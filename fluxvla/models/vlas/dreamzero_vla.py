@@ -195,10 +195,14 @@ class DreamZeroVLA(BaseVLA):
         video = self._prepare_video(images)  # [B, C, T, H, W]
 
         # Prepare states [B, num_state_tokens, D]
+        # VAE temporal compression: latent_frames = 1 + (T-1)//4
+        # Non-conditioning latent frames = latent_frames - 1
+        # num_blocks = non_cond_latent_frames // num_frame_per_block
         t_video = video.shape[2]
-        num_state_tokens = max(1, (t_video - 1) //
-                               self.vla_head.num_frame_per_block *
-                               self.vla_head.num_state_per_block)
+        latent_frames = 1 + (t_video - 1) // 4
+        num_blocks = max(1, (latent_frames - 1) //
+                         self.vla_head.num_frame_per_block)
+        num_state_tokens = num_blocks * self.vla_head.num_state_per_block
         states = self._prepare_states(states, num_state_tokens)
 
         # Pad actions to max_action_dim

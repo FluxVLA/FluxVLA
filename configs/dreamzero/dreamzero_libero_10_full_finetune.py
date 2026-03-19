@@ -16,10 +16,13 @@
 # DreamZero – LIBERO-10 full fine-tune config
 #
 # Video setup:
-#   frame_window_size = 5 (current frame + 4 future frames for
+#   frame_window_size = 9 (current frame + 8 future frames for
 #   dynamics supervision).  The first frame is the conditioning
 #   observation; the remaining frames are prediction targets for
 #   the video dynamics loss.
+#   VAE temporal compression: latent_frames = 1 + (T-1)//4
+#   T=9 → 3 latent frames → 1 conditioning + 2 = 1 block of
+#   num_frame_per_block=2.
 #
 # Image layout : 2 views (agentview + wrist) @ 128x128 each
 #                tiled vertically → 256×128
@@ -48,7 +51,7 @@ _vae_path = os.environ.get('VAE_PATH', None)
 _tokenizer = os.environ.get('TOKENIZER_PATH', 'google/umt5-xxl')
 _skip_pretrained = _wan_ckpt is None
 
-_frame_window_size = 5
+_frame_window_size = 9
 
 model = dict(
     type='DreamZeroVLA',
@@ -173,7 +176,7 @@ runner = dict(
             'embodiment_ids',
             'frame_masks',
         ],
-        meta_keys=['task_description', 'prompt', 'info', 'stats'],
+        meta_keys=['task_description', 'prompt', 'info', 'stats', 'timestamp'],
     ),
     sampler=None,
     metric=dict(

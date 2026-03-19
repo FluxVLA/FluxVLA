@@ -314,7 +314,8 @@ class FSDPTrainRunner(BaseTrainRunner):
         vlm_has_hf_checkpointing = False
         if self.enable_gradient_checkpointing:
             # Add LLM backbone transformer layers
-            if hasattr(self, 'llm_transformer_layer_cls'):
+            if hasattr(self, 'llm_transformer_layer_cls') \
+                    and self.llm_transformer_layer_cls is not None:
                 checkpoint_layer_classes.add(self.llm_transformer_layer_cls)
 
             # Add Vision Transformer blocks (for timm models)

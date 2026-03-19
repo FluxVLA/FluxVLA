@@ -584,11 +584,10 @@ class DreamZeroHead(nn.Module):
     # FSDP / DDP helpers
     # ------------------------------------------------------------------
     def get_fsdp_wrapping_policy(self) -> Callable:
-        (CausalWanModel, WanTextEncoder, WanImageEncoder, WanVideoVAE,
-         _) = _import_dreamzero_modules()
+        (CausalWanModel, _, _, _, _) = _import_dreamzero_modules()
+        # Only wrap the trainable DiT; frozen encoders (T5, CLIP, VAE)
+        # must NOT be wrapped — FSDP flattens params which breaks Conv3d.
         return partial(
             _module_wrap_policy,
-            module_classes={
-                CausalWanModel, WanTextEncoder, WanImageEncoder, WanVideoVAE
-            },
+            module_classes={CausalWanModel},
         )

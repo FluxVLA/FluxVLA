@@ -565,9 +565,9 @@ class CLIP(nn.Module):
             proj_dropout=proj_dropout,
             embedding_dropout=embedding_dropout,
             norm_eps=norm_eps)
-        self.log_scale = nn.Parameter(math.log(1 / 0.07) * torch.ones([]))
+        self.log_scale = nn.Parameter(math.log(1 / 0.07) * torch.ones([1]))
         if logit_bias is not None:
-            self.logit_bias = nn.Parameter(logit_bias * torch.ones([]))
+            self.logit_bias = nn.Parameter(logit_bias * torch.ones([1]))
 
         # initialize weights
         self.init_weights()
@@ -709,7 +709,7 @@ class XLMRobertaCLIP(nn.Module):
             embedding_dropout=embedding_dropout,
             norm_eps=norm_eps)
         self.textual = None
-        self.log_scale = nn.Parameter(math.log(1 / 0.07) * torch.ones([]))
+        self.log_scale = nn.Parameter(math.log(1 / 0.07) * torch.ones([1]))
 
     def forward(self, imgs, txt_ids):
         """
