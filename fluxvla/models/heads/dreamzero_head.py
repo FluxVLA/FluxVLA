@@ -381,20 +381,80 @@ class DreamZeroHead(nn.Module):
         ys: torch.Tensor,
         states: torch.Tensor,
         embodiment_ids: torch.Tensor,
+        num_inference_steps: int = 4,
         **kwargs,
     ) -> torch.Tensor:
-        """Single-step action prediction (simplified, non-autoregressive)."""
-        raise NotImplementedError(
-            'DreamZero inference is not yet implemented in fluxvla. '
-            'Use the original dreamzero codebase for inference.')
+        """Action prediction via flow-matching denoising.
+
+        Uses the scheduler to iterate from pure noise to clean actions.
+        Video latents are kept fixed (no video denoising at inference).
+
+        Returns:
+            ``[B, action_horizon, action_dim]`` predicted actions (padded dim).
+        """
+        device = states.device
+
+        _, num_lat_frames, num_channels, lat_h, lat_w = latents.shape
+        frame_seqlen = int(lat_h * lat_w / 4)
+        seq_len = num_lat_frames * frame_seqlen
+
+        # Use a separate scheduler for inference timesteps
+        _, FlowMatchScheduler = _import_dreamzero_modules()
+        inf_scheduler = FlowMatchScheduler(
+            num_inference_steps=num_inference_steps,
+            shift=5,
+            sigma_min=0.0,
+            extra_one_step=True)
+
+        # Start from pure noise for actions
+        b = states.shape[0]
+        noisy_actions = torch.randn(
+            b,
+            self.action_horizon,
+            self.max_action_dim,
+            device=device,
+            dtype=states.dtype)
+
+        # Denoise actions iteratively
+        for i, t in enumerate(inf_scheduler.timesteps):
+            t_action = t.to(device).expand(b, self.action_horizon)
+            with torch.amp.autocast(
+                    dtype=torch.bfloat16,
+                    device_type=torch.device(device).type):
+                _, action_noise_pred = self.model(
+                    latents.transpose(1, 2),
+                    timestep=t.to(device).expand(b, num_lat_frames),
+                    clip_feature=clip_feas,
+                    y=ys,
+                    context=prompt_embs,
+                    seq_len=seq_len,
+                    state=states.to(torch.bfloat16),
+                    embodiment_id=embodiment_ids,
+                    action=noisy_actions,
+                    timestep_action=t_action,
+                )
+            noisy_actions = inf_scheduler.step(
+                action_noise_pred.float(),
+                t,
+                noisy_actions.float(),
+                to_final=(i == len(inf_scheduler.timesteps) - 1))
+
+        return noisy_actions
 
     # ------------------------------------------------------------------
     # FSDP / DDP helpers
     # ------------------------------------------------------------------
     def get_fsdp_wrapping_policy(self) -> Callable:
-        CausalWanModel, _ = _import_dreamzero_modules()
-        # Only wrap the trainable DiT.
+        from importlib import import_module
+
+        _chunk = import_module(
+            'fluxvla.models.third_party_models.dreamzero.modules.'
+            'wan_video_dit_action_casual_chunk')
+        CausalWanAttentionBlock = _chunk.CausalWanAttentionBlock
+
+        # Wrap at the block level so FSDP shards each DiT block
+        # individually, significantly reducing peak memory.
         return partial(
             _module_wrap_policy,
-            module_classes={CausalWanModel},
+            module_classes={CausalWanAttentionBlock},
         )

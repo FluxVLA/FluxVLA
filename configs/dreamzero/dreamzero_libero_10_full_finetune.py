@@ -30,26 +30,15 @@
 # After patch  : 16×8  (patch 2×2)
 # frame_seqlen : 16 * 8 = 128
 #
-# When Wan2.1 pretrained weights are available, set the environment
-# variables below (or edit the paths directly):
-#   WAN_CKPT_DIR          → Wan2.1-I2V-14B-480P checkpoint dir
-#   TEXT_ENCODER_PATH      → T5 umt5-xxl encoder .pth
-#   IMAGE_ENCODER_PATH     → CLIP .pth
-#   VAE_PATH               → Wan2.1_VAE.pth
-#   TOKENIZER_PATH         → google/umt5-xxl (HF name or local)
-#
-# With skip_pretrained_loading=True all sub-models (T5, CLIP, VAE,
-# DiT) are randomly initialised – useful for pipeline validation.
+# Pretrained weights are loaded from pretrained_name_or_path
+# (DreamZero-AgiBot safetensors) with name_mapping to remap
+# checkpoint keys to the fluxvla module structure.
+# Sub-model skip_pretrained_loading=True because weights come
+# from the unified checkpoint, not per-component .pth files.
 # ===================================================================
 
-import os
-
-_wan_ckpt = os.environ.get('WAN_CKPT_DIR', None)
-_text_enc = os.environ.get('TEXT_ENCODER_PATH', None)
-_img_enc = os.environ.get('IMAGE_ENCODER_PATH', None)
-_vae_path = os.environ.get('VAE_PATH', None)
-_tokenizer = os.environ.get('TOKENIZER_PATH', 'google/umt5-xxl')
-_skip_pretrained = _wan_ckpt is None
+_ckpt_root = '/limx/tos/users/liyinhao/checkpoints'
+_tokenizer = _ckpt_root + '/Wan2.1-I2V-14B-480P/google/umt5-xxl'
 
 _frame_window_size = 9
 
@@ -57,13 +46,15 @@ model = dict(
     type='DreamZeroVLA',
     num_views=2,
     frame_window_size=_frame_window_size,
+    pretrained_name_or_path=  # noqa: E251
+    _ckpt_root + '/DreamZero-AgiBot',
     wan_backbone=dict(
         type='WanBackbone',
-        text_encoder_path=_text_enc,
-        image_encoder_path=_img_enc,
-        vae_path=_vae_path,
+        text_encoder_path=None,
+        image_encoder_path=None,
+        vae_path=None,
         tiled=False,
-        skip_pretrained_loading=_skip_pretrained,
+        skip_pretrained_loading=True,
     ),
     vla_head=dict(
         type='DreamZeroHead',
@@ -79,7 +70,7 @@ model = dict(
         num_state_per_block=1,
         frame_seqlen=128,
         # ----- DiT architecture (Wan 14B) -----
-        hidden_size=64,
+        hidden_size=1024,
         input_embedding_dim=1536,
         dit_dim=5120,
         dit_ffn_dim=13824,
@@ -96,11 +87,16 @@ model = dict(
         # ----- training mode -----
         train_architecture='full',
         # ----- pretrained paths -----
-        skip_pretrained_loading=_skip_pretrained,
-        wan_model_path=_wan_ckpt,
+        skip_pretrained_loading=True,
+        wan_model_path=None,
         use_gradient_checkpointing=True,
     ),
-    pretrained_name_or_path=None,
+    name_mapping={
+        'vla_head.model': 'action_head.model',
+        'wan_backbone.text_encoder': 'action_head.text_encoder',
+        'wan_backbone.image_encoder': 'action_head.image_encoder',
+        'wan_backbone.vae': 'action_head.vae',
+    },
 )
 
 train_dataloader = dict(

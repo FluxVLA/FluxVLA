@@ -2093,7 +2093,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
                     use_reentrant=False,
                 )
             else:
-                x = block(x, **kwargs)
+                x, _ = block(x, **kwargs)
 
         if clean_x is not None:
             x = x[:, clean_x.shape[1]:]

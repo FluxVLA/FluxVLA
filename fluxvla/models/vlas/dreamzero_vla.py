@@ -254,18 +254,66 @@ class DreamZeroVLA(BaseVLA):
     def predict_action(
         self,
         images: torch.Tensor,
-        task_description: List[str],
+        lang_tokens: torch.Tensor,
+        lang_masks: torch.Tensor,
         states: torch.Tensor,
         embodiment_ids: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
-        video = self._prepare_video(images)
+        device = images.device
+        video = self._prepare_video(images)  # [B, C, T, H, W]
+
         if embodiment_ids is None:
             embodiment_ids = torch.zeros(
-                images.shape[0], dtype=torch.long, device=images.device)
+                images.shape[0], dtype=torch.long, device=device)
+
+        # Pad video to training frame_window_size so that the number of
+        # latent frames (and thus image/action/state blocks) matches
+        # what the model was trained with.
+        b, c, t_obs, h, w = video.shape
+        t_train = self.frame_window_size
+        if t_obs < t_train:
+            pad = video.new_zeros(b, c, t_train - t_obs, h, w)
+            video = torch.cat([video, pad], dim=2)
+
+        # --- Encode with WanBackbone (same as forward) ---
+        prompt_embs = self.wan_backbone.encode_prompt(
+            lang_tokens.long().to(device),
+            lang_masks.long().to(device))
+
+        latents = self.wan_backbone.encode_video(video)
+
+        b, c, t, h, w = video.shape
+        first_frame = video[:, :, :1].transpose(1, 2)  # [B, 1, C, H, W]
+        clip_feas, ys, _ = self.wan_backbone.encode_image(first_frame, t, h, w)
+
+        latents = latents.to(device)
+        clip_feas = clip_feas.to(device)
+        ys = ys.to(device)
+        prompt_embs = prompt_embs.to(device)
+
+        # Prepare states [B, num_state_tokens, D]
+        t_video = video.shape[2]
+        latent_frames = 1 + (t_video - 1) // 4
+        num_blocks = max(1, (latent_frames - 1) //
+                         self.vla_head.num_frame_per_block)
+        num_state_tokens = num_blocks * self.vla_head.num_state_per_block
+        states = self._prepare_states(states, num_state_tokens)
+
+        # Pad states to max_state_dim
+        max_state_dim = self.vla_head.max_state_dim
+        if states.shape[-1] < max_state_dim:
+            pad_size = max_state_dim - states.shape[-1]
+            states = torch.nn.functional.pad(states, (0, pad_size))
+
+        # Transpose latents to [B, T_lat, C, H_lat, W_lat] for head
+        latents = latents.transpose(1, 2)
+
         return self.vla_head.predict_action(
-            images=video,
-            task_description=task_description,
+            prompt_embs=prompt_embs,
+            latents=latents,
+            clip_feas=clip_feas,
+            ys=ys,
             states=states,
             embodiment_ids=embodiment_ids,
         )

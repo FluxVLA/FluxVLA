@@ -288,6 +288,12 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                                         pretrained_weights[mapped_name].to(
                                             param.dtype))
                                 else:
+                                    overwatch.info(
+                                        f"[*] Size mismatch for '{name}': "
+                                        f'model={list(param.size())} vs '
+                                        f"ckpt '{mapped_name}'="
+                                        f'{list(pretrained_weights[mapped_name].size())}'  # noqa: E501
+                                    )
                                     continue
                             matched = True
                     if not matched:
@@ -296,6 +302,15 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                                 f"Parameter '{name}' not found in pretrained weights with mapping."  # noqa: E501
                             )
                         else:
+                            # Debug: show what mapping was attempted
+                            attempted = []
+                            for key, val in self.name_mapping.items():
+                                if key in name:
+                                    mn = name.replace(key, val)
+                                    in_ckpt = mn in pretrained_weights
+                                    attempted.append(f"{key}->{val}: '{mn}' "
+                                                     f'(in_ckpt={in_ckpt})')
                             overwatch.info(
-                                f"Parameter '{name}' not found in pretrained weights, skipping."  # noqa: E501
-                            )  # noqa: E501
+                                f"[*] Parameter '{name}' not found in "
+                                f'pretrained weights, skipping. '
+                                f'Attempted: {attempted}')
