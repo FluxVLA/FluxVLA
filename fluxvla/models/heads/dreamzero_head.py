@@ -322,47 +322,45 @@ class DreamZeroHead(nn.Module):
             actions, noise_action, timestep_action)
 
         # --- DiT forward ---
-        with torch.amp.autocast(
-                dtype=torch.bfloat16, device_type=torch.device(device).type):
-            video_noise_pred, action_noise_pred = self.model(
-                noisy_latents.transpose(1, 2),
-                timestep=timestep,
-                clip_feature=clip_feas,
-                y=ys,
-                context=prompt_embs,
-                seq_len=seq_len,
-                state=states.to(torch.bfloat16),
-                embodiment_id=embodiment_ids,
-                action=noisy_actions,
-                timestep_action=timestep_action,
-                clean_x=latents.transpose(1, 2),
-            )
+        video_noise_pred, action_noise_pred = self.model(
+            noisy_latents.transpose(1, 2),
+            timestep=timestep,
+            clip_feature=clip_feas,
+            y=ys,
+            context=prompt_embs,
+            seq_len=seq_len,
+            state=states.to(torch.bfloat16),
+            embodiment_id=embodiment_ids,
+            action=noisy_actions,
+            timestep_action=timestep_action,
+            clean_x=latents.transpose(1, 2),
+        )
 
-            # --- Compute losses ---
-            dynamics_loss = F.mse_loss(
-                video_noise_pred.float(),
-                training_target.float(),
-                reduction='none',
-            ).mean(dim=(1, 3, 4))
-            weight_dyn = (
-                dynamics_loss * self.scheduler.training_weight(
-                    timestep.flatten(0, 1)).unflatten(
-                        0, (noise.shape[0], noise.shape[1])).to(device))
-            weighted_dynamics_loss = weight_dyn.mean()
+        # --- Compute losses ---
+        dynamics_loss = F.mse_loss(
+            video_noise_pred.float(),
+            training_target.float(),
+            reduction='none',
+        ).mean(dim=(1, 3, 4))
+        weight_dyn = (
+            dynamics_loss *
+            self.scheduler.training_weight(timestep.flatten(0, 1)).unflatten(
+                0, (noise.shape[0], noise.shape[1])).to(device))
+        weighted_dynamics_loss = weight_dyn.mean()
 
-            action_loss_raw = F.mse_loss(
-                action_noise_pred.float(),
-                training_target_action.float(),
-                reduction='none',
-            ) * action_masks.float()
-            weight_act = (
-                action_loss_raw.mean(dim=2) *
-                self.scheduler.training_weight(timestep_action.flatten(
-                    0, 1)).unflatten(0, (noise_action.shape[0],
-                                         noise_action.shape[1])).to(device))
-            weighted_action_loss = weight_act.mean()
+        action_loss_raw = F.mse_loss(
+            action_noise_pred.float(),
+            training_target_action.float(),
+            reduction='none',
+        ) * action_masks.float()
+        weight_act = (
+            action_loss_raw.mean(dim=2) * self.scheduler.training_weight(
+                timestep_action.flatten(0, 1)).unflatten(
+                    0,
+                    (noise_action.shape[0], noise_action.shape[1])).to(device))
+        weighted_action_loss = weight_act.mean()
 
-            loss = weighted_dynamics_loss + weighted_action_loss
+        loss = weighted_dynamics_loss + weighted_action_loss
 
         return dict(
             loss=loss,
@@ -418,21 +416,18 @@ class DreamZeroHead(nn.Module):
         # Denoise actions iteratively
         for i, t in enumerate(inf_scheduler.timesteps):
             t_action = t.to(device).expand(b, self.action_horizon)
-            with torch.amp.autocast(
-                    dtype=torch.bfloat16,
-                    device_type=torch.device(device).type):
-                _, action_noise_pred = self.model(
-                    latents.transpose(1, 2),
-                    timestep=t.to(device).expand(b, num_lat_frames),
-                    clip_feature=clip_feas,
-                    y=ys,
-                    context=prompt_embs,
-                    seq_len=seq_len,
-                    state=states.to(torch.bfloat16),
-                    embodiment_id=embodiment_ids,
-                    action=noisy_actions,
-                    timestep_action=t_action,
-                )
+            _, action_noise_pred = self.model(
+                latents.transpose(1, 2),
+                timestep=t.to(device).expand(b, num_lat_frames),
+                clip_feature=clip_feas,
+                y=ys,
+                context=prompt_embs,
+                seq_len=seq_len,
+                state=states.to(torch.bfloat16),
+                embodiment_id=embodiment_ids,
+                action=noisy_actions,
+                timestep_action=t_action,
+            )
             noisy_actions = inf_scheduler.step(
                 action_noise_pred.float(),
                 t,
