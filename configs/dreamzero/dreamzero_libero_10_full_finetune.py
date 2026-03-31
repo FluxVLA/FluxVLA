@@ -84,6 +84,7 @@ model = dict(
         noise_beta_alpha=1.5,
         noise_beta_beta=1.0,
         noise_s=0.999,
+        num_inference_steps=16,
         # ----- training mode -----
         train_architecture='full',
         # ----- pretrained paths -----

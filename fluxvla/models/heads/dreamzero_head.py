@@ -110,6 +110,7 @@ class DreamZeroHead(nn.Module):
         noise_beta_alpha: float = 1.5,
         noise_beta_beta: float = 1.0,
         noise_s: float = 0.999,
+        num_inference_steps: int = 4,
         train_architecture: str = 'full',
         lora_rank: int = 4,
         lora_alpha: int = 4,
@@ -131,6 +132,7 @@ class DreamZeroHead(nn.Module):
         self.num_frames = num_frames
         self.num_frame_per_block = num_frame_per_block
         self.noise_s = noise_s
+        self.num_inference_steps = num_inference_steps
         self.train_architecture = train_architecture
         self.skip_pretrained_loading = skip_pretrained_loading
         self.num_action_per_block = num_action_per_block
@@ -379,60 +381,169 @@ class DreamZeroHead(nn.Module):
         ys: torch.Tensor,
         states: torch.Tensor,
         embodiment_ids: torch.Tensor,
-        num_inference_steps: int = 4,
+        num_inference_steps: Optional[int] = None,
         **kwargs,
     ) -> torch.Tensor:
-        """Action prediction via flow-matching denoising.
+        """Joint video+action denoising with UniPC multistep schedulers.
 
-        Uses the scheduler to iterate from pure noise to clean actions.
-        Video latents are kept fixed (no video denoising at inference).
+        Compared to the previous simple Euler-style flow step, this uses the
+        same scheduler family as the reference DreamZero inference path
+        (FlowUniPCMultistepScheduler) for both video and action trajectories.
 
         Returns:
             ``[B, action_horizon, action_dim]`` predicted actions (padded dim).
         """
+        from fluxvla.models.third_party_models.dreamzero.modules.flow_unipc_multistep_scheduler import \
+            FlowUniPCMultistepScheduler  # noqa: E501
+
         device = states.device
 
-        _, num_lat_frames, num_channels, lat_h, lat_w = latents.shape
+        # Incoming latents are [B, T_lat, C, H_lat, W_lat] from DreamZeroVLA;
+        # convert to model-facing [B, C, T_lat, H_lat, W_lat].
+        latents = latents.transpose(1, 2)
+        _, num_channels, num_lat_frames, lat_h, lat_w = latents.shape
         frame_seqlen = int(lat_h * lat_w / 4)
-        seq_len = num_lat_frames * frame_seqlen
 
-        # Use a separate scheduler for inference timesteps
-        _, FlowMatchScheduler = _import_dreamzero_modules()
-        inf_scheduler = FlowMatchScheduler(
-            num_inference_steps=num_inference_steps,
-            shift=5,
-            sigma_min=0.0,
-            extra_one_step=True)
+        if num_inference_steps is None:
+            num_inference_steps = self.num_inference_steps
 
-        # Start from pure noise for actions
         b = states.shape[0]
+
+        # Denoise only future latent block(s); first latent frame is the
+        # conditioning frame used to build causal KV cache.
+        denoise_frames = self.num_frame_per_block
+        if num_lat_frames <= 1:
+            denoise_frames = 1
+
+        # Jointly sample noisy video/action and denoise together.
+        noisy_latents = torch.randn(
+            b,
+            num_channels,
+            denoise_frames,
+            lat_h,
+            lat_w,
+            device=device,
+            dtype=states.dtype,
+        )
         noisy_actions = torch.randn(
             b,
             self.action_horizon,
             self.max_action_dim,
             device=device,
-            dtype=states.dtype)
+            dtype=states.dtype,
+        )
 
-        # Denoise actions iteratively
-        for i, t in enumerate(inf_scheduler.timesteps):
-            t_action = t.to(device).expand(b, self.action_horizon)
-            _, action_noise_pred = self.model(
-                latents.transpose(1, 2),
-                timestep=t.to(device).expand(b, num_lat_frames),
+        # UniPC schedulers for video and action branches.
+        sample_scheduler = FlowUniPCMultistepScheduler(
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            shift=1,
+            use_dynamic_shifting=False,
+        )
+        sample_scheduler_action = FlowUniPCMultistepScheduler(
+            num_train_timesteps=self.scheduler.num_train_timesteps,
+            shift=1,
+            use_dynamic_shifting=False,
+        )
+        sample_scheduler.set_timesteps(
+            num_inference_steps,
+            device=device,
+            shift=5.0,
+        )
+        sample_scheduler_action.set_timesteps(
+            num_inference_steps,
+            device=device,
+            shift=5.0,
+        )
+
+        # Build empty KV cache tensors so CausalWanModel uses inference path
+        # (`_forward_inference`) instead of training path (`_forward_train`).
+        num_heads = self.model.num_heads
+        head_dim = self.model.dim // self.model.num_heads
+        kv_cache = [
+            torch.zeros(
+                2,
+                b,
+                0,
+                num_heads,
+                head_dim,
+                dtype=noisy_latents.dtype,
+                device=device,
+            ) for _ in range(self.model.num_layers)
+        ]
+
+        # Seed causal cache with conditioning first latent frame, matching
+        # reference inference flow: action/state are not used in this stage.
+        cond_x = latents[:, :, :1]
+        cond_t = torch.zeros(
+            b,
+            1,
+            dtype=torch.int64,
+            device=device,
+        )
+        _, _, kv_cache = self.model(
+            cond_x,
+            timestep=cond_t,
+            clip_feature=clip_feas,
+            y=ys[:, :, :1],
+            context=prompt_embs,
+            seq_len=frame_seqlen,
+            action=None,
+            timestep_action=None,
+            state=None,
+            embodiment_id=None,
+            kv_cache=kv_cache,
+            crossattn_cache=None,
+            current_start_frame=0,
+        )
+
+        # Use the subsequent y block(s) for denoising stage.
+        y_future = ys[:, :, 1:1 + denoise_frames]
+        if y_future.shape[2] == 0:
+            y_future = ys[:, :, -denoise_frames:]
+
+        denoise_seq_len = denoise_frames * frame_seqlen
+
+        for step_index in range(len(sample_scheduler.timesteps)):
+            video_timestep = sample_scheduler.timesteps[step_index]
+            action_timestep = sample_scheduler_action.timesteps[step_index]
+
+            t_video = video_timestep.expand(b, denoise_frames)
+            t_action = action_timestep.expand(b, self.action_horizon)
+
+            video_noise_pred, action_noise_pred, kv_cache = self.model(
+                noisy_latents,
+                timestep=t_video,
                 clip_feature=clip_feas,
-                y=ys,
+                y=y_future,
                 context=prompt_embs,
-                seq_len=seq_len,
+                seq_len=denoise_seq_len,
                 state=states.to(torch.bfloat16),
                 embodiment_id=embodiment_ids,
                 action=noisy_actions,
                 timestep_action=t_action,
+                kv_cache=kv_cache,
+                crossattn_cache=None,
+                current_start_frame=1,
             )
-            noisy_actions = inf_scheduler.step(
-                action_noise_pred.float(),
-                t,
-                noisy_actions.float(),
-                to_final=(i == len(inf_scheduler.timesteps) - 1))
+
+            noisy_latents = sample_scheduler.step(
+                model_output=video_noise_pred.float(),
+                timestep=video_timestep,
+                sample=noisy_latents.float(),
+                step_index=step_index,
+                return_dict=False,
+            )[0]
+            noisy_actions = sample_scheduler_action.step(
+                model_output=action_noise_pred.float(),
+                timestep=action_timestep,
+                sample=noisy_actions.float(),
+                step_index=step_index,
+                return_dict=False,
+            )[0]
+
+            # Keep scheduler state dtype aligned with model compute dtype.
+            noisy_latents = noisy_latents.to(dtype=states.dtype)
+            noisy_actions = noisy_actions.to(dtype=states.dtype)
 
         return noisy_actions
 

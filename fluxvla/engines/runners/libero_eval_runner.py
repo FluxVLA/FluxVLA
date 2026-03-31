@@ -147,7 +147,11 @@ class LiberoEvalRunner:
         self.vla.freeze_projector = True
         self.vla.freeze_vlm_backbone = True
         self.vla.freeze_wam_backbone = True
-        self.vla.cuda(self.device_id)
+        if self.enable_mixed_precision_training:
+            self.vla.to(
+                device=self.device_id, dtype=self.mixed_precision_dtype)
+        else:
+            self.vla.cuda(self.device_id)
 
     def run(self):
         """Run the evaluation process."""
@@ -265,11 +269,11 @@ class LiberoEvalRunner:
                             actions = self.vla.predict_action(**batch)
                     if len(actions.shape) == 3:
                         actions = actions[
-                            0, :self.eval_chunk_size, :].cpu().numpy()
+                            0, :self.eval_chunk_size, :].float().cpu().numpy()
                     else:
                         assert len(actions.shape) == 2, \
                             f'Unexpected action shape: {actions.shape}'
-                        actions = actions[0, None, :].cpu().numpy()
+                        actions = actions[0, None, :].float().cpu().numpy()
                     for action in actions:
                         inputs = dict(
                             action=action,

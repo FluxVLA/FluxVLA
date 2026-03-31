@@ -503,10 +503,14 @@ class LiberoProprioFromInputs:
             mask = np.array(stats['mask'])
         else:
             mask = np.ones_like(stats['mean'], dtype=bool)
+        # Keep eval-time mean/std normalization consistent with training:
+        # (x - mean) / (std + eps), without clipping.
         states = np.where(
             mask,
-            np.clip((normalized_states - np.array(stats['mean'])) /
-                    np.array(stats['std']) + 1e-6, -1, 1), normalized_states)
+            (normalized_states - np.array(stats['mean'])) /
+            (np.array(stats['std']) + 1e-6),
+            normalized_states,
+        )
         return states
 
     def _normalize_quantile(self, normalized_states: np.ndarray, stats: Dict):
