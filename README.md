@@ -4,21 +4,7 @@
   <img src="assets/fluxvla.png" alt="FluxVLA" width="600">
 </p>
 
-<div align="center">
-<a href="https://huggingface.co/limxdynamics/FluxVLAEngine"><img src="https://img.shields.io/badge/HuggingFace-yellow?logo=huggingface&logoColor=white" alt="Hugging Face"></a>
-<a href="https://fluxvla.limxdynamics.com"><img src="https://img.shields.io/badge/Documentation-Purple?color=8A2BE2&logo=readthedocs"></a>
-<a href="https://fluxvla.limxdynamics.com/zh"><img src="https://img.shields.io/badge/中文文档-red?logo=readthedocs"></a>
-<a href="https://github.com/limxdynamics/FluxVLA/issues/1"><img src="https://img.shields.io/badge/WeChat-green?logo=wechat"></a>
-<a href="https://github.com/limxdynamics/FluxVLA/issues/1"><img src="https://img.shields.io/badge/Feishu-3370FF?logo=lark&logoColor=white"></a>
-</div>
-
-<div align="center">
-
-English | [简体中文](README_zh-CN.md) | [日本語](README_ja.md)
-
-</div>
-
-FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying embodied intelligence applications. Built on the core design principles of unified configuration, standardized interfaces, module decoupling, and deployability, it creates a complete engineering loop from data to real-device deployment. With the goal of providing a standardized industry–academia–research foundation, it significantly lowers the engineering barrier for VLA research and development.
+A Unified, Modular, and Deployable VLA Codebase.
 
 ## Framework
 
@@ -38,12 +24,11 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 **\[2026/04/03\]** 🔥 FluxVLA has been open-sourced.
 
-## 🛠️ Installation
+## Installation
 
-The installation guide below uses NVCC 12.4 as an example. If your environment differs, adjust the CUDA version accordingly.
+The following installation guide uses NVCC 12.4 as an example. Please adjust the CUDA version accordingly if your setup differs.
 
-<details>
-<summary><b>1. Create a conda environment</b></summary>
+### 1. Create conda environment
 
 ```bash
 conda create -n fluxvla python=3.10 -y
@@ -217,16 +202,9 @@ For example, download the `libero-10` dataset:
 huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "libero_10_no_noops_lerobotv2.1/*" --local-dir ./datasets
 ```
 
-Replace `libero_10_no_noops_lerobotv2.1` with the corresponding folder name of the dataset you want to download.
+Replace `libero_10_no_noops_lerobotv2.1` with the corresponding folder name to download other datasets.
 
-</details>
-
-<details>
-<summary><b>Private dataset directory structure</b></summary>
-
-If you train with fluxvla on private datasets, you need to convert your raw data (e.g., HDF5 files collected by ALOHA robots) into the LeRobot Dataset v2.1 format. For a step-by-step conversion guide, see [Data Conversion Guide](docs/data_convert.md).
-
-The converted dataset should follow this directory structure:
+To train models using fluxvla on private datasets, organize the datasets in the following format.
 
 ```
 ├── data
@@ -326,55 +304,21 @@ huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_li
 
 </details>
 
-## 🌟 Features
+## Features
 
-<details>
-<summary><b>All-in-one: One configuration file manages the full workflow</b></summary>
-
-- Manage key parameters for data, models, training, evaluation, inference, and deployment through a single config file (easier to reproduce and deploy).
-
-</details>
-
-<details>
-<summary><b>Supports different VLA models</b></summary>
-
-- Supports OpenVLA, LlavaVLA, Gr00t, Pi0, and Pi0.5.
-
-</details>
-
-<details>
-<summary><b>Supports different modules</b></summary>
-
-- Supports Llama, Gemma, and Qwen-family LLM backbones.
-- Supports DINOv2 and SigLIP vision backbones.
-- Supports PaliGemma and Qwen-VL VLM backbones.
-
-</details>
-
-<details>
-<summary><b>Supports different training strategies</b></summary>
-
-- Supports FSDP together with DDP, and supports LoRA training mode.
-- Supports eval-after-train.
-- Supports resuming training from checkpoints.
-
-</details>
-
-<details>
-<summary><b>Data and weight formats</b></summary>
-
-- Supports Parquet datasets and loading LeRobot-format data.
-- Supports model weights in safetensors format.
-
-</details>
-
-<details>
-<summary><b>Evaluation and inference capabilities</b></summary>
-
-- Supports multi-GPU evaluation.
-- Supports evaluating libero on devices without ray tracing.
-- Supports [RTC (Real-Time Chunking)](docs/rtc.md) to improve cross-chunk trajectory continuity.
-- Supports accelerated inference for GR00T and PI0.5; see [Inference Acceleration](docs/inference_acceleration.md), including Triton fused kernels, CUDA Graph capture, and CUDA custom operators.
+- Support OpenVLA, LlavaVLA, Gr00t, Pi0 and Pi0.5.
+- Support llama, gemma and qwen llm backbones.
+- Support dinosiglip vision backbone.
+- Support paligemma and qwenvl vlm backbones.
+- Support multi-gpu evaluation.
+- Support evaluate libero on devices without ray tracing.
+- Support eval-after-train.
+- Support both FSDP and DDP, support lora training mode.
+- Support Parquet datasets and enable the loading of data in the LeRobot format.
+- Support resuming training from checkpoints.
+- Support safetensors format for model weights.
+- Support [RTC (Real-Time Chunking)](docs/rtc.md) for improved cross-chunk trajectory continuity.
+- Support accelerated inference for Gr00t and PI0.5; See [Inference Acceleration](docs/inference_acceleration.md) for details on Triton fused kernels, CUDA Graph capture and CUDA custom operators.
 
 </details>
 
