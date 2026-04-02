@@ -40,7 +40,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                  vision_backbone: str = None,
                  llm_backbone: str = None,
                  vlm_backbone: str = None,
-                 wan_backbone: str = None,
+                 wam_backbone: str = None,
                  projector: str = None,
                  vla_head: str = None,
                  enable_mixed_precision_training: bool = True,
@@ -70,11 +70,11 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
             self.vlm_backbone = build_vlm_backbone_from_cfg(vlm_backbone)
         else:
             self.vlm_backbone = None
-        if wan_backbone is not None:
-            self.wan_backbone = build_wam_backbone_from_cfg(
-                copy.deepcopy(wan_backbone))
+        if wam_backbone is not None:
+            self.wam_backbone = build_wam_backbone_from_cfg(
+                copy.deepcopy(wam_backbone))
         else:
-            self.wan_backbone = None
+            self.wam_backbone = None
         if projector is not None:
             self.projector = build_projector_from_cfg(projector)
         else:
@@ -117,8 +117,8 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
             self.llm_backbone.requires_grad_(not self.freeze_llm_backbone)
         if self.vlm_backbone is not None:
             self.vlm_backbone.requires_grad_(not self.freeze_vlm_backbone)
-        if self.wan_backbone is not None:
-            self.wan_backbone.requires_grad_(not self.freeze_wam_backbone)
+        if self.wam_backbone is not None:
+            self.wam_backbone.requires_grad_(not self.freeze_wam_backbone)
         if self.projector is not None:
             self.projector.requires_grad_(not self.freeze_projector)
 
@@ -133,7 +133,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         if not self.freeze_vlm_backbone:
             self.trainable_module_keys.append('vlm_backbone')
         if not self.freeze_wam_backbone:
-            self.trainable_module_keys.append('wan_backbone')
+            self.trainable_module_keys.append('wam_backbone')
 
         # Update Trackers
         self.vision_backbone_requires_grad = not self.freeze_vision_backbone
@@ -156,7 +156,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                 overwatch.info('[Frozen]    🥶 =>> VLM Backbone', ctx_level=1)
             else:
                 overwatch.info('[TRAINABLE] 🔥 =>> VLM Backbone', ctx_level=1)
-        if self.wan_backbone is not None:
+        if self.wam_backbone is not None:
             if self.freeze_wam_backbone:
                 overwatch.info('[Frozen]    🥶 =>> Wan Backbone', ctx_level=1)
             else:

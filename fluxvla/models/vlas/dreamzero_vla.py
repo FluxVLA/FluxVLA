@@ -27,7 +27,7 @@ overwatch = initialize_overwatch(__name__)
 class DreamZeroVLA(BaseVLA):
     """DreamZero World-Action Model.
 
-    Uses ``WanBackbone`` (wan_backbone) for encoding (T5, CLIP, VAE) and
+    Uses ``WanBackbone`` (wam_backbone) for encoding (T5, CLIP, VAE) and
     ``DreamZeroHead`` (vla_head) for the DiT diffusion model and flow-matching.
 
     Data contract
@@ -43,13 +43,13 @@ class DreamZeroVLA(BaseVLA):
       ``[B, action_horizon, action_dim]`` boolean.
     * ``embodiment_ids`` – ``[B]`` integer (optional, defaults to 0).
 
-    Encoding (T5, CLIP, VAE) is done by ``WanBackbone`` (wan_backbone),
+    Encoding (T5, CLIP, VAE) is done by ``WanBackbone`` (wam_backbone),
     then encoded tensors are passed to ``DreamZeroHead`` (vla_head).
     """
 
     def __init__(
         self,
-        wan_backbone: Dict = None,
+        wam_backbone: Dict = None,
         vla_head: Dict = None,
         num_views: int = 2,
         frame_window_size: int = 1,
@@ -64,7 +64,7 @@ class DreamZeroVLA(BaseVLA):
         **kwargs,
     ) -> None:
         super().__init__(
-            wan_backbone=wan_backbone,
+            wam_backbone=wam_backbone,
             vla_head=vla_head,
             pretrained_name_or_path=pretrained_name_or_path,
             name_mapping=name_mapping,
@@ -76,7 +76,7 @@ class DreamZeroVLA(BaseVLA):
         )
         self.num_views = num_views
         self.frame_window_size = frame_window_size
-        self.all_module_keys = ['wan_backbone', 'vla_head']
+        self.all_module_keys = ['wam_backbone', 'vla_head']
 
     # ------------------------------------------------------------------
     # Data format conversion
@@ -193,16 +193,16 @@ class DreamZeroVLA(BaseVLA):
         b, c, t, h, w = video.shape
 
         # --- Encode with WanBackbone ---
-        self.wan_backbone.set_frozen_modules_to_eval_mode()
+        self.wam_backbone.set_frozen_modules_to_eval_mode()
 
-        prompt_embs = self.wan_backbone.encode_prompt(
+        prompt_embs = self.wam_backbone.encode_prompt(
             lang_tokens.long().to(device),
             lang_masks.long().to(device))
 
-        latents = self.wan_backbone.encode_video(video)
+        latents = self.wam_backbone.encode_video(video)
 
         first_frame = video[:, :, :1].transpose(1, 2)  # [B, 1, C, H, W]
-        clip_feas, ys, _ = self.wan_backbone.encode_image(first_frame, t, h, w)
+        clip_feas, ys, _ = self.wam_backbone.encode_image(first_frame, t, h, w)
 
         latents = latents.to(device)
         clip_feas = clip_feas.to(device)
@@ -277,15 +277,15 @@ class DreamZeroVLA(BaseVLA):
             video = torch.cat([video, pad], dim=2)
 
         # --- Encode with WanBackbone (same as forward) ---
-        prompt_embs = self.wan_backbone.encode_prompt(
+        prompt_embs = self.wam_backbone.encode_prompt(
             lang_tokens.long().to(device),
             lang_masks.long().to(device))
 
-        latents = self.wan_backbone.encode_video(video)
+        latents = self.wam_backbone.encode_video(video)
 
         b, c, t, h, w = video.shape
         first_frame = video[:, :, :1].transpose(1, 2)  # [B, 1, C, H, W]
-        clip_feas, ys, _ = self.wan_backbone.encode_image(first_frame, t, h, w)
+        clip_feas, ys, _ = self.wam_backbone.encode_image(first_frame, t, h, w)
 
         latents = latents.to(device)
         clip_feas = clip_feas.to(device)
@@ -364,8 +364,8 @@ class DreamZeroVLA(BaseVLA):
 
     def freeze_backbones(self) -> None:
         """Freeze WanBackbone (encoders), keep DreamZeroHead trainable."""
-        if self.wan_backbone is not None:
-            self.wan_backbone.requires_grad_(False)
+        if self.wam_backbone is not None:
+            self.wam_backbone.requires_grad_(False)
         self.trainable_module_keys = ['vla_head']
         overwatch.info(
             '[Frozen]    =>> WanBackbone (T5, CLIP, VAE)', ctx_level=1)
