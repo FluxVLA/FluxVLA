@@ -1129,3 +1129,51 @@ class TestDreamZeroForwardConsistency(unittest.TestCase):
                 output['action_loss'].float().cpu().numpy(),
                 action_loss_ref,
                 atol=1e-3))
+
+    def test_predict_action(self):
+        if not os.path.isdir(_DREAMZERO_FORWARD_IO_DIR):
+            self.skipTest(
+                f'DreamZero forward_io dir not found: {_DREAMZERO_FORWARD_IO_DIR}'  # noqa: E501
+            )
+
+        pred_actions_path = os.path.join(_DREAMZERO_FORWARD_IO_DIR,
+                                         'pred_actions.npy')
+        if not os.path.exists(pred_actions_path):
+            self.skipTest(
+                f'DreamZero pred_actions not found: {pred_actions_path}')
+
+        images = torch.from_numpy(
+            self._load_tensor(_DREAMZERO_FORWARD_IO_DIR,
+                              'images')).cuda().to(torch.bfloat16)
+        lang_tokens = torch.from_numpy(
+            self._load_tensor(_DREAMZERO_FORWARD_IO_DIR,
+                              'lang_tokens')).cuda().long()
+        lang_masks = torch.from_numpy(
+            self._load_tensor(_DREAMZERO_FORWARD_IO_DIR,
+                              'lang_masks')).cuda().long()
+        states = torch.from_numpy(
+            self._load_tensor(_DREAMZERO_FORWARD_IO_DIR,
+                              'states')).cuda().to(torch.bfloat16)
+        embodiment_ids = torch.from_numpy(
+            self._load_tensor(_DREAMZERO_FORWARD_IO_DIR,
+                              'embodiment_ids')).cuda().long()
+
+        pred_actions_ref = self._load_tensor(_DREAMZERO_FORWARD_IO_DIR,
+                                             'pred_actions')
+
+        set_seed_everywhere(0)
+        with torch.no_grad():
+            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=True):
+                pred_actions = self.vla.predict_action(
+                    images=images,
+                    lang_tokens=lang_tokens,
+                    lang_masks=lang_masks,
+                    states=states,
+                    embodiment_ids=embodiment_ids,
+                )
+
+        self.assertTrue(
+            np.allclose(
+                pred_actions.float().cpu().numpy(),
+                pred_actions_ref,
+                atol=1e-2))
