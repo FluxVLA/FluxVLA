@@ -64,7 +64,13 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         else:
             self.llm_backbone = None
         if vlm_backbone is not None:
-            self.vlm_backbone = build_vlm_backbone_from_cfg(vlm_backbone)
+            vlm_backbone_cfg = copy.deepcopy(vlm_backbone)
+            if (pretrained_name_or_path is not None
+                    and vlm_backbone_cfg.get('type') in ('Qwen3VL', 'Qwen3_5')
+                    and vlm_backbone_cfg.get('vlm_path') is None):
+                vlm_backbone_cfg['vla_pretrained_path'] = (
+                    pretrained_name_or_path)
+            self.vlm_backbone = build_vlm_backbone_from_cfg(vlm_backbone_cfg)
         else:
             self.vlm_backbone = None
         if projector is not None:
@@ -254,30 +260,32 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                         )
                 else:
                     matched = False
+                    in_mapping_scope = False
                     for key, val in self.name_mapping.items():
                         if key in name:
+                            in_mapping_scope = True
                             mapped_name = name.replace(key, val)
                             if mapped_name not in pretrained_weights:
                                 continue
                             if matched:
                                 raise ValueError(
-                                    f"Parameter '{name}' matched multiple times in name_mapping."  # noqa: E501
-                                )
-                            with torch.no_grad():
-                                if param.size(
-                                ) == pretrained_weights[mapped_name].size():
+                                    "Parameter '{}' matched multiple times "
+                                    'in name_mapping.'.format(name))
+                            pretrained_size = pretrained_weights[
+                                mapped_name].size()
+                            if param.size() == pretrained_size:
+                                with torch.no_grad():
                                     param.copy_(
                                         pretrained_weights[mapped_name].to(
                                             param.dtype))
-                                else:
-                                    continue
                             matched = True
+                            break
                     if not matched:
                         if self.strict_mapping:
                             raise ValueError(
                                 f"Parameter '{name}' not found in pretrained weights with mapping."  # noqa: E501
                             )
-                        else:
+                        elif in_mapping_scope:
                             overwatch.info(
                                 f"Parameter '{name}' not found in pretrained weights, skipping."  # noqa: E501
-                            )  # noqa: E501
+                            )

@@ -118,12 +118,14 @@ class BaseTrainRunner(ABC):
         self.vla = build_vla_from_cfg(cfg.model)
         self.all_module_keys = self.vla.all_module_keys
         self.trainable_module_keys = list()
-        if self.vla.llm_backbone is not None:
-            self.llm_transformer_layer_cls = self.vla.llm_backbone.transformer_layer_cls  # noqa: E501
+        llm_backbone = getattr(self.vla, 'llm_backbone', None)
+        vlm_backbone = getattr(self.vla, 'vlm_backbone', None)
+        if llm_backbone is not None:
+            self.llm_transformer_layer_cls = llm_backbone.transformer_layer_cls  # noqa: E501
         else:
-            assert self.vla.vlm_backbone is not None, \
-                'VLA model must have either an LLM or VLM backbone!'
-            self.llm_transformer_layer_cls = self.vla.vlm_backbone.transformer_layer_cls  # noqa: E501
+            assert vlm_backbone is not None, \
+                'Model must have either an LLM or VLM backbone!'
+            self.llm_transformer_layer_cls = vlm_backbone.transformer_layer_cls  # noqa: E501
 
         self.device_id = device_id
         self.max_epochs = max_epochs

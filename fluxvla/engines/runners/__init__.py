@@ -21,3 +21,4 @@ from .fsdp_train_runner import FSDPTrainRunner  # noqa: F401, F403
 from .libero_eval_runner import LiberoEvalRunner  # noqa: F401, F403
 from .libero_inference_runner import LiberoInferenceRunner  # noqa: F401, F403
 from .ur_inference_runner import URInferenceRunner  # noqa: F401, F403
+from .vlm_eval_runner import VLMEvalRunner  # noqa: F401, F403

@@ -28,6 +28,50 @@ from .configs import LLM_BACKBONE_CONFIGS
 overwatch = initialize_overwatch(__name__)
 
 
+class _LLMDtypeCastWrapper(nn.Module):
+    """Cast float inputs to model dtype for transformers 5.x."""
+
+    def __init__(self, model: nn.Module) -> None:
+        super().__init__()
+        self._model = model
+
+    def _inner_model(self) -> nn.Module:
+        d = object.__getattribute__(self, '__dict__')
+        mods = d.get('_modules')
+        if mods is not None and '_model' in mods:
+            return mods['_model']
+        return d['_model']
+
+    def forward(self, *args, **kwargs):
+        inner = self._inner_model()
+        dtype = next(inner.parameters()).dtype
+        cast_input = False
+        if kwargs.get('inputs_embeds'
+                      ) is not None and kwargs['inputs_embeds'].dtype != dtype:
+            kwargs = dict(kwargs)
+            kwargs['inputs_embeds'] = kwargs['inputs_embeds'].to(dtype)
+            cast_input = True
+        if kwargs.get('attention_mask') is not None and kwargs[
+                'attention_mask'].dtype != dtype and kwargs[
+                    'attention_mask'].is_floating_point():
+            kwargs = dict(kwargs)
+            kwargs['attention_mask'] = kwargs['attention_mask'].to(dtype)
+        out = inner(*args, **kwargs)
+        if cast_input and getattr(out, 'logits', None) is not None:
+            out = type(out)(**{**out, 'logits': out.logits.float()})
+        return out
+
+    def __getattr__(self, name: str):
+        if name in ('_parameters', '_buffers', '_modules'):
+            raise AttributeError(name)
+        modules = object.__getattribute__(self, '__dict__').get('_modules')
+        if modules is not None and '_model' in modules:
+            inner = modules['_model']
+        else:
+            inner = object.__getattribute__(self, '__dict__')['_model']
+        return getattr(inner, name)
+
+
 @LLM_BACKBONES.register_module()
 class HFCausalLLMBackbone(nn.Module):
     """HuggingFace Causal LLM Backbone
@@ -98,6 +142,7 @@ class HFCausalLLMBackbone(nn.Module):
         self.llm.config.use_cache = False if not self.inference_mode else True
         if not self.inference_mode:
             self.llm.enable_input_require_grads()
+        self.llm = _LLMDtypeCastWrapper(self.llm)
 
         # Load (Fast) Tokenizer
         overwatch.info(
@@ -136,6 +181,9 @@ class HFCausalLLMBackbone(nn.Module):
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
     ) -> CausalLMOutputWithPast:
+        if output_hidden_states is None:
+            output_hidden_states = getattr(self.llm.config,
+                                           'output_hidden_states', False)
         output: CausalLMOutputWithPast = self.llm(
             input_ids=input_ids,
             attention_mask=attention_mask,

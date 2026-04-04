@@ -248,6 +248,13 @@ class FSDPTrainRunner(BaseTrainRunner):
 
                 # Save Checkpoint & Copy Latest to `latest-checkpoint.pt`
                 torch.save(checkpoint_dict, checkpoint_path)
+                # Save HuggingFace-compatible VLM for transformers loading
+                if hasattr(self.vla, '_fsdp_wrapped_module') and hasattr(
+                        self.vla._fsdp_wrapped_module, 'save_pretrained_hf'):
+                    hf_dir = os.path.join(checkpoint_dir,
+                                          f'hf_step-{global_step:06d}')
+                    self.vla._fsdp_wrapped_module.save_pretrained_hf(
+                        hf_dir, state_dict=full_vla_state_dict)
 
                 # Save model weights as safetensors for fast loading
                 safetensors_path = checkpoint_path.replace(

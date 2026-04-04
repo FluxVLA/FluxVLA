@@ -16,3 +16,6 @@ from .data_transforms import *  # noqa: F401, F403
 from .data_utils import *  # noqa: F401, F403
 from .goal_relabeling import *  # noqa: F401, F403
 from .task_augmentation import *  # noqa: F401, F403
+from .vlm_processors import build_messages_llava  # noqa: F401, F403, E501
+from .vlm_processors import get_processor_for_vlm  # noqa: F401, F403, E501
+from .vlm_processors import process_item_for_vlm  # noqa: F401, F403, E501

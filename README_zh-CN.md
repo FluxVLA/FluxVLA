@@ -558,6 +558,7 @@ pip install triton==3.2.0
 - [RTC](https://github.com/Physical-Intelligence/real-time-chunking-kinetix)
 - [Training RTC](https://arxiv.org/pdf/2512.05964)
 - [Realtime-VLA](https://github.com/Dexmal/realtime-vla)
+- [VLMEvalKit](https://github.com/open-compass/VLMEvalKit/tree/main)
 
 ## 路线图
 

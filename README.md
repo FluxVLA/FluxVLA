@@ -558,6 +558,7 @@ This project benefits from the following open-source projects and community effo
 - [RTC](https://github.com/Physical-Intelligence/real-time-chunking-kinetix)
 - [Training RTC](https://arxiv.org/pdf/2512.05964)
 - [Realtime-VLA](https://github.com/Dexmal/realtime-vla)
+- [VLMEvalKit](https://github.com/open-compass/VLMEvalKit/tree/main)
 
 ## Roadmap
 
