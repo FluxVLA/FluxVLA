@@ -215,39 +215,39 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
     def get_fsdp_wrapping_policy(self) -> Callable:
         ...
 
-    def _load_checkpoint_weights(self, checkpoint_path: str):
-        if checkpoint_path.endswith('.safetensors') or os.path.isdir(
-                checkpoint_path):
-            if checkpoint_path.endswith('.safetensors'):
-                pretrained_weights = load_file(checkpoint_path, device='cpu')
+    def from_pretrained(self):
+        # Load weights based on file format
+        if self.pretrained_name_or_path is None:
+            return
+        if self.pretrained_name_or_path.endswith(
+                '.safetensors') or os.path.isdir(self.pretrained_name_or_path):
+            # Handle safetensors format
+            if self.pretrained_name_or_path.endswith('.safetensors'):
+                pretrained_weights = load_file(
+                    self.pretrained_name_or_path, device='cpu')
             else:
+                # Load from directory containing safetensors files
                 pretrained_weights = dict()
-                for file in os.listdir(checkpoint_path):
+                for file in os.listdir(self.pretrained_name_or_path):
                     if file.endswith('.safetensors'):
-                        file_path = os.path.join(checkpoint_path, file)
+                        file_path = os.path.join(self.pretrained_name_or_path,
+                                                 file)
                         pretrained_weights.update(
                             load_file(file_path, device='cpu'))
-        elif checkpoint_path.endswith('.pt') or checkpoint_path.endswith(
-                '.pth'):
-            checkpoint = torch.load(checkpoint_path, map_location='cpu')
+        elif self.pretrained_name_or_path.endswith(
+                '.pt') or self.pretrained_name_or_path.endswith('.pth'):
+            # Handle pt/pth format using torch.load
+            checkpoint = torch.load(
+                self.pretrained_name_or_path, map_location='cpu')
+            # Handle both dict format {'model': state_dict}
+            # and direct state_dict
             if isinstance(checkpoint, dict) and 'model' in checkpoint:
                 pretrained_weights = checkpoint['model']
             else:
                 pretrained_weights = checkpoint
         else:
-            raise ValueError(
-                f'Unsupported checkpoint format: {checkpoint_path}')
-        return pretrained_weights
-
-    def load_checkpoint(self, checkpoint_path: str, strict: bool = True):
-        pretrained_weights = self._load_checkpoint_weights(checkpoint_path)
-        self.load_state_dict(pretrained_weights, strict=strict)
-
-    def from_pretrained(self):
-        if self.pretrained_name_or_path is None:
-            return
-        pretrained_weights = self._load_checkpoint_weights(
-            self.pretrained_name_or_path)
+            raise ValueError(f'Unsupported checkpoint format: '
+                             f'{self.pretrained_name_or_path}')
 
         # Load weights with name_mapping handling
         if not self.name_mapping:
@@ -258,7 +258,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                 if self.name_mapping is None:
                     if self.strict_mapping and name not in pretrained_weights:
                         raise ValueError(
-                            f"Parameter '{name}' not found in pretrained weights."  # noqa: E501
+                            f"Parameter '{name}' not found in pretrained weights."  # noqa: E501, E713
                         )
                     if name in pretrained_weights and param.size(
                     ) == pretrained_weights[name].size():
@@ -268,7 +268,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                                 param.dtype))
                     else:
                         overwatch.info(
-                            f"Parameter '{name}' not found in pretrained weights, skipping."  # noqa: E501
+                            f"Parameter '{name}' not found in pretrained weights, skipping."  # noqa: E501, E713
                         )
                 else:
                     matched = False
@@ -299,7 +299,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                     if not matched:
                         if self.strict_mapping:
                             raise ValueError(
-                                f"Parameter '{name}' not found in pretrained weights with mapping."  # noqa: E501
+                                f"Parameter '{name}' not found in pretrained weights with mapping."  # noqa: E501, E713
                             )
                         else:
                             # Debug: show what mapping was attempted
@@ -311,6 +311,6 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                                     attempted.append(f"{key}->{val}: '{mn}' "
                                                      f'(in_ckpt={in_ckpt})')
                             overwatch.info(
-                                f"[*] Parameter '{name}' not found in "
+                                f"[*] Parameter '{name}' not found in "  # noqa: E713, E501
                                 f'pretrained weights, skipping. '
                                 f'Attempted: {attempted}')

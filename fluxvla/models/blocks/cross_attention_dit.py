@@ -371,14 +371,6 @@ class DiT(ModelMixin, ConfigMixin):
                 - 'reduce-overhead': Best for inference (recommended)
                 - 'max-autotune': Best speedup but slow compilation
         """
-        # Disabled due to triton 3.6 compatibility
-        # if self._compiled_forward is None:
-        #     self._compiled_forward = torch.compile(
-        #         self._forward_impl,
-        #         mode=mode,
-        #         fullgraph=True,
-        #     )
-        #     overwatch.info(f'[DiT] Model compiled with mode={mode}')
         pass
 
     def forward(
@@ -395,17 +387,6 @@ class DiT(ModelMixin, ConfigMixin):
         # Process through transformer blocks - single pass through the blocks
         hidden_states = hidden_states.contiguous()
         encoder_hidden_states = encoder_hidden_states.contiguous()
-
-        # Disabled due to triton 3.6 compatibility
-        # if self.use_torch_compile and not self.training:
-        #     if self._compiled_forward is None:
-        #         self.compile_model(self.compile_mode)
-        #     output = self._compiled_forward(hidden_states,
-        #                                     encoder_hidden_states, temb,
-        #                                     return_all_hidden_states)
-        #     if return_all_hidden_states:
-        #         return output
-        #     return output
 
         all_hidden_states = [hidden_states]
 

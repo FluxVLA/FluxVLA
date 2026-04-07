@@ -4,7 +4,21 @@
   <img src="assets/fluxvla.png" alt="FluxVLA" width="600">
 </p>
 
-A Unified, Modular, and Deployable VLA Codebase.
+<div align="center">
+<a href="https://huggingface.co/limxdynamics/FluxVLAEngine"><img src="https://img.shields.io/badge/HuggingFace-yellow?logo=huggingface&logoColor=white" alt="Hugging Face"></a>
+<a href="https://fluxvla.limxdynamics.com"><img src="https://img.shields.io/badge/Documentation-Purple?color=8A2BE2&logo=readthedocs"></a>
+<a href="https://fluxvla.limxdynamics.com/zh"><img src="https://img.shields.io/badge/中文文档-red?logo=readthedocs"></a>
+<a href="https://github.com/limxdynamics/FluxVLA/issues/1"><img src="https://img.shields.io/badge/WeChat-green?logo=wechat"></a>
+<a href="https://github.com/limxdynamics/FluxVLA/issues/1"><img src="https://img.shields.io/badge/Feishu-3370FF?logo=lark&logoColor=white"></a>
+</div>
+
+<div align="center">
+
+English | [简体中文](README_zh-CN.md) | [日本語](README_ja.md)
+
+</div>
+
+FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying embodied intelligence applications. Built on the core design principles of unified configuration, standardized interfaces, module decoupling, and deployability, it creates a complete engineering loop from data to real-device deployment. With the goal of providing a standardized industry–academia–research foundation, it significantly lowers the engineering barrier for VLA research and development.
 
 ## Framework
 
@@ -24,7 +38,7 @@ A Unified, Modular, and Deployable VLA Codebase.
 
 **\[2026/04/03\]** 🔥 FluxVLA has been open-sourced.
 
-## Installation
+## 🛠️ Installation
 
 The following installation guide uses NVCC 12.4 as an example. Please adjust the CUDA version accordingly if your setup differs.
 
@@ -304,7 +318,7 @@ huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_li
 
 </details>
 
-## Features
+## 🌟 Features
 
 - Support OpenVLA, LlavaVLA, Gr00t, Pi0 and Pi0.5.
 - Support llama, gemma and qwen llm backbones.
