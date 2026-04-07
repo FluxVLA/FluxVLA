@@ -95,16 +95,6 @@ def layer_norm_QKV_matmul_n256_1152_3456_bias(x, norm_w, norm_b, qkv_w, qkv_b,
         BLOCK_SIZE_K=32)
 
 
-# @torch.compile
-def AttnMultiKey(QKV):
-    QKV = QKV.view(-1, 256, 3, 16, 72).permute(0, 2, 3, 1, 4)
-    Q = QKV[:, 0]
-    K = QKV[:, 1]
-    V = QKV[:, 2]
-    attn = torch.nn.functional.scaled_dot_product_attention(Q, K, V)
-    attn = attn.transpose(1, 2).reshape(Q.shape[0], 256, 1152)
-    return attn
-
 
 def matmul_n256_1152_1152_bias_res(x, weight, bias, res, out, buf):
     num_views = x.shape[0]
