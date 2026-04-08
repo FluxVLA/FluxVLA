@@ -154,6 +154,11 @@ train_dataloader = dict(
                     action_key='action',
                     norm_type='mean_std',
                 ),
+                dict(
+                    type='PrepareVideoForDreamZero',
+                    num_views=2,
+                    frame_window_size=_frame_window_size,
+                ),
             ],
             action_window_size=10,
             action_key='action',

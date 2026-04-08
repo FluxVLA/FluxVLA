@@ -327,7 +327,7 @@ class TransformImage:
                 pass
             else:
                 raise ValueError(
-                    f'Image resize strategy `{self.image_resize_strategy}` is not supported!'  # noqa: E501
+                    f"Image resize strategy '{self.image_resize_strategy}' is not supported!"  # noqa: E501
                 )
 
     def apply_transform(self, img: Image.Image, resize_param: Dict,
@@ -567,6 +567,64 @@ class ConvertPILImageToNumpyArray:
         inputs[self.img_key] = np.array(inputs[self.img_key]).transpose(
             0, 3, 1, 2)
         return inputs
+
+
+@TRANSFORMS.register_module()
+class PrepareVideoForDreamZero:
+    """Reshape multi-view / temporal image arrays into the video layout
+    expected by DreamZero: ``[C, T, H_tiled, W]`` (per sample, no batch dim).
+
+    Camera views are tiled *vertically* (view-0 on top, view-1 on bottom).
+
+    This transform should be placed **after** ``SimpleNormalizeImages`` (or any
+    other pixel-level transform) so that the spatial content is final before
+    rearrangement.
+
+    Args:
+        num_views (int): Number of camera views. Default: 2.
+        frame_window_size (int): Number of temporal frames. Default: 1.
+    """
+
+    def __init__(self,
+                 num_views: int = 2,
+                 frame_window_size: int = 1,
+                 *args,
+                 **kwargs):
+        self.num_views = num_views
+        self.frame_window_size = frame_window_size
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        images = data['images']
+        V = self.num_views
+        T = self.frame_window_size
+
+        if images.ndim == 3:
+            # [V*T*C, H, W] or [C, H, W]
+            channels, h, w = images.shape
+            if channels > 3 and channels % 3 == 0:
+                n_items = channels // 3
+                if T > 1 and n_items == V * T:
+                    # [V*T*C, H, W] -> [V, T, 3, H, W] -> [T, 3, V*H, W]
+                    #                                    -> [3, T, V*H, W]
+                    images = images.reshape(V, T, 3, h, w)
+                    # tile views vertically: [T, 3, V*H, W]
+                    images = images.transpose(1, 2, 0, 3, 4)  # [3, T, V, H, W]
+                    images = images.reshape(3, T, V * h, w)
+                    data['images'] = images
+                    return data
+                # [V*C, H, W] single timestep multi-view -> [3, 1, V*H, W]
+                images = images.reshape(n_items, 3, h, w)
+                # tile vertically: concat along H
+                tiled = np.concatenate([images[i] for i in range(n_items)],
+                                       axis=1)  # [3, n*H, W]
+                data['images'] = tiled[:, np.newaxis, :, :]  # [3, 1, n*H, W]
+                return data
+            # [C, H, W] single view, single timestep -> [C, 1, H, W]
+            data['images'] = images[:, np.newaxis, :, :]
+            return data
+
+        raise ValueError(f'Unsupported image shape: {images.shape}')
 
 
 @TRANSFORMS.register_module()

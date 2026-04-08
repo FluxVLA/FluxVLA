@@ -15,7 +15,6 @@
 from typing import Callable, Dict, List, Optional
 
 import torch
-from einops import rearrange
 
 from fluxvla.engines import VLAS, initialize_overwatch
 from .base_vla import BaseVLA
@@ -34,8 +33,8 @@ class DreamZeroVLA(BaseVLA):
     -------------
     The forward method expects the following keys from the dataloader:
 
-    * ``images``  – ``[B, V*C, H, W]`` (concatenated multi-view) **or**
-      ``[B, V, C, H, W]`` **or** ``[B, C, H, W]`` (single view).
+    * ``images``  – ``[B, C, T, H_tiled, W]`` (prepared by
+      ``PrepareVideoForDreamZero`` transform).
     * ``task_description`` – ``list[str]`` of length *B* (raw text).
     * ``states``  – ``[B, state_dim]`` or ``[B, num_tokens, state_dim]``.
     * ``actions`` – ``[B, action_horizon, action_dim]``.
@@ -77,54 +76,6 @@ class DreamZeroVLA(BaseVLA):
         self.num_views = num_views
         self.frame_window_size = frame_window_size
         self.all_module_keys = ['wam_backbone', 'vla_head']
-
-    # ------------------------------------------------------------------
-    # Data format conversion
-    # ------------------------------------------------------------------
-    def _prepare_video(self, images: torch.Tensor) -> torch.Tensor:
-        """Convert fluxvla image tensors to DreamZero video format.
-
-        Accepts several layouts and returns ``[B, 3, T, H_tiled, W]``.
-
-        Camera views are tiled *vertically*:
-            view-0 on top, view-1 on bottom -> ``H_out = num_views * H``.
-
-        Supported input formats:
-            * ``[B, C, H, W]``         single view, single timestep
-            * ``[B, V*C, H, W]``       multi-view concatenated channels
-            * ``[B, V*T*C, H, W]``     multi-view + temporal concatenated
-            * ``[B, V, C, H, W]``      multi-view, single timestep
-            * ``[B, V, T, C, H, W]``   multi-view, temporal
-        """
-        V = self.num_views
-        T = self.frame_window_size
-
-        if images.ndim == 4:
-            b, channels, h, w = images.shape
-            if channels > 3 and channels % 3 == 0:
-                n_items = channels // 3
-                if T > 1 and n_items == V * T:
-                    # [B, V*T*C, H, W] → [B, V, T, 3, H, W]
-                    images = images.view(b, V, T, 3, h, w)
-                    imgs = rearrange(images, 'b v t c h w -> b t c (v h) w')
-                    return imgs.transpose(1, 2)
-                # [B, V*C, H, W] single timestep multi-view
-                images = images.view(b, n_items, 3, h, w)
-                tiles = [images[:, i] for i in range(n_items)]
-                tiled = torch.cat(tiles, dim=2)  # [B, 3, n*H, W]
-                return tiled.unsqueeze(2)  # [B, 3, 1, n*H, W]
-            return images.unsqueeze(2)  # [B, C, 1, H, W]
-        if images.ndim == 5:
-            b, v, c, h, w = images.shape
-            if v <= 4 and c == 3:
-                tiles = [images[:, i] for i in range(v)]
-                tiled = torch.cat(tiles, dim=2)
-                return tiled.unsqueeze(2)
-            return images.transpose(1, 2)
-        if images.ndim == 6:
-            imgs = rearrange(images, 'b v t c h w -> b t c (v h) w')
-            return imgs.transpose(1, 2)
-        raise ValueError(f'Unsupported image shape: {images.shape}')
 
     def _prepare_states(self, states: torch.Tensor,
                         num_tokens: int) -> torch.Tensor:
@@ -188,8 +139,8 @@ class DreamZeroVLA(BaseVLA):
         max_state_dim = self.vla_head.max_state_dim
         actual_action_dim = self.vla_head.action_dim
 
-        # Prepare video tensor
-        video = self._prepare_video(images)  # [B, C, T, H, W]
+        # images: [B, C, T, H, W] (prepared by PrepareVideoForDreamZero)
+        video = images
         b, c, t, h, w = video.shape
 
         # --- Encode with WanBackbone ---
@@ -262,7 +213,8 @@ class DreamZeroVLA(BaseVLA):
         **kwargs,
     ) -> torch.Tensor:
         device = images.device
-        video = self._prepare_video(images)  # [B, C, T, H, W]
+        # images: [B, C, T, H, W] (prepared by PrepareVideoForDreamZero)
+        video = images
 
         if embodiment_ids is None:
             embodiment_ids = torch.zeros(
