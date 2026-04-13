@@ -78,32 +78,31 @@ class ParquetDataset(Dataset):
         info_list = []
 
         for root in meta_root:
-            assert os.path.exists(os.path.join(root, 'info.json')), \
-                f'Metadata file not found at {os.path.join(root, "info.json")}'  # noqa: E501
+            info_path = os.path.join(root, 'info.json')
+            assert os.path.exists(info_path), \
+                f'Metadata file not found at {info_path}'
             with open(os.path.join(root, 'info.json'), 'rb') as f:
                 info_list.append(json.load(f))
 
-            assert os.path.exists(
-                os.path.join(root, 'episodes_stats.jsonl')), \
-                f'Statistics file not found at {os.path.join(root, "episodes_stats.jsonl")}'  # noqa: E501
+            stats_path = os.path.join(root, 'episodes_stats.jsonl')
+            assert os.path.exists(stats_path), \
+                f'Statistics file not found at {stats_path}'
             with open(
                     os.path.join(root, 'episodes_stats.jsonl'),
                     'r',
                     encoding='utf-8') as f:
                 all_stats.extend([json.loads(line) for line in f])
 
-            assert os.path.exists(os.path.join(root, 'tasks.jsonl')), \
-                f'Tasks file not found at {os.path.join(root, "tasks.jsonl")}'
-            with open(
-                    os.path.join(root, 'tasks.jsonl'), 'r',
-                    encoding='utf-8') as f:
+            tasks_path = os.path.join(root, 'tasks.jsonl')
+            assert os.path.exists(tasks_path), \
+                f'Tasks file not found at {tasks_path}'
+            with open(tasks_path, 'r', encoding='utf-8') as f:
                 all_tasks.append([json.loads(line) for line in f])
 
-            assert os.path.exists(os.path.join(root, 'episodes.jsonl')), \
-                f'Episodes file not found at {os.path.join(root, "episodes.jsonl")}'  # noqa: E501
-            with open(
-                    os.path.join(root, 'episodes.jsonl'), 'r',
-                    encoding='utf-8') as f:
+            episodes_path = os.path.join(root, 'episodes.jsonl')
+            assert os.path.exists(episodes_path), \
+                f'Episodes file not found at {episodes_path}'
+            with open(episodes_path, 'r', encoding='utf-8') as f:
                 all_episodes.extend([json.loads(line) for line in f])
 
         self.info = info_list
@@ -332,6 +331,8 @@ class LiberoParquetEvalDataset:
         if data.get('image_grid_thw', None) is not None:
             batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
 
+        batch['reset_history'] = bool(data.get('is_new_episode', False))
+
         return batch, replay_img
 
 
@@ -394,7 +395,8 @@ class PrivateInferenceDataset:
         imgs = list()
         for img_key in self.img_keys:
             if img_key not in data:
-                raise KeyError(f'Image key `{img_key}` not found in inputs!')
+                raise KeyError(
+                    'Image key {!r} not found in inputs!'.format(img_key))
             imgs.append(data[img_key].transpose(2, 0, 1))  # HWC to CHW
         inputs = dict(
             images=imgs,

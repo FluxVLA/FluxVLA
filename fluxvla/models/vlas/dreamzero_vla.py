@@ -203,11 +203,23 @@ class DreamZeroVLA(BaseVLA):
         lang_masks: torch.Tensor,
         states: torch.Tensor,
         embodiment_ids: Optional[torch.Tensor] = None,
+        reset_history: bool = False,
         **kwargs,
     ) -> torch.Tensor:
         device = images.device
         # images: [B, C, T, H, W] (prepared by PrepareVideoForDreamZero)
         video = images
+
+        observed_video_frames = video.shape[2]
+
+        if observed_video_frames <= 1:
+            reset_history = True
+
+        if reset_history:
+            self.vla_head.reset_inference_state()
+
+        observed_video_frames = video.shape[2]
+        observed_latent_frames = 1 + max(0, observed_video_frames - 1) // 4
 
         if embodiment_ids is None:
             embodiment_ids = torch.zeros(
@@ -259,6 +271,8 @@ class DreamZeroVLA(BaseVLA):
             ys=image_cond,
             states=states,
             embodiment_ids=embodiment_ids,
+            observed_latent_frames=observed_latent_frames,
+            reset_history=reset_history,
         )
 
     # ------------------------------------------------------------------

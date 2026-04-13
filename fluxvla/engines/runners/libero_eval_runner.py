@@ -192,9 +192,13 @@ class LiberoEvalRunner:
             # In some cases, the key must be manually modified (e.g. after
             # training on a modified version of the dataset
             # with the suffix "_no_noops" in the dataset name)
-            if unnorm_key not in self.vla.norm_stats and f'{unnorm_key}_no_noops' in self.vla.norm_stats:  # noqa: E501
-                unnorm_key = f'{unnorm_key}_no_noops'
-            assert unnorm_key in self.vla.norm_stats, f'Action un-norm key {unnorm_key} not found in VLA `norm_stats`!'  # noqa: E501
+            candidate_unnorm_key = f'{unnorm_key}_no_noops'
+            if (unnorm_key not in self.vla.norm_stats
+                    and candidate_unnorm_key in self.vla.norm_stats):
+                unnorm_key = candidate_unnorm_key
+            assert unnorm_key in self.vla.norm_stats, (
+                f'Action un-norm key {unnorm_key} '
+                'not found in VLA norm_stats!')
         for id in range(num_local_episodes):
             if id >= len(local_episodes):
                 step_tensor = torch.zeros(
@@ -228,6 +232,7 @@ class LiberoEvalRunner:
 
                 # Set initial states
                 obs = env.set_init_state(initial_states[trial_id])
+                is_new_episode = True
 
                 # Setup
                 t = 0
@@ -257,7 +262,9 @@ class LiberoEvalRunner:
                         t += 1
                         continue
                     obs['task_description'] = task_description
+                    obs['is_new_episode'] = is_new_episode
                     batch, replay_img = self.dataset(obs)
+                    is_new_episode = False
                     batch['unnorm_key'] = unnorm_key
                     if len(replay_images) == 0:
                         replay_images.append(replay_img)
@@ -321,15 +328,16 @@ class LiberoEvalRunner:
                 # Log current results
                 overwatch.info(
                     f'# episodes completed so far: {int(global_episodes[0])}')
-                overwatch.info(
-                    f'# successes: {int(global_successes[0])} ({global_successes[0] / global_episodes[0] * 100:.1f}%)'  # noqa: E501
-                )
+                success_rate = (global_successes[0] / global_episodes[0] * 100)
+                success_text = (f'# successes: {int(global_successes[0])} '
+                                f'({success_rate:.1f}%)')  # noqa: E231
+                overwatch.info(success_text)
                 log_file.write(f'Success: {done}\n')
                 log_file.write(
                     f'# episodes completed so far: {global_episodes[0]}\n')
-                log_file.write(
-                    f'# successes: {global_successes[0]} ({global_successes[0] / global_episodes[0] * 100:.1f}%)\n'  # noqa: E501
-                )
+                success_log = (f'# successes: {global_successes[0]} '
+                               f'({success_rate:.1f}%)\n')  # noqa: E231
+                log_file.write(success_log)
                 log_file.flush()
         dist.barrier()
         exit(0)

@@ -196,9 +196,13 @@ class LiberoInferenceRunner:
             # In some cases, the key must be manually modified (e.g. after
             # training on a modified version of the dataset
             # with the suffix "_no_noops" in the dataset name)
-            if unnorm_key not in self.vla.norm_stats and f'{unnorm_key}_no_noops' in self.vla.norm_stats:  # noqa: E501
-                unnorm_key = f'{unnorm_key}_no_noops'
-            assert unnorm_key in self.vla.norm_stats, f'Action un-norm key {unnorm_key} not found in VLA `norm_stats`!'  # noqa: E501
+            candidate_unnorm_key = f'{unnorm_key}_no_noops'
+            if (unnorm_key not in self.vla.norm_stats
+                    and candidate_unnorm_key in self.vla.norm_stats):
+                unnorm_key = candidate_unnorm_key
+            assert unnorm_key in self.vla.norm_stats, (
+                f'Action un-norm key {unnorm_key} '
+                'not found in VLA norm_stats!')
         for id in range(num_local_episodes):
             local_id = local_episodes[id]
             # Get task ID from local episode index
@@ -227,6 +231,7 @@ class LiberoInferenceRunner:
 
             # Set initial states
             obs = env.set_init_state(initial_states[trial_id])
+            is_new_episode = True
 
             # Setup
             t = 0
@@ -256,7 +261,9 @@ class LiberoInferenceRunner:
                     t += 1
                     continue
                 obs['task_description'] = task_description
+                obs['is_new_episode'] = is_new_episode
                 batch, replay_img = self.dataset(obs)
+                is_new_episode = False
                 batch['unnorm_key'] = unnorm_key
                 if len(replay_images) == 0:
                     replay_images.append(replay_img)

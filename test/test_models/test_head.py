@@ -119,11 +119,62 @@ class TestDreamZeroHeadTiny(unittest.TestCase):
         inputs = self._make_inputs(batch_size=1)
         results = []
         for _ in range(2):
+            self.head.reset_inference_state()
             torch.manual_seed(42)
             with torch.no_grad():
                 a = self.head.predict_action(num_inference_steps=2, **inputs)
             results.append(a.clone())
         torch.testing.assert_close(results[0], results[1])
+
+    def test_predict_action_reset_history_reproduces_first_step(self):
+        inputs = self._make_inputs(batch_size=1)
+
+        self.head.reset_inference_state()
+        torch.manual_seed(123)
+        with torch.no_grad():
+            first = self.head.predict_action(num_inference_steps=2, **inputs)
+
+        torch.manual_seed(123)
+        with torch.no_grad():
+            second = self.head.predict_action(num_inference_steps=2, **inputs)
+
+        self.head.reset_inference_state()
+        torch.manual_seed(123)
+        with torch.no_grad():
+            reset = self.head.predict_action(num_inference_steps=2, **inputs)
+
+        self.assertFalse(torch.allclose(first, second))
+        torch.testing.assert_close(first, reset)
+
+    def test_predict_action_single_frame_forces_reset(self):
+        inputs = self._make_inputs(batch_size=1)
+        single_frame_inputs = dict(inputs)
+        single_frame_inputs['latents'] = inputs['latents'][:, :1]
+        single_frame_inputs['ys'] = inputs['ys'][:, :, :1]
+
+        self.head.current_start_frame = 5
+        self.head.inference_kv_cache = self.head._create_kv_cache(
+            batch_size=1,
+            dtype=inputs['latents'].dtype,
+            device=inputs['latents'].device,
+        )
+        self.head.inference_prompt_embs = inputs['prompt_embs']
+        self.head.inference_clip_feas = inputs['clip_feas']
+        self.head.inference_ys = inputs['ys']
+
+        torch.manual_seed(7)
+        with torch.no_grad():
+            self.head.predict_action(
+                num_inference_steps=2,
+                observed_latent_frames=1,
+                reset_history=True,
+                **single_frame_inputs,
+            )
+
+        self.assertEqual(self.head.current_start_frame, 2)
+        self.assertIsNotNone(self.head.inference_kv_cache)
+
+        self.head.reset_inference_state()
 
 
 if __name__ == '__main__':

@@ -176,6 +176,7 @@ class DreamZeroHead(nn.Module):
         if use_gradient_checkpointing:
             self.model.enable_gradient_checkpointing()
 
+        self.reset_inference_state()
         self.scheduler.set_timesteps(1000, training=True)
 
     # ------------------------------------------------------------------
@@ -370,6 +371,100 @@ class DreamZeroHead(nn.Module):
             action_loss=weighted_action_loss,
         )
 
+    def _create_kv_cache(
+        self,
+        batch_size: int,
+        dtype: torch.dtype,
+        device: torch.device,
+    ) -> list[torch.Tensor]:
+        num_heads = self.model.num_heads
+        head_dim = self.model.dim // num_heads
+        return [
+            torch.zeros(
+                2,
+                batch_size,
+                0,
+                num_heads,
+                head_dim,
+                dtype=dtype,
+                device=device,
+            ) for _ in range(self.model.num_layers)
+        ]
+
+    def reset_inference_state(self) -> None:
+        self.inference_kv_cache = None
+        self.inference_clip_feas = None
+        self.inference_ys = None
+        self.inference_prompt_embs = None
+        self.current_start_frame = 0
+
+    def _should_reset_inference_state(
+        self,
+        prompt_embs: torch.Tensor,
+        clip_feas: torch.Tensor,
+        ys: torch.Tensor,
+    ) -> bool:
+        if self.inference_kv_cache is None:
+            return True
+        if (self.inference_prompt_embs is None
+                or self.inference_clip_feas is None
+                or self.inference_ys is None):
+            return True
+        if self.inference_prompt_embs.shape != prompt_embs.shape:
+            return True
+        if self.inference_clip_feas.shape != clip_feas.shape:
+            return True
+        if self.inference_ys.shape != ys.shape:
+            return True
+        if not torch.equal(self.inference_prompt_embs, prompt_embs):
+            return True
+        if not torch.equal(self.inference_clip_feas, clip_feas):
+            return True
+        if not torch.equal(self.inference_ys, ys):
+            return True
+        if getattr(self.model, 'local_attn_size', -1) != -1 \
+                and self.current_start_frame >= self.model.local_attn_size:
+            return True
+        return False
+
+    def _append_reference_frames(
+        self,
+        prompt_embs: torch.Tensor,
+        reference_latents: torch.Tensor,
+        clip_feas: torch.Tensor,
+        ys: torch.Tensor,
+        start_frame: int,
+    ) -> None:
+        if reference_latents.shape[2] == 0:
+            return
+
+        device = reference_latents.device
+        batch_size = reference_latents.shape[0]
+        timestep = torch.zeros(
+            batch_size,
+            reference_latents.shape[2],
+            dtype=torch.int64,
+            device=device,
+        )
+        frame_seqlen = int(reference_latents.shape[-2] *
+                           reference_latents.shape[-1] / 4)
+        _, _, updated_kv_cache = self.model(
+            reference_latents,
+            timestep=timestep,
+            clip_feature=clip_feas,
+            y=ys,
+            context=prompt_embs,
+            seq_len=reference_latents.shape[2] * frame_seqlen,
+            action=None,
+            timestep_action=None,
+            state=None,
+            embodiment_id=None,
+            kv_cache=self.inference_kv_cache,
+            crossattn_cache=None,
+            current_start_frame=start_frame,
+        )
+        self.inference_kv_cache = updated_kv_cache
+
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
@@ -382,17 +477,11 @@ class DreamZeroHead(nn.Module):
         states: torch.Tensor,
         embodiment_ids: torch.Tensor,
         num_inference_steps: Optional[int] = None,
+        observed_latent_frames: Optional[int] = None,
+        reset_history: bool = False,
         **kwargs,
     ) -> torch.Tensor:
-        """Joint video+action denoising with UniPC multistep schedulers.
-
-        Compared to the previous simple Euler-style flow step, this uses the
-        same scheduler family as the reference DreamZero inference path
-        (FlowUniPCMultistepScheduler) for both video and action trajectories.
-
-        Returns:
-            ``[B, action_horizon, action_dim]`` predicted actions (padded dim).
-        """
+        """Joint video+action denoising with persistent causal history."""
         from fluxvla.models.third_party_models.dreamzero.modules.flow_unipc_multistep_scheduler import \
             FlowUniPCMultistepScheduler  # noqa: E501
 
@@ -404,18 +493,67 @@ class DreamZeroHead(nn.Module):
         _, num_channels, num_lat_frames, lat_h, lat_w = latents.shape
         frame_seqlen = int(lat_h * lat_w / 4)
 
+        if observed_latent_frames is None:
+            observed_latent_frames = num_lat_frames
+        observed_latent_frames = max(
+            1, min(observed_latent_frames, num_lat_frames))
+        observed_latents = latents[:, :, :observed_latent_frames]
+
         if num_inference_steps is None:
             num_inference_steps = self.num_inference_steps
 
+        if reset_history or self._should_reset_inference_state(
+                prompt_embs=prompt_embs, clip_feas=clip_feas, ys=ys):
+            self.reset_inference_state()
+            self.inference_kv_cache = self._create_kv_cache(
+                batch_size=states.shape[0],
+                dtype=latents.dtype,
+                device=device,
+            )
+            self.inference_clip_feas = clip_feas
+            self.inference_ys = ys
+            self.inference_prompt_embs = prompt_embs
+
         b = states.shape[0]
 
-        # Denoise only future latent block(s); first latent frame is the
-        # conditioning frame used to build causal KV cache.
+        if self.current_start_frame == 0:
+            self._append_reference_frames(
+                prompt_embs=prompt_embs,
+                reference_latents=observed_latents[:, :, :1],
+                clip_feas=self.inference_clip_feas,
+                ys=self.inference_ys[:, :, :1],
+                start_frame=0,
+            )
+            self.current_start_frame = 1
+
+        if self.current_start_frame != 1 and observed_latent_frames > 1:
+            reference_latents = observed_latents[:, :,
+                                                 -self.num_frame_per_block:]
+            reference_start_frame = max(
+                1,
+                self.current_start_frame - reference_latents.shape[2],
+            )
+            y_ref_end = min(
+                self.current_start_frame,
+                self.inference_ys.shape[2],
+            )
+            y_ref_start = max(0, y_ref_end - reference_latents.shape[2])
+            y_reference = self.inference_ys[:, :, y_ref_start:y_ref_end]
+            if y_reference.shape[2] == 0:
+                y_reference = self.inference_ys[:, :, :reference_latents.
+                                                shape[2]]
+            self._append_reference_frames(
+                prompt_embs=prompt_embs,
+                reference_latents=reference_latents,
+                clip_feas=self.inference_clip_feas,
+                ys=y_reference,
+                start_frame=reference_start_frame,
+            )
+
         denoise_frames = self.num_frame_per_block
-        if num_lat_frames <= 1:
+        if observed_latent_frames <= 1:
             denoise_frames = 1
 
-        # Jointly sample noisy video/action and denoise together.
         noisy_latents = torch.randn(
             b,
             num_channels,
@@ -433,7 +571,6 @@ class DreamZeroHead(nn.Module):
             dtype=states.dtype,
         )
 
-        # UniPC schedulers for video and action branches.
         sample_scheduler = FlowUniPCMultistepScheduler(
             num_train_timesteps=self.scheduler.num_train_timesteps,
             shift=1,
@@ -455,51 +592,15 @@ class DreamZeroHead(nn.Module):
             shift=5.0,
         )
 
-        # Build empty KV cache tensors so CausalWanModel uses inference path
-        # (`_forward_inference`) instead of training path (`_forward_train`).
-        num_heads = self.model.num_heads
-        head_dim = self.model.dim // self.model.num_heads
-        kv_cache = [
-            torch.zeros(
-                2,
-                b,
-                0,
-                num_heads,
-                head_dim,
-                dtype=noisy_latents.dtype,
-                device=device,
-            ) for _ in range(self.model.num_layers)
-        ]
-
-        # Seed causal cache with conditioning first latent frame, matching
-        # reference inference flow: action/state are not used in this stage.
-        cond_x = latents[:, :, :1]
-        cond_t = torch.zeros(
-            b,
-            1,
-            dtype=torch.int64,
-            device=device,
+        y_future_start = min(self.current_start_frame,
+                             self.inference_ys.shape[2])
+        y_future_end = min(
+            self.current_start_frame + denoise_frames,
+            self.inference_ys.shape[2],
         )
-        _, _, kv_cache = self.model(
-            cond_x,
-            timestep=cond_t,
-            clip_feature=clip_feas,
-            y=ys[:, :, :1],
-            context=prompt_embs,
-            seq_len=frame_seqlen,
-            action=None,
-            timestep_action=None,
-            state=None,
-            embodiment_id=None,
-            kv_cache=kv_cache,
-            crossattn_cache=None,
-            current_start_frame=0,
-        )
-
-        # Use the subsequent y block(s) for denoising stage.
-        y_future = ys[:, :, 1:1 + denoise_frames]
-        if y_future.shape[2] == 0:
-            y_future = ys[:, :, -denoise_frames:]
+        y_future = self.inference_ys[:, :, y_future_start:y_future_end]
+        if y_future.shape[2] < denoise_frames:
+            y_future = self.inference_ys[:, :, -denoise_frames:]
 
         denoise_seq_len = denoise_frames * frame_seqlen
 
@@ -510,10 +611,10 @@ class DreamZeroHead(nn.Module):
             t_video = video_timestep.expand(b, denoise_frames)
             t_action = action_timestep.expand(b, self.action_horizon)
 
-            video_noise_pred, action_noise_pred, kv_cache = self.model(
+            video_noise_pred, action_noise_pred, _ = self.model(
                 noisy_latents,
                 timestep=t_video,
-                clip_feature=clip_feas,
+                clip_feature=self.inference_clip_feas,
                 y=y_future,
                 context=prompt_embs,
                 seq_len=denoise_seq_len,
@@ -521,9 +622,9 @@ class DreamZeroHead(nn.Module):
                 embodiment_id=embodiment_ids,
                 action=noisy_actions,
                 timestep_action=t_action,
-                kv_cache=kv_cache,
+                kv_cache=self.inference_kv_cache,
                 crossattn_cache=None,
-                current_start_frame=1,
+                current_start_frame=self.current_start_frame,
             )
 
             noisy_latents = sample_scheduler.step(
@@ -541,10 +642,10 @@ class DreamZeroHead(nn.Module):
                 return_dict=False,
             )[0]
 
-            # Keep scheduler state dtype aligned with model compute dtype.
             noisy_latents = noisy_latents.to(dtype=states.dtype)
             noisy_actions = noisy_actions.to(dtype=states.dtype)
 
+        self.current_start_frame += self.num_frame_per_block
         return noisy_actions
 
     # ------------------------------------------------------------------
