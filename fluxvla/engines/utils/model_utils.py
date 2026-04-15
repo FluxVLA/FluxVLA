@@ -97,7 +97,7 @@ def make_att_2d_masks(pad_masks, att_masks):
 def resize_with_pad(img, width, height, pad_value=-1):
     # assume no-op when width height fits already
     if img.ndim != 4:
-        raise ValueError(f'(b,c,h,w) expected, but {img.shape}')
+        raise ValueError(f'(b, c, h, w) expected, but {img.shape}')
 
     cur_height, cur_width = img.shape[2:]
 
@@ -183,6 +183,35 @@ def eager_attention_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
+
+
+def sdpa_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    key_states = repeat_kv(key, module.num_key_value_groups)
+    value_states = repeat_kv(value, module.num_key_value_groups)
+
+    causal_mask = None
+    if attention_mask is not None:
+        causal_mask = attention_mask[:, :, :, :key_states.shape[-2]]
+
+    attn_output = F.scaled_dot_product_attention(
+        query,
+        key_states,
+        value_states,
+        attn_mask=causal_mask,
+        dropout_p=dropout if module.training else 0.0,
+        scale=scaling,
+    )
+    attn_output = attn_output.transpose(1, 2).contiguous()
+    return attn_output, None
 
 
 def apply_rope(x, positions, max_wavelength=10_000):

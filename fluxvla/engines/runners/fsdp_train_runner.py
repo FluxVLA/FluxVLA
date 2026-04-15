@@ -125,6 +125,8 @@ class FSDPTrainRunner(BaseTrainRunner):
             self.fsdp_sharding_strategy = ShardingStrategy.FULL_SHARD
         elif self.sharding_strategy == 'hybrid-shard':
             self.fsdp_sharding_strategy = ShardingStrategy.HYBRID_SHARD
+        elif self.sharding_strategy == 'no-shard':
+            self.fsdp_sharding_strategy = ShardingStrategy.NO_SHARD
         else:
             raise ValueError(
                 f'FSDP Sharding Strategy {sharding_strategy} is not supported!'
@@ -218,15 +220,14 @@ class FSDPTrainRunner(BaseTrainRunner):
                 if train_loss is None:
                     checkpoint_path = os.path.join(
                         checkpoint_dir,
-                        f'step-{global_step:06d}-epoch-{epoch:02d}-loss=inf.pt'
-                    )  # noqa: E501
+                        f'step-{global_step:06d}-epoch-{epoch:02d}-loss=inf.pt'  # noqa: E231, E501
+                    )
                 else:
                     checkpoint_path = (
                         os.path.join(
                             checkpoint_dir,
-                            f'step-{global_step:06d}-epoch-{epoch:02d}-loss={train_loss:.4f}.pt'  # noqa: E501
-                        )  # noqa: E501
-                    )
+                            f'step-{global_step:06d}-epoch-{epoch:02d}-loss={train_loss:.4f}.pt'  # noqa: E231, E501
+                        ))
 
                 # Prepare checkpoint dictionary
                 checkpoint_dict = {
@@ -275,23 +276,34 @@ class FSDPTrainRunner(BaseTrainRunner):
 
     def run_setup(self, n_train_examples: int) -> None:
         self.vla.from_pretrained()
-        # Iteratively Assemble FSDP Wrapping Policy by fetching the wrapping
-        # policies for each backbone/constituent
         torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
         torch.cuda.empty_cache()
-        vla_fsdp_wrapping_policy = self.vla.get_fsdp_wrapping_policy()
+
+        is_no_shard = (
+            self.fsdp_sharding_strategy == ShardingStrategy.NO_SHARD)
+
+        if is_no_shard:
+            vla_fsdp_wrapping_policy = None
+        else:
+            vla_fsdp_wrapping_policy = self.vla.get_fsdp_wrapping_policy()
 
         # Assemble the Default FSDP Mixed Precision Policy
         if self.enable_mixed_precision_training and self.mixed_precision_dtype == torch.bfloat16:  # noqa: E501
-            # MixedPrecision `param_dtype` specifies *compute*
-            # dtype (for forward/backward only)
-            #  => Reference: https://pytorch.org/docs/stable/fsdp.html#torch.distributed.fsdp.MixedPrecision  # noqa: E501
-            reduce_buffer_dtype = torch.bfloat16 if not \
-                self.reduce_in_full_precision else torch.float32
-            fsdp_precision_policy = MixedPrecision(
-                param_dtype=torch.bfloat16,
-                reduce_dtype=reduce_buffer_dtype,
-                buffer_dtype=reduce_buffer_dtype)
+            if is_no_shard:
+                fsdp_precision_policy = MixedPrecision(
+                    param_dtype=torch.bfloat16,
+                    reduce_dtype=torch.bfloat16,
+                    buffer_dtype=torch.bfloat16)
+            elif not self.reduce_in_full_precision:
+                fsdp_precision_policy = MixedPrecision(
+                    param_dtype=torch.bfloat16,
+                    reduce_dtype=torch.bfloat16,
+                    buffer_dtype=torch.bfloat16)
+            else:
+                fsdp_precision_policy = MixedPrecision(
+                    param_dtype=torch.bfloat16,
+                    reduce_dtype=torch.float32,
+                    buffer_dtype=torch.float32)
         else:
             fsdp_precision_policy = MixedPrecision(
                 param_dtype=torch.float32,
@@ -301,51 +313,45 @@ class FSDPTrainRunner(BaseTrainRunner):
         self.vla.freeze_backbones()
         self.trainable_module_keys = self.vla.trainable_module_keys
 
-        # Unify parameter dtypes before FSDP wrapping
-        # FSDP requires all parameters in the same FSDP unit to float32
+        if is_no_shard:
+            target_dtype = torch.bfloat16
+        else:
+            target_dtype = torch.float32
         for name, param in self.vla.named_parameters():
-            if param.dtype != torch.float32:
-                param.data = param.data.to(torch.float32)
+            if param.dtype != target_dtype:
+                param.data = param.data.to(target_dtype)
         overwatch.info(
-            'Unified all model parameters to torch.float32', ctx_level=1)
+            f'Unified all model parameters to {target_dtype}', ctx_level=1)
 
         # Collect checkpoint layer classes BEFORE FSDP wrapping
         checkpoint_layer_classes = set()
         vlm_has_hf_checkpointing = False
         if self.enable_gradient_checkpointing:
-            # Add LLM backbone transformer layers
             if hasattr(self, 'llm_transformer_layer_cls') \
                     and self.llm_transformer_layer_cls is not None:
                 checkpoint_layer_classes.add(self.llm_transformer_layer_cls)
 
-            # Add Vision Transformer blocks (for timm models)
             try:
                 from timm.models.vision_transformer import Block as VisionBlock
                 checkpoint_layer_classes.add(VisionBlock)
             except ImportError:
                 pass
 
-            # Check if VLM backbone has HuggingFace gradient checkpointing
-            # We will enable it AFTER FSDP wrapping
             if hasattr(self.vla,
                        'vlm_backbone') and self.vla.vlm_backbone is not None:
                 if hasattr(self.vla.vlm_backbone,
                            'enable_gradient_checkpointing'):
                     vlm_has_hf_checkpointing = True
                 elif hasattr(self.vla.vlm_backbone, 'transformer_layer_cls'):
-                    # Fallback: use PyTorch's apply_activation_checkpointing
                     checkpoint_layer_classes.add(
                         self.vla.vlm_backbone.transformer_layer_cls)
 
-            # Add LLM expert layers
             if hasattr(self.vla,
                        'llm_expert') and self.vla.llm_expert is not None:
                 if hasattr(self.vla.llm_expert, 'transformer_layer_cls'):
                     checkpoint_layer_classes.add(
                         self.vla.llm_expert.transformer_layer_cls)
 
-        # <FSDP> => note that FSDP will automatically take care of
-        # device placement (similar to `autocast`)
         self.vla = FSDP(
             self.vla,
             auto_wrap_policy=vla_fsdp_wrapping_policy,
@@ -411,21 +417,21 @@ class FSDPTrainRunner(BaseTrainRunner):
         # Finalize Setup =>> Log!
         overwatch.info(
             'FSDP Full-Shard Strategy =>> Finalized Training Setup:\n'  # noqa: E501
-            f'         |-> Global (Effective) Batch Size = {self.global_batch_size}\n'  # noqa: E501
-            f'         |-> Per-Device Batch Size = {self.per_device_batch_size}\n'  # noqa: E501
-            f'         |-> Distributed World Size = {overwatch.world_size()}\n'  # noqa: E501
-            f'         |-> Gradient Accumulation Steps = {self.grad_accumulation_steps}\n\n'  # noqa: E501
-            f'         |-> LLM Backbone FSDP Gradient Checkpointing = {self.enable_gradient_checkpointing}\n'  # noqa: E501
-            f'         |-> Use FSDP Mixed Precision = {self.enable_mixed_precision_training}\n'  # noqa: E501
-            f'                 |-> Parameter Precision = {fsdp_precision_policy.param_dtype}\n'  # noqa: E501
-            f'                 |-> Reduction Precision = {fsdp_precision_policy.reduce_dtype}\n'  # noqa: E501
-            f'                 |-> Buffer Precision = {fsdp_precision_policy.buffer_dtype}\n\n'  # noqa: E501
-            f'         |-> Default AdamW LR = {self.learning_rate}\n'  # noqa: E501
-            f'         |-> AdamW Weight Decay = {self.weight_decay}\n'  # noqa: E501
-            f'         |-> LR Scheduler Type = {self.lr_scheduler_type}\n'  # noqa: E501
-            f'         |-> LR Scheduler Warm-up Steps (Ratio) = {num_warmup_steps} ({self.warmup_ratio})\n'  # noqa: E501
-            f'         |-> Dataset Size = {n_train_examples} Examples\n'  # noqa: E501
-            f'         |-> Max Steps = {num_training_steps}\n\n'  # noqa: E501
+            f'         |-> Global (Effective) Batch Size = {self.global_batch_size}\n'  # noqa: E221, E501
+            f'         |-> Per-Device Batch Size = {self.per_device_batch_size}\n'  # noqa: E221, E501
+            f'         |-> Distributed World Size = {overwatch.world_size()}\n'  # noqa: E221, E501
+            f'         |-> Gradient Accumulation Steps = {self.grad_accumulation_steps}\n\n'  # noqa: E221, E501
+            f'         |-> LLM Backbone FSDP Gradient Checkpointing = {self.enable_gradient_checkpointing}\n'  # noqa: E221, E501
+            f'         |-> Use FSDP Mixed Precision = {self.enable_mixed_precision_training}\n'  # noqa: E221, E501
+            f'                 |-> Parameter Precision = {fsdp_precision_policy.param_dtype}\n'  # noqa: E221, E501
+            f'                 |-> Reduction Precision = {fsdp_precision_policy.reduce_dtype}\n'  # noqa: E221, E501
+            f'                 |-> Buffer Precision = {fsdp_precision_policy.buffer_dtype}\n\n'  # noqa: E221, E501
+            f'         |-> Default AdamW LR = {self.learning_rate}\n'  # noqa: E221, E501
+            f'         |-> AdamW Weight Decay = {self.weight_decay}\n'  # noqa: E221, E501
+            f'         |-> LR Scheduler Type = {self.lr_scheduler_type}\n'  # noqa: E221, E501
+            f'         |-> LR Scheduler Warm-up Steps (Ratio) = {num_warmup_steps} ({self.warmup_ratio})\n'  # noqa: E221, E501
+            f'         |-> Dataset Size = {n_train_examples} Examples\n'  # noqa: E221, E501
+            f'         |-> Max Steps = {num_training_steps}\n\n'  # noqa: E221, E501
         )
 
     def clip_grad_norm(self) -> None:

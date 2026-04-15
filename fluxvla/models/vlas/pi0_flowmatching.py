@@ -27,7 +27,8 @@ from fluxvla.engines.utils.model_utils import (apply_rotary_pos_emb,
                                                create_sinusoidal_pos_embedding,
                                                eager_attention_forward,
                                                gated_residual,
-                                               make_att_2d_masks, sample_beta)
+                                               make_att_2d_masks, sample_beta,
+                                               sdpa_attention_forward)
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 from .base_vla import BaseVLA
 
@@ -100,7 +101,7 @@ class PI0FlowMatching(BaseVLA):
                  pretrained_name_or_path: Optional[str] = None,
                  name_mapping: Optional[Dict[str, str]] = None,
                  strict_mapping: Optional[bool] = False,
-                 attention_implementation: Optional[str] = 'eager',
+                 attention_implementation: Optional[str] = 'sdpa',
                  params_to_change_dtype: Optional[List[str]] = [],
                  max_action_dim: int = 7,
                  ori_action_dim: int = None,
@@ -190,22 +191,14 @@ class PI0FlowMatching(BaseVLA):
         return time.to(dtype=torch.float32, device=device)
 
     def get_attention_interface(self):
-        if self.attention_implementation == 'fa2':
-            raise NotImplementedError('FA2 is not implemented (yet)')
-        elif self.attention_implementation == 'flex':
-            # attention_interface = flex_attention_forward
-            raise NotImplementedError(
-                'Flex attention is not implemented (yet)')
+        if self.attention_implementation == 'sdpa':
+            attention_interface = sdpa_attention_forward
         elif self.attention_implementation == 'eager':
             attention_interface = eager_attention_forward
-        elif self.attention_implementation == 'xformer':
-            # attention_interface = xformer_attention_forward
-            raise NotImplementedError(
-                'Xformer attention is not implemented (yet)')
         else:
             raise ValueError(
                 f'Invalid attention implementation: {self.attention_implementation}. '  # noqa: E501
-                "Expected one of ['fa2', 'flex', 'eager', 'xformer'].")
+                "Expected one of ['sdpa', 'eager'].")
         return attention_interface
 
     def embed_prefix(self, images, lang_tokens, img_masks, lang_masks, *args,
@@ -351,6 +344,8 @@ class PI0FlowMatching(BaseVLA):
         Returns:
             List[torch.Tensor]: Output embeddings after processing all layers.
         """
+        _rope_device_tensor = torch.empty(
+            0, device=inputs_embeds[0].device, dtype=inputs_embeds[0].dtype)
         for layer_idx in range(num_layers):
             query_states = []
             key_states = []
@@ -378,21 +373,12 @@ class PI0FlowMatching(BaseVLA):
                 key_states.append(key_state)
                 value_states.append(value_state)
 
-            # B,L,H,D with L sequence length, H number of heads, D head dim
-            # concatenate on the number of embeddings/tokens
             query_states = torch.cat(query_states, dim=2)
             key_states = torch.cat(key_states, dim=2)
             value_states = torch.cat(value_states, dim=2)
 
-            dummy_tensor = torch.zeros(
-                query_states.shape[0],
-                query_states.shape[2],
-                query_states.shape[-1],
-                device=query_states.device,
-                dtype=query_states.dtype,
-            )
-            cos, sin = (
-                self.llm_backbone.rotary_emb(dummy_tensor, position_ids))
+            cos, sin = self.llm_backbone.rotary_emb(_rope_device_tensor,
+                                                    position_ids)
             query_states, key_states = apply_rotary_pos_emb(
                 query_states, key_states, cos, sin)
 
@@ -407,11 +393,9 @@ class PI0FlowMatching(BaseVLA):
                 attention_masks,
                 scaling,
             )
-            # Get head_dim from the current layer, not from the model
             head_dim = self.llm_backbone.layers[layer_idx].self_attn.head_dim
             att_output = att_output.reshape(batch_size, -1, 1 * 8 * head_dim)
 
-            # Process layer outputs
             outputs_embeds = []
             start_pos = 0
             for i, hidden_states in enumerate(inputs_embeds):
@@ -426,20 +410,13 @@ class PI0FlowMatching(BaseVLA):
                 out_emb = layer.self_attn.o_proj(att_output[:,
                                                             start_pos:end_pos])
 
-                # first residual
-                out_emb = gated_residual(hidden_states, out_emb,
-                                         gates[i])  # noqa: SLF001
-                after_first_residual = out_emb.clone()
+                out_emb = gated_residual(hidden_states, out_emb, gates[i])
+                after_first_residual = out_emb
                 out_emb, gate = layer.post_attention_layernorm(
                     out_emb, cond=adarms_cond[i])
-                # Convert to bfloat16 if the next layer (mlp) uses bfloat16
-                if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
-                    out_emb = out_emb.to(dtype=torch.bfloat16)
 
                 out_emb = layer.mlp(out_emb)
-                # second residual
-                out_emb = gated_residual(after_first_residual, out_emb,
-                                         gate)  # noqa: SLF001
+                out_emb = gated_residual(after_first_residual, out_emb, gate)
                 outputs_embeds.append(out_emb)
                 start_pos = end_pos
 
@@ -545,7 +522,9 @@ class PI0FlowMatching(BaseVLA):
     def _prepare_attention_masks_4d(self, att_2d_masks):
         """Helper method to prepare 4D attention masks for transformer."""
         att_2d_masks_4d = att_2d_masks[:, None, :, :]
-        return torch.where(att_2d_masks_4d, 0.0, -2.3819763e38)
+        mask = torch.zeros_like(att_2d_masks_4d, dtype=torch.bfloat16)
+        mask.masked_fill_(~att_2d_masks_4d, torch.finfo(torch.bfloat16).min)
+        return mask
 
     def forward(self,
                 images: List[torch.Tensor],

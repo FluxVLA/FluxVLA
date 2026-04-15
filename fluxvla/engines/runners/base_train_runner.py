@@ -595,13 +595,17 @@ class BaseTrainRunner(ABC):
             shuffle=True,
             drop_last=False) if self.sampler == 'distributed' else None
 
+        use_workers = self.per_device_num_workers > 0
         dataloader = DataLoader(
             vla_dataset,
             batch_size=self.per_device_batch_size,
             sampler=sampler,
             collate_fn=self.collator,
             num_workers=self.per_device_num_workers,
-            worker_init_fn=worker_init_function)
+            worker_init_fn=worker_init_function,
+            pin_memory=True,
+            prefetch_factor=2 if use_workers else None,
+            persistent_workers=use_workers)
 
         # Calculate steps per epoch
         self.steps_per_epoch = self._get_steps_per_epoch(vla_dataset)
