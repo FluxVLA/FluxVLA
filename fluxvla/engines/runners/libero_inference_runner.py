@@ -21,6 +21,7 @@ from typing import Dict
 
 import torch
 import torch.distributed as dist
+from libero.libero import benchmark
 
 from fluxvla.engines.utils import initialize_overwatch
 from fluxvla.engines.utils.eval_utils import (get_libero_dummy_action,
@@ -28,7 +29,6 @@ from fluxvla.engines.utils.eval_utils import (get_libero_dummy_action,
                                               save_rollout_video)
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
-from libero.libero import benchmark
 from ..utils.root import RUNNERS
 
 overwatch = initialize_overwatch(__name__)
