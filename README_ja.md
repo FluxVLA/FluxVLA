@@ -194,7 +194,38 @@ export WANDB_MODE=disabled
 
 </details>
 
-## 📦 データ準備
+<details>
+<summary><b>TensorBoard の設定（オプション）</b></summary>
+
+[TensorBoard](https://www.tensorflow.org/tensorboard) はオプションのログバックエンドとして、実験メトリクスの可視化に使用できます。設定手順は次の通りです：
+
+1. 設定ファイルの `active_trackers` に `'tensorboard'` を追加：
+
+```python
+metric=dict(
+    type='VLAMetric',
+    active_trackers=('jsonl', 'wandb', 'tensorboard'),
+    ...
+)
+```
+
+設定ファイルを変更せずに、コマンドラインから有効化することも可能です：
+
+```bash
+--cfg-options 'runner.metric.active_trackers=[jsonl,wandb,tensorboard]'
+```
+
+2. トレーニング後、TensorBoard を起動してメトリクスを確認：
+
+```bash
+tensorboard --logdir work_dirs/tensorboard
+```
+
+補足：各実験のイベントファイルは `{work_dir}/tensorboard/{run_id}/` に保存され、複数の実験を自動的に比較できます。`TENSORBOARD_LOG_PATH` 環境変数が設定されている場合、そのパスがログディレクトリとして直接使用されます。
+
+</details>
+
+## データ準備
 
 <details>
 <summary><b>用意済みのデータをそのまま使う</b></summary>

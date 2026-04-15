@@ -194,7 +194,38 @@ Note: all wandb configuration is read from environment variables; no additional 
 
 </details>
 
-## 📦 Data Preparation
+<details>
+<summary><b>Configure TensorBoard (optional)</b></summary>
+
+[TensorBoard](https://www.tensorflow.org/tensorboard) is supported as an optional logging backend for experiment metric visualization. Configure it as follows:
+
+1. Add `'tensorboard'` to `active_trackers` in your config file:
+
+```python
+metric=dict(
+    type='VLAMetric',
+    active_trackers=('jsonl', 'wandb', 'tensorboard'),
+    ...
+)
+```
+
+Alternatively, enable it via command line without modifying the config file:
+
+```bash
+--cfg-options 'runner.metric.active_trackers=[jsonl,wandb,tensorboard]'
+```
+
+2. After training, launch TensorBoard to view metrics:
+
+```bash
+tensorboard --logdir work_dirs/tensorboard
+```
+
+Note: event files are saved to `{work_dir}/tensorboard/{run_id}/` per run, enabling automatic comparison across experiments. If the `TENSORBOARD_LOG_PATH` environment variable is set, it will be used directly as the log directory.
+
+</details>
+
+## Data Preparation
 
 <details>
 <summary><b>Use the datasets we prepared directly</b></summary>

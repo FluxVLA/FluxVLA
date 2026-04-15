@@ -194,7 +194,38 @@ export WANDB_MODE=disabled
 
 </details>
 
-## 📦 数据准备
+<details>
+<summary><b>配置 TensorBoard（可选）</b></summary>
+
+[TensorBoard](https://www.tensorflow.org/tensorboard) 作为可选的日志后端，用于实验指标可视化。配置方式如下：
+
+1. 在配置文件中将 `'tensorboard'` 添加到 `active_trackers`：
+
+```python
+metric=dict(
+    type='VLAMetric',
+    active_trackers=('jsonl', 'wandb', 'tensorboard'),
+    ...
+)
+```
+
+也可以不修改配置文件，通过命令行参数启用：
+
+```bash
+--cfg-options 'runner.metric.active_trackers=[jsonl,wandb,tensorboard]'
+```
+
+2. 训练完成后，启动 TensorBoard 查看指标：
+
+```bash
+tensorboard --logdir work_dirs/tensorboard
+```
+
+说明：每次实验的事件文件保存在 `{work_dir}/tensorboard/{run_id}/` 目录下，多次实验可自动对比。若设置了 `TENSORBOARD_LOG_PATH` 环境变量，将直接使用该路径作为日志目录。
+
+</details>
+
+## 数据准备
 
 <details>
 <summary><b>直接使用我们准备好的数据</b></summary>

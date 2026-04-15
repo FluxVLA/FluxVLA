@@ -130,6 +130,53 @@ class WeightsBiasesTracker:
         time.sleep(210)
 
 
+class TensorBoardTracker:
+
+    def __init__(self, run_id: str, run_dir: str, hparams: Dict[str,
+                                                                Any]) -> None:
+        """Initialize TensorBoard Tracker.
+        This class is used to log hyperparameters and metrics to
+            TensorBoard.
+
+        Args:
+            run_id (str): ID of the run.
+            run_dir (str): Directory to save the run.
+            hparams (Dict[str, Any]): parameters for the run.
+
+        Environment Variables:
+            TENSORBOARD_LOG_PATH: TensorBoard log directory.
+                Defaults to "{run_dir}/tensorboard/{run_id}".
+        """
+        self.run_id, self.run_dir, self.hparams = run_id, run_dir, hparams
+        tb_path = os.environ.get('TENSORBOARD_LOG_PATH')
+        if tb_path:
+            self.log_dir = tb_path
+        else:
+            self.log_dir = os.path.join(run_dir, 'tensorboard', run_id)
+        self.writer = None
+        self.initialize()
+
+    @overwatch.rank_zero_only
+    def initialize(self) -> None:
+        from torch.utils.tensorboard import SummaryWriter
+        self.writer = SummaryWriter(log_dir=self.log_dir)
+
+    @overwatch.rank_zero_only
+    def write_hyperparameters(self) -> None:
+        self.writer.add_text('hyperparameters', str(self.hparams.to_dict()))
+
+    @overwatch.rank_zero_only
+    def write(self, global_step: int,
+              metrics: Dict[str, Union[int, float]]) -> None:
+        for key, value in metrics.items():
+            self.writer.add_scalar(key, value, global_step)
+
+    @overwatch.rank_zero_only
+    def finalize(self) -> None:
+        if self.writer:
+            self.writer.close()
+
+
 # === Core Metrics Container :: Initializes Trackers
 # => Compiles/Pushes Metrics ===
 
@@ -184,6 +231,8 @@ class VLAMetric:
             elif tracker_type == 'wandb':
                 tracker = WeightsBiasesTracker(
                     run_id, run_dir, hparams, group='vla-train')
+            elif tracker_type == 'tensorboard':
+                tracker = TensorBoardTracker(run_id, run_dir, hparams)
             else:
                 raise ValueError(
                     f'Tracker with type `{tracker_type} is not supported!')
