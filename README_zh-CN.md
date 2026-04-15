@@ -28,11 +28,12 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 性能
 
-| Codebase                    | Libero-Spatial | Libero-Object | Libero-Goal | Libero-Long | Libero-Average |
-| --------------------------- | -------------- | ------------- | ----------- | ----------- | -------------- |
-| FluxVLA(GR00T)              | 96.4           | 93.8          | 93.6        | 83.5±1.5    | 91.8           |
-| FluxVLA(Pi)                 | 99.4           | 99.4          | 98          | 96.8        | 98.4           |
-| FluxVLA(Qwen3VL 0.6B+GR00T) | 98             | 99.2          | 95.2        | 87.2        | 94.9           |
+|          Codebase           | Libero-Spatial | Libero-Object | Libero-Goal | Libero-Long | Libero-Average |
+| :-------------------------: | :------------: | :-----------: | :---------: | :---------: | :------------: |
+|       FluxVLA(GR00T)        |      96.4      |     93.8      |    93.6     |  83.5±1.5   |      91.8      |
+|         FluxVLA(Pi)         |      99.4      |     99.4      |     98      |    96.8     |      98.4      |
+| FluxVLA(Qwen3VL 0.6B+GR00T) |       98       |     99.2      |    95.2     |    87.2     |      94.9      |
+|     FluxVLA(DreamZero)      |      96.8      |     97.4      |    92.8     |    93.6     |     95.15      |
 
 ## 📢 最新动态
 
