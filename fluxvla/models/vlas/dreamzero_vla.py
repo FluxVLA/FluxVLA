@@ -26,7 +26,7 @@ overwatch = initialize_overwatch(__name__)
 class DreamZeroVLA(BaseVLA):
     """DreamZero World-Action Model.
 
-    Uses ``WanBackbone`` (wam_backbone) for encoding (T5, CLIP, VAE) and
+    Uses ``WanBackbone`` (vlm_backbone) for encoding (T5, CLIP, VAE) and
     ``DreamZeroHead`` (vla_head) for the DiT diffusion model and flow-matching.
 
     Data contract
@@ -34,7 +34,7 @@ class DreamZeroVLA(BaseVLA):
     The forward method expects the following keys from the dataloader:
 
     * ``images``  – ``[B, C, T, H_tiled, W]`` (prepared by
-      ``PrepareVideoForDreamZero`` transform).
+      ``PrepareVideo`` transform).
     * ``task_description`` – ``list[str]`` of length *B* (raw text).
     * ``states``  – ``[B, state_dim]`` or ``[B, num_tokens, state_dim]``.
     * ``actions`` – ``[B, action_horizon, action_dim]``.
@@ -42,20 +42,19 @@ class DreamZeroVLA(BaseVLA):
       ``[B, action_horizon, action_dim]`` boolean.
     * ``embodiment_ids`` – ``[B]`` integer (optional, defaults to 0).
 
-    Encoding (T5, CLIP, VAE) is done by ``WanBackbone`` (wam_backbone),
+    Encoding (T5, CLIP, VAE) is done by ``WanBackbone`` (vlm_backbone),
     then encoded tensors are passed to ``DreamZeroHead`` (vla_head).
     """
 
     def __init__(
         self,
-        wam_backbone: Dict = None,
+        vlm_backbone: Dict = None,
         vla_head: Dict = None,
         num_views: int = 2,
         frame_window_size: int = 1,
         pretrained_name_or_path: str = None,
         name_mapping: Dict = None,
         strict_mapping: bool = False,
-        freeze_wam_backbone: bool = True,
         freeze_llm_backbone: bool = True,
         freeze_vlm_backbone: bool = True,
         freeze_projector: bool = True,
@@ -64,12 +63,11 @@ class DreamZeroVLA(BaseVLA):
         **kwargs,
     ) -> None:
         super().__init__(
-            wam_backbone=wam_backbone,
+            vlm_backbone=vlm_backbone,
             vla_head=vla_head,
             pretrained_name_or_path=pretrained_name_or_path,
             name_mapping=name_mapping,
             strict_mapping=strict_mapping,
-            freeze_wam_backbone=freeze_wam_backbone,
             freeze_llm_backbone=freeze_llm_backbone,
             freeze_vlm_backbone=freeze_vlm_backbone,
             freeze_projector=freeze_projector,
@@ -78,7 +76,7 @@ class DreamZeroVLA(BaseVLA):
         self.frame_window_size = frame_window_size
         self.use_cache = use_cache
         self.vla_head.use_cache = use_cache
-        self.all_module_keys = ['wam_backbone', 'vla_head']
+        self.all_module_keys = ['vlm_backbone', 'vla_head']
 
     def _prepare_states(self, states: torch.Tensor,
                         num_tokens: int) -> torch.Tensor:
@@ -142,20 +140,20 @@ class DreamZeroVLA(BaseVLA):
         max_state_dim = self.vla_head.max_state_dim
         actual_action_dim = self.vla_head.action_dim
 
-        # images: [B, C, T, H, W] (prepared by PrepareVideoForDreamZero)
+        # images: [B, C, T, H, W] (prepared by PrepareVideo)
         video = images
         b, c, t, h, w = video.shape
 
-        # --- Encode with WanBackbone ---
-        wam_outputs = self.wam_backbone(
+        # --- Encode with WanBackbone (vlm_backbone) ---
+        vlm_outputs = self.vlm_backbone(
             video=video,
             input_ids=lang_tokens.long().to(device),
             attention_mask=lang_masks.long().to(device),
         )
-        prompt_embs = wam_outputs['prompt_embs']
-        latents = wam_outputs['latents']
-        clip_feas = wam_outputs['clip_feas']
-        image_cond = wam_outputs['image_cond']
+        prompt_embs = vlm_outputs['prompt_embs']
+        latents = vlm_outputs['latents']
+        clip_feas = vlm_outputs['clip_feas']
+        image_cond = vlm_outputs['image_cond']
 
         # Prepare states [B, num_state_tokens, D]
         t_video = video.shape[2]
@@ -210,7 +208,7 @@ class DreamZeroVLA(BaseVLA):
         **kwargs,
     ) -> torch.Tensor:
         device = images.device
-        # images: [B, C, T, H, W] (prepared by PrepareVideoForDreamZero)
+        # images: [B, C, T, H, W] (prepared by PrepareVideo)
         video = images
         use_cache = kwargs.get('use_cache', self.use_cache)
 
@@ -235,16 +233,16 @@ class DreamZeroVLA(BaseVLA):
             pad = video.new_zeros(b, c, t_train - t_obs, h, w)
             video = torch.cat([video, pad], dim=2)
 
-        # --- Encode with WanBackbone (same as forward) ---
-        wam_outputs = self.wam_backbone(
+        # --- Encode with WanBackbone (vlm_backbone) ---
+        vlm_outputs = self.vlm_backbone(
             video=video,
             input_ids=lang_tokens.long().to(device),
             attention_mask=lang_masks.long().to(device),
         )
-        prompt_embs = wam_outputs['prompt_embs']
-        latents = wam_outputs['latents']
-        clip_feas = wam_outputs['clip_feas']
-        image_cond = wam_outputs['image_cond']
+        prompt_embs = vlm_outputs['prompt_embs']
+        latents = vlm_outputs['latents']
+        clip_feas = vlm_outputs['clip_feas']
+        image_cond = vlm_outputs['image_cond']
 
         # Prepare states [B, num_state_tokens, D]
         t_video = video.shape[2]

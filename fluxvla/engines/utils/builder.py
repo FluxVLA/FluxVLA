@@ -107,8 +107,8 @@ def build_from_cfg(
             obj_cls = registry.get(obj_type)
             if obj_cls is None:
                 raise KeyError(
-                    f'{obj_type} is not in the {registry.scope}::{registry.name} registry. '  # noqa: E501
-                    f'Please check whether the value of `{obj_type}` is '
+                    f'{obj_type} is not in the {registry.scope}::{registry.name} registry. '  # noqa: E231, E501
+                    f"Please check whether the value of '{obj_type}' is "
                     'correct or it was registered as expected. More details '
                     'can be found at '
                     'https://mmengine.readthedocs.io/en/latest/advanced_tutorials/config.html#import-the-custom-module'  # noqa: E501
@@ -132,7 +132,7 @@ def build_from_cfg(
         if (inspect.isclass(obj_cls) or inspect.isfunction(obj_cls)
                 or inspect.ismethod(obj_cls)):
             print_log(
-                f'An `{obj_cls.__name__}` instance is built from '  # type: ignore # noqa: E501
+                f"An '{obj_cls.__name__}' instance is built from "  # type: ignore # noqa: E501
                 'registry, and its implementation can be found in '
                 f'{obj_cls.__module__}',  # type: ignore
                 logger='current',
@@ -291,15 +291,6 @@ def build_head_from_cfg(
     """
     from .root import HEADS
     return build_from_cfg(cfg, HEADS, default_args)
-
-
-def build_wam_backbone_from_cfg(
-    cfg: Union[dict, ConfigDict, Config],
-    default_args: Optional[Union[dict, 'ConfigDict', 'Config']] = None
-) -> 'nn.Module':
-    """Build a Wam backbone from config dict(s)."""
-    from .root import WAM_BACKBONES
-    return build_from_cfg(cfg, WAM_BACKBONES, default_args)
 
 
 def build_vlm_backbone_from_cfg(

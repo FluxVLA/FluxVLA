@@ -161,7 +161,6 @@ class LiberoInferenceRunner:
         self.vla.freeze_llm_backbone = True
         self.vla.freeze_projector = True
         self.vla.freeze_vlm_backbone = True
-        self.vla.freeze_wam_backbone = True
         self.vla.cuda(self.device_id)
 
     def run(self):

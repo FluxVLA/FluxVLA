@@ -19,7 +19,7 @@ from typing import Optional
 import torch
 import torch.nn as nn
 
-from fluxvla.engines import WAM_BACKBONES
+from fluxvla.engines import VLM_BACKBONES
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +48,7 @@ def _import_wan_encoder_modules():
     return WanTextEncoder, WanImageEncoder, WanVideoVAE
 
 
-@WAM_BACKBONES.register_module()
+@VLM_BACKBONES.register_module()
 class WanBackbone(nn.Module):
     """Wan 2.1 encoder backbone: T5 text encoder, CLIP image encoder, VAE.
 

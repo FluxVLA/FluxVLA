@@ -146,7 +146,6 @@ class LiberoEvalRunner:
         self.vla.freeze_llm_backbone = True
         self.vla.freeze_projector = True
         self.vla.freeze_vlm_backbone = True
-        self.vla.freeze_wam_backbone = True
         if self.enable_mixed_precision_training:
             self.vla.to(
                 device=self.device_id, dtype=self.mixed_precision_dtype)

@@ -48,7 +48,7 @@ model = dict(
     frame_window_size=_frame_window_size,
     pretrained_name_or_path=  # noqa: E251
     _ckpt_root + '/DreamZero-AgiBot',
-    wam_backbone=dict(
+    vlm_backbone=dict(
         type='WanBackbone',
         text_encoder_path=None,
         image_encoder_path=None,
@@ -89,9 +89,9 @@ model = dict(
     ),
     name_mapping={
         'vla_head.model': 'action_head.model',
-        'wam_backbone.text_encoder': 'action_head.text_encoder',
-        'wam_backbone.image_encoder': 'action_head.image_encoder',
-        'wam_backbone.vae': 'action_head.vae',
+        'vlm_backbone.text_encoder': 'action_head.text_encoder',
+        'vlm_backbone.image_encoder': 'action_head.image_encoder',
+        'vlm_backbone.vae': 'action_head.vae',
     },
 )
 
@@ -150,7 +150,7 @@ train_dataloader = dict(
                     norm_type='mean_std',
                 ),
                 dict(
-                    type='PrepareVideoForDreamZero',
+                    type='PrepareVideo',
                     num_views=2,
                     frame_window_size=_frame_window_size,
                 ),
@@ -247,7 +247,7 @@ eval = dict(
                 use_conversation=False,
             ),
             dict(
-                type='PrepareVideoForDreamZero',
+                type='PrepareVideo',
                 num_views=2,
                 frame_window_size=1,
             ),

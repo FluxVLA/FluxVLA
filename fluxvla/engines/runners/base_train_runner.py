@@ -120,10 +120,10 @@ class BaseTrainRunner(ABC):
         self.trainable_module_keys = list()
         if self.vla.llm_backbone is not None:
             self.llm_transformer_layer_cls = self.vla.llm_backbone.transformer_layer_cls  # noqa: E501
-        elif self.vla.vlm_backbone is not None:
+        elif (self.vla.vlm_backbone is not None
+              and hasattr(self.vla.vlm_backbone, 'transformer_layer_cls')):
             self.llm_transformer_layer_cls = self.vla.vlm_backbone.transformer_layer_cls  # noqa: E501
         else:
-            # Models like DreamZero manage encoders inside the head
             self.llm_transformer_layer_cls = None
 
         self.device_id = device_id
@@ -580,7 +580,7 @@ class BaseTrainRunner(ABC):
 
         else:
             raise ValueError(f'Learning Rate Schedule with type '
-                             f'`{self.lr_scheduler_type}` is not supported!')
+                             f"'{self.lr_scheduler_type}' is not supported!")
 
     def run(self, vla_dataset) -> None:
         """Train the VLA model."""

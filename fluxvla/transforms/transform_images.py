@@ -570,7 +570,7 @@ class ConvertPILImageToNumpyArray:
 
 
 @TRANSFORMS.register_module()
-class PrepareVideoForDreamZero:
+class PrepareVideo:
     """Reshape multi-view / temporal image arrays into the video layout
     expected by DreamZero: ``[C, T, H_tiled, W]`` (per sample, no batch dim).
 
