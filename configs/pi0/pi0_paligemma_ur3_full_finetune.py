@@ -192,6 +192,7 @@ runner = dict(
     learning_rate=2e-5,
     weight_decay=0.0,
     max_grad_norm=1.0,
+    sharding_strategy='no-shard',
     collator=dict(
         type='DictCollator',
         keys=[
