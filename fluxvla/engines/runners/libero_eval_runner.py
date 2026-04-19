@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import json
 import math
 import os
@@ -96,12 +97,36 @@ class LiberoEvalRunner:
             if ckpt_path.endswith('.safetensors'):
                 state_dict = load_file(ckpt_path, device='cpu')
             else:
-                checkpoint = torch.load(ckpt_path, map_location='cpu')
-                if isinstance(checkpoint, dict) and 'model' in checkpoint:
-                    state_dict = checkpoint['model']
+                # A sibling .safetensors is preferred when available because
+                # the .pt file also contains the optimizer/scheduler state
+                # which is unnecessary for inference and quickly exhausts
+                # CPU RAM when loaded on every rank (SIGKILL / exit -9).
+                sf_candidate = (
+                    ckpt_path[:-len('.pt')] +
+                    '.safetensors' if ckpt_path.endswith('.pt') else None)
+                if sf_candidate is not None and os.path.exists(sf_candidate):
+                    state_dict = load_file(sf_candidate, device='cpu')
                 else:
-                    state_dict = checkpoint
+                    # mmap=True avoids copying the whole checkpoint into RAM
+                    # on every rank.
+                    try:
+                        checkpoint = torch.load(
+                            ckpt_path, map_location='cpu', mmap=True)
+                    except TypeError:
+                        checkpoint = torch.load(ckpt_path, map_location='cpu')
+                    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+                        state_dict = checkpoint['model']
+                        # Drop optimizer/scheduler state ASAP to reclaim RAM.
+                        checkpoint.pop('optimizer_state_dict', None)
+                        checkpoint.pop('scheduler_state_dict', None)
+                        checkpoint.pop('optimizer_state_index_to_name', None)
+                    else:
+                        state_dict = checkpoint
+                    del checkpoint
+                    gc.collect()
             self.vla.load_state_dict(state_dict, strict=True)
+            del state_dict
+            gc.collect()
         self.cfg = cfg
         self.seed = seed
         self.ckpt_path = ckpt_path
