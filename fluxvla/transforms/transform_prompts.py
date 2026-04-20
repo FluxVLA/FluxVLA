@@ -363,9 +363,10 @@ class LiberoPromptFromInputs:
         assert 'task_description' in inputs, "inputs must contain 'task_description'"  # noqa: E501
         task_description = inputs['task_description']
         if self.use_conversation:
-            prompt = (f'In: What action should the robot take to '
-                      f'{str(task_description).lower()}?\nOut:' +
-                      self.prompt_suffix)
+            prompt = (
+                f'In: What action should the robot take to '
+                f'{str(task_description).lower()}?\nOut:' +  # noqa: E231
+                self.prompt_suffix)
         else:
             prompt = task_description
         if self.add_new_line:
