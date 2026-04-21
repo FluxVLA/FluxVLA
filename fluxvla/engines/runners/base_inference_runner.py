@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import io
 import os
+import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional
@@ -40,8 +43,35 @@ class BaseInferenceRunner:
         _postprocess_actions → denormalize to robot command space
         _execute_actions → send commands to the robot (abstract)
 
-    Subclasses should implement robot-specific methods like get_ros_observation
-    and _execute_actions. Override other phases as needed.
+    When ``remote_inference`` is provided, the runner delegates model
+    inference to a remote ZMQ GPU server instead of loading the model
+    locally.  Subclasses (URInferenceRunner, AlohaInferenceRunner) work
+    identically in both local and remote modes.
+
+    Args:
+        cfg (Dict): Configuration dictionary for the VLA model.
+        seed (str): Random seed for reproducibility.
+        ckpt_path (str): Path to model checkpoint file.
+        dataset (Dict): Dataset configuration dictionary.
+        denormalize_action (Dict): Action denormalization configuration.
+        task_suite_name (str): Name of task suite.
+        state_dim (int): Dimension of robot state vector.
+        action_chunk (int): Number of actions to predict at once.
+        publish_rate (int): ROS publishing rate in Hz.
+        max_publish_step (int): Maximum steps per episode.
+        use_eval_collector (bool): Whether to use evaluation data collector.
+        use_robot_base (bool): Whether to use mobile base.
+        disable_puppet_arm (bool): Whether to disable puppet arm.
+        camera_names (List[str]): Names of camera feeds.
+        operator (Dict): ROS operator configuration.
+        task_descriptions (Dict): Task descriptions mapping.
+        task_pose_sequences (Dict): Task pose sequences mapping.
+        mixed_precision_dtype (str): Data type for mixed precision.
+        enable_mixed_precision (bool): Whether to enable mixed precision.
+        remote_inference (Dict): Remote inference config.  When provided,
+            model loading is skipped and inference is delegated to a ZMQ
+            server.  Keys: ``server_host``, ``server_port``, ``timeout_s``,
+            ``serializer``, ``compress``, ``enable_profiling``.
     """
 
     def __init__(self,
@@ -64,39 +94,21 @@ class BaseInferenceRunner:
                  task_pose_sequences: Dict = None,
                  mixed_precision_dtype: str = 'float32',
                  enable_mixed_precision: bool = True,
+                 remote_inference: Dict = None,
                  **kwargs):
-        """Initialize the base inference runner.
-
-        Args:
-            cfg: Configuration dictionary for the VLA model.
-            seed: Random seed for reproducibility.
-            ckpt_path: Path to model checkpoint file.  When None, model
-                building and checkpoint loading are skipped (used by
-                RemoteInferenceRunner which delegates to a remote server).
-            dataset: Dataset configuration dictionary.
-            denormalize_action: Action denormalization configuration.
-            task_suite_name: Name of task suite.
-            state_dim: Dimension of robot state vector.
-            action_chunk: Number of actions to predict at once.
-            publish_rate: ROS publishing rate in Hz.
-            max_publish_step: Maximum steps per episode.
-            use_eval_collector: Whether to use evaluation data collector.
-            use_robot_base: Whether to use mobile base.
-            disable_puppet_arm: Whether to disable puppet arm.
-            camera_names: Names of camera feeds.
-            operator: ROS operator configuration.
-            task_descriptions: Task descriptions mapping.
-            task_pose_sequences: Task pose sequences mapping.
-            mixed_precision_dtype: Data type for mixed precision.
-            enable_mixed_precision: Whether to enable mixed precision.
-        """
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
 
         self.ckpt_path = ckpt_path
+        self._use_remote = remote_inference is not None
 
-        if ckpt_path is not None:
+        if self._use_remote:
+            self.dataset = None
+            self.denormalize_action = None
+            self.vla = None
+            self._init_zmq_client(remote_inference)
+        elif ckpt_path is not None:
             data_stat_path = os.path.join(
                 Path(ckpt_path).resolve().parent.parent,
                 'dataset_statistics.json')
@@ -156,6 +168,64 @@ class BaseInferenceRunner:
         self._prev_ctx = None
         self._action_ctx = SimpleNamespace()
 
+
+    def _init_zmq_client(self, cfg: Dict):
+        """Initialize ZMQ client for remote inference.
+
+        Args:
+            cfg (Dict): Remote inference config with keys server_host,
+                server_port, timeout_s, serializer, compress,
+                enable_profiling.
+        """
+        import zmq
+        import msgpack
+
+        host = cfg.get('server_host', 'localhost')
+        port = cfg.get('server_port', 5555)
+        timeout_s = cfg.get('timeout_s', 30.0)
+        serializer = cfg.get('serializer', 'msgpack')
+        assert serializer in ('msgpack', 'protobuf'), \
+            f"serializer must be 'msgpack' or 'protobuf', got '{serializer}'"
+
+        self._serializer = serializer
+        self._compress = cfg.get('compress', True)
+        self._server_address = f'tcp://{host}:{port}'
+        self._enable_profiling = cfg.get('enable_profiling', True)
+
+        self._zmq_context = zmq.Context()
+        self._zmq_socket = self._zmq_context.socket(zmq.REQ)
+        self._zmq_socket.setsockopt(zmq.RCVTIMEO, int(timeout_s * 1000))
+        self._zmq_socket.setsockopt(zmq.SNDTIMEO, int(timeout_s * 1000))
+        self._zmq_socket.connect(self._server_address)
+        self._zmq_lock = threading.Lock()
+
+        self._call_count = 0
+        self._t_serialize = 0.0
+        self._t_zmq = 0.0
+        self._t_deserialize = 0.0
+        self._t_total = 0.0
+        self._t_server_infer = 0.0
+        self._t_network = 0.0
+        self._payload_bytes = 0
+        self._resp_bytes = 0
+        self.last_profile = {}
+
+    def ping(self) -> bool:
+        """Health-check the remote ZMQ server."""
+        if not self._use_remote:
+            return False
+        import zmq
+        import msgpack
+        try:
+            request = msgpack.packb({'endpoint': 'ping'})
+            with self._zmq_lock:
+                self._zmq_socket.send(request)
+                raw = self._zmq_socket.recv()
+            resp = msgpack.unpackb(raw, raw=False)
+            return resp.get('status') == 'ok'
+        except zmq.error.ZMQError:
+            return False
+
     def _apply_jpeg_compression(self, img: np.ndarray) -> np.ndarray:
         """Apply JPEG compression and decompression to image.
 
@@ -164,10 +234,10 @@ class BaseInferenceRunner:
         present during dataset collection.
 
         Args:
-            img (np.ndarray): Input BGR image array
+            img (np.ndarray): Input BGR image array.
 
         Returns:
-            np.ndarray: JPEG-processed BGR image array
+            np.ndarray: JPEG-processed BGR image array.
         """
         encoded_img = cv2.imencode('.jpg', img)[1].tobytes()
         decoded_img = cv2.imdecode(
@@ -178,10 +248,10 @@ class BaseInferenceRunner:
         """Get task description for given task ID.
 
         Args:
-            task_id (str): Task identifier string
+            task_id (str): Task identifier string.
 
         Returns:
-            str: Human-readable task description
+            str: Human-readable task description.
         """
         return self.task_descriptions.get(
             task_id, 'place it in the brown paper bag with right arm')
@@ -189,34 +259,39 @@ class BaseInferenceRunner:
     def execute_task_pose(self, task_id: str):
         """Execute pose sequence for a specific task.
 
-        Args:
-            task_id (str): Task identifier string
+        Base implementation does nothing.  Subclasses should override to
+        implement robot-specific pose execution.
 
-        Note:
-            This is a base implementation that does nothing.
-            Subclasses should override this method to implement
-            robot-specific pose execution.
+        Args:
+            task_id (str): Task identifier string.
         """
         if task_id in self.task_pose_sequences:
             overwatch.info(f'Executing pose sequence for task {task_id}')
-            # Base implementation - subclasses should override
-            pass
 
     def run_setup(self):
         """Set up the inference environment.
 
-        Configures the model for evaluation mode, moves it to GPU,
-        and sets random seeds for reproducibility.
+        In local mode, configures the model for evaluation, moves it to
+        GPU, and sets random seeds.  In remote mode, pings the ZMQ
+        server to verify connectivity.
         """
         set_seed_everywhere(self.seed)
-        self.vla.eval()
-        if self.enable_mixed_precision:
-            self.vla.to(device='cuda', dtype=self.mixed_precision_dtype)
+        if self._use_remote:
+            if not self.ping():
+                raise ConnectionError(
+                    f'Cannot reach VLA server at {self._server_address}')
+            overwatch.info(
+                f'Remote server OK at {self._server_address}. '
+                f'Seed set to {self.seed}')
         else:
-            self.vla.cuda()
-        overwatch.info(f'Model loaded and moved to GPU '
-                       f'(dtype={self.mixed_precision_dtype}). '
-                       f'Seed set to {self.seed}')
+            self.vla.eval()
+            if self.enable_mixed_precision:
+                self.vla.to(device='cuda', dtype=self.mixed_precision_dtype)
+            else:
+                self.vla.cuda()
+            overwatch.info(
+                f'Model loaded (dtype={self.mixed_precision_dtype}). '
+                f'Seed set to {self.seed}')
 
     def run(self,
             initial_instruction:
@@ -253,6 +328,13 @@ class BaseInferenceRunner:
         Args:
             default_instruction (str): Default task instruction to use
         """
+        """Run a single episode: preprocess → predict → postprocess → execute.
+
+        Subclasses should override individual phases rather than this method.
+
+        Args:
+            default_instruction (str): Default task instruction to use
+        """
         import rospy
 
         t = 0
@@ -269,7 +351,8 @@ class BaseInferenceRunner:
                 with torch.autocast(
                         'cuda',
                         dtype=self.mixed_precision_dtype,
-                        enabled=self.enable_mixed_precision):
+                        enabled=(self.enable_mixed_precision
+                                 and not self._use_remote)):
                     raw_action = self._predict_action(inputs)
 
                 actions = self._postprocess_actions(raw_action)
@@ -282,40 +365,143 @@ class BaseInferenceRunner:
     def _preprocess(self, instruction: str) -> dict:
         """Observe environment and build model inputs.
 
+        In local mode, runs the dataset transform pipeline.  In remote
+        mode, returns raw observation for server-side preprocessing.
+
         Args:
             instruction (str): Task description for this chunk.
 
         Returns:
-            dict: Model-ready inputs from the dataset transform.
+            dict: Model-ready inputs (local) or raw obs (remote).
         """
         obs = self.update_observation_window()
         obs['task_description'] = instruction
+        if self._use_remote:
+            obs['unnorm_key'] = self.task_suite_name
+            return obs
         return self.dataset(obs)
 
     def _predict_action(self, inputs: dict):
-        """Run model inference to produce normalized actions.
+        """Run model inference to produce actions.
 
-        Override to add RTC guidance, timing, or other prediction logic.
+        Dispatches to local model or remote ZMQ server depending on
+        ``self._use_remote``.
 
         Args:
             inputs (dict): Model inputs from _preprocess.
 
         Returns:
-            Tensor: Normalized action tensor.
+            torch.Tensor: Action tensor.
         """
+        if self._use_remote:
+            return self._predict_action_remote(inputs)
         return self.vla.predict_action(**inputs)
+
+    def _predict_action_remote(self, inputs: dict):
+        """Send observation to remote server and receive action tensor.
+
+        Handles serialization, ZMQ round-trip, deserialization, and
+        latency profiling.
+
+        Args:
+            inputs (dict): Raw observation dict with unnorm_key.
+
+        Returns:
+            torch.Tensor: Action tensor from remote server.
+        """
+        from .serving.serializers import (FORMAT_PROTOBUF,
+                                          decode_predict_response,
+                                          encode_predict_request)
+
+        t_total_start = time.perf_counter()
+        unnorm_key = inputs.pop('unnorm_key', '')
+
+        t0 = time.perf_counter()
+        obs = {}
+        for k, v in inputs.items():
+            if isinstance(v, torch.Tensor):
+                obs[k] = v.cpu().numpy()
+            else:
+                obs[k] = v
+        request = encode_predict_request(
+            obs, str(unnorm_key), fmt=self._serializer,
+            compress=self._compress)
+        payload_size = len(request)
+        t_serialize = time.perf_counter() - t0
+
+        t1 = time.perf_counter()
+        with self._zmq_lock:
+            self._zmq_socket.send(request)
+            raw_response = self._zmq_socket.recv()
+        fmt_tag = FORMAT_PROTOBUF if self._serializer == 'protobuf' else 0
+        response = decode_predict_response(raw_response, fmt=fmt_tag)
+        t_zmq = time.perf_counter() - t1
+
+        if isinstance(response, dict) and 'error' in response:
+            raise RuntimeError(f"ZMQ server error: {response['error']}")
+
+        t2 = time.perf_counter()
+        action_buf = io.BytesIO(response['action_data'])
+        arr = np.load(action_buf, allow_pickle=False)
+        actions = torch.from_numpy(arr.copy())
+        t_deserialize = time.perf_counter() - t2
+
+        t_total = time.perf_counter() - t_total_start
+        server_infer = response.get('infer_time', 0.0)
+        resp_size = len(raw_response)
+        t_network = t_zmq - server_infer
+
+        self.last_profile = {
+            'serialize_ms': t_serialize * 1000,
+            'zmq_roundtrip_ms': t_zmq * 1000,
+            'server_infer_ms': server_infer * 1000,
+            'network_ms': t_network * 1000,
+            'deserialize_ms': t_deserialize * 1000,
+            'total_ms': t_total * 1000,
+            'payload_kb': payload_size / 1024,
+            'response_kb': resp_size / 1024,
+        }
+
+        if self._enable_profiling:
+            self._call_count += 1
+            self._t_serialize += t_serialize
+            self._t_zmq += t_zmq
+            self._t_deserialize += t_deserialize
+            self._t_total += t_total
+            self._t_server_infer += server_infer
+            self._t_network += t_network
+            self._payload_bytes += payload_size
+            self._resp_bytes += resp_size
+
+            if self._call_count % 50 == 0:
+                n = self._call_count
+                overwatch.info(
+                    f'[RemoteInference] calls={n}  '
+                    f'avg_total={self._t_total/n*1000:.1f}ms  '
+                    f'avg_serialize={self._t_serialize/n*1000:.1f}ms  '
+                    f'avg_zmq={self._t_zmq/n*1000:.1f}ms  '
+                    f'avg_server={self._t_server_infer/n*1000:.1f}ms  '
+                    f'avg_network={self._t_network/n*1000:.1f}ms  '
+                    f'avg_deser={self._t_deserialize/n*1000:.1f}ms  '
+                    f'avg_payload={self._payload_bytes/n/1024:.0f}KB  '
+                    f'avg_resp={self._resp_bytes/n/1024:.0f}KB')
+
+        return actions
 
     def _postprocess_actions(self, raw_action):
         """Denormalize raw actions into robot command space.
 
-        Override to add trajectory stitching, smoothing, etc.
+        In remote mode the server already denormalized, so this just
+        converts to numpy and truncates.
 
         Args:
-            raw_action: Normalized action tensor from _predict_action.
+            raw_action (torch.Tensor): Action tensor from _predict_action.
 
         Returns:
             np.ndarray: Denormalized actions, truncated to action_chunk.
         """
+        if self._use_remote:
+            return raw_action.cpu().numpy()[:self.action_chunk]
         denormalized = self.denormalize_action(
             dict(action=raw_action.cpu().numpy()))
         return denormalized[:self.action_chunk]
@@ -324,10 +510,10 @@ class BaseInferenceRunner:
         """Get task instruction from user input.
 
         Args:
-            default_instruction (str): Default instruction if no valid input
+            default_instruction (str): Default instruction if no valid input.
 
         Returns:
-            str: Task instruction string
+            str: Task instruction string.
         """
         task_id = input('Enter task ID (or press Enter for default): ').strip()
         if task_id == '0':
@@ -362,13 +548,21 @@ class BaseInferenceRunner:
         }
 
     def cleanup(self):
-        """Clean up resources and shutdown gracefully."""
-        overwatch.info('Cleaning up BaseInferenceRunner')
+        """Clean up resources and shutdown gracefully.
 
+        Releases ZMQ resources in remote mode, clears observation window
+        and action context.
+        """
+        overwatch.info('Cleaning up BaseInferenceRunner')
+        if self._use_remote:
+            import zmq
+            if hasattr(self, '_zmq_socket') and not self._zmq_socket.closed:
+                self._zmq_socket.setsockopt(zmq.LINGER, 0)
+                self._zmq_socket.close()
+            if hasattr(self, '_zmq_context'):
+                self._zmq_context.term()
         self._prev_ctx = None
         self._action_ctx = SimpleNamespace()
-
-        # Clear observation window
         if self.observation_window is not None:
             self.observation_window.clear()
 
@@ -382,7 +576,7 @@ class BaseInferenceRunner:
         robot-specific observation collection.
 
         Returns:
-            Tuple: Robot-specific observation data
+            Tuple: Robot-specific observation data.
         """
         raise NotImplementedError(
             'Subclasses must implement get_ros_observation method')
@@ -394,7 +588,7 @@ class BaseInferenceRunner:
         robot-specific observation window management.
 
         Returns:
-            Dict: Latest observation data
+            Dict: Latest observation data.
         """
         raise NotImplementedError(
             'Subclasses must implement update_observation_window method')

@@ -25,18 +25,11 @@ from .serializers import (FORMAT_PROTOBUF, MsgSerializer, ObsSerializer,
                           encode_predict_response)
 
 
-# =========================================================================
-# Action tensor serialization
-# =========================================================================
 def serialize_actions(actions: torch.Tensor) -> bytes:
     buf = io.BytesIO()
     np.save(buf, actions.cpu().numpy(), allow_pickle=False)
     return buf.getvalue()
 
-
-# =========================================================================
-# PolicyServer: generic ZMQ REP event loop (Layer 1)
-# =========================================================================
 @dataclass
 class EndpointHandler:
     handler: Callable
@@ -135,10 +128,6 @@ class PolicyServer:
     def close(self):
         self.running = False
 
-
-# =========================================================================
-# Server factory (Layer 2)
-# =========================================================================
 def create_server(
     vla,
     dataset=None,

@@ -15,12 +15,15 @@
 #       --config configs/pi05/pi05_paligemma_ur3_remote_inference.py
 
 inference = dict(
-    type='RemoteURInferenceRunner',
-    server_host='127.0.0.1',
-    server_port=5555,
-    timeout_s=30.0,
-    serializer='msgpack',
-    compress=True,
+    type='URInferenceRunner',
+    remote_inference=dict(
+        server_host='127.0.0.1',
+        server_port=5555,
+        timeout_s=30.0,
+        serializer='msgpack',
+        compress=True,
+        enable_profiling=True,
+    ),
     seed=7,
     action_chunk=10,
     publish_rate=30,

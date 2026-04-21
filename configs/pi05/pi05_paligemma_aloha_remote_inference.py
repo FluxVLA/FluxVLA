@@ -1,8 +1,8 @@
-# Remote inference config for UR3 (ZMQ)
+# Remote inference config for Aloha dual-arm (ZMQ)
 #
 # GPU server side:
 #   python -m fluxvla.engines.runners.serving.serve \
-#       --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py \
+#       --config configs/pi05/pi05_paligemma_aloha_full_finetune.py \
 #       --ckpt-path /path/to/checkpoint.pt \
 #       --host 0.0.0.0 --port 3333
 #
@@ -12,19 +12,22 @@
 #
 # Robot side (no GPU needed):
 #   python scripts/inference.py \
-#       --config configs/pi05/pi05_paligemma_ur3_remote_inference.py
+#       --config configs/pi05/pi05_paligemma_aloha_remote_inference.py
 
 inference = dict(
-    type='RemoteAlohaInferenceRunner',
-    server_host='127.0.0.1',
-    server_port=5555,
-    timeout_s=30.0,
-    serializer='msgpack',
-    compress=True,
+    type='AlohaInferenceRunner',
+    remote_inference=dict(
+        server_host='127.0.0.1',
+        server_port=5555,
+        timeout_s=30.0,
+        serializer='msgpack',
+        compress=True,
+        enable_profiling=True,
+    ),
     seed=7,
-    action_chunk=10,
-    publish_rate=30,
+    action_chunk=50,
+    publish_rate=50,
     max_publish_step=10000,
     task_suite_name='private',
-    state_dim=7,
+    state_dim=14,
 )

@@ -103,25 +103,31 @@ If the robot and GPU server are on the same LAN, skip the tunnel and point
 
 ### Step 3: Create client config
 
-Create `configs/pi05/pi05_paligemma_ur3_remote_inference.py`:
+Add ``remote_inference`` to any existing runner config.  The runner type
+stays the same (``URInferenceRunner``, ``AlohaInferenceRunner``, etc.):
 
 ```python
+# configs/pi05/pi05_paligemma_ur3_remote_inference.py
 inference = dict(
-    type='RemoteURInferenceRunner',   # or 'RemoteAlohaInferenceRunner'
-    server_host='127.0.0.1',         # localhost if using SSH tunnel
-    server_port=5555,                 # local tunnel port
-    timeout_s=30.0,
-    serializer='msgpack',             # 'msgpack' (recommended) or 'protobuf'
-    compress=True,                     # True=JPEG compress, False=raw npy
+    type='URInferenceRunner',          # same runner as local inference
+    remote_inference=dict(              # add this block to enable remote mode
+        server_host='127.0.0.1',       # localhost if using SSH tunnel
+        server_port=5555,
+        timeout_s=30.0,
+        serializer='msgpack',          # 'msgpack' (recommended) or 'protobuf'
+        compress=True,
+        enable_profiling=True,
+    ),
     seed=7,
     action_chunk=10,
     publish_rate=30,
     max_publish_step=10000,
     task_suite_name='private',
     state_dim=7,
-    # Optional: override UR defaults (camera_names, operator, task_descriptions)
 )
 ```
+
+For Aloha, just change ``type='AlohaInferenceRunner'``.
 
 ### Step 4: Run the client (robot)
 
@@ -132,7 +138,7 @@ python scripts/inference.py \
 
 This will:
 
-1. Build a `RemoteURInferenceRunner` from the config
+1. Build a `URInferenceRunner` with `remote_inference` enabled
 2. `run_setup()` connects to the ZMQ server and sends a ping health-check
 3. `run()` enters the ROS inference loop:
    collect obs -> encode -> ZMQ send -> receive -> decode action -> execute
@@ -148,29 +154,27 @@ During inference, the terminal prompts for task selection:
 - Enter `0` to reset the robot to its prepare pose (local ROS, no network)
 - Enter the number of times to repeat the task
 
-### Available remote runners
+### Supported runners
 
-| Runner                       | Robot              | Inherits                                     |
-| ---------------------------- | ------------------ | -------------------------------------------- |
-| `RemoteURInferenceRunner`    | UR3/UR5 single-arm | RemoteInferenceRunner + URInferenceRunner    |
-| `RemoteAlohaInferenceRunner` | Aloha dual-arm     | RemoteInferenceRunner + AlohaInferenceRunner |
+Any runner that inherits from `BaseInferenceRunner` supports remote mode
+by adding `remote_inference` to its config:
 
-### Client config options
+| Runner | Robot |
+|--------|-------|
+| `URInferenceRunner` | UR3/UR5 single-arm |
+| `AlohaInferenceRunner` | Aloha dual-arm |
+| `AlohaRTCInferenceRunner` | Aloha dual-arm + RTC |
 
-| Option              | Default            | Description                             |
-| ------------------- | ------------------ | --------------------------------------- |
-| `server_host`       | `localhost`        | GPU server IP or hostname               |
-| `server_port`       | `5555`             | ZMQ TCP port                            |
-| `timeout_s`         | `30.0`             | ZMQ send/recv timeout (seconds)         |
-| `serializer`        | `msgpack`          | Wire format: `msgpack` or `protobuf`    |
-| `compress`          | `True`             | JPEG-compress images before sending     |
-| `enable_profiling`  | `True`             | Print avg latency every 50 calls        |
-| `seed`              | `7`                | Random seed                             |
-| `action_chunk`      | `32`               | Actions per prediction chunk            |
-| `publish_rate`      | `30`               | ROS publishing rate (Hz)                |
-| `camera_names`      | (UR/Aloha default) | Override camera names                   |
-| `operator`          | (UR/Aloha default) | Override ROS operator config            |
-| `task_descriptions` | (UR/Aloha default) | Override task ID -> description mapping |
+### Client config options (remote_inference dict)
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `server_host` | `localhost` | GPU server IP or hostname |
+| `server_port` | `5555` | ZMQ TCP port |
+| `timeout_s` | `30.0` | ZMQ send/recv timeout (seconds) |
+| `serializer` | `msgpack` | Wire format: `msgpack` or `protobuf` |
+| `compress` | `True` | JPEG-compress images before sending |
+| `enable_profiling` | `True` | Print avg latency every 50 calls |
 
 ## CLI Arguments
 

@@ -38,3 +38,7 @@ tqdm-loggable==0.2
 transformers==4.53.2
 types-boto3-s3==1.38.26
 wandb==0.21.0
+
+# Optional: remote inference (only needed if using remote_inference config)
+# pip install pyzmq msgpack
+# pip install protobuf  # only if serializer='protobuf'
