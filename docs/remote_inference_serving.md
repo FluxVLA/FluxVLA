@@ -103,8 +103,8 @@ If the robot and GPU server are on the same LAN, skip the tunnel and point
 
 ### Step 3: Create client config
 
-Add ``remote_inference`` to any existing runner config.  The runner type
-stays the same (``URInferenceRunner``, ``AlohaInferenceRunner``, etc.):
+Add `remote_inference` to any existing runner config.  The runner type
+stays the same (`URInferenceRunner`, `AlohaInferenceRunner`, etc.):
 
 ```python
 # configs/pi05/pi05_paligemma_ur3_remote_inference.py
@@ -127,18 +127,11 @@ inference = dict(
 )
 ```
 
-For Aloha, just change ``type='AlohaInferenceRunner'``.
+For Aloha, just change `type='AlohaInferenceRunner'`.
 
 ### Step 4: Run the client (robot)
 
 Option A: Direct launch
-
-```bash
-python scripts/inference.py \
-    --config configs/pi05/pi05_paligemma_ur3_remote_inference.py
-```
-
-Option B: One-command launch with auto SSH tunnel
 
 ```bash
 bash scripts/remote_inference_client.sh \
@@ -150,14 +143,21 @@ bash scripts/remote_inference_client.sh \
     --remote-port 3333
 ```
 
+Option B: One-command launch with auto SSH tunnel
+
+```bash
+python scripts/inference.py \
+    --config configs/pi05/pi05_paligemma_ur3_remote_inference.py
+```
+
 The script automatically starts the SSH tunnel, runs inference, and cleans
 up the tunnel on exit.  SSH parameters:
 
-- ``--ssh-host``: SSH destination (user@host), enables auto tunnel
-- ``--ssh-port``: SSH port (default 22)
-- ``--ssh-key``: path to private key file
-- ``--local-port``: local tunnel entry port (default 5555)
-- ``--remote-port``: remote ZMQ server port (default 3333)
+- `--ssh-host`: SSH destination (user@host), enables auto tunnel
+- `--ssh-port`: SSH port (default 22)
+- `--ssh-key`: path to private key file
+- `--local-port`: local tunnel entry port (default 5555)
+- `--remote-port`: remote ZMQ server port (default 3333)
 
 This will:
 
@@ -182,22 +182,22 @@ During inference, the terminal prompts for task selection:
 Any runner that inherits from `BaseInferenceRunner` supports remote mode
 by adding `remote_inference` to its config:
 
-| Runner | Robot |
-|--------|-------|
-| `URInferenceRunner` | UR3/UR5 single-arm |
-| `AlohaInferenceRunner` | Aloha dual-arm |
+| Runner                    | Robot                |
+| ------------------------- | -------------------- |
+| `URInferenceRunner`       | UR3/UR5 single-arm   |
+| `AlohaInferenceRunner`    | Aloha dual-arm       |
 | `AlohaRTCInferenceRunner` | Aloha dual-arm + RTC |
 
 ### Client config options (remote_inference dict)
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `server_host` | `localhost` | GPU server IP or hostname |
-| `server_port` | `5555` | ZMQ TCP port |
-| `timeout_s` | `30.0` | ZMQ send/recv timeout (seconds) |
-| `serializer` | `msgpack` | Wire format: `msgpack` or `protobuf` |
-| `compress` | `True` | JPEG-compress images before sending |
-| `enable_profiling` | `True` | Print avg latency every 50 calls |
+| Option             | Default     | Description                          |
+| ------------------ | ----------- | ------------------------------------ |
+| `server_host`      | `localhost` | GPU server IP or hostname            |
+| `server_port`      | `5555`      | ZMQ TCP port                         |
+| `timeout_s`        | `30.0`      | ZMQ send/recv timeout (seconds)      |
+| `serializer`       | `msgpack`   | Wire format: `msgpack` or `protobuf` |
+| `compress`         | `True`      | JPEG-compress images before sending  |
+| `enable_profiling` | `True`      | Print avg latency every 50 calls     |
 
 ## CLI Arguments
 
