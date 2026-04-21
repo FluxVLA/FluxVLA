@@ -212,8 +212,8 @@ class BaseInferenceRunner:
         """Health-check the remote ZMQ server."""
         if not self._use_remote:
             return False
-        import zmq
         import msgpack
+        import zmq
         try:
             request = msgpack.packb({'endpoint': 'ping'})
             with self._zmq_lock:
@@ -278,9 +278,8 @@ class BaseInferenceRunner:
             if not self.ping():
                 raise ConnectionError(
                     f'Cannot reach VLA server at {self._server_address}')
-            overwatch.info(
-                f'Remote server OK at {self._server_address}. '
-                f'Seed set to {self.seed}')
+            overwatch.info(f'Remote server OK at {self._server_address}. '
+                           f'Seed set to {self.seed}')
         else:
             self.vla.eval()
             if self.enable_mixed_precision:
@@ -422,7 +421,9 @@ class BaseInferenceRunner:
             else:
                 obs[k] = v
         request = encode_predict_request(
-            obs, str(unnorm_key), fmt=self._serializer,
+            obs,
+            str(unnorm_key),
+            fmt=self._serializer,
             compress=self._compress)
         payload_size = len(request)
         t_serialize = time.perf_counter() - t0
