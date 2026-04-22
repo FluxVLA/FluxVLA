@@ -18,6 +18,10 @@ from .aloha_rtc_inference_runner import \
 from .base_train_runner import BaseTrainRunner  # noqa: F401, F403
 from .ddp_train_runner import DDPTrainRunner  # noqa: F401, F403
 from .fsdp_train_runner import FSDPTrainRunner  # noqa: F401, F403
-from .libero_eval_runner import LiberoEvalRunner  # noqa: F401, F403
-from .libero_inference_runner import LiberoInferenceRunner  # noqa: F401, F403
 from .ur_inference_runner import URInferenceRunner  # noqa: F401, F403
+
+try:
+    from .libero_eval_runner import LiberoEvalRunner  # noqa: F401, F403
+    from .libero_inference_runner import LiberoInferenceRunner  # noqa: F401, F403
+except ImportError:
+    pass
