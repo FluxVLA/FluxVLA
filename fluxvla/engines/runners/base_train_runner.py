@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import math
 import os
 from abc import ABC, abstractmethod
@@ -63,6 +64,18 @@ class BaseTrainRunner(ABC):
             Defaults to 'constant'.
         warmup_ratio (int, optional): Warm-up ratio for learning rate
             scheduler. Defaults to 0.
+        freeze_steps (int, optional): Number of initial steps during which
+            XVLA VLM/core parameter groups are frozen. Defaults to 0.
+        warmup_steps (int, optional): XVLA warm-up steps after freeze when
+            cosine decay is enabled. Defaults to 0.
+        lr_coef (float, optional): Learning rate multiplier for XVLA VLM and
+            soft prompt groups. Defaults to 1.0.
+        betas (tuple, optional): AdamW beta values. Defaults to (0.9, 0.999).
+        use_cosine_decay (bool, optional): Whether XVLA group LRs use the
+            original X-VLA warmup/cosine schedule after freeze. Defaults to
+            False.
+        min_lr_ratio (float, optional): Minimum LR ratio for XVLA cosine decay.
+            Defaults to 0.1.
         enable_gradient_checkpointing (bool, optional): Enable gradient
             checkpointing. Defaults to True.
         enable_mixed_precision_training (bool, optional): Enable mixed
@@ -95,6 +108,8 @@ class BaseTrainRunner(ABC):
                  warmup_steps: int = 0,
                  lr_coef: float = 1.0,
                  betas: tuple = (0.9, 0.999),
+                 use_cosine_decay: bool = False,
+                 min_lr_ratio: float = 0.1,
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
                  convert_batch_float_to_mixed_precision: bool = True,
@@ -147,6 +162,8 @@ class BaseTrainRunner(ABC):
         self.warmup_steps = warmup_steps
         self.lr_coef = lr_coef
         self.betas = tuple(float(b) for b in betas)
+        self.use_cosine_decay = use_cosine_decay
+        self.min_lr_ratio = min_lr_ratio
         self.enable_gradient_checkpointing = enable_gradient_checkpointing
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.convert_batch_float_to_mixed_precision = \
@@ -179,6 +196,9 @@ class BaseTrainRunner(ABC):
         self.optimizer_state_loaded = False
         # Store lr_schedule for step-based scheduler
         self.lr_schedule = lr_schedule
+        self.weight_decay = None
+        self.num_training_steps = None
+        self._active_dataloader = None
 
         # Lightweight Validation
         assert (
@@ -243,6 +263,55 @@ class BaseTrainRunner(ABC):
                 converted_batch[key] = value
 
         return converted_batch
+
+    @staticmethod
+    def _shutdown_dataloader(dataloader: Optional[DataLoader]) -> None:
+        """Stop DataLoader workers so they do not overlap with evaluation."""
+        if dataloader is None:
+            return
+
+        iterator = getattr(dataloader, '_iterator', None)
+        shutdown_fn = getattr(iterator, '_shutdown_workers', None)
+        if callable(shutdown_fn):
+            shutdown_fn()
+
+    def cleanup(self) -> None:
+        """Release training resources before launching evaluation."""
+        self._shutdown_dataloader(self._active_dataloader)
+        self._active_dataloader = None
+
+        if self.optimizer is not None:
+            try:
+                self.optimizer.zero_grad(set_to_none=True)
+            except TypeError:
+                self.optimizer.zero_grad()
+
+        if self.vla is not None:
+            try:
+                self.vla.zero_grad(set_to_none=True)
+            except TypeError:
+                self.vla.zero_grad()
+
+        self.optimizer = None
+        self.lr_scheduler = None
+        self.collator = None
+        self.tokenizer = None
+        self.vla = None
+        self._loss_accumulator.clear()
+
+        if hasattr(self, 'recent_losses'):
+            self.recent_losses.clear()
+
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            ipc_collect = getattr(torch.cuda, 'ipc_collect', None)
+            if callable(ipc_collect):
+                try:
+                    ipc_collect()
+                except RuntimeError:
+                    pass
 
     @abstractmethod
     def save_checkpoint(
@@ -464,6 +533,7 @@ class BaseTrainRunner(ABC):
                 'step-based'.
         """
         # Calculate number of training steps
+        self.weight_decay = weight_decay
         n_train_examples = math.ceil(
             n_train_examples / self.global_batch_size) * self.global_batch_size
         if self.max_steps is None:
@@ -471,6 +541,7 @@ class BaseTrainRunner(ABC):
                                   self.max_epochs) // self.global_batch_size
         else:
             num_training_steps = self.max_steps
+        self.num_training_steps = num_training_steps
 
         if self.lr_scheduler_type == 'linear-warmup+cosine-decay':
             # Set warm-up steps (floor) based on `warmup_ratio`
@@ -593,6 +664,7 @@ class BaseTrainRunner(ABC):
             param_groups = self._build_xvla_param_groups(weight_decay)
             self.optimizer = AdamW(param_groups, betas=self.betas)
             self.lr_scheduler = get_constant_schedule(self.optimizer)
+            self._update_xvla_group_lrs(self.metric.global_step)
 
         else:
             raise ValueError(f'Learning Rate Schedule with type '
@@ -620,7 +692,7 @@ class BaseTrainRunner(ABC):
         coef = self.lr_coef
         wd = weight_decay if weight_decay is not None else 0.0
 
-        vlm_ids, soft_ids, action_ids = set(), set(), set()
+        vlm_ids, soft_ids, action_ids, core_ids = set(), set(), set(), set()
         vlm_params, soft_params, action_params, core_params = [], [], [], []
 
         for name, param in self.vla.named_parameters():
@@ -647,19 +719,21 @@ class BaseTrainRunner(ABC):
                     action_ids.add(pid)
                     action_params.append(param)
             else:
-                core_params.append(param)
+                if pid not in core_ids:
+                    core_ids.add(pid)
+                    core_params.append(param)
 
         return [
             {
                 'name': 'vlm',
                 'params': vlm_params,
-                'lr': lr * coef,
+                'lr': 0.0,
                 'weight_decay': wd
             },
             {
                 'name': 'transformer_core',
                 'params': core_params,
-                'lr': lr,
+                'lr': 0.0,
                 'weight_decay': wd
             },
             {
@@ -676,7 +750,24 @@ class BaseTrainRunner(ABC):
             },
         ]
 
+    def _xvla_lr_scale(self, step: int) -> float:
+        if not self.use_cosine_decay:
+            return 1.0
+
+        progress = max(0, step - self.freeze_steps)
+        if progress < self.warmup_steps:
+            return progress / max(1, self.warmup_steps)
+
+        total_steps = self.num_training_steps
+        if total_steps is None:
+            total_steps = self.max_steps or 0
+        remain = max(1, total_steps - (self.freeze_steps + self.warmup_steps))
+        cosine_progress = min(1.0, (progress - self.warmup_steps) / remain)
+        cosine_ratio = 0.5 * (1.0 + math.cos(math.pi * cosine_progress))
+        return self.min_lr_ratio + (1.0 - self.min_lr_ratio) * cosine_ratio
+
     def _update_xvla_group_lrs(self, step: int) -> None:
+        """Match X-VLA's group-wise freeze and optional warmup/cosine policy."""
         lr = self.learning_rate
         coef = self.lr_coef
         base = {
@@ -693,7 +784,7 @@ class BaseTrainRunner(ABC):
                 group['lr'] = 0.0 if name in ('vlm',
                                               'transformer_core') else base[name]
             else:
-                group['lr'] = base[name]
+                group['lr'] = base[name] * self._xvla_lr_scale(step)
 
     def run(self, vla_dataset) -> None:
         """Train the VLA model."""
@@ -728,11 +819,17 @@ class BaseTrainRunner(ABC):
         # Dispatch to training mode specific loop
         self.vla.train()
         self.optimizer.zero_grad()
+        self._active_dataloader = dataloader
 
-        if self.training_mode == 'step_based':
-            return self._run_step_based(dataloader, sampler)
-        else:
-            return self._run_epoch_based(dataloader, sampler)
+        try:
+            if self.training_mode == 'step_based':
+                return self._run_step_based(dataloader, sampler)
+            else:
+                return self._run_epoch_based(dataloader, sampler)
+        finally:
+            self._shutdown_dataloader(self._active_dataloader)
+            self._active_dataloader = None
+            gc.collect()
 
     def _run_step_based(self, dataloader, sampler) -> str:
         """Step-based training loop. Handles infinite dataloaders."""
@@ -916,7 +1013,8 @@ class BaseTrainRunner(ABC):
                 self.optimizer.step()
             else:
                 raise
-        self.lr_scheduler.step()
+        if self.lr_scheduler_type != 'xvla-freeze-warmup':
+            self.lr_scheduler.step()
         self.optimizer.zero_grad()
 
         # Custom hook for subclasses
@@ -931,6 +1029,14 @@ class BaseTrainRunner(ABC):
         """Reinitialize optimizer on state mismatch."""
         if overwatch.is_rank_zero():
             overwatch.warning('Optimizer state mismatch. Reinitializing.')
+        if self.lr_scheduler_type == 'xvla-freeze-warmup':
+            param_groups = self._build_xvla_param_groups(self.weight_decay)
+            self.optimizer = AdamW(param_groups, betas=self.betas)
+            self.lr_scheduler = get_constant_schedule(self.optimizer)
+            self._update_xvla_group_lrs(self.metric.global_step)
+            self.optimizer_state_loaded = False
+            return
+
         trainable_params = [
             p for p in self.vla.parameters() if p.requires_grad
         ]

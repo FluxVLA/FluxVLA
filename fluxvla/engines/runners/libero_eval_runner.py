@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import gc
 import json
 import math
 import os
@@ -60,12 +61,25 @@ class LiberoEvalRunner:
         num_steps_wait (int): Number of steps to wait before
             starting evaluation.
             Default is 10.
+        task_ids (Optional[List[int]]): Optional subset of LIBERO task IDs to
+            evaluate.
+        task_horizons (Dict): Optional max-step overrides by task suite name.
+        use_xvla_client_semantics (bool): If True, use X-VLA LIBERO client
+            rollout semantics such as absolute controller setup and horizons.
         mixed_precision_dtype (str): Data type for mixed precision training.
             Default is 'bf16'.
         enable_mixed_precision_training (bool): Whether to enable mixed
             precision training.
             Default is True.
     """
+
+    XVLA_TASK_HORIZONS = {
+        'libero_goal': 800,
+        'libero_object': 800,
+        'libero_spatial': 800,
+        'libero_10': 900,
+        'libero_90': 800,
+    }
 
     def __init__(self,
                  cfg: Dict,
@@ -100,12 +114,31 @@ class LiberoEvalRunner:
             if ckpt_path.endswith('.safetensors'):
                 state_dict = load_file(ckpt_path, device='cpu')
             else:
-                checkpoint = torch.load(ckpt_path, map_location='cpu')
-                if isinstance(checkpoint, dict) and 'model' in checkpoint:
-                    state_dict = checkpoint['model']
+                # Prefer sibling safetensors because .pt checkpoints usually
+                # include optimizer/scheduler states that are unused in eval.
+                sf_candidate = (
+                    ckpt_path[:-len('.pt')] +
+                    '.safetensors' if ckpt_path.endswith('.pt') else None)
+                if sf_candidate is not None and os.path.exists(sf_candidate):
+                    state_dict = load_file(sf_candidate, device='cpu')
                 else:
-                    state_dict = checkpoint
+                    try:
+                        checkpoint = torch.load(
+                            ckpt_path, map_location='cpu', mmap=True)
+                    except TypeError:
+                        checkpoint = torch.load(ckpt_path, map_location='cpu')
+                    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+                        state_dict = checkpoint['model']
+                        checkpoint.pop('optimizer_state_dict', None)
+                        checkpoint.pop('scheduler_state_dict', None)
+                        checkpoint.pop('optimizer_state_index_to_name', None)
+                    else:
+                        state_dict = checkpoint
+                    del checkpoint
+                    gc.collect()
             self.vla.load_state_dict(state_dict, strict=True)
+            del state_dict
+            gc.collect()
         self.cfg = cfg
         self.seed = seed
         self.ckpt_path = ckpt_path
@@ -243,6 +276,7 @@ class LiberoEvalRunner:
                 f'Action un-norm key {unnorm_key} '
                 'not found in VLA norm_stats!')
         for id in range(num_local_episodes):
+            episode_done = None
             if id >= len(local_episodes):
                 step_tensor = torch.zeros(
                     1, device=torch.cuda.current_device())
@@ -284,10 +318,14 @@ class LiberoEvalRunner:
 
                 # Setup
                 t = 0
+                policy_steps = 0
                 replay_images = []
                 closed_loop_state = None
                 if self.task_suite_name in self.task_horizons:
                     max_steps = self.task_horizons[self.task_suite_name]
+                elif (self.use_xvla_client_semantics
+                      and self.task_suite_name in self.XVLA_TASK_HORIZONS):
+                    max_steps = self.XVLA_TASK_HORIZONS[self.task_suite_name]
                 elif self.task_suite_name == 'libero_spatial':
                     max_steps = 220  # longest training demo has 193 steps
                 elif self.task_suite_name == 'libero_object':
@@ -309,7 +347,12 @@ class LiberoEvalRunner:
                         t += 1
                     for robot in env.env.robots:
                         robot.controller.use_delta = False
-                while t < max_steps + self.num_steps_wait:
+                rollout_limit = max_steps
+                if not self.use_xvla_client_semantics:
+                    rollout_limit += self.num_steps_wait
+                while (policy_steps < rollout_limit
+                       if self.use_xvla_client_semantics else
+                       t < rollout_limit):
                     # IMPORTANT: Do nothing for the first
                     # few timesteps
                     # because the simulator drops objects
@@ -348,16 +391,25 @@ class LiberoEvalRunner:
                             f'Unexpected action shape: {actions.shape}'
                         actions = actions[0, None, :].float().cpu().numpy()
                     for action in actions:
+                        if (self.use_xvla_client_semantics
+                                and policy_steps >= rollout_limit):
+                            break
+                        if (not self.use_xvla_client_semantics
+                                and t >= rollout_limit):
+                            break
                         inputs = dict(
                             action=action,
                             task_suite_name=self.task_suite_name,
                         )
                         action_denormed = self.denormalize_action(inputs)
                         if self.use_xvla_client_semantics:
+                            # Match original X-VLA client: only absolute pose
+                            # is fed back; gripper state remains initialized.
                             closed_loop_state[:9] = action[:9].astype(
                                 np.float32)
                         obs, reward, done, info = env.step(
                             action_denormed.tolist())
+                        policy_steps += 1
                         obs['task_description'] = task_description
                         batch, replay_img = self.dataset(obs)
                         replay_images.append(replay_img)
@@ -368,6 +420,7 @@ class LiberoEvalRunner:
                     if done:
                         break
                 total_episodes += 1
+                episode_done = done
                 step_tensor = torch.ones(1, device=torch.cuda.current_device())
                 # Save a replay video of the episode
                 save_rollout_video(
@@ -392,7 +445,8 @@ class LiberoEvalRunner:
             global_successes = total_successes.clone()
             dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
             dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
-            done = done.item() if isinstance(done, torch.Tensor) else done
+            if isinstance(episode_done, torch.Tensor):
+                episode_done = episode_done.item()
             if rank == 0:
                 # Log current results
                 overwatch.info(
@@ -401,7 +455,8 @@ class LiberoEvalRunner:
                 success_text = (f'# successes: {int(global_successes[0])} '
                                 f'({success_rate:.1f}%)')  # noqa: E231
                 overwatch.info(success_text)
-                log_file.write(f'Success: {done}\n')
+                if episode_done is not None:
+                    log_file.write(f'Success: {episode_done}\n')
                 log_file.write(
                     f'# episodes completed so far: {global_episodes[0]}\n')
                 success_log = (f'# successes: {global_successes[0]} '
