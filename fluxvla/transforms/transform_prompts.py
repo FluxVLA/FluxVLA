@@ -16,8 +16,10 @@ import os
 from typing import Dict, List, Optional
 
 import numpy as np
+from transformers import AutoTokenizer
 
 from fluxvla.engines import TRANSFORMS
+from fluxvla.engines.utils.hf_hub import resolve_hf_local_path
 
 
 @TRANSFORMS.register_module()
@@ -362,9 +364,10 @@ class LiberoPromptFromInputs:
         assert 'task_description' in inputs, "inputs must contain 'task_description'"  # noqa: E501
         task_description = inputs['task_description']
         if self.use_conversation:
-            prompt = (f'In: What action should the robot take to '
-                      f'{str(task_description).lower()}?\nOut:' +
-                      self.prompt_suffix)
+            prompt = (
+                f'In: What action should the robot take to '
+                f'{str(task_description).lower()}?\nOut:' +  # noqa: E231
+                self.prompt_suffix)
         else:
             prompt = task_description
         if self.add_new_line:
@@ -384,3 +387,34 @@ class LiberoPromptFromInputs:
         inputs['lang_tokens'] = np.asarray(token_ids, dtype=np.int64)
         inputs['lang_masks'] = np.asarray(mask, dtype=np.bool_)
         return inputs
+
+
+@TRANSFORMS.register_module()
+class TokenizeText:
+
+    def __init__(self,
+                 model_name_or_path: str,
+                 max_length: int = 77,
+                 text_key: str = 'task_description',
+                 output_ids_key: str = 'text_input_ids',
+                 output_attention_mask_key: str = 'text_attention_mask'):
+        resolved_path = resolve_hf_local_path(model_name_or_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(resolved_path)
+        self.max_length = max_length
+        self.text_key = text_key
+        self.output_ids_key = output_ids_key
+        self.output_attention_mask_key = output_attention_mask_key
+
+    def __call__(self, data: Dict) -> Dict:
+        encoded = self.tokenizer(
+            data[self.text_key],
+            padding='max_length',
+            truncation=True,
+            max_length=self.max_length,
+            return_tensors='np',
+        )
+        data[self.output_ids_key] = encoded['input_ids'][0].astype(np.int64)
+        data[self.
+             output_attention_mask_key] = encoded['attention_mask'][0].astype(
+                 np.int64)
+        return data

@@ -31,6 +31,25 @@ from .utils import pad_to_dim, parse_image
 
 
 @TRANSFORMS.register_module()
+class PadStates:
+
+    def __init__(self, max_state_dim: int = 32):
+        self.max_state_dim = max_state_dim
+
+    def __call__(self, data: Dict) -> Dict:
+        states = np.asarray(data['states'], dtype=np.float32)
+        current_dim = states.shape[-1]
+        if current_dim >= self.max_state_dim:
+            data['states'] = states[..., :self.max_state_dim]
+            return data
+        padded_shape = (*states.shape[:-1], self.max_state_dim)
+        padded = np.zeros(padded_shape, dtype=np.float32)
+        padded[..., :current_dim] = states
+        data['states'] = padded
+        return data
+
+
+@TRANSFORMS.register_module()
 class ProcessLiberoInputs():
     """Process inputs for Libero dataset.
     This transform processes the inputs from the Libero
@@ -174,7 +193,8 @@ class ProcessParquetInputs():
         for frame in reader:
             current_ts = frame['pts']
             if log_loaded_timestamps:
-                logging.info(f'frame loaded at timestamp={current_ts:.4f}')
+                logging.info(
+                    'frame loaded at timestamp={:.4f}'.format(current_ts))
             loaded_frames.append(frame['data'])
             loaded_ts.append(current_ts)
             if current_ts >= last_ts:
@@ -226,7 +246,7 @@ class ProcessParquetInputs():
         assert 'video_path' in info, "Input data must contain 'video_path' key"
         video_root_path = info['video_path']
         for key in self.parquet_keys:
-            assert key in data, f'Key {key} not found in input data'
+            assert key in data, f'Key {key} not found in input data'  # noqa: E713,E501
             if self.name_mappings is not None and key in self.name_mappings:
                 if isinstance(self.name_mappings[key], str):
                     if isinstance(data[key], list) or isinstance(
@@ -358,7 +378,8 @@ class ProcessLiberoEvalInputs:
         imgs = list()
         for img_key in self.img_keys:
             if img_key not in inputs:
-                raise KeyError(f'Image key `{img_key}` not found in inputs!')
+                raise KeyError(
+                    'Image key {!r} missing from inputs!'.format(img_key))
             imgs.append(get_libero_image(inputs, self.resize_size, img_key))
         replay_img = copy.deepcopy(imgs[0])
         images = list()
