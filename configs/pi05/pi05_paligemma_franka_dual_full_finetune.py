@@ -120,7 +120,7 @@ model = dict(
         'vlm_backbone.vlm.model.vision_tower',
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
-    ori_action_dim=14,
+    ori_action_dim=16,
 )
 
 inference_model = model.copy()
@@ -216,12 +216,15 @@ runner = dict(
     change_key_name=False)
 
 inference = dict(
-    type='AlohaInferenceRunner',
+    type='FrankaInferenceRunner',
     task_descriptions={
         '1':
         'The right arm picks up the shuttlecock bucket, hands it to the left arm, and places it on the plate.'  # noqa: E501
     },
     seed=7,
+    # Prepare pose: [left_arm_eepose, right_arm_eepose]
+    # Each pose: [x, y, z, qx, qy, qz, qw, gripper_width]
+    prepare_pose=None,  # Set to None to skip, or provide poses to enable
     dataset=dict(
         type='PrivateInferenceDataset',
         img_keys=['cam_front', 'cam_wrist_left', 'cam_wrist_right'],
@@ -247,21 +250,22 @@ inference = dict(
     denormalize_action=dict(
         type='DenormalizePrivateAction',
         norm_type='min_max',
-        action_dim=14,
+        action_dim=16,
     ),
     action_chunk=50,
     operator=dict(
-        type='AlohaOperator',
-        img_front_topic='/camera_h/color/image_raw',
-        img_left_topic='/camera_l/color/image_raw',
-        img_right_topic='/camera_r/color/image_raw',
-        img_front_depth_topic='/camera_h/depth/image_raw',
-        img_left_depth_topic='/camera_l/depth/image_raw',
-        img_right_depth_topic='/camera_r/depth/image_raw',
-        puppet_arm_left_cmd_topic='/master/joint_left',
-        puppet_arm_right_cmd_topic='/master/joint_right',
-        puppet_arm_left_topic='/puppet/joint_left',
-        puppet_arm_right_topic='/puppet/joint_right',
-        robot_base_topic='/odom_raw',
-        robot_base_cmd_topic='/cmd_vel',
+        type='FrankaDualOperator',
+        img_left_topic='/camera_left_wrist/color/image_raw',
+        img_right_topic='/camera_right_wrist/color/image_raw',
+        img_front_topic='/camera_front/color/image_raw',
+        puppet_arm_left_topic='/left_arm/joint_states',
+        puppet_arm_right_topic='/right_arm/joint_states',
+        puppet_gripper_left_topic='/left_arm/franka_gripper/joint_states',
+        puppet_gripper_right_topic='/right_arm/franka_gripper/joint_states',
+        puppet_franka_state_left_topic='/left_arm/franka_state_controller/franka_states',
+        puppet_franka_state_right_topic='/right_arm/franka_state_controller/franka_states',
+        cartesian_cmd_left_topic='/left_arm/cartesian_impedance_controller/equilibrium_pose',
+        cartesian_cmd_right_topic='/right_arm/cartesian_impedance_controller/equilibrium_pose',
+        gripper_action_left_name='/left_arm/franka_gripper/move',
+        gripper_action_right_name='/right_arm/franka_gripper/move',
     ))
