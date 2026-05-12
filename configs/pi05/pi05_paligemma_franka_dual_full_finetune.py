@@ -139,7 +139,8 @@ train_dataloader = dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260422_dual_franka_teleop',  # noqa: E501
+                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260511_dual_franka_teleop',  # noqa: E501
+                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260512_dual_franka_teleop',  # noqa: E501
                 ],
                 action_key='observation.eepose',
                 transforms=[
@@ -262,10 +263,14 @@ inference = dict(
         puppet_arm_right_topic='/right_arm/joint_states',
         puppet_gripper_left_topic='/left_arm/franka_gripper/joint_states',
         puppet_gripper_right_topic='/right_arm/franka_gripper/joint_states',
-        puppet_franka_state_left_topic='/left_arm/franka_state_controller/franka_states',
-        puppet_franka_state_right_topic='/right_arm/franka_state_controller/franka_states',
-        cartesian_cmd_left_topic='/left_arm/cartesian_impedance_controller/equilibrium_pose',
-        cartesian_cmd_right_topic='/right_arm/cartesian_impedance_controller/equilibrium_pose',
+        puppet_franka_state_left_topic=(
+            '/left_arm/franka_state_controller/franka_states'),
+        puppet_franka_state_right_topic=(
+            '/right_arm/franka_state_controller/franka_states'),
+        cartesian_cmd_left_topic=(
+            '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
+        cartesian_cmd_right_topic=(
+            '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
         gripper_action_left_name='/left_arm/franka_gripper/move',
         gripper_action_right_name='/right_arm/franka_gripper/move',
     ))
