@@ -159,6 +159,7 @@ train_dataloader = dict(
                 [
                     './datasets/RealRobot_franka_dual_lerobotv2.1/20260511_dual_franka_teleop',  # noqa: E501
                     './datasets/RealRobot_franka_dual_lerobotv2.1/20260512_dual_franka_teleop',  # noqa: E501
+                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260513_dual_franka_teleop'  # noqa: E501
                 ],
                 action_key='observation.eepose',
                 transforms=[
