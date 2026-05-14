@@ -121,6 +121,24 @@ model = dict(
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
     ori_action_dim=16,
+    action_loss_weights=[
+        1,
+        1,
+        1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        10,
+        1,
+        1,
+        1,
+        0.1,
+        0.1,
+        0.1,
+        0.1,
+        10,
+    ],
 )
 
 inference_model = model.copy()

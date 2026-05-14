@@ -105,6 +105,7 @@ class PI0FlowMatching(BaseVLA):
                  params_to_change_dtype: Optional[List[str]] = [],
                  max_action_dim: int = 7,
                  ori_action_dim: int = None,
+                 action_loss_weights: Optional[List[float]] = None,
                  num_steps: int = 10,
                  rtc_training_config: Optional[Dict] = None,
                  **kwargs):
@@ -166,6 +167,13 @@ class PI0FlowMatching(BaseVLA):
         self.strict_mapping = strict_mapping
         self.max_action_dim = max_action_dim
         self.ori_action_dim = ori_action_dim
+        if action_loss_weights is not None:
+            self.register_buffer(
+                'action_loss_weights',
+                torch.tensor(action_loss_weights, dtype=torch.float32),
+            )
+        else:
+            self.action_loss_weights = None
         self.num_steps = num_steps
         self.rtc_training_config = rtc_training_config
 
@@ -628,12 +636,33 @@ class PI0FlowMatching(BaseVLA):
         if self.ori_action_dim is not None:
             v_t = v_t[:, :, :self.ori_action_dim]
             u_t = u_t[:, :, :self.ori_action_dim]
+        if self.action_loss_weights is not None:
+            if self.action_loss_weights.numel() != u_t.shape[-1]:
+                raise ValueError(
+                    'action_loss_weights length must match action dim: '
+                    f'{self.action_loss_weights.numel()} vs {u_t.shape[-1]}')
+            action_loss_weights = self.action_loss_weights.to(
+                device=u_t.device, dtype=u_t.dtype)
+        else:
+            action_loss_weights = None
         if action_masks is not None:
             losses = F.mse_loss(u_t, v_t, reduction='none')
+            if action_loss_weights is not None:
+                losses = losses * action_loss_weights.view(1, 1, -1)
+                weight_sum = action_loss_weights.sum()
+            else:
+                weight_sum = u_t.shape[-1]
             losses = losses * action_masks.unsqueeze(-1)
-            loss = losses.sum() / (action_masks.sum() * u_t.shape[-1] + 1e-8)
+            loss = losses.sum() / (action_masks.sum() * weight_sum + 1e-8)
         else:
-            loss = F.mse_loss(u_t, v_t)
+            losses = F.mse_loss(u_t, v_t, reduction='none')
+            if action_loss_weights is not None:
+                losses = losses * action_loss_weights.view(1, 1, -1)
+                loss = losses.sum() / (
+                    u_t.shape[0] * u_t.shape[1] * action_loss_weights.sum() +
+                    1e-8)
+            else:
+                loss = losses.mean()
 
         return_dict = dict(
             predictions=v_t,
