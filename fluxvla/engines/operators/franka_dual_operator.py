@@ -13,12 +13,44 @@
 # limitations under the License.
 
 import threading
+import time
 from collections import deque
 from types import SimpleNamespace
 
 import numpy as np
 
 from fluxvla.engines.utils.root import OPERATORS
+
+DEFAULT_HOME_JOINT_NAMES = [
+    'panda_joint1',
+    'panda_joint2',
+    'panda_joint3',
+    'panda_joint4',
+    'panda_joint5',
+    'panda_joint6',
+    'panda_joint7',
+]
+
+DEFAULT_HOME_JOINT_POSITIONS = [
+    0.0,
+    -0.785398163397,
+    0.0,
+    -2.35619449019,
+    0.0,
+    1.57079632679,
+    0.785398163397,
+]
+
+CARTESIAN_IMPEDANCE_CONTROLLER = 'cartesian_impedance_controller'
+JOINT_IMPEDANCE_CONTROLLER = 'joint_impedance_controller'
+JOINT_RUCKIG_POSITION_CONTROLLER = 'joint_ruckig_position_controller'
+HOMING_CONTROLLER = 'joint_position_controller'
+ALL_MANAGED_CONTROLLERS = (
+    CARTESIAN_IMPEDANCE_CONTROLLER,
+    JOINT_IMPEDANCE_CONTROLLER,
+    JOINT_RUCKIG_POSITION_CONTROLLER,
+    HOMING_CONTROLLER,
+)
 
 
 def replace_last_segment(input_string, new_segment='camera_info'):
@@ -39,29 +71,48 @@ class FrankaDualOperator:
     end-effector poses and joint states for dual arms.
     """
 
-    def __init__(self,
-                 img_left_topic,
-                 img_right_topic,
-                 img_front_topic,
-                 puppet_arm_left_topic,
-                 puppet_arm_right_topic,
-                 puppet_gripper_left_topic,
-                 puppet_gripper_right_topic,
-                 puppet_ee_pose_left_topic=None,
-                 puppet_ee_pose_right_topic=None,
-                 puppet_franka_state_left_topic=None,
-                 puppet_franka_state_right_topic=None,
-                 cartesian_cmd_left_topic='/left_arm/cartesian_impedance_controller/equilibrium_pose',
-                 cartesian_cmd_right_topic='/right_arm/cartesian_impedance_controller/equilibrium_pose',
-                 gripper_action_left_name='/left_arm/franka_gripper/move',
-                 gripper_action_right_name='/right_arm/franka_gripper/move',
-                 use_depth_image=False,
-                 img_left_depth_topic=None,
-                 img_right_depth_topic=None,
-                 img_front_depth_topic=None,
-                 gripper_speed=0.08,
-                 base_frame_id='',
-                 publish_rate=30):
+    def __init__(
+            self,
+            img_left_topic,
+            img_right_topic,
+            img_front_topic,
+            puppet_arm_left_topic,
+            puppet_arm_right_topic,
+            puppet_gripper_left_topic,
+            puppet_gripper_right_topic,
+            puppet_ee_pose_left_topic=None,
+            puppet_ee_pose_right_topic=None,
+            puppet_franka_state_left_topic=None,
+            puppet_franka_state_right_topic=None,
+            cartesian_cmd_left_topic=(
+                '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
+            cartesian_cmd_right_topic=(
+                '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
+            gripper_action_left_name='/left_arm/franka_gripper/move',
+            gripper_action_right_name='/right_arm/franka_gripper/move',
+            use_depth_image=False,
+            img_left_depth_topic=None,
+            img_right_depth_topic=None,
+            img_front_depth_topic=None,
+            gripper_speed=0.08,
+            gripper_open_width=0.08,
+            base_frame_id='',
+            publish_rate=30,
+            left_arm_ns='/left_arm',
+            right_arm_ns='/right_arm',
+            use_home_service=True,
+            left_home_service='/left_arm/vive_controller_franka/home_arm',
+            right_home_service='/right_arm/vive_controller_franka/home_arm',
+            home_service_wait_timeout=1.0,
+            home_joint_names=None,
+            home_target_joint_positions=None,
+            home_joint_tolerance=0.01,
+            home_joint_velocity_tolerance=0.02,
+            home_min_duration=11.0,
+            home_settle_samples=5,
+            home_timeout=25.0,
+            left_home_joint_state_topic=None,
+            right_home_joint_state_topic=None):
         self.img_left_topic = img_left_topic
         self.img_right_topic = img_right_topic
         self.img_front_topic = img_front_topic
@@ -82,18 +133,54 @@ class FrankaDualOperator:
         self.img_right_depth_topic = img_right_depth_topic
         self.img_front_depth_topic = img_front_depth_topic
         self.gripper_speed = gripper_speed
+        self.gripper_open_width = gripper_open_width
         self.base_frame_id = base_frame_id
         self.publish_rate = publish_rate
+        self.left_arm_ns = left_arm_ns
+        self.right_arm_ns = right_arm_ns
+        self.use_home_service = use_home_service
+        self.left_home_service = left_home_service
+        self.right_home_service = right_home_service
+        self.home_service_wait_timeout = home_service_wait_timeout
+        self.home_joint_names = home_joint_names or DEFAULT_HOME_JOINT_NAMES
+        self.home_target_joint_positions = (
+            home_target_joint_positions or DEFAULT_HOME_JOINT_POSITIONS)
+        self.home_joint_tolerance = home_joint_tolerance
+        self.home_joint_velocity_tolerance = home_joint_velocity_tolerance
+        self.home_min_duration = home_min_duration
+        self.home_settle_samples = home_settle_samples
+        self.home_timeout = home_timeout
+        self.left_home_joint_state_topic = (
+            left_home_joint_state_topic
+            or f'{self.left_arm_ns}/franka_state_controller/joint_states')
+        self.right_home_joint_state_topic = (
+            right_home_joint_state_topic
+            or f'{self.right_arm_ns}/franka_state_controller/joint_states')
+
+        if len(self.home_joint_names) != 7 or len(
+                self.home_target_joint_positions) != 7:
+            raise ValueError(
+                'Home joint configuration must contain exactly 7 joints')
 
         if self.use_depth_image:
-            if not all([img_left_depth_topic, img_right_depth_topic, img_front_depth_topic]):
-                raise ValueError('When use_depth_image=True, all depth topics must be provided')
+            if not all([
+                    img_left_depth_topic, img_right_depth_topic,
+                    img_front_depth_topic
+            ]):
+                raise ValueError(
+                    'When use_depth_image=True, all depth topics must be '
+                    'provided')
 
-        if (self.puppet_ee_pose_left_topic is None and self.puppet_franka_state_left_topic is None):
-            raise ValueError('Either puppet_ee_pose_left_topic or puppet_franka_state_left_topic must be provided')
+        if (self.puppet_ee_pose_left_topic is None
+                and self.puppet_franka_state_left_topic is None):
+            raise ValueError('Either puppet_ee_pose_left_topic or '
+                             'puppet_franka_state_left_topic must be provided')
 
-        if (self.puppet_ee_pose_right_topic is None and self.puppet_franka_state_right_topic is None):
-            raise ValueError('Either puppet_ee_pose_right_topic or puppet_franka_state_right_topic must be provided')
+        if (self.puppet_ee_pose_right_topic is None
+                and self.puppet_franka_state_right_topic is None):
+            raise ValueError(
+                'Either puppet_ee_pose_right_topic or '
+                'puppet_franka_state_right_topic must be provided')
 
         self._init()
         self._init_ros()
@@ -117,6 +204,10 @@ class FrankaDualOperator:
 
         self.movegrip_left_client = None
         self.movegrip_right_client = None
+        self._last_left_gripper_cmd = None
+        self._last_right_gripper_cmd = None
+        self._last_left_gripper_cmd_time = 0.0
+        self._last_right_gripper_cmd_time = 0.0
         self.cam_info_dict = {}
         self._traj_thread = None
         self._traj_stop_event = threading.Event()
@@ -180,15 +271,18 @@ class FrankaDualOperator:
             self.puppet_gripper_left_deque, self.puppet_gripper_right_deque
         ]
         for deque_obj in checks:
-            if (len(deque_obj) == 0 or deque_obj[-1].header.stamp.to_sec() < frame_time):
+            if (len(deque_obj) == 0
+                    or deque_obj[-1].header.stamp.to_sec() < frame_time):
                 return False
 
         if self.use_depth_image:
             depth_checks = [
-                self.img_left_depth_deque, self.img_right_depth_deque, self.img_front_depth_deque
+                self.img_left_depth_deque, self.img_right_depth_deque,
+                self.img_front_depth_deque
             ]
             for deque_obj in depth_checks:
-                if (len(deque_obj) == 0 or deque_obj[-1].header.stamp.to_sec() < frame_time):
+                if (len(deque_obj) == 0
+                        or deque_obj[-1].header.stamp.to_sec() < frame_time):
                     return False
         return True
 
@@ -203,34 +297,42 @@ class FrankaDualOperator:
         for queue in queues_to_sync:
             while queue[0].header.stamp.to_sec() < frame_time:
                 queue.popleft()
-            frame_time_max = max(frame_time_max, queue[0].header.stamp.to_sec())
+            frame_time_max = max(frame_time_max,
+                                 queue[0].header.stamp.to_sec())
 
         if self.use_depth_image:
             depth_queues = [
-                self.img_left_depth_deque, self.img_right_depth_deque, self.img_front_depth_deque
+                self.img_left_depth_deque, self.img_right_depth_deque,
+                self.img_front_depth_deque
             ]
             for queue in depth_queues:
                 while queue[0].header.stamp.to_sec() < frame_time:
                     queue.popleft()
-                frame_time_max = max(frame_time_max, queue[0].header.stamp.to_sec())
+                frame_time_max = max(frame_time_max,
+                                     queue[0].header.stamp.to_sec())
         return frame_time_max
 
     def _flush_outdated_data(self, frame_time):
         queues_to_flush = [
             self.img_left_deque, self.img_right_deque, self.img_front_deque,
-            self.img_left_depth_deque, self.img_right_depth_deque, self.img_front_depth_deque,
-            self.puppet_arm_left_deque, self.puppet_arm_right_deque,
-            self.puppet_ee_pose_left_deque, self.puppet_ee_pose_right_deque,
-            self.puppet_gripper_left_deque, self.puppet_gripper_right_deque
+            self.img_left_depth_deque, self.img_right_depth_deque,
+            self.img_front_depth_deque, self.puppet_arm_left_deque,
+            self.puppet_arm_right_deque, self.puppet_ee_pose_left_deque,
+            self.puppet_ee_pose_right_deque, self.puppet_gripper_left_deque,
+            self.puppet_gripper_right_deque
         ]
         for queue in queues_to_flush:
-            while (len(queue) > 0 and queue[0].header.stamp.to_sec() <= frame_time):
+            while (len(queue) > 0
+                   and queue[0].header.stamp.to_sec() <= frame_time):
                 queue.popleft()
 
     def _extract_synchronized_data(self):
-        img_front = self.bridge.imgmsg_to_cv2(self.img_front_deque.popleft(), 'passthrough')
-        img_left = self.bridge.imgmsg_to_cv2(self.img_left_deque.popleft(), 'passthrough')
-        img_right = self.bridge.imgmsg_to_cv2(self.img_right_deque.popleft(), 'passthrough')
+        img_front = self.bridge.imgmsg_to_cv2(self.img_front_deque.popleft(),
+                                              'passthrough')
+        img_left = self.bridge.imgmsg_to_cv2(self.img_left_deque.popleft(),
+                                             'passthrough')
+        img_right = self.bridge.imgmsg_to_cv2(self.img_right_deque.popleft(),
+                                              'passthrough')
 
         puppet_arm_left = self.puppet_arm_left_deque.popleft()
         puppet_arm_right = self.puppet_arm_right_deque.popleft()
@@ -243,18 +345,58 @@ class FrankaDualOperator:
         img_right_depth = None
         img_front_depth = None
         if self.use_depth_image:
-            img_left_depth = self.bridge.imgmsg_to_cv2(self.img_left_depth_deque.popleft(), 'passthrough')
-            img_right_depth = self.bridge.imgmsg_to_cv2(self.img_right_depth_deque.popleft(), 'passthrough')
-            img_front_depth = self.bridge.imgmsg_to_cv2(self.img_front_depth_deque.popleft(), 'passthrough')
+            img_left_depth = self.bridge.imgmsg_to_cv2(
+                self.img_left_depth_deque.popleft(), 'passthrough')
+            img_right_depth = self.bridge.imgmsg_to_cv2(
+                self.img_right_depth_deque.popleft(), 'passthrough')
+            img_front_depth = self.bridge.imgmsg_to_cv2(
+                self.img_front_depth_deque.popleft(), 'passthrough')
 
-        return (img_front, img_left, img_right, img_front_depth, img_left_depth, img_right_depth,
-                puppet_arm_left, puppet_arm_right, puppet_ee_pose_left, puppet_ee_pose_right,
+        return (img_front, img_left, img_right, img_front_depth,
+                img_left_depth, img_right_depth, puppet_arm_left,
+                puppet_arm_right, puppet_ee_pose_left, puppet_ee_pose_right,
                 puppet_gripper_left, puppet_gripper_right)
 
     def _append_with_limit(self, deque_obj, msg, max_len=2000):
         if len(deque_obj) >= max_len:
             deque_obj.popleft()
         deque_obj.append(msg)
+
+    def clear_observation_queues(self):
+        for queue in self._all_observation_queues():
+            queue.clear()
+
+    def get_queue_status(self):
+        return {
+            'img_left': len(self.img_left_deque),
+            'img_right': len(self.img_right_deque),
+            'img_front': len(self.img_front_deque),
+            'img_left_depth': len(self.img_left_depth_deque),
+            'img_right_depth': len(self.img_right_depth_deque),
+            'img_front_depth': len(self.img_front_depth_deque),
+            'left_joint': len(self.puppet_arm_left_deque),
+            'right_joint': len(self.puppet_arm_right_deque),
+            'left_pose': len(self.puppet_ee_pose_left_deque),
+            'right_pose': len(self.puppet_ee_pose_right_deque),
+            'left_gripper': len(self.puppet_gripper_left_deque),
+            'right_gripper': len(self.puppet_gripper_right_deque),
+        }
+
+    def _all_observation_queues(self):
+        return (
+            self.img_left_deque,
+            self.img_right_deque,
+            self.img_front_deque,
+            self.img_left_depth_deque,
+            self.img_right_depth_deque,
+            self.img_front_depth_deque,
+            self.puppet_arm_left_deque,
+            self.puppet_arm_right_deque,
+            self.puppet_ee_pose_left_deque,
+            self.puppet_ee_pose_right_deque,
+            self.puppet_gripper_left_deque,
+            self.puppet_gripper_right_deque,
+        )
 
     def img_left_callback(self, msg):
         self._append_with_limit(self.img_left_deque, msg)
@@ -322,7 +464,8 @@ class FrankaDualOperator:
         from geometry_msgs.msg import Point, PoseStamped, Quaternion
         from tf.transformations import quaternion_from_matrix
 
-        transform = np.array(msg.O_T_EE, dtype=np.float64).reshape((4, 4), order='F')
+        transform = np.array(
+            msg.O_T_EE, dtype=np.float64).reshape((4, 4), order='F')
         quat = quaternion_from_matrix(transform)
 
         pose_msg = PoseStamped()
@@ -341,78 +484,170 @@ class FrankaDualOperator:
         return pose_msg
 
     def _init_ros(self):
+        import warnings
+
         import rospy
         from geometry_msgs.msg import PoseStamped
         from sensor_msgs.msg import CameraInfo, Image, JointState
 
         rospy.init_node('franka_dual_operator', anonymous=True)
+        warnings.filterwarnings(
+            'ignore',
+            message=r'notifyAll\(\) is deprecated, use notify_all\(\) instead',
+            category=DeprecationWarning,
+            module=r'actionlib\.simple_action_client')
         camera_info_topics = []
 
-        rospy.Subscriber(self.img_left_topic, Image, self.img_left_callback, queue_size=1000, tcp_nodelay=True)
+        rospy.Subscriber(
+            self.img_left_topic,
+            Image,
+            self.img_left_callback,
+            queue_size=1000,
+            tcp_nodelay=True)
         camera_info_topics.append(replace_last_segment(self.img_left_topic))
 
-        rospy.Subscriber(self.img_right_topic, Image, self.img_right_callback, queue_size=1000, tcp_nodelay=True)
+        rospy.Subscriber(
+            self.img_right_topic,
+            Image,
+            self.img_right_callback,
+            queue_size=1000,
+            tcp_nodelay=True)
         camera_info_topics.append(replace_last_segment(self.img_right_topic))
 
-        rospy.Subscriber(self.img_front_topic, Image, self.img_front_callback, queue_size=1000, tcp_nodelay=True)
+        rospy.Subscriber(
+            self.img_front_topic,
+            Image,
+            self.img_front_callback,
+            queue_size=1000,
+            tcp_nodelay=True)
         camera_info_topics.append(replace_last_segment(self.img_front_topic))
 
         if self.use_depth_image:
-            rospy.Subscriber(self.img_left_depth_topic, Image, self.img_left_depth_callback, queue_size=1000, tcp_nodelay=True)
-            camera_info_topics.append(replace_last_segment(self.img_left_depth_topic))
+            rospy.Subscriber(
+                self.img_left_depth_topic,
+                Image,
+                self.img_left_depth_callback,
+                queue_size=1000,
+                tcp_nodelay=True)
+            camera_info_topics.append(
+                replace_last_segment(self.img_left_depth_topic))
 
-            rospy.Subscriber(self.img_right_depth_topic, Image, self.img_right_depth_callback, queue_size=1000, tcp_nodelay=True)
-            camera_info_topics.append(replace_last_segment(self.img_right_depth_topic))
+            rospy.Subscriber(
+                self.img_right_depth_topic,
+                Image,
+                self.img_right_depth_callback,
+                queue_size=1000,
+                tcp_nodelay=True)
+            camera_info_topics.append(
+                replace_last_segment(self.img_right_depth_topic))
 
-            rospy.Subscriber(self.img_front_depth_topic, Image, self.img_front_depth_callback, queue_size=1000, tcp_nodelay=True)
-            camera_info_topics.append(replace_last_segment(self.img_front_depth_topic))
+            rospy.Subscriber(
+                self.img_front_depth_topic,
+                Image,
+                self.img_front_depth_callback,
+                queue_size=1000,
+                tcp_nodelay=True)
+            camera_info_topics.append(
+                replace_last_segment(self.img_front_depth_topic))
 
-        rospy.Subscriber(self.puppet_arm_left_topic, JointState, self.puppet_arm_left_callback, queue_size=1000, tcp_nodelay=True)
-        rospy.Subscriber(self.puppet_arm_right_topic, JointState, self.puppet_arm_right_callback, queue_size=1000, tcp_nodelay=True)
+        rospy.Subscriber(
+            self.puppet_arm_left_topic,
+            JointState,
+            self.puppet_arm_left_callback,
+            queue_size=1000,
+            tcp_nodelay=True)
+        rospy.Subscriber(
+            self.puppet_arm_right_topic,
+            JointState,
+            self.puppet_arm_right_callback,
+            queue_size=1000,
+            tcp_nodelay=True)
 
         if self.puppet_ee_pose_left_topic is not None:
-            rospy.Subscriber(self.puppet_ee_pose_left_topic, PoseStamped, self.puppet_ee_pose_left_callback, queue_size=1000, tcp_nodelay=True)
+            rospy.Subscriber(
+                self.puppet_ee_pose_left_topic,
+                PoseStamped,
+                self.puppet_ee_pose_left_callback,
+                queue_size=1000,
+                tcp_nodelay=True)
         else:
             from franka_msgs.msg import FrankaState
-            rospy.Subscriber(self.puppet_franka_state_left_topic, FrankaState, self.puppet_franka_state_left_callback, queue_size=1000, tcp_nodelay=True)
+            rospy.Subscriber(
+                self.puppet_franka_state_left_topic,
+                FrankaState,
+                self.puppet_franka_state_left_callback,
+                queue_size=1000,
+                tcp_nodelay=True)
 
         if self.puppet_ee_pose_right_topic is not None:
-            rospy.Subscriber(self.puppet_ee_pose_right_topic, PoseStamped, self.puppet_ee_pose_right_callback, queue_size=1000, tcp_nodelay=True)
+            rospy.Subscriber(
+                self.puppet_ee_pose_right_topic,
+                PoseStamped,
+                self.puppet_ee_pose_right_callback,
+                queue_size=1000,
+                tcp_nodelay=True)
         else:
             from franka_msgs.msg import FrankaState
-            rospy.Subscriber(self.puppet_franka_state_right_topic, FrankaState, self.puppet_franka_state_right_callback, queue_size=1000, tcp_nodelay=True)
+            rospy.Subscriber(
+                self.puppet_franka_state_right_topic,
+                FrankaState,
+                self.puppet_franka_state_right_callback,
+                queue_size=1000,
+                tcp_nodelay=True)
 
-        rospy.Subscriber(self.puppet_gripper_left_topic, JointState, self.puppet_gripper_left_callback, queue_size=1000, tcp_nodelay=True)
-        rospy.Subscriber(self.puppet_gripper_right_topic, JointState, self.puppet_gripper_right_callback, queue_size=1000, tcp_nodelay=True)
+        rospy.Subscriber(
+            self.puppet_gripper_left_topic,
+            JointState,
+            self.puppet_gripper_left_callback,
+            queue_size=1000,
+            tcp_nodelay=True)
+        rospy.Subscriber(
+            self.puppet_gripper_right_topic,
+            JointState,
+            self.puppet_gripper_right_callback,
+            queue_size=1000,
+            tcp_nodelay=True)
 
-        self.left_ee_pub = rospy.Publisher(self.cartesian_cmd_left_topic, PoseStamped, queue_size=10)
-        self.right_ee_pub = rospy.Publisher(self.cartesian_cmd_right_topic, PoseStamped, queue_size=10)
+        self.left_ee_pub = rospy.Publisher(
+            self.cartesian_cmd_left_topic, PoseStamped, queue_size=10)
+        self.right_ee_pub = rospy.Publisher(
+            self.cartesian_cmd_right_topic, PoseStamped, queue_size=10)
 
         if self.gripper_action_left_name:
             try:
                 import actionlib
                 from franka_gripper.msg import MoveAction
-                self.movegrip_left_client = actionlib.SimpleActionClient(self.gripper_action_left_name, MoveAction)
-                if not self.movegrip_left_client.wait_for_server(rospy.Duration(2.0)):
-                    rospy.logwarn('Left Franka gripper action server not ready')
+                self.movegrip_left_client = actionlib.SimpleActionClient(
+                    self.gripper_action_left_name, MoveAction)
+                if not self.movegrip_left_client.wait_for_server(
+                        rospy.Duration(2.0)):
+                    rospy.logwarn(
+                        'Left Franka gripper action server not ready')
             except Exception as exc:
-                rospy.logwarn('Failed to initialize left Franka gripper action: %s', exc)
+                rospy.logwarn(
+                    'Failed to initialize left Franka gripper action: %s', exc)
                 self.movegrip_left_client = None
 
         if self.gripper_action_right_name:
             try:
                 import actionlib
                 from franka_gripper.msg import MoveAction
-                self.movegrip_right_client = actionlib.SimpleActionClient(self.gripper_action_right_name, MoveAction)
-                if not self.movegrip_right_client.wait_for_server(rospy.Duration(2.0)):
-                    rospy.logwarn('Right Franka gripper action server not ready')
+                self.movegrip_right_client = actionlib.SimpleActionClient(
+                    self.gripper_action_right_name, MoveAction)
+                if not self.movegrip_right_client.wait_for_server(
+                        rospy.Duration(2.0)):
+                    rospy.logwarn(
+                        'Right Franka gripper action server not ready')
             except Exception as exc:
-                rospy.logwarn('Failed to initialize right Franka gripper action: %s', exc)
+                rospy.logwarn(
+                    'Failed to initialize right Franka gripper action: %s',
+                    exc)
                 self.movegrip_right_client = None
 
         for topic in camera_info_topics:
             try:
-                camera_info = rospy.wait_for_message(topic, CameraInfo, timeout=5)
+                camera_info = rospy.wait_for_message(
+                    topic, CameraInfo, timeout=5)
             except rospy.ROSException:
                 continue
             self.cam_info_dict[topic] = {
@@ -444,22 +679,95 @@ class FrankaDualOperator:
         msg_left = PoseStamped()
         msg_left.header.stamp = rospy.Time.now()
         msg_left.header.frame_id = self.base_frame_id
-        msg_left.pose.position = Point(x=float(left_eepose[0]), y=float(left_eepose[1]), z=float(left_eepose[2]))
-        msg_left.pose.orientation = Quaternion(x=float(left_eepose[3]), y=float(left_eepose[4]), z=float(left_eepose[5]), w=float(left_eepose[6]))
+        msg_left.pose.position = Point(
+            x=float(left_eepose[0]),
+            y=float(left_eepose[1]),
+            z=float(left_eepose[2]))
+        msg_left.pose.orientation = Quaternion(
+            x=float(left_eepose[3]),
+            y=float(left_eepose[4]),
+            z=float(left_eepose[5]),
+            w=float(left_eepose[6]))
         self.left_ee_pub.publish(msg_left)
 
         msg_right = PoseStamped()
         msg_right.header.stamp = rospy.Time.now()
         msg_right.header.frame_id = self.base_frame_id
-        msg_right.pose.position = Point(x=float(right_eepose[0]), y=float(right_eepose[1]), z=float(right_eepose[2]))
-        msg_right.pose.orientation = Quaternion(x=float(right_eepose[3]), y=float(right_eepose[4]), z=float(right_eepose[5]), w=float(right_eepose[6]))
+        msg_right.pose.position = Point(
+            x=float(right_eepose[0]),
+            y=float(right_eepose[1]),
+            z=float(right_eepose[2]))
+        msg_right.pose.orientation = Quaternion(
+            x=float(right_eepose[3]),
+            y=float(right_eepose[4]),
+            z=float(right_eepose[5]),
+            w=float(right_eepose[6]))
         self.right_ee_pub.publish(msg_right)
 
-    def execute_trajectory(self, left_trajectory, right_trajectory, dt=0.1, async_exec=False, base_velocity=None):
+        if len(left_eepose) > 7:
+            self._send_gripper_command('left', left_eepose[7])
+        if len(right_eepose) > 7:
+            self._send_gripper_command('right', right_eepose[7])
+
+    def _send_gripper_command(self,
+                              side,
+                              gripper_width,
+                              force=False,
+                              wait=False,
+                              wait_timeout=2.0):
+        if side == 'left':
+            client = self.movegrip_left_client
+            last_attr = '_last_left_gripper_cmd'
+            last_time_attr = '_last_left_gripper_cmd_time'
+        elif side == 'right':
+            client = self.movegrip_right_client
+            last_attr = '_last_right_gripper_cmd'
+            last_time_attr = '_last_right_gripper_cmd_time'
+        else:
+            raise ValueError(f'Unknown gripper side: {side}')
+
+        if client is None:
+            return
+
+        target_width = max(0.0, float(gripper_width))
+        last_width = getattr(self, last_attr)
+        now = time.monotonic()
+        if (not force and last_width is not None
+                and abs(target_width - last_width) < 1e-4
+                and now - getattr(self, last_time_attr) < 0.5):
+            return
+
+        try:
+            import rospy
+            from franka_gripper.msg import MoveGoal
+            goal = MoveGoal()
+            goal.width = target_width
+            goal.speed = float(self.gripper_speed)
+            client.send_goal(goal)
+            if wait:
+                client.wait_for_result(rospy.Duration(wait_timeout))
+            setattr(self, last_attr, target_width)
+            setattr(self, last_time_attr, now)
+        except Exception as exc:
+            import rospy
+            rospy.logwarn('Failed to send %s gripper command: %s', side, exc)
+
+    def open_grippers(self, wait=False):
+        self._send_gripper_command(
+            'left', self.gripper_open_width, force=True, wait=wait)
+        self._send_gripper_command(
+            'right', self.gripper_open_width, force=True, wait=wait)
+
+    def execute_trajectory(self,
+                           left_trajectory,
+                           right_trajectory,
+                           dt=0.1,
+                           async_exec=False,
+                           base_velocity=None):
         left_traj = np.asarray(left_trajectory)
         right_traj = np.asarray(right_trajectory)
 
-        self._traj_stop_event.set()
+        self.stop_trajectory(join_timeout=0.2)
         self._traj_stop_event = threading.Event()
 
         stop_event = self._traj_stop_event
@@ -481,8 +789,11 @@ class FrankaDualOperator:
             self.execute_step(left_traj[i], right_traj[i])
             rate.sleep()
 
-    def stop_trajectory(self):
+    def stop_trajectory(self, join_timeout=None):
         self._traj_stop_event.set()
+        if (join_timeout is not None and self._traj_thread is not None
+                and self._traj_thread.is_alive()):
+            self._traj_thread.join(timeout=join_timeout)
 
     def is_trajectory_running(self):
         return (self._traj_thread is not None and self._traj_thread.is_alive())
@@ -495,3 +806,267 @@ class FrankaDualOperator:
                 break
             self.execute_step(left_eepose, right_eepose)
             rate.sleep()
+
+    def home_both_arms(self):
+        import rospy
+
+        self.stop_trajectory(join_timeout=1.0)
+        self.clear_observation_queues()
+
+        if self.use_home_service:
+            service_result = self._try_home_both_arms_via_services()
+            if service_result is True:
+                self.open_grippers(wait=True)
+                self.clear_observation_queues()
+                return
+
+        rospy.loginfo(
+            'Homing both Franka arms via controller_manager fallback')
+        rospy.set_param('/target_joint_positions',
+                        list(self.home_target_joint_positions))
+        helpers = [
+            self._make_home_helper('left', self.left_arm_ns,
+                                   self.left_home_joint_state_topic),
+            self._make_home_helper('right', self.right_arm_ns,
+                                   self.right_home_joint_state_topic),
+        ]
+        for helper in helpers:
+            helper.wait_for_services()
+
+        errors = []
+        lock = threading.Lock()
+
+        def _home(helper):
+            try:
+                helper.home()
+                helper.activate_controller(CARTESIAN_IMPEDANCE_CONTROLLER)
+            except Exception as exc:  # noqa: BLE001
+                with lock:
+                    errors.append(f'{helper.arm_label}: {exc}')
+
+        threads = [
+            threading.Thread(target=_home, args=(helper, ), daemon=True)
+            for helper in helpers
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=self.home_timeout + 5.0)
+
+        for helper, thread in zip(helpers, threads):
+            if thread.is_alive():
+                errors.append(f'{helper.arm_label}: homing thread timed out')
+
+        if errors:
+            raise rospy.ROSException('; '.join(errors))
+
+        self.open_grippers(wait=True)
+        self.clear_observation_queues()
+        rospy.loginfo('Both Franka arms reached the home pose')
+
+    def _try_home_both_arms_via_services(self):
+        import rospy
+        from std_srvs.srv import Trigger
+
+        service_names = [self.left_home_service, self.right_home_service]
+        try:
+            for service_name in service_names:
+                rospy.wait_for_service(
+                    service_name, timeout=self.home_service_wait_timeout)
+        except rospy.ROSException:
+            rospy.logwarn('Franka home service is not available; '
+                          'using controller_manager fallback')
+            return False
+
+        rospy.loginfo(
+            'Homing both Franka arms via vive_controller home services')
+        errors = []
+        lock = threading.Lock()
+
+        def _call(service_name):
+            try:
+                response = rospy.ServiceProxy(service_name, Trigger)()
+                if not response.success:
+                    raise rospy.ROSException(response.message)
+            except Exception as exc:  # noqa: BLE001
+                with lock:
+                    errors.append(f'{service_name}: {exc}')
+
+        threads = [
+            threading.Thread(target=_call, args=(service_name, ), daemon=True)
+            for service_name in service_names
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=self.home_timeout + 5.0)
+
+        for service_name, thread in zip(service_names, threads):
+            if thread.is_alive():
+                errors.append(f'{service_name}: service call timed out')
+
+        if errors:
+            raise rospy.ROSException('; '.join(errors))
+
+        rospy.loginfo('Both Franka arms reached the home pose')
+        return True
+
+    def _make_home_helper(self, arm_label, arm_ns, joint_state_topic):
+        import rospy
+        from controller_manager_msgs.srv import (ListControllers,
+                                                 LoadController,
+                                                 SwitchController,
+                                                 SwitchControllerRequest,
+                                                 UnloadController)
+        from sensor_msgs.msg import JointState
+
+        return _ArmHomeHelper(
+            rospy=rospy,
+            arm_label=arm_label,
+            arm_ns=arm_ns,
+            joint_state_topic=joint_state_topic,
+            home_joint_names=self.home_joint_names,
+            home_target_joint_positions=self.home_target_joint_positions,
+            home_joint_tolerance=self.home_joint_tolerance,
+            home_joint_velocity_tolerance=self.home_joint_velocity_tolerance,
+            home_min_duration=self.home_min_duration,
+            home_settle_samples=self.home_settle_samples,
+            home_timeout=self.home_timeout,
+            list_controllers_cls=ListControllers,
+            load_controller_cls=LoadController,
+            switch_controller_cls=SwitchController,
+            unload_controller_cls=UnloadController,
+            switch_controller_request_cls=SwitchControllerRequest,
+            joint_state_cls=JointState)
+
+
+class _ArmHomeHelper:
+
+    def __init__(self, rospy, arm_label, arm_ns, joint_state_topic,
+                 home_joint_names, home_target_joint_positions,
+                 home_joint_tolerance, home_joint_velocity_tolerance,
+                 home_min_duration, home_settle_samples, home_timeout,
+                 list_controllers_cls, load_controller_cls,
+                 switch_controller_cls, unload_controller_cls,
+                 switch_controller_request_cls, joint_state_cls):
+        self.rospy = rospy
+        self.arm_label = arm_label
+        self.arm_ns = arm_ns
+        self.joint_state_topic = joint_state_topic
+        self.home_joint_names = list(home_joint_names)
+        self.home_target_joint_positions = list(home_target_joint_positions)
+        self.home_joint_tolerance = float(home_joint_tolerance)
+        self.home_joint_velocity_tolerance = float(
+            home_joint_velocity_tolerance)
+        self.home_min_duration = float(home_min_duration)
+        self.home_settle_samples = int(home_settle_samples)
+        self.home_timeout = float(home_timeout)
+        self.SwitchControllerRequest = switch_controller_request_cls
+        self.JointState = joint_state_cls
+
+        cm_ns = f'{arm_ns}/controller_manager'
+        self.srv_list = rospy.ServiceProxy(f'{cm_ns}/list_controllers',
+                                           list_controllers_cls)
+        self.srv_load = rospy.ServiceProxy(f'{cm_ns}/load_controller',
+                                           load_controller_cls)
+        self.srv_switch = rospy.ServiceProxy(f'{cm_ns}/switch_controller',
+                                             switch_controller_cls)
+        self.srv_unload = rospy.ServiceProxy(f'{cm_ns}/unload_controller',
+                                             unload_controller_cls)
+        self._service_names = [
+            f'{cm_ns}/list_controllers',
+            f'{cm_ns}/load_controller',
+            f'{cm_ns}/switch_controller',
+            f'{cm_ns}/unload_controller',
+        ]
+
+    def wait_for_services(self):
+        for service_name in self._service_names:
+            self.rospy.wait_for_service(
+                service_name, timeout=self.home_timeout)
+        self.rospy.wait_for_message(
+            self.joint_state_topic, self.JointState, timeout=self.home_timeout)
+
+    def get_controller_states(self):
+        response = self.srv_list()
+        return {
+            controller.name: controller.state
+            for controller in response.controller
+        }
+
+    def ensure_loaded(self, controller_name):
+        states = self.get_controller_states()
+        if controller_name in states:
+            return
+        response = self.srv_load(controller_name)
+        if not response.ok:
+            raise self.rospy.ROSException(
+                f'{self.arm_label}: failed to load controller '
+                f'{controller_name}')
+
+    def switch(self, start_controllers, stop_controllers):
+        start_controllers = [name for name in start_controllers if name]
+        stop_controllers = [name for name in stop_controllers if name]
+        if not start_controllers and not stop_controllers:
+            return
+        request = self.SwitchControllerRequest()
+        request.start_controllers = start_controllers
+        request.stop_controllers = stop_controllers
+        request.strictness = self.SwitchControllerRequest.STRICT
+        request.start_asap = False
+        request.timeout = 0.0
+        response = self.srv_switch(request)
+        if not response.ok:
+            raise self.rospy.ROSException(
+                f'{self.arm_label}: failed to switch controllers '
+                f'(start={start_controllers}, stop={stop_controllers})')
+
+    def activate_controller(self, target):
+        self.ensure_loaded(target)
+        states = self.get_controller_states()
+        stop = [
+            name for name in ALL_MANAGED_CONTROLLERS
+            if name != target and states.get(name) == 'running'
+        ]
+        start = [] if states.get(target) == 'running' else [target]
+        self.switch(start, stop)
+
+    def home(self):
+        self.activate_controller(HOMING_CONTROLLER)
+        started_at = time.monotonic()
+        deadline = started_at + self.home_timeout
+        settled_samples = 0
+
+        while time.monotonic() < deadline and not self.rospy.is_shutdown():
+            joint_state = self.rospy.wait_for_message(
+                self.joint_state_topic, self.JointState, timeout=1.0)
+            if time.monotonic() - started_at < self.home_min_duration:
+                settled_samples = 0
+                continue
+            if self.home_reached(joint_state):
+                settled_samples += 1
+                if settled_samples >= self.home_settle_samples:
+                    self.rospy.sleep(0.3)
+                    return
+            else:
+                settled_samples = 0
+
+        raise self.rospy.ROSException(
+            f'{self.arm_label}: timed out while moving to home pose')
+
+    def home_reached(self, joint_state):
+        positions = dict(zip(joint_state.name, joint_state.position))
+        velocities = dict(zip(joint_state.name, joint_state.velocity))
+        for joint_name, target in zip(self.home_joint_names,
+                                      self.home_target_joint_positions):
+            current = positions.get(joint_name)
+            if current is None:
+                return False
+            if abs(current - target) > self.home_joint_tolerance:
+                return False
+            velocity = velocities.get(joint_name)
+            if velocity is None:
+                return False
+            if abs(velocity) > self.home_joint_velocity_tolerance:
+                return False
+        return True
