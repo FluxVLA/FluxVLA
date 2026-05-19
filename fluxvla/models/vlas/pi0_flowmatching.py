@@ -171,6 +171,7 @@ class PI0FlowMatching(BaseVLA):
             self.register_buffer(
                 'action_loss_weights',
                 torch.tensor(action_loss_weights, dtype=torch.float32),
+                persistent=False,
             )
         else:
             self.action_loss_weights = None

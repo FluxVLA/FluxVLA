@@ -88,6 +88,11 @@ class FrankaDualOperator:
                 '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
             cartesian_cmd_right_topic=(
                 '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
+            joint_cmd_left_topic=None,
+            joint_cmd_right_topic=None,
+            command_mode='cartesian',
+            joint_names=None,
+            command_controller_name=None,
             gripper_action_left_name='/left_arm/franka_gripper/move',
             gripper_action_right_name='/right_arm/franka_gripper/move',
             use_depth_image=False,
@@ -124,8 +129,27 @@ class FrankaDualOperator:
         self.puppet_ee_pose_right_topic = puppet_ee_pose_right_topic
         self.puppet_franka_state_left_topic = puppet_franka_state_left_topic
         self.puppet_franka_state_right_topic = puppet_franka_state_right_topic
+        if command_mode not in {'cartesian', 'joint'}:
+            raise ValueError(
+                f'Unsupported Franka command_mode: {command_mode}')
+        self.command_mode = command_mode
+        self.left_arm_ns = left_arm_ns
+        self.right_arm_ns = right_arm_ns
         self.cartesian_cmd_left_topic = cartesian_cmd_left_topic
         self.cartesian_cmd_right_topic = cartesian_cmd_right_topic
+        self.joint_cmd_left_topic = (
+            joint_cmd_left_topic or
+            f'{self.left_arm_ns}/joint_ruckig_position_controller/target_joint_state'  # noqa: E501
+        )
+        self.joint_cmd_right_topic = (
+            joint_cmd_right_topic or
+            f'{self.right_arm_ns}/joint_ruckig_position_controller/target_joint_state'  # noqa: E501
+        )
+        self.joint_names = joint_names or DEFAULT_HOME_JOINT_NAMES
+        self.command_controller_name = (
+            command_controller_name
+            or (JOINT_RUCKIG_POSITION_CONTROLLER if self.command_mode
+                == 'joint' else CARTESIAN_IMPEDANCE_CONTROLLER))
         self.gripper_action_left_name = gripper_action_left_name
         self.gripper_action_right_name = gripper_action_right_name
         self.use_depth_image = use_depth_image
@@ -136,8 +160,6 @@ class FrankaDualOperator:
         self.gripper_open_width = gripper_open_width
         self.base_frame_id = base_frame_id
         self.publish_rate = publish_rate
-        self.left_arm_ns = left_arm_ns
-        self.right_arm_ns = right_arm_ns
         self.use_home_service = use_home_service
         self.left_home_service = left_home_service
         self.right_home_service = right_home_service
@@ -161,6 +183,9 @@ class FrankaDualOperator:
                 self.home_target_joint_positions) != 7:
             raise ValueError(
                 'Home joint configuration must contain exactly 7 joints')
+        if len(self.joint_names) != 7:
+            raise ValueError(
+                'Joint command configuration must contain exactly 7 joints')
 
         if self.use_depth_image:
             if not all([
@@ -171,12 +196,14 @@ class FrankaDualOperator:
                     'When use_depth_image=True, all depth topics must be '
                     'provided')
 
-        if (self.puppet_ee_pose_left_topic is None
+        if (self.command_mode == 'cartesian'
+                and self.puppet_ee_pose_left_topic is None
                 and self.puppet_franka_state_left_topic is None):
             raise ValueError('Either puppet_ee_pose_left_topic or '
                              'puppet_franka_state_left_topic must be provided')
 
-        if (self.puppet_ee_pose_right_topic is None
+        if (self.command_mode == 'cartesian'
+                and self.puppet_ee_pose_right_topic is None
                 and self.puppet_franka_state_right_topic is None):
             raise ValueError(
                 'Either puppet_ee_pose_right_topic or '
@@ -219,10 +246,13 @@ class FrankaDualOperator:
             or len(self.img_front_deque) == 0
             or len(self.puppet_arm_left_deque) == 0
             or len(self.puppet_arm_right_deque) == 0
-            or len(self.puppet_ee_pose_left_deque) == 0
-            or len(self.puppet_ee_pose_right_deque) == 0
             or len(self.puppet_gripper_left_deque) == 0
             or len(self.puppet_gripper_right_deque) == 0)
+        if self.command_mode == 'cartesian':
+            required_queues_empty = (
+                required_queues_empty
+                or len(self.puppet_ee_pose_left_deque) == 0
+                or len(self.puppet_ee_pose_right_deque) == 0)
 
         depth_queues_empty = (
             self.use_depth_image and (len(self.img_left_depth_deque) == 0
@@ -250,11 +280,14 @@ class FrankaDualOperator:
             self.img_front_deque[-1].header.stamp.to_sec(),
             self.puppet_arm_left_deque[-1].header.stamp.to_sec(),
             self.puppet_arm_right_deque[-1].header.stamp.to_sec(),
-            self.puppet_ee_pose_left_deque[-1].header.stamp.to_sec(),
-            self.puppet_ee_pose_right_deque[-1].header.stamp.to_sec(),
             self.puppet_gripper_left_deque[-1].header.stamp.to_sec(),
             self.puppet_gripper_right_deque[-1].header.stamp.to_sec(),
         ]
+        if self.command_mode == 'cartesian':
+            timestamps.extend([
+                self.puppet_ee_pose_left_deque[-1].header.stamp.to_sec(),
+                self.puppet_ee_pose_right_deque[-1].header.stamp.to_sec(),
+            ])
         if self.use_depth_image:
             timestamps.extend([
                 self.img_left_depth_deque[-1].header.stamp.to_sec(),
@@ -267,9 +300,13 @@ class FrankaDualOperator:
         checks = [
             self.img_left_deque, self.img_right_deque, self.img_front_deque,
             self.puppet_arm_left_deque, self.puppet_arm_right_deque,
-            self.puppet_ee_pose_left_deque, self.puppet_ee_pose_right_deque,
             self.puppet_gripper_left_deque, self.puppet_gripper_right_deque
         ]
+        if self.command_mode == 'cartesian':
+            checks.extend([
+                self.puppet_ee_pose_left_deque,
+                self.puppet_ee_pose_right_deque,
+            ])
         for deque_obj in checks:
             if (len(deque_obj) == 0
                     or deque_obj[-1].header.stamp.to_sec() < frame_time):
@@ -291,9 +328,13 @@ class FrankaDualOperator:
         queues_to_sync = [
             self.img_left_deque, self.img_right_deque, self.img_front_deque,
             self.puppet_arm_left_deque, self.puppet_arm_right_deque,
-            self.puppet_ee_pose_left_deque, self.puppet_ee_pose_right_deque,
             self.puppet_gripper_left_deque, self.puppet_gripper_right_deque
         ]
+        if self.command_mode == 'cartesian':
+            queues_to_sync.extend([
+                self.puppet_ee_pose_left_deque,
+                self.puppet_ee_pose_right_deque,
+            ])
         for queue in queues_to_sync:
             while queue[0].header.stamp.to_sec() < frame_time:
                 queue.popleft()
@@ -317,10 +358,14 @@ class FrankaDualOperator:
             self.img_left_deque, self.img_right_deque, self.img_front_deque,
             self.img_left_depth_deque, self.img_right_depth_deque,
             self.img_front_depth_deque, self.puppet_arm_left_deque,
-            self.puppet_arm_right_deque, self.puppet_ee_pose_left_deque,
-            self.puppet_ee_pose_right_deque, self.puppet_gripper_left_deque,
+            self.puppet_arm_right_deque, self.puppet_gripper_left_deque,
             self.puppet_gripper_right_deque
         ]
+        if self.command_mode == 'cartesian':
+            queues_to_flush.extend([
+                self.puppet_ee_pose_left_deque,
+                self.puppet_ee_pose_right_deque,
+            ])
         for queue in queues_to_flush:
             while (len(queue) > 0
                    and queue[0].header.stamp.to_sec() <= frame_time):
@@ -336,8 +381,12 @@ class FrankaDualOperator:
 
         puppet_arm_left = self.puppet_arm_left_deque.popleft()
         puppet_arm_right = self.puppet_arm_right_deque.popleft()
-        puppet_ee_pose_left = self.puppet_ee_pose_left_deque.popleft()
-        puppet_ee_pose_right = self.puppet_ee_pose_right_deque.popleft()
+        if self.command_mode == 'cartesian':
+            puppet_ee_pose_left = self.puppet_ee_pose_left_deque.popleft()
+            puppet_ee_pose_right = self.puppet_ee_pose_right_deque.popleft()
+        else:
+            puppet_ee_pose_left = None
+            puppet_ee_pose_right = None
         puppet_gripper_left = self.puppet_gripper_left_deque.popleft()
         puppet_gripper_right = self.puppet_gripper_right_deque.popleft()
 
@@ -570,7 +619,7 @@ class FrankaDualOperator:
                 self.puppet_ee_pose_left_callback,
                 queue_size=1000,
                 tcp_nodelay=True)
-        else:
+        elif self.puppet_franka_state_left_topic is not None:
             from franka_msgs.msg import FrankaState
             rospy.Subscriber(
                 self.puppet_franka_state_left_topic,
@@ -586,7 +635,7 @@ class FrankaDualOperator:
                 self.puppet_ee_pose_right_callback,
                 queue_size=1000,
                 tcp_nodelay=True)
-        else:
+        elif self.puppet_franka_state_right_topic is not None:
             from franka_msgs.msg import FrankaState
             rospy.Subscriber(
                 self.puppet_franka_state_right_topic,
@@ -612,6 +661,10 @@ class FrankaDualOperator:
             self.cartesian_cmd_left_topic, PoseStamped, queue_size=10)
         self.right_ee_pub = rospy.Publisher(
             self.cartesian_cmd_right_topic, PoseStamped, queue_size=10)
+        self.left_joint_pub = rospy.Publisher(
+            self.joint_cmd_left_topic, JointState, queue_size=10)
+        self.right_joint_pub = rospy.Publisher(
+            self.joint_cmd_right_topic, JointState, queue_size=10)
 
         if self.gripper_action_left_name:
             try:
@@ -672,7 +725,33 @@ class FrankaDualOperator:
             right_pos = np.array(self.puppet_arm_right_deque[-1].position)
         return left_pos, right_pos
 
+    def _build_joint_state(self, qpos):
+        import rospy
+        from sensor_msgs.msg import JointState
+
+        if len(qpos) < 7:
+            raise ValueError('Joint command must contain at least 7 joints')
+
+        msg = JointState()
+        msg.header.stamp = rospy.Time.now()
+        msg.name = self.joint_names
+        msg.position = [float(q) for q in qpos[:7]]
+        return msg
+
+    def _execute_joint_step(self, left_joint, right_joint):
+        self.left_joint_pub.publish(self._build_joint_state(left_joint))
+        self.right_joint_pub.publish(self._build_joint_state(right_joint))
+
+        if len(left_joint) > 7:
+            self._send_gripper_command('left', left_joint[7])
+        if len(right_joint) > 7:
+            self._send_gripper_command('right', right_joint[7])
+
     def execute_step(self, left_eepose, right_eepose):
+        if self.command_mode == 'joint':
+            self._execute_joint_step(left_eepose, right_eepose)
+            return
+
         import rospy
         from geometry_msgs.msg import Point, PoseStamped, Quaternion
 
@@ -839,7 +918,7 @@ class FrankaDualOperator:
         def _home(helper):
             try:
                 helper.home()
-                helper.activate_controller(CARTESIAN_IMPEDANCE_CONTROLLER)
+                helper.activate_controller(self.command_controller_name)
             except Exception as exc:  # noqa: BLE001
                 with lock:
                     errors.append(f'{helper.arm_label}: {exc}')

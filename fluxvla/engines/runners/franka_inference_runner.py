@@ -60,12 +60,16 @@ class FrankaInferenceRunner(BaseInferenceRunner):
     def __init__(self,
                  gripper_threshold: float = 0.05,
                  prepare_pose: List[float] = None,
+                 action_mode: str = 'cartesian',
                  async_execution: bool = False,
                  execute_horizon: int = None,
                  observation_timeout: float = 15.0,
                  *args,
                  **kwargs):
         self.gripper_threshold = gripper_threshold
+        if action_mode not in {'cartesian', 'joint'}:
+            raise ValueError(f'Unsupported Franka action_mode: {action_mode}')
+        self.action_mode = action_mode
         self.async_execution = async_execution
         self.execute_horizon = execute_horizon
         self.observation_timeout = observation_timeout
@@ -116,6 +120,17 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         else:
             self.prepare_pose = prepare_pose
 
+    @staticmethod
+    def _joint_state_to_arm_qpos(joint_state, gripper_width):
+        positions = np.asarray(joint_state.position, dtype=np.float32)
+        if positions.shape[0] < 7:
+            raise ValueError(
+                'Franka joint state must contain at least 7 arm joints, '
+                f'got {positions.shape[0]}')
+        return np.concatenate(
+            (positions[:7], np.array([gripper_width], dtype=np.float32)),
+            axis=0)
+
     def get_ros_observation(
         self
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Any, Any, float, float]:
@@ -126,9 +141,12 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 - img_front (np.ndarray): Front camera RGB image
                 - img_left (np.ndarray): Left wrist camera RGB image
                 - img_right (np.ndarray): Right wrist camera RGB image
-                - puppet_ee_pose_left (PoseStamped): Left arm end-effector pose
-                - puppet_ee_pose_right (PoseStamped): Right arm end-effector
-                  pose
+                - puppet_arm_left (JointState): Left arm joint state
+                - puppet_arm_right (JointState): Right arm joint state
+                - puppet_ee_pose_left (PoseStamped | None): Left arm
+                  end-effector pose when available
+                - puppet_ee_pose_right (PoseStamped | None): Right arm
+                  end-effector pose when available
                 - gripper_left_width (float): Left gripper width
                 - gripper_right_width (float): Right gripper width
         """
@@ -176,7 +194,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
              puppet_ee_pose_left, puppet_ee_pose_right, puppet_gripper_left,
              puppet_gripper_right) = result
 
-            return (img_front, img_left, img_right, puppet_ee_pose_left,
+            return (img_front, img_left, img_right, puppet_arm_left,
+                    puppet_arm_right, puppet_ee_pose_left,
                     puppet_ee_pose_right, puppet_gripper_left.data,
                     puppet_gripper_right.data)
 
@@ -185,8 +204,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
         Returns:
             Dict: Latest observation containing:
-                - 'qpos': End-effector poses from both arms
-                  (14 dimensions: 2 arms × 7 DOF)
+                - 'qpos': Robot state for both arms. In joint mode this is
+                  16 dimensions: 2 arms x (7 joints + gripper).
                 - Camera images keyed by camera names
         """
         from collections import deque
@@ -199,30 +218,39 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 dummy_obs[camera_name] = None
             self.observation_window.append(dummy_obs)
 
-        (img_front, img_left, img_right, puppet_ee_pose_left,
-         puppet_ee_pose_right, gripper_left_width,
+        (img_front, img_left, img_right, puppet_arm_left, puppet_arm_right,
+         puppet_ee_pose_left, puppet_ee_pose_right, gripper_left_width,
          gripper_right_width) = self.get_ros_observation()
 
         img_front = self._apply_jpeg_compression(img_front)
         img_left = self._apply_jpeg_compression(img_left)
         img_right = self._apply_jpeg_compression(img_right)
 
-        left_pose = puppet_ee_pose_left.pose
-        right_pose = puppet_ee_pose_right.pose
+        if self.action_mode == 'joint':
+            qpos_left = self._joint_state_to_arm_qpos(puppet_arm_left,
+                                                      gripper_left_width)
+            qpos_right = self._joint_state_to_arm_qpos(puppet_arm_right,
+                                                       gripper_right_width)
+        else:
+            if puppet_ee_pose_left is None or puppet_ee_pose_right is None:
+                raise ValueError(
+                    'End-effector poses are required in cartesian mode')
+            left_pose = puppet_ee_pose_left.pose
+            right_pose = puppet_ee_pose_right.pose
 
-        qpos_left = np.array([
-            left_pose.position.x, left_pose.position.y, left_pose.position.z,
-            left_pose.orientation.x, left_pose.orientation.y,
-            left_pose.orientation.z, left_pose.orientation.w,
-            gripper_left_width
-        ])
+            qpos_left = np.array([
+                left_pose.position.x, left_pose.position.y,
+                left_pose.position.z, left_pose.orientation.x,
+                left_pose.orientation.y, left_pose.orientation.z,
+                left_pose.orientation.w, gripper_left_width
+            ])
 
-        qpos_right = np.array([
-            right_pose.position.x, right_pose.position.y,
-            right_pose.position.z, right_pose.orientation.x,
-            right_pose.orientation.y, right_pose.orientation.z,
-            right_pose.orientation.w, gripper_right_width
-        ])
+            qpos_right = np.array([
+                right_pose.position.x, right_pose.position.y,
+                right_pose.position.z, right_pose.orientation.x,
+                right_pose.orientation.y, right_pose.orientation.z,
+                right_pose.orientation.w, gripper_right_width
+            ])
 
         qpos = np.concatenate((qpos_left, qpos_right), axis=0)
 
@@ -239,10 +267,11 @@ class FrankaInferenceRunner(BaseInferenceRunner):
     def _move_to_prepare_pose(self):
         """Move robot to predefined preparation pose.
 
-        The prepare_pose should be a tuple of two 8-element arrays:
-        (left_arm_pose, right_arm_pose)
+        The prepare_pose should be a tuple of two 8-element arrays.
 
-        Each pose: [x, y, z, qx, qy, qz, qw, gripper_width]
+        In joint mode each arm is [joint1..joint7, gripper_width].
+        In cartesian mode each arm is [x, y, z, qx, qy, qz, qw,
+        gripper_width].
         """
         from ..utils import initialize_overwatch
         overwatch = initialize_overwatch(__name__)
@@ -269,7 +298,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             if len(left_pose) != 8 or len(right_pose) != 8:
                 raise ValueError(
                     f'Each prepare pose must have 8 elements '
-                    f'[x, y, z, qx, qy, qz, qw, gripper], '
+                    f'for the configured action mode, '
                     f'got left={len(left_pose)}, right={len(right_pose)}')
 
             self.ros_operator.move_to_joints(left_pose, right_pose)
