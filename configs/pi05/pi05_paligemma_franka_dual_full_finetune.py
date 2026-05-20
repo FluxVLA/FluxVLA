@@ -129,7 +129,6 @@ model = dict(
         1,
         1,
         1,
-        10,
         1,
         1,
         1,
@@ -137,7 +136,8 @@ model = dict(
         1,
         1,
         1,
-        10,
+        1,
+        1,
     ],
 )
 
@@ -155,9 +155,7 @@ train_dataloader = dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260511_dual_franka_teleop',  # noqa: E501
-                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260512_dual_franka_teleop',  # noqa: E501
-                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260513_dual_franka_teleop'  # noqa: E501
+                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260519_dual_franka_teleop'  # noqa: E501
                 ],
                 action_key='observation.state',
                 transforms=[
