@@ -695,6 +695,7 @@ class BaseTrainRunner(ABC):
 
                 # Get next batch
                 try:
+
                     batch = next(dataloader_iter)
                 except StopIteration:
                     # Finite dataloader exhausted, start new epoch

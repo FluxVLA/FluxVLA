@@ -55,6 +55,8 @@ class DistributedRepeatingDataset(IterableDataset):
         dim (int, optional): Target dimension for padding/copying data.
             If provided, data will be padded/copied to be an integer
             multiple of this dimension. Defaults to None.
+        statistics_overrides (dict, optional): Nested statistic values to
+            override after collecting dataset statistics.
     """
 
     def __init__(self,
@@ -66,7 +68,8 @@ class DistributedRepeatingDataset(IterableDataset):
                  seed: int = 42,
                  statistic_name: str = 'private',
                  dim: Optional[int] = None,
-                 dataset_statistics: Optional[Dict] = None) -> None:
+                 dataset_statistics: Optional[Dict] = None,
+                 statistics_overrides: Optional[Dict] = None) -> None:
         self.shuffle = shuffle
         self.reshuffle_each_epoch = reshuffle_each_epoch
         self.seed = seed
@@ -179,10 +182,28 @@ class DistributedRepeatingDataset(IterableDataset):
             self.is_grouped = True
             self.is_list = False
 
+        if statistics_overrides is not None:
+            if self.is_grouped:
+                for stats in self.grouped_dataset_statistics.values():
+                    self._apply_statistics_overrides(stats,
+                                                     statistics_overrides)
+            else:
+                self._apply_statistics_overrides(self.dataset_statistics,
+                                                 statistics_overrides)
+
         # Get the rank and world size from the overwatch
         self.rank = overwatch.rank()
         self.world_size = overwatch.world_size()
         self._epoch = 0
+
+    def _apply_statistics_overrides(self, statistics: Dict,
+                                    overrides: Dict) -> None:
+        for key, value in overrides.items():
+            if (isinstance(value, dict) and key in statistics
+                    and isinstance(statistics[key], dict)):
+                self._apply_statistics_overrides(statistics[key], value)
+            else:
+                statistics[key] = value
 
     def _get_item_from_global_idx(self, global_idx):
         """Get item from global index, handling single, list,
@@ -256,7 +277,7 @@ class DistributedRepeatingDataset(IterableDataset):
         for stat in stats:
             for key in static_keys:
                 if key not in stat['stats']:
-                    raise KeyError(f"Key '{key}' not found in dataset.")
+                    raise KeyError(f"Missing dataset statistic key: '{key}'.")
 
                 stat_data = stat['stats'][key]
 

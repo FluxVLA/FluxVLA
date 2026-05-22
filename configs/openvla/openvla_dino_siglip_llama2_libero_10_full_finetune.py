@@ -72,6 +72,28 @@ train_dataloader = dict(
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name='libero_10_no_noops',
+        statistics_overrides=dict(
+            libero_10_no_noops=dict(
+                action=dict(
+                    q01=[
+                        -0.6348214149475098,
+                        -0.7741071581840515,
+                        -0.7633928656578064,
+                        -0.09749999642372131,
+                        -0.14819999992847435,
+                        -0.2742857038974762,
+                        0.0,
+                    ],
+                    q99=[
+                        0.7714285850524902,
+                        0.8464285731315613,
+                        0.9375,
+                        0.13928571343421936,
+                        0.15964286029338837,
+                        0.3246428668498993,
+                        1.0,
+                    ],
+                ), ), ),
         datasets=dict(
             type='ParquetDataset',
             data_root_path='./datasets/libero_10_no_noops_lerobotv2.1',
@@ -101,7 +123,10 @@ train_dataloader = dict(
                     action_dim=7,
                     state_key='proprio',
                     action_key='action',
-                    norm_type='min_max',
+                    norm_type='quantile',
+                    state_norm_type='min_max',
+                    action_norm_type='quantile',
+                    clip_norm=True,
                     action_norm_mask=[
                         True,
                         True,
@@ -114,6 +139,7 @@ train_dataloader = dict(
                 ),
                 dict(
                     type='ParquetPrompter',
+                    lowercase_task_description=True,
                     action_tokenizer=dict(
                         type='ActionTokenizer',
                         model_path=  # noqa: E251
@@ -209,7 +235,7 @@ runner = dict(
             ]),
         denormalize_action=dict(
             type='DenormalizeLiberoAction',
-            norm_type='min_max',
+            norm_type='quantile',
             action_norm_mask=[True, True, True, True, True, True, False],
         ),
         resize_size=224,
@@ -249,7 +275,7 @@ eval = dict(
         ]),
     denormalize_action=dict(
         type='DenormalizeLiberoAction',
-        norm_type='min_max',
+        norm_type='quantile',
         action_norm_mask=[True, True, True, True, True, True, False],
     ),
     resize_size=224,
