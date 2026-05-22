@@ -628,21 +628,32 @@ class OpenVLA(BaseVLA):
         if unnorm_key is None:
             assert len(norm_stats) == 1, (
                 f'Your model was trained on more than one dataset, '
-                f'please pass a `unnorm_key` from the following options to'
-                f'choose the statistics'
+                f'please pass an unnorm_key from the following options to '
+                f'choose the statistics '
                 f'used for un-normalizing actions: {norm_stats.keys()}')
             unnorm_key = next(iter(norm_stats.keys()))
 
         assert unnorm_key in norm_stats, (
-            f'The `unnorm_key` you chose is not in'
-            f'the set of available dataset statistics,'
+            f'The unnorm_key you chose is unavailable in '
+            f'the set of dataset statistics. '
             f'please choose from: {norm_stats.keys()}')
         return unnorm_key
 
     def get_action_dim(self, unnorm_key: Optional[str] = None) -> int:
         """Get the dimensionality of the policy's action space."""
         unnorm_key = self._check_unnorm_key(self.norm_stats, unnorm_key)
-        return len(self.norm_stats[unnorm_key]['action']['q01'])
+        return self._get_action_dim_from_stats(
+            self.norm_stats[unnorm_key]['action'])
+
+    @staticmethod
+    def _get_action_dim_from_stats(action_stats: Dict[str, Any]) -> int:
+        for key in ('q01', 'min', 'mean', 'max', 'std'):
+            value = action_stats.get(key)
+            if value is not None:
+                return len(value)
+        raise KeyError(
+            'Unable to infer action dimension from normalization stats. '
+            "Expected one of: 'q01', 'min', 'mean', 'max', or 'std'.")
 
     def prepare_inputs_for_generation(
         self,
