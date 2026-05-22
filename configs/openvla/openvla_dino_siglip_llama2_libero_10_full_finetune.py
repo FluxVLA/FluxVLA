@@ -101,7 +101,7 @@ train_dataloader = dict(
                     action_dim=7,
                     state_key='proprio',
                     action_key='action',
-                    norm_type='quantile',
+                    norm_type='min_max',
                     action_norm_mask=[
                         True,
                         True,
@@ -209,7 +209,7 @@ runner = dict(
             ]),
         denormalize_action=dict(
             type='DenormalizeLiberoAction',
-            norm_type='quantile',
+            norm_type='min_max',
             action_norm_mask=[True, True, True, True, True, True, False],
         ),
         resize_size=224,
@@ -249,7 +249,7 @@ eval = dict(
         ]),
     denormalize_action=dict(
         type='DenormalizeLiberoAction',
-        norm_type='quantile',
+        norm_type='min_max',
         action_norm_mask=[True, True, True, True, True, True, False],
     ),
     resize_size=224,
