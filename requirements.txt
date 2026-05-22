@@ -8,7 +8,6 @@ botocore==1.38.32
 cloudpickle
 datasets==4.0.0
 diffusers==0.30.2
--e git+https://github.com/kvablack/dlimp#egg=dlimp
 draccus==0.10.0
 easydict==1.9
 einops==0.4.1
@@ -31,7 +30,6 @@ robosuite==1.4.1
 sentencepiece==0.1.99
 sentry-sdk==2.27.0
 tensorflow==2.15.0
-tensorflow-graphics
 thop==0.1.1-2209072238
 timm==0.9.10
 tqdm-loggable==0.2

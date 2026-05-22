@@ -262,8 +262,7 @@ class ParquetDataset(Dataset):
 class LiberoParquetEvalDataset:
     """Evaluation dataset pipeline for Libero using Parquet-style transforms.
 
-    This mirrors the behavior of `LiberoEvalDataset` in `rlds_dataset.py`,
-    but composes processing via a list of transforms similar to
+    This composes Libero eval processing via a list of transforms similar to
     `ParquetDataset`.
 
     Args:

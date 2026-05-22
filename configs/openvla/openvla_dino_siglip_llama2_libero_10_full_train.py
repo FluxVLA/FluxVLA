@@ -57,55 +57,93 @@ model = dict(
 
 train_dataloader = dict(
     per_device_batch_size=8,
+    per_device_num_workers=4,
     dataset=dict(
-        type='RLDSDataset',
-        data_root_dir=  # noqa: E251
-        './datasets/modified_libero_rlds',
-        data_mix=[('libero_10_no_noops', 1.0)],
-        batch_transform=dict(
-            type='RLDSBatchTransform',
-            load_camera_views=['image_primary', 'image_primary'],
-            action_tokenizer=dict(
-                type='ActionTokenizer',
-                model_path=  # noqa: E251
-                './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
-                bins=256,
-                min_action=-1,
-                max_action=1,
-            ),
-            base_tokenizer=dict(
-                type='PretrainedTokenizer',
-                model_path=  # noqa: E251
-                './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
-                # special_tokens={'pad_token': '<PAD>'}
-            ),
-            prompter=dict(
-                type='PurePrompter',
-                model_family='openvla',
-            ),
-            img_transform=dict(
-                type='TransformImage',
-                image_resize_strategy='resize-naive',
-                input_sizes=[[3, 224, 224], [3, 224, 224]],
-                means=[[123.515625, 116.04492188, 103.59375], [128, 128, 128]],
-                stds=[[58.27148438, 57.02636719, 57.27539062], [128, 128,
-                                                                128]],
-            ),
+        type='DistributedRepeatingDataset',
+        name_mappings={
+            'observation.state': ['proprio'],
+            'action': ['action'],
+        },
+        statistic_keys=['observation.state', 'timestamp', 'action'],
+        statistic_name='libero_10_no_noops',
+        datasets=dict(
+            type='ParquetDataset',
+            data_root_path='./datasets/libero_10_no_noops_lerobotv2.1',
+            transforms=[
+                dict(
+                    type='ProcessParquetInputs',
+                    parquet_keys=[
+                        'observation.state',
+                        'timestamp',
+                        'actions',
+                        'info',
+                        'stats',
+                        'action_masks',
+                    ],
+                    video_keys=[
+                        'observation.images.image',
+                        'observation.images.image',
+                    ],
+                    name_mappings={
+                        'observation.state': ['states'],
+                        'actions': ['actions'],
+                    },
+                    dataset_name='libero_10_no_noops',
+                ),
+                dict(
+                    type='NormalizeStatesAndActions',
+                    action_dim=7,
+                    state_key='proprio',
+                    action_key='action',
+                    norm_type='quantile',
+                    action_norm_mask=[
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        False,
+                    ],
+                ),
+                dict(
+                    type='ParquetPrompter',
+                    action_tokenizer=dict(
+                        type='ActionTokenizer',
+                        model_path=  # noqa: E251
+                        './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
+                        bins=256,
+                        min_action=-1,
+                        max_action=1,
+                    ),
+                ),
+                dict(
+                    type='ProcessPrompts',
+                    tokenizer=dict(
+                        type='PretrainedTokenizer',
+                        model_path=  # noqa: E251
+                        './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
+                        # special_tokens={'pad_token': '<PAD>'}
+                    ),
+                    max_len=None,
+                    with_labels=True,
+                ),
+                dict(type='ResizeImages', height=224, width=224),
+                dict(
+                    type='NormalizeImages',
+                    means=[[123.515625, 116.04492188, 103.59375],
+                           [128, 128, 128]],
+                    stds=[[58.27148438, 57.02636719, 57.27539062],
+                          [128, 128, 128]],
+                ),
+            ],
+            action_window_size=1,
+            action_key='action',
+            use_delta=False,
+            statistic_name='libero_10_no_noops',
+            window_start_idx=0,
         ),
-        traj_transform_kwargs=dict(
-            window_size=1,
-            future_action_window_size=0,
-            skip_unlabeled=True,
-            goal_relabeling_strategy='uniform',
-        ),
-        frame_transform_kwargs=dict(
-            resize_size=(224, 224),
-            num_parallel_calls=16,
-        ),
-        shuffle_buffer_size=256000,
-        train=True,
-        image_aug=False,
-        action_proprio_normalization_type='bounds_q99'))
+    ))
 
 runner = dict(
     type='FSDPTrainRunner',

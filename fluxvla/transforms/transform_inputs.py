@@ -112,13 +112,15 @@ class ProcessParquetInputs():
                  name_mappings: Dict = None,
                  embodiment_id: int = None,
                  embodiment_dim: int = None,
-                 num_padding_imgs: int = 0):
+                 num_padding_imgs: int = 0,
+                 dataset_name: str = None):
         self.parquet_keys = parquet_keys
         self.video_keys = video_keys
         self.name_mappings = name_mappings
         self.embodiment_id = embodiment_id
         self.embodiment_dim = embodiment_dim
         self.num_padding_imgs = num_padding_imgs
+        self.dataset_name = dataset_name
 
     def decode_video_frames_torchvision(
         self,
@@ -173,7 +175,7 @@ class ProcessParquetInputs():
         for frame in reader:
             current_ts = frame['pts']
             if log_loaded_timestamps:
-                logging.info(f'frame loaded at timestamp={current_ts:.4f}')
+                logging.info('frame loaded at timestamp=%.4f', current_ts)
             loaded_frames.append(frame['data'])
             loaded_ts.append(current_ts)
             if current_ts >= last_ts:
@@ -225,26 +227,30 @@ class ProcessParquetInputs():
         assert 'video_path' in info, "Input data must contain 'video_path' key"
         video_root_path = info['video_path']
         for key in self.parquet_keys:
-            assert key in data, f'Key {key} not found in input data'
-            if self.name_mappings is not None and key in self.name_mappings:
-                if isinstance(self.name_mappings[key], str):
-                    if isinstance(data[key], list) or isinstance(
-                            data[key], float):
-                        inputs[self.name_mappings[key]] = np.array(data[key])
+            try:
+                value = data[key]
+            except KeyError as exc:
+                raise KeyError(f'Missing input data key: {key}') from exc
+            mapped_names = None
+            if self.name_mappings is not None:
+                mapped_names = self.name_mappings.get(key)
+            if mapped_names is not None:
+                if isinstance(mapped_names, str):
+                    if isinstance(value, list) or isinstance(value, float):
+                        inputs[mapped_names] = np.array(value)
                     else:
-                        inputs[self.name_mappings[key]] = data[key]
+                        inputs[mapped_names] = value
                 else:
-                    for mapped_key in self.name_mappings[key]:
-                        if isinstance(data[key], list) or isinstance(
-                                data[key], float):
-                            inputs[mapped_key] = np.array(data[key])
+                    for mapped_key in mapped_names:
+                        if isinstance(value, list) or isinstance(value, float):
+                            inputs[mapped_key] = np.array(value)
                         else:
-                            inputs[mapped_key] = data[key]
+                            inputs[mapped_key] = value
             else:
-                if isinstance(data[key], list) or isinstance(data[key], float):
-                    inputs[key] = np.array(data[key])
+                if isinstance(value, list) or isinstance(value, float):
+                    inputs[key] = np.array(value)
                 else:
-                    inputs[key] = data[key]
+                    inputs[key] = value
         images = list()
         img_masks = list()
         timestamps = data.get('frame_timestamps', [data['timestamp']])
@@ -281,6 +287,8 @@ class ProcessParquetInputs():
         inputs['images'] = images
         inputs['img_masks'] = np.array(img_masks)
         inputs['task_description'] = data.get('task_description', '')
+        if self.dataset_name is not None:
+            inputs['dataset_name'] = self.dataset_name
         if self.embodiment_id is not None:
             inputs['embodiment_ids'] = np.array(self.embodiment_id)
         if 'frame_masks' in data:
