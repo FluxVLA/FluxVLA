@@ -72,6 +72,7 @@ train_dataloader = dict(
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name='libero_10_no_noops',
+        reshuffle_each_epoch=True,
         statistics_overrides=dict(
             libero_10_no_noops=dict(
                 action=dict(
@@ -118,7 +119,6 @@ train_dataloader = dict(
                     },
                     dataset_name='libero_10_no_noops',
                 ),
-                dict(type='StandardizeLiberoAction'),
                 dict(
                     type='NormalizeStatesAndActions',
                     action_dim=7,

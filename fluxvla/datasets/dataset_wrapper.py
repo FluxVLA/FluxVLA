@@ -499,9 +499,13 @@ class DistributedRepeatingDataset(IterableDataset):
         total_rank = self.rank * num_workers + worker_id
 
         while True:
+            epoch = self._epoch
+            if self.reshuffle_each_epoch:
+                self._epoch += 1
+
             indices = np.arange(self.total_len)
             if self.shuffle:
-                epoch_offset = self._epoch if self.reshuffle_each_epoch else 0
+                epoch_offset = epoch if self.reshuffle_each_epoch else 0
                 rng = np.random.default_rng(self.seed + epoch_offset)
                 rng.shuffle(indices)
 
@@ -509,9 +513,6 @@ class DistributedRepeatingDataset(IterableDataset):
 
             for idx in shard:
                 yield self._get_item_from_global_idx(idx)
-
-            if self.reshuffle_each_epoch:
-                self._epoch += 1
 
     def __len__(self):
         """Return the total length of all datasets."""

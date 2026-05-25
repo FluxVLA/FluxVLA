@@ -317,23 +317,6 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
 
 
 @TRANSFORMS.register_module()
-class StandardizeLiberoAction:
-    """Match the legacy RLDS LIBERO action convention before normalization."""
-
-    def __init__(self, action_key: str = 'actions') -> None:
-        self.action_key = action_key
-
-    def __call__(self, data: Dict) -> Dict:
-        assert self.action_key in data, \
-            f"Input data must contain '{self.action_key}' key"
-        actions = np.array(data[self.action_key], copy=True)
-        gripper_action = 1 - np.clip(actions[..., -1:], 0, 1)
-        data[self.action_key] = np.concatenate(
-            [actions[..., :6], gripper_action], axis=-1)
-        return data
-
-
-@TRANSFORMS.register_module()
 class NormalizeStatesAndActions:
     """Normalize states and actions in the data.
     This transform normalizes the state and action
