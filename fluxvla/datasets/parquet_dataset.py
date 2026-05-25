@@ -202,8 +202,10 @@ class ParquetDataset(Dataset):
         return dataset_idx
 
     def _get_task_name(self, dataset_idx: int, index: int) -> str:
-        return self.tasks[dataset_idx][self.dataset[index]
-                                       ['task_index']]['task']
+        task_idx = self.dataset[index]['task_index']
+        if task_idx < 0 or task_idx >= len(self.tasks[dataset_idx]):
+            return 'empty'
+        return self.tasks[dataset_idx][task_idx].get('task', 'empty')
 
     def _invalid_start_index(self, index: int, dataset_idx: int,
                              data: Dict[str, Any]) -> bool:
@@ -294,8 +296,7 @@ class ParquetDataset(Dataset):
         data['action_masks'] = np.array(action_masks, dtype=np.float32)
         if self.expose_index:
             data['index'] = np.array(index, dtype=np.int64)
-        data['task_description'] = self.tasks[dataset_idx][data['task_index']][
-            'task']  # noqa: E501
+        data['task_description'] = self._get_task_name(dataset_idx, index)
         data['data_root'] = self.data_root_path[dataset_idx]
         for transform in self.transforms:
             data = transform(data)
