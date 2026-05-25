@@ -36,6 +36,8 @@ class ParquetDataset(Dataset):
                  statistic_name: str = 'private',
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
+                 train_episode_fraction: float = 1.0,
+                 repeat_to_full_length: bool = False,
                  expose_index: bool = False) -> None:
         """Initialize the Parquet dataset.
 
@@ -63,12 +65,21 @@ class ParquetDataset(Dataset):
                 Defaults to 'private'.
             window_start_idx (int): Start index for the action window.
                 Defaults to 1.
+            train_episode_fraction (float): Fraction of episodes to sample
+                from each data root, preserving original episode order.
+                Defaults to 1.0.
+            repeat_to_full_length (bool): If True, repeat the selected
+                episode subset so `__len__` remains the full dataset length.
+                This matches the RLDS training behavior where train[:95%] is
+                repeated while epoch length is based on full statistics.
             expose_index (bool): Whether to add the concatenated dataset index
                 to each raw sample before transforms. This is useful for
                 offline sample-weight transforms such as SARM RA-BC.
                 Defaults to False.
         """
         super().__init__()
+        if not 0 < train_episode_fraction <= 1:
+            raise ValueError('train_episode_fraction must be in (0, 1].')
         self.action_window_size = action_window_size
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
@@ -126,6 +137,12 @@ class ParquetDataset(Dataset):
         # Compute cumulative sizes for fast index lookup
         self.dataset_cumulative_sizes = np.cumsum([0] + dataset_sizes)
         self.dataset = hf_dataset
+        self.full_length = len(self.dataset)
+        self.sample_indices = self._build_sample_indices(
+            train_episode_fraction)
+        self.effective_length = (
+            self.full_length
+            if repeat_to_full_length else len(self.sample_indices))
         self.transforms = list()
         self.action_key = action_key
         self.use_delta = use_delta
@@ -136,9 +153,37 @@ class ParquetDataset(Dataset):
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
 
+    def _build_sample_indices(self, episode_fraction: float) -> np.ndarray:
+        if episode_fraction == 1.0:
+            return np.arange(self.full_length, dtype=np.int64)
+
+        episode_indices = list(self.dataset['episode_index'])
+        sample_indices = []
+        for start, end in zip(self.dataset_cumulative_sizes[:-1],
+                              self.dataset_cumulative_sizes[1:]):
+            start, end = int(start), int(end)
+            local_episode_indices = episode_indices[start:end]
+            ordered_episodes = list(dict.fromkeys(local_episode_indices))
+            keep_count = int(len(ordered_episodes) * episode_fraction)
+            keep_count = max(1, min(keep_count, len(ordered_episodes)))
+            keep_episodes = set(ordered_episodes[:keep_count])
+            sample_indices.extend(
+                start + offset
+                for offset, episode in enumerate(local_episode_indices)
+                if episode in keep_episodes)
+
+        if not sample_indices:
+            raise ValueError('No samples left after applying episode split.')
+        return np.asarray(sample_indices, dtype=np.int64)
+
+    def _resolve_index(self, index: int) -> int:
+        sample_index = index % len(self.sample_indices)
+        return int(self.sample_indices[sample_index])
+
     def _rand_another(self):
         """Randomly select another index from the dataset."""
-        return np.random.randint(0, len(self.dataset))
+        return int(self.sample_indices[np.random.randint(
+            0, len(self.sample_indices))])
 
     def _get_dataset_index(self, index: int) -> int:
         """Get which dataset in data_root list the index belongs to.
@@ -162,13 +207,17 @@ class ParquetDataset(Dataset):
 
     def _invalid_start_index(self, index: int, dataset_idx: int,
                              data: Dict[str, Any]) -> bool:
-        if index == len(self.dataset) - 1:
+        if self._get_task_name(dataset_idx, index) in ('empty', 'static'):
             return True
-        if not self._same_episode_and_dataset(index + 1, dataset_idx, data):
+
+        first_action_index = index + self.window_start_idx
+        if first_action_index == index:
+            return False
+        if not self._same_episode_and_dataset(first_action_index, dataset_idx,
+                                              data):
             return True
-        return (self._get_task_name(dataset_idx, index) in ('empty', 'static')
-                or self._get_task_name(dataset_idx,
-                                       index + 1) in ('empty', 'static'))
+        return self._get_task_name(dataset_idx,
+                                   first_action_index) in ('empty', 'static')
 
     def _same_episode_and_dataset(self, index: int, dataset_idx: int,
                                   data: Dict[str, Any]) -> bool:
@@ -177,6 +226,7 @@ class ParquetDataset(Dataset):
                 and self._get_dataset_index(index) == dataset_idx)
 
     def __getitem__(self, index, dataset_statistics):
+        index = self._resolve_index(index)
         data = self.dataset[index]
         # Determine which dataset the data belongs to
         dataset_idx = self._get_dataset_index(index)
@@ -253,7 +303,7 @@ class ParquetDataset(Dataset):
         return data
 
     def __len__(self):
-        return len(self.dataset)
+        return self.effective_length
 
         # Additional initialization can be added here if needed.
 

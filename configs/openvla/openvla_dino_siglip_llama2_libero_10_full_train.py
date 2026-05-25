@@ -155,7 +155,7 @@ train_dataloader = dict(
                     max_len=None,
                     with_labels=True,
                 ),
-                dict(type='ResizeImages', height=224, width=224),
+                dict(type='ResizeImagesLanczos', height=224, width=224),
                 dict(
                     type='NormalizeImages',
                     means=[[123.515625, 116.04492188, 103.59375],
@@ -169,6 +169,8 @@ train_dataloader = dict(
             use_delta=False,
             statistic_name='libero_10_no_noops',
             window_start_idx=0,
+            train_episode_fraction=0.95,
+            repeat_to_full_length=True,
         ),
     ))
 

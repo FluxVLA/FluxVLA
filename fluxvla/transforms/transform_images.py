@@ -38,6 +38,90 @@ PAD_POSITIONS = (
 PAD_POSITIONS_TEXT = ', '.join(PAD_POSITIONS)
 
 
+def _sinc(x: np.ndarray) -> np.ndarray:
+    out = np.ones_like(x, dtype=np.float64)
+    nonzero = x != 0
+    out[nonzero] = np.sin(np.pi * x[nonzero]) / (np.pi * x[nonzero])
+    return out
+
+
+def _lanczos3_kernel(x: np.ndarray) -> np.ndarray:
+    abs_x = np.abs(x)
+    return np.where(abs_x < 3.0, _sinc(x) * _sinc(x / 3.0), 0.0)
+
+
+def _lanczos3_weights(in_size: int,
+                      out_size: int) -> Tuple[np.ndarray, np.ndarray]:
+    scale = out_size / in_size
+    inv_scale = in_size / out_size
+    sample_positions = (np.arange(out_size, dtype=np.float64) +
+                        0.5) * inv_scale - 0.5
+
+    kernel_scale = scale if scale < 1.0 else 1.0
+    radius = 3.0 / kernel_scale
+    span = int(np.ceil(radius) * 2 + 1)
+    left = np.floor(sample_positions - radius).astype(np.int64)
+    indices = left[:, None] + np.arange(span, dtype=np.int64)[None, :]
+
+    weights = _lanczos3_kernel(
+        (indices - sample_positions[:, None]) * kernel_scale)
+    weights = np.where((indices >= 0) & (indices < in_size), weights, 0.0)
+    weight_sums = weights.sum(axis=1, keepdims=True)
+    weights = np.divide(
+        weights,
+        weight_sums,
+        out=np.zeros_like(weights),
+        where=np.abs(weight_sums) > 1e-12)
+
+    return np.clip(indices, 0, in_size - 1), weights
+
+
+def _resize_hwc_lanczos3_numpy(image: np.ndarray, height: int,
+                               width: int) -> np.ndarray:
+    if image.ndim != 3:
+        raise ValueError(f'Expected HWC image, got shape {image.shape}')
+
+    image = image.astype(np.float64, copy=False)
+    x_indices, x_weights = _lanczos3_weights(image.shape[1], width)
+    resized_x = (image[:, x_indices, :] *
+                 x_weights[None, :, :, None]).sum(axis=2)
+
+    y_indices, y_weights = _lanczos3_weights(image.shape[0], height)
+    resized = (resized_x[y_indices, :, :] *
+               y_weights[:, :, None, None]).sum(axis=1)
+
+    return np.clip(np.round(resized), 0, 255).astype(np.uint8)
+
+
+def _jpeg_roundtrip_numpy(image: np.ndarray) -> np.ndarray:
+    encoded = cv2.imencode('.jpg', cv2.cvtColor(image, cv2.COLOR_RGB2BGR))[1]
+    decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    return cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+
+
+def _resize_hwc_lanczos3_tensorflow(
+        image: np.ndarray,
+        height: int,
+        width: int,
+        jpeg_roundtrip: bool = False) -> np.ndarray:
+    import tensorflow as tf
+
+    try:
+        tf.config.set_visible_devices([], 'GPU')
+    except RuntimeError:
+        pass
+
+    img = image
+    if jpeg_roundtrip:
+        encoded = tf.image.encode_jpeg(img)
+        img = tf.io.decode_image(
+            encoded, expand_animations=False, dtype=tf.uint8)
+    img = tf.image.resize(
+        img, (height, width), method='lanczos3', antialias=True)
+    img = tf.cast(tf.clip_by_value(tf.round(img), 0, 255), tf.uint8)
+    return img.numpy()
+
+
 def _resize_chw_with_pad(image: np.ndarray, height: int, width: int,
                          pad_value: int, pad_direction: str) -> np.ndarray:
     img_hwc = image.transpose(1, 2, 0)
@@ -140,6 +224,55 @@ class ResizeImages:
 
         resized_images = np.concatenate(resized_images, axis=0)
         data['images'] = resized_images
+        return data
+
+
+@TRANSFORMS.register_module()
+class ResizeImagesLanczos:
+    """Resize CHW uint8 images with the same policy as the RLDS pipeline."""
+
+    def __init__(self,
+                 height,
+                 width,
+                 jpeg_roundtrip: bool = False,
+                 backend: str = 'numpy',
+                 *args,
+                 **kwargs):
+        self.height = height
+        self.width = width
+        self.jpeg_roundtrip = jpeg_roundtrip
+        if backend not in ('numpy', 'tensorflow'):
+            raise ValueError(
+                f"Unsupported ResizeImagesLanczos backend '{backend}'. "
+                "Expected 'numpy' or 'tensorflow'.")
+        self.backend = backend
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        if isinstance(data['images'], np.ndarray):
+            assert data['images'].ndim == 3, \
+                "Input 'images' must be a 3D numpy array"
+            images = data['images'].reshape(-1, 3, data['images'].shape[-2],
+                                            data['images'].shape[-1])
+        else:
+            images = data['images']
+
+        resized_images = list()
+        for image in images:
+            img = image.transpose(1, 2, 0)
+            if self.backend == 'tensorflow':
+                img = _resize_hwc_lanczos3_tensorflow(
+                    img,
+                    self.height,
+                    self.width,
+                    jpeg_roundtrip=self.jpeg_roundtrip)
+            else:
+                if self.jpeg_roundtrip:
+                    img = _jpeg_roundtrip_numpy(img)
+                img = _resize_hwc_lanczos3_numpy(img, self.height, self.width)
+            resized_images.append(img.transpose(2, 0, 1))
+
+        data['images'] = np.concatenate(resized_images, axis=0)
         return data
 
 
