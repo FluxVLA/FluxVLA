@@ -118,6 +118,7 @@ train_dataloader = dict(
                     },
                     dataset_name='libero_10_no_noops',
                 ),
+                dict(type='StandardizeLiberoAction'),
                 dict(
                     type='NormalizeStatesAndActions',
                     action_dim=7,

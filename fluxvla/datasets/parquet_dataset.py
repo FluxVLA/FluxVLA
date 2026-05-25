@@ -156,21 +156,31 @@ class ParquetDataset(Dataset):
             self.dataset_cumulative_sizes, index, side='right') - 1
         return dataset_idx
 
+    def _get_task_name(self, dataset_idx: int, index: int) -> str:
+        return self.tasks[dataset_idx][self.dataset[index]
+                                       ['task_index']]['task']
+
+    def _invalid_start_index(self, index: int, dataset_idx: int,
+                             data: Dict[str, Any]) -> bool:
+        if index == len(self.dataset) - 1:
+            return True
+        if not self._same_episode_and_dataset(index + 1, dataset_idx, data):
+            return True
+        return (self._get_task_name(dataset_idx, index) in ('empty', 'static')
+                or self._get_task_name(dataset_idx,
+                                       index + 1) in ('empty', 'static'))
+
+    def _same_episode_and_dataset(self, index: int, dataset_idx: int,
+                                  data: Dict[str, Any]) -> bool:
+        return (index < len(self.dataset) and data['episode_index']
+                == self.dataset[index]['episode_index']
+                and self._get_dataset_index(index) == dataset_idx)
+
     def __getitem__(self, index, dataset_statistics):
         data = self.dataset[index]
         # Determine which dataset the data belongs to
         dataset_idx = self._get_dataset_index(index)
-        while (index == len(self.dataset) - 1
-               or self.dataset[index]['episode_index'] !=
-               self.dataset[index + 1]['episode_index']
-               or self._get_dataset_index(index + 1) != dataset_idx or
-               self.tasks[dataset_idx][self.dataset[index +
-                                                    1]['task_index']]['task']
-               == 'empty' or
-               self.tasks[dataset_idx][self.dataset[index +
-                                                    1]['task_index']]['task']
-               == 'static'):
-
+        while self._invalid_start_index(index, dataset_idx, data):
             index = self._rand_another()
             data = self.dataset[index]
             # Recalculate dataset_idx
@@ -179,37 +189,27 @@ class ParquetDataset(Dataset):
         action_masks = list()
         window_idx = self.window_start_idx
         while len(actions) < self.action_window_size:
-            if (index + window_idx < len(self.dataset)
-                    and data['episode_index']
-                    == self.dataset[index + window_idx]['episode_index']
-                    and  # noqa: E501
-                    self._get_dataset_index(index + window_idx) == dataset_idx
-                    and  # noqa: E501
-                    self.tasks[dataset_idx][self.dataset[index + window_idx]
-                                            ['task_index']]['task'] != 'empty'
-                    and  # noqa: E501
-                    self.tasks[dataset_idx][self.dataset[index + window_idx]
-                                            ['task_index']]['task'] !=
-                    'static'):  # noqa: E501
+            action_index = index + window_idx
+            valid_window_index = self._same_episode_and_dataset(
+                action_index, dataset_idx, data)
+            action_task = (
+                self._get_task_name(dataset_idx, action_index)
+                if valid_window_index else None)
+            if valid_window_index and action_task not in ('empty', 'static'):
                 if self.use_delta:
-                    actions.append(
-                        np.array(self.dataset[index +
-                                              window_idx][self.action_key]) -
-                        np.array(self.dataset[index + window_idx -
-                                              1][self.action_key]).tolist())
+                    actions.append((
+                        np.array(self.dataset[action_index][self.action_key]) -
+                        np.array(self.dataset[action_index -
+                                              1][self.action_key])).tolist())
                 else:
-                    actions.append(self.dataset[index +
-                                                window_idx][self.action_key])
+                    actions.append(self.dataset[action_index][self.action_key])
                 action_masks.append(1)
-            elif index + window_idx >= len(
-                    self.dataset) or self.tasks[dataset_idx][self.dataset[
-                        index + window_idx]['task_index']]['task'] == 'empty':
+            elif action_task == 'empty':
                 for _ in range(self.action_window_size - len(actions)):
                     actions.append(actions[-1])
                     action_masks.append(0)
                 break
-            elif self.tasks[dataset_idx][self.dataset[index + window_idx]
-                                         ['task_index']]['task'] == 'static':
+            elif action_task == 'static':
                 window_idx += 1
                 continue
             else:
