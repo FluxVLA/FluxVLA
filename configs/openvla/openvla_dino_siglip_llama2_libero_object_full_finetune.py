@@ -1,27 +1,370 @@
-from copy import deepcopy
-from importlib.util import module_from_spec, spec_from_file_location
+# Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-_base_path = ('{{ fileDirname }}/'
-              'openvla_dino_siglip_llama2_libero_10_full_finetune.py')
-_base_spec = spec_from_file_location('openvla_libero_10_base', _base_path)
-_base = module_from_spec(_base_spec)
-_base_spec.loader.exec_module(_base)
+model = dict(
+    arch_specifier='no-align+fused-gelu-mlp',
+    freeze_llm_backbone=False,
+    freeze_projector=False,
+    freeze_vision_backbone=False,
+    llm_backbone=dict(
+        hf_token=None,
+        inference_mode=False,
+        llm_backbone_id='llama2-7b-pure_causal',
+        llm_config=dict(
+            bos_token_id=1,
+            eos_token_id=2,
+            hidden_act='silu',
+            hidden_size=4096,
+            intermediate_size=11008,
+            max_position_embeddings=2048,
+            num_attention_heads=32,
+            num_hidden_layers=32,
+            num_key_value_heads=32,
+            pad_token_id=32000,
+            rms_norm_eps=1e-06,
+            tie_word_embeddings=False,
+            vocab_size=32064),
+        llm_family='llama',
+        llm_max_length=2048,
+        llm_path=None,
+        pad_token_id=32000,
+        tokenizer_length=32064,
+        type='LLaMa2LLMBackbone'),
+    name_mapping=dict({
+        'llm_backbone.llm':
+        'language_model',
+        'vision_backbone.dino_featurizer':
+        'vision_backbone.featurizer',
+        'vision_backbone.siglip_featurizer':
+        'vision_backbone.fused_featurizer'
+    }),
+    pretrained_name_or_path='./checkpoints/openvla-7b-finetuned-libero-10',
+    projector=dict(
+        fused_vision_dim=2176, llm_dim=4096, type='FusedMLPProjector'),
+    tokenizer=dict(
+        bins=256,
+        max_action=1,
+        min_action=-1,
+        model_path='checkpoints/openvla-7b-finetuned-libero-10',
+        type='ActionTokenizer'),
+    type='OpenVLA',
+    vision_backbone=dict(
+        dino_config=dict(model_id='dino'),
+        image_resize_strategy='resize-naive',
+        pretrained=False,
+        siglip_config=dict(model_id='siglip_224'),
+        type='DinoSigLIPViTBackbone',
+        vision_backbone_id='dinosiglip-vit-so-224px'),
+    vla_head=dict(norm_stats=None, type='OpenVLAHead', vocab_size=32000))
 
-model = deepcopy(_base.model)
-train_dataloader = deepcopy(_base.train_dataloader)
-runner = deepcopy(_base.runner)
-eval = deepcopy(_base.eval)
+train_dataloader = dict(
+    dataset=dict(
+        datasets=dict(
+            action_key='action',
+            action_window_size=1,
+            data_root_path='./datasets/libero_object_no_noops_lerobotv2.1',
+            repeat_to_full_length=True,
+            statistic_name='libero_object_no_noops',
+            train_episode_fraction=0.95,
+            transforms=[
+                dict(
+                    dataset_name='libero_object_no_noops',
+                    name_mappings=dict({
+                        'actions': [
+                            'actions',
+                        ],
+                        'observation.state': [
+                            'states',
+                        ]
+                    }),
+                    parquet_keys=[
+                        'observation.state',
+                        'timestamp',
+                        'actions',
+                        'info',
+                        'stats',
+                        'action_masks',
+                    ],
+                    type='ProcessParquetInputs',
+                    video_keys=[
+                        'observation.images.image',
+                        'observation.images.image',
+                    ]),
+                dict(
+                    action_dim=7,
+                    action_key='action',
+                    action_norm_mask=[
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        True,
+                        False,
+                    ],
+                    action_norm_type='quantile',
+                    clip_norm=True,
+                    norm_type='quantile',
+                    state_key='proprio',
+                    state_norm_type='min_max',
+                    type='NormalizeStatesAndActions'),
+                dict(
+                    action_tokenizer=dict(
+                        bins=256,
+                        max_action=1,
+                        min_action=-1,
+                        model_path=(
+                            './checkpoints/openvla-7b-finetuned-libero-10'),
+                        type='ActionTokenizer'),
+                    lowercase_task_description=True,
+                    type='ParquetPrompter'),
+                dict(
+                    max_len=None,
+                    tokenizer=dict(
+                        model_path=(
+                            './checkpoints/openvla-7b-finetuned-libero-10'),
+                        type='PretrainedTokenizer'),
+                    type='ProcessPrompts',
+                    with_labels=True),
+                dict(height=224, type='ResizeImagesLanczos', width=224),
+                dict(
+                    means=[
+                        [
+                            123.515625,
+                            116.04492188,
+                            103.59375,
+                        ],
+                        [
+                            128,
+                            128,
+                            128,
+                        ],
+                    ],
+                    stds=[
+                        [
+                            58.27148438,
+                            57.02636719,
+                            57.27539062,
+                        ],
+                        [
+                            128,
+                            128,
+                            128,
+                        ],
+                    ],
+                    type='NormalizeImages'),
+            ],
+            type='ParquetDataset',
+            use_delta=False,
+            window_start_idx=0),
+        name_mappings=dict({
+            'action': [
+                'action',
+            ],
+            'observation.state': [
+                'proprio',
+            ]
+        }),
+        reshuffle_each_epoch=True,
+        statistic_keys=[
+            'observation.state',
+            'timestamp',
+            'action',
+        ],
+        statistic_name='libero_object_no_noops',
+        type='DistributedRepeatingDataset'),
+    per_device_batch_size=8,
+    per_device_num_workers=4)
 
-_dataset_name = 'libero_object_no_noops'
-_task_suite_name = 'libero_object'
+runner = dict(
+    collator=dict(
+        ignore_idx=-100,
+        model_max_length=2048,
+        pad_token_id=0,
+        padding_side='right',
+        pixel_values_dtype='fp16',
+        type='PaddedCollatorForActionPrediction'),
+    enable_gradient_checkpointing=False,
+    enable_mixed_precision_training=True,
+    eval=dict(
+        dataset=dict(
+            transforms=[
+                dict(
+                    img_keys=[
+                        'agentview_image',
+                        'agentview_image',
+                    ],
+                    type='ProcessLiberoEvalInputs'),
+                dict(
+                    image_resize_strategy='resize-naive',
+                    input_sizes=[
+                        [
+                            3,
+                            224,
+                            224,
+                        ],
+                        [
+                            3,
+                            224,
+                            224,
+                        ],
+                    ],
+                    means=[
+                        [
+                            123.515625,
+                            116.04492188,
+                            103.59375,
+                        ],
+                        [
+                            128,
+                            128,
+                            128,
+                        ],
+                    ],
+                    stds=[
+                        [
+                            58.27148438,
+                            57.02636719,
+                            57.27539062,
+                        ],
+                        [
+                            128,
+                            128,
+                            128,
+                        ],
+                    ],
+                    type='TransformImage'),
+                dict(
+                    max_len=None,
+                    prompt_suffix=' ',
+                    tokenizer=dict(
+                        model_path='openvla/openvla-7b-finetuned-libero-10',
+                        type='PretrainedTokenizer'),
+                    type='LiberoPromptFromInputs'),
+            ],
+            type='LiberoParquetEvalDataset'),
+        denormalize_action=dict(
+            action_norm_mask=[
+                True,
+                True,
+                True,
+                True,
+                True,
+                True,
+                False,
+            ],
+            norm_type='quantile',
+            type='DenormalizeLiberoAction'),
+        model_family='openvla',
+        num_steps_wait=10,
+        num_trials_per_task=50,
+        resize_size=224,
+        seed=7,
+        task_suite_name='libero_object',
+        type='LiberoEvalRunner'),
+    learning_rate=2e-05,
+    lr_scheduler_type='constant',
+    max_epochs=24,
+    max_grad_norm=1.0,
+    metric=dict(
+        active_trackers=(
+            'jsonl',
+            'wandb',
+        ),
+        grad_accumulation_steps=1,
+        run_dir='work_dirs',
+        type='VLAMetric',
+        window_size=1),
+    mixed_precision_dtype='bf16',
+    sampler=None,
+    type='FSDPTrainRunner',
+    warmup_ratio=0.0,
+    weight_decay=0.0)
 
-train_dataloader['dataset']['statistic_name'] = _dataset_name
-train_dataloader['dataset'].pop('statistics_overrides', None)
-train_dataloader['dataset']['datasets'][
-    'data_root_path'] = './datasets/libero_object_no_noops_lerobotv2.1'
-train_dataloader['dataset']['datasets']['statistic_name'] = _dataset_name
-train_dataloader['dataset']['datasets']['transforms'][0][
-    'dataset_name'] = _dataset_name
-
-runner['eval']['task_suite_name'] = _task_suite_name
-eval['task_suite_name'] = _task_suite_name
+eval = dict(
+    dataset=dict(
+        transforms=[
+            dict(
+                img_keys=[
+                    'agentview_image',
+                    'agentview_image',
+                ],
+                type='ProcessLiberoEvalInputs'),
+            dict(
+                image_resize_strategy='resize-naive',
+                input_sizes=[
+                    [
+                        3,
+                        224,
+                        224,
+                    ],
+                    [
+                        3,
+                        224,
+                        224,
+                    ],
+                ],
+                means=[
+                    [
+                        123.515625,
+                        116.04492188,
+                        103.59375,
+                    ],
+                    [
+                        128,
+                        128,
+                        128,
+                    ],
+                ],
+                stds=[
+                    [
+                        58.27148438,
+                        57.02636719,
+                        57.27539062,
+                    ],
+                    [
+                        128,
+                        128,
+                        128,
+                    ],
+                ],
+                type='TransformImage'),
+            dict(
+                max_len=None,
+                prompt_suffix=' ',
+                tokenizer=dict(
+                    model_path='./checkpoints/openvla-7b-finetuned-libero-10',
+                    type='PretrainedTokenizer'),
+                type='LiberoPromptFromInputs'),
+        ],
+        type='LiberoParquetEvalDataset'),
+    denormalize_action=dict(
+        action_norm_mask=[
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            False,
+        ],
+        norm_type='quantile',
+        type='DenormalizeLiberoAction'),
+    model_family='openvla',
+    num_steps_wait=10,
+    num_trials_per_task=50,
+    resize_size=224,
+    seed=7,
+    task_suite_name='libero_object',
+    type='LiberoEvalRunner')
