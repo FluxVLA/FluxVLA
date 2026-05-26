@@ -177,6 +177,28 @@ train_dataloader = dict(
             ]
         }),
         reshuffle_each_epoch=True,
+        statistics_overrides=dict(
+            libero_object_no_noops=dict(
+                action=dict(
+                    q01=[
+                        -0.5383928418159485,
+                        -0.8758928775787354,
+                        -0.9375,
+                        -0.06964285671710968,
+                        -0.11678571254014969,
+                        -0.15964286029338837,
+                        0.0,
+                    ],
+                    q99=[
+                        0.8464285731315613,
+                        0.84375,
+                        0.9375,
+                        0.08142857253551483,
+                        0.14892856776714325,
+                        0.0867857113480568,
+                        1.0,
+                    ],
+                ), ), ),
         statistic_keys=[
             'observation.state',
             'timestamp',
