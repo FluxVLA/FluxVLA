@@ -70,8 +70,8 @@ class ParquetDataset(Dataset):
                 Defaults to 1.0.
             repeat_to_full_length (bool): If True, repeat the selected
                 episode subset so `__len__` remains the full dataset length.
-                This matches the RLDS training behavior where train[:95%] is
-                repeated while epoch length is based on full statistics.
+                This keeps epoch length based on full statistics while
+                sampling only the selected train episode fraction.
             expose_index (bool): Whether to add the concatenated dataset index
                 to each raw sample before transforms. This is useful for
                 offline sample-weight transforms such as SARM RA-BC.

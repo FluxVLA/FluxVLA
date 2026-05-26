@@ -684,6 +684,5 @@ If you use FluxVLA in your research or projects, please cite it as:
 - Support more VLM backbones.
 - Support more VLA methods.
 - Support training with VLM data or reasoning-chain-of-thought (CoT) data.
-- RLDS datasets will be deprecated and replaced by Parquet datasets.
 - Full implementation of the logger feature.
 - Support Isaac Sim.

@@ -411,7 +411,7 @@ class BaseTrainRunner(ABC):
         return (self.current_epoch % self.save_epoch_interval) == 0
 
     def _get_effective_dataset_size(self, dataset, sampler):
-        """Get effective dataset size, handling RLDS datasets
+        """Get effective dataset size for finite and sampler-backed datasets.
 
         Args:
             dataset: The dataset object.
@@ -429,7 +429,7 @@ class BaseTrainRunner(ABC):
                 return None
 
     def _estimate_steps_per_epoch(self, dataset, sampler):
-        """Estimate steps per epoch, handling RLDS datasets"""
+        """Estimate steps per epoch for finite and sampler-backed datasets."""
         if sampler is not None:
             # Effective size after DistributedSampler processing
             return len(sampler)

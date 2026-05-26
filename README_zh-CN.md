@@ -677,6 +677,5 @@ pip install numpy==1.26.4
 - 支持更多 VLM 主干。
 - 支持更多 VLA 方法。
 - 支持使用 VLM 数据或思维链（CoT）数据进行训练。
-- RLDS 数据集将废弃并被 Parquet 数据集替代。
 - logger 功能将完整实现。
 - 支持 issacsim。

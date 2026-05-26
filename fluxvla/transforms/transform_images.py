@@ -229,7 +229,7 @@ class ResizeImages:
 
 @TRANSFORMS.register_module()
 class ResizeImagesLanczos:
-    """Resize CHW uint8 images with the same policy as the RLDS pipeline."""
+    """Resize CHW uint8 images with the training-time Lanczos policy."""
 
     def __init__(self,
                  height,
