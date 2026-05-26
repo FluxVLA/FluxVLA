@@ -338,6 +338,8 @@ class NormalizeStatesAndActions:
             Defaults to `norm_type`.
         clip_norm (bool): Whether to clip min_max/quantile normalized values
             to [-1, 1]. Defaults to False.
+        normalize_states (bool): Whether to normalize states before optional
+            padding/truncation. Defaults to True.
         state_key (str | None): The key in the data dictionary
             that contains the state information.
         action_key (str | None): The key in the data dictionary
@@ -355,6 +357,7 @@ class NormalizeStatesAndActions:
                  pad_value: float = 0.0,
                  action_norm_mask: List[bool] = None,
                  clip_norm: bool = False,
+                 normalize_states: bool = True,
                  *args,
                  **kwargs):
         self.state_key = state_key
@@ -366,6 +369,7 @@ class NormalizeStatesAndActions:
         self.action_dim = action_dim
         self.state_dim = state_dim
         self.clip_norm = clip_norm
+        self.normalize_states = normalize_states
         if action_norm_mask is not None:
             assert len(action_norm_mask) == action_dim, \
                 f'Action norm mask must be of length {action_dim}'
@@ -379,7 +383,8 @@ class NormalizeStatesAndActions:
         if self.action_key is not None and 'actions' in data:
             actions = np.asarray(data['actions'], dtype=np.float32)
 
-        needs_state_stats = self.state_norm_type != 'none'
+        needs_state_stats = (
+            self.normalize_states and self.state_norm_type != 'none')
         needs_action_stats = (
             actions is not None and self.action_norm_type != 'none')
         if needs_state_stats or needs_action_stats:
