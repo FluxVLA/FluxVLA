@@ -18,35 +18,26 @@ model = dict(
     vision_backbone=dict(
         type='DinoSigLIPViTBackbone',
         vision_backbone_id='dinosiglip-vit-so-224px',
-        dino_config=dict(model_id='dino'),
+        dino_config=dict(
+            model_id='dino',
+            file=  # noqa: E251
+            './checkpoints/vit_large_patch14_reg4_dinov2.lvd142m/model.safetensors'  # noqa: E501
+        ),
         image_resize_strategy='resize-naive',
-        pretrained=False,
-        siglip_config=dict(model_id='siglip_224')),
+        siglip_config=dict(
+            model_id='siglip_224',
+            file=  # noqa: E251
+            './checkpoints/ViT-SO400M-14-SigLIP/open_clip_model.safetensors'  # noqa: E501
+        )),
     llm_backbone=dict(
         type='LLaMa2LLMBackbone',
         llm_backbone_id='llama2-7b-pure_causal',
         llm_family='llama',
-        llm_path=None,
-        llm_config=dict(
-            vocab_size=32064,
-            hidden_size=4096,
-            intermediate_size=11008,
-            num_hidden_layers=32,
-            num_attention_heads=32,
-            num_key_value_heads=32,
-            max_position_embeddings=2048,
-            hidden_act='silu',
-            rms_norm_eps=1e-6,
-            tie_word_embeddings=False,
-            pad_token_id=32000,
-            bos_token_id=1,
-            eos_token_id=2,
-        ),
+        llm_path=  # noqa: E251
+        './checkpoints/Llama-2-7b-hf',  # noqa: E501
         llm_max_length=2048,
         hf_token=None,
-        inference_mode=False,
-        pad_token_id=32000,
-        tokenizer_length=32064),
+        inference_mode=False),
     projector=dict(
         type='FusedMLPProjector', fused_vision_dim=2176, llm_dim=4096),
     tokenizer=dict(

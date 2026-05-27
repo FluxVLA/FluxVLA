@@ -21,25 +21,9 @@ model = dict(
         hf_token=None,
         inference_mode=False,
         llm_backbone_id='llama2-7b-pure_causal',
-        llm_config=dict(
-            bos_token_id=1,
-            eos_token_id=2,
-            hidden_act='silu',
-            hidden_size=4096,
-            intermediate_size=11008,
-            max_position_embeddings=2048,
-            num_attention_heads=32,
-            num_hidden_layers=32,
-            num_key_value_heads=32,
-            pad_token_id=32000,
-            rms_norm_eps=1e-06,
-            tie_word_embeddings=False,
-            vocab_size=32064),
         llm_family='llama',
         llm_max_length=2048,
-        llm_path=None,
-        pad_token_id=32000,
-        tokenizer_length=32064,
+        llm_path='./checkpoints/Llama-2-7b-hf',
         type='LLaMa2LLMBackbone'),
     name_mapping=dict({
         'llm_backbone.llm':
@@ -60,10 +44,15 @@ model = dict(
         type='ActionTokenizer'),
     type='OpenVLA',
     vision_backbone=dict(
-        dino_config=dict(model_id='dino'),
+        dino_config=dict(
+            file=('./checkpoints/vit_large_patch14_reg4_dinov2.lvd142m/'
+                  'model.safetensors'),
+            model_id='dino'),
         image_resize_strategy='resize-naive',
-        pretrained=False,
-        siglip_config=dict(model_id='siglip_224'),
+        siglip_config=dict(
+            file=('./checkpoints/ViT-SO400M-14-SigLIP/'
+                  'open_clip_model.safetensors'),
+            model_id='siglip_224'),
         type='DinoSigLIPViTBackbone',
         vision_backbone_id='dinosiglip-vit-so-224px'),
     vla_head=dict(norm_stats=None, type='OpenVLAHead', vocab_size=32000))
