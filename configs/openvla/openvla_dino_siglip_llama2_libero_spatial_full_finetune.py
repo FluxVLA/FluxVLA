@@ -33,14 +33,14 @@ model = dict(
         'vision_backbone.siglip_featurizer':
         'vision_backbone.fused_featurizer'
     }),
-    pretrained_name_or_path='./checkpoints/openvla-7b-finetuned-libero-10',
+    pretrained_name_or_path='./checkpoints/openvla-7b',
     projector=dict(
         fused_vision_dim=2176, llm_dim=4096, type='FusedMLPProjector'),
     tokenizer=dict(
         bins=256,
         max_action=1,
         min_action=-1,
-        model_path='checkpoints/openvla-7b-finetuned-libero-10',
+        model_path='checkpoints/openvla-7b',
         type='ActionTokenizer'),
     type='OpenVLA',
     vision_backbone=dict(
@@ -113,16 +113,14 @@ train_dataloader = dict(
                         bins=256,
                         max_action=1,
                         min_action=-1,
-                        model_path=(
-                            './checkpoints/openvla-7b-finetuned-libero-10'),
+                        model_path=('./checkpoints/openvla-7b'),
                         type='ActionTokenizer'),
                     lowercase_task_description=True,
                     type='ParquetPrompter'),
                 dict(
                     max_len=None,
                     tokenizer=dict(
-                        model_path=(
-                            './checkpoints/openvla-7b-finetuned-libero-10'),
+                        model_path=('./checkpoints/openvla-7b'),
                         type='PretrainedTokenizer'),
                     type='ProcessPrompts',
                     with_labels=True),
@@ -260,7 +258,7 @@ runner = dict(
                     max_len=None,
                     prompt_suffix=' ',
                     tokenizer=dict(
-                        model_path='openvla/openvla-7b-finetuned-libero-10',
+                        model_path='./checkpoints/openvla-7b',
                         type='PretrainedTokenizer'),
                     type='LiberoPromptFromInputs'),
             ],
@@ -355,7 +353,7 @@ eval = dict(
                 max_len=None,
                 prompt_suffix=' ',
                 tokenizer=dict(
-                    model_path='./checkpoints/openvla-7b-finetuned-libero-10',
+                    model_path='./checkpoints/openvla-7b',
                     type='PretrainedTokenizer'),
                 type='LiberoPromptFromInputs'),
         ],

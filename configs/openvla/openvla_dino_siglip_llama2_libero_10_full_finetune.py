@@ -43,13 +43,13 @@ model = dict(
     tokenizer=dict(
         type='ActionTokenizer',
         model_path=  # noqa: E251
-        'checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
+        'checkpoints/openvla-7b',  # noqa: E501
         bins=256,
         min_action=-1,
         max_action=1,
     ),
     pretrained_name_or_path=  # noqa: E251
-    './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
+    './checkpoints/openvla-7b',  # noqa: E501
     vla_head=dict(type='OpenVLAHead', norm_stats=None, vocab_size=32000),
     freeze_vision_backbone=False,
     freeze_llm_backbone=False,
@@ -144,7 +144,7 @@ train_dataloader = dict(
                     action_tokenizer=dict(
                         type='ActionTokenizer',
                         model_path=  # noqa: E251
-                        './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
+                        './checkpoints/openvla-7b',  # noqa: E501
                         bins=256,
                         min_action=-1,
                         max_action=1,
@@ -155,7 +155,7 @@ train_dataloader = dict(
                     tokenizer=dict(
                         type='PretrainedTokenizer',
                         model_path=  # noqa: E251
-                        './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
+                        './checkpoints/openvla-7b',  # noqa: E501
                         # special_tokens={'pad_token': '<PAD>'}
                     ),
                     max_len=None,
@@ -232,7 +232,7 @@ runner = dict(
                     tokenizer=dict(
                         type='PretrainedTokenizer',
                         model_path=  # noqa: E251
-                        'openvla/openvla-7b-finetuned-libero-10',  # noqa: E501
+                        './checkpoints/openvla-7b',  # noqa: E501
                         # special_tokens={'pad_token': '<PAD>'}
                     )),
             ]),
@@ -272,7 +272,7 @@ eval = dict(
                 tokenizer=dict(
                     type='PretrainedTokenizer',
                     model_path=  # noqa: E251
-                    './checkpoints/openvla-7b-finetuned-libero-10',  # noqa: E501
+                    './checkpoints/openvla-7b',  # noqa: E501
                     # special_tokens={'pad_token': '<PAD>'}
                 )),
         ]),
