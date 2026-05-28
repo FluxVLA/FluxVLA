@@ -65,7 +65,7 @@ train_dataloader = dict(
             data_root_path='./datasets/libero_spatial_no_noops_lerobotv2.1',
             repeat_to_full_length=True,
             statistic_name='libero_spatial_no_noops',
-            train_episode_fraction=0.95,
+            train_episode_fraction=1.0,
             transforms=[
                 dict(
                     dataset_name='libero_spatial_no_noops',
@@ -286,6 +286,7 @@ runner = dict(
     lr_scheduler_type='constant',
     max_epochs=24,
     max_grad_norm=1.0,
+    max_keep_ckpts=6,
     metric=dict(
         active_trackers=(
             'jsonl',
@@ -297,6 +298,7 @@ runner = dict(
         window_size=1),
     mixed_precision_dtype='bf16',
     sampler=None,
+    save_epoch_interval=4,
     type='FSDPTrainRunner',
     warmup_ratio=0.0,
     weight_decay=0.0)

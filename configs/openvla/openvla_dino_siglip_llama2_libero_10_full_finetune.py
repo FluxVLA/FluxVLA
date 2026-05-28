@@ -175,7 +175,7 @@ train_dataloader = dict(
             use_delta=False,
             statistic_name='libero_10_no_noops',
             window_start_idx=0,
-            train_episode_fraction=0.95,
+            train_episode_fraction=1.0,
             repeat_to_full_length=True,
         ),
     ))
@@ -186,6 +186,8 @@ runner = dict(
     learning_rate=2e-5,
     weight_decay=0.0,
     max_grad_norm=1.0,
+    save_epoch_interval=4,
+    max_keep_ckpts=6,
     sampler=None,
     collator=dict(
         type='PaddedCollatorForActionPrediction',
