@@ -12,9 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import atexit
+import csv
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -117,7 +120,9 @@ class FrankaDualOperator:
             home_settle_samples=5,
             home_timeout=25.0,
             left_home_joint_state_topic=None,
-            right_home_joint_state_topic=None):
+            right_home_joint_state_topic=None,
+            enable_joint_tracking_plot=True,
+            joint_tracking_output_dir='/home/franka/Data/raw_data/vla_tracking'):
         self.img_left_topic = img_left_topic
         self.img_right_topic = img_right_topic
         self.img_front_topic = img_front_topic
@@ -178,6 +183,8 @@ class FrankaDualOperator:
         self.right_home_joint_state_topic = (
             right_home_joint_state_topic
             or f'{self.right_arm_ns}/franka_state_controller/joint_states')
+        self.enable_joint_tracking_plot = enable_joint_tracking_plot
+        self.joint_tracking_output_dir = joint_tracking_output_dir
 
         if len(self.home_joint_names) != 7 or len(
                 self.home_target_joint_positions) != 7:
@@ -211,6 +218,7 @@ class FrankaDualOperator:
 
         self._init()
         self._init_ros()
+        atexit.register(self.save_joint_tracking_outputs)
 
     def _init(self):
         from cv_bridge import CvBridge
@@ -238,6 +246,11 @@ class FrankaDualOperator:
         self.cam_info_dict = {}
         self._traj_thread = None
         self._traj_stop_event = threading.Event()
+        self._joint_tracking_rows = []
+        self._joint_tracking_start_time = None
+        self._joint_tracking_saved = False
+        self._joint_tracking_base = None
+        self._last_joint_tracking_plot_time = 0.0
 
     def get_frame(self, slop=0.7):
         """Get synchronized frame data from all sensors."""
@@ -725,6 +738,147 @@ class FrankaDualOperator:
             right_pos = np.array(self.puppet_arm_right_deque[-1].position)
         return left_pos, right_pos
 
+    def _latest_joint_actual(self, side):
+        if side == 'left':
+            queue = self.puppet_arm_left_deque
+        else:
+            queue = self.puppet_arm_right_deque
+        if len(queue) == 0:
+            return None, None
+        msg = queue[-1]
+        return (np.asarray(msg.position[:7], dtype=np.float64).copy(),
+                msg.header.stamp.to_sec())
+
+    def _record_joint_tracking_sample(self,
+                                      left_target,
+                                      right_target,
+                                      left_velocity=None,
+                                      right_velocity=None):
+        if not self.enable_joint_tracking_plot or self.command_mode != 'joint':
+            return
+
+        now = time.monotonic()
+        if self._joint_tracking_start_time is None:
+            self._joint_tracking_start_time = now
+
+        left_actual, left_stamp = self._latest_joint_actual('left')
+        right_actual, right_stamp = self._latest_joint_actual('right')
+        self._joint_tracking_rows.append({
+            'time':
+            now - self._joint_tracking_start_time,
+            'left_target':
+            np.asarray(left_target[:7], dtype=np.float64).copy(),
+            'right_target':
+            np.asarray(right_target[:7], dtype=np.float64).copy(),
+            'left_velocity':
+            None if left_velocity is None else
+            np.asarray(left_velocity[:7], dtype=np.float64).copy(),
+            'right_velocity':
+            None if right_velocity is None else
+            np.asarray(right_velocity[:7], dtype=np.float64).copy(),
+            'left_actual':
+            left_actual,
+            'right_actual':
+            right_actual,
+            'left_stamp':
+            left_stamp,
+            'right_stamp':
+            right_stamp,
+        })
+
+    def _joint_tracking_output_base(self):
+        if self._joint_tracking_base is None:
+            output_dir = Path(self.joint_tracking_output_dir).expanduser()
+            output_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = time.strftime('%Y%m%d_%H%M%S')
+            self._joint_tracking_base = output_dir / f'vla_qpos_tracking_{timestamp}'
+        return self._joint_tracking_base
+
+    def save_joint_tracking_outputs(self, final=True):
+        if (not self.enable_joint_tracking_plot or not self._joint_tracking_rows
+                or (final and self._joint_tracking_saved)):
+            return
+
+        base = self._joint_tracking_output_base()
+        csv_path = base.with_suffix('.csv')
+        png_path = base.with_suffix('.png')
+
+        fieldnames = ['time', 'left_stamp', 'right_stamp']
+        for side in ('left', 'right'):
+            for kind in ('target', 'actual', 'velocity'):
+                for joint_name in self.joint_names:
+                    fieldnames.append(f'{side}_{kind}_{joint_name}')
+
+        with csv_path.open('w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in self._joint_tracking_rows:
+                flat = {
+                    'time': row['time'],
+                    'left_stamp': row['left_stamp'],
+                    'right_stamp': row['right_stamp'],
+                }
+                for side in ('left', 'right'):
+                    for kind in ('target', 'actual', 'velocity'):
+                        values = row[f'{side}_{kind}']
+                        for idx, joint_name in enumerate(self.joint_names):
+                            key = f'{side}_{kind}_{joint_name}'
+                            flat[key] = (
+                                np.nan if values is None else float(values[idx]))
+                writer.writerow(flat)
+
+        now = time.monotonic()
+        should_plot = final or now - self._last_joint_tracking_plot_time > 10.0
+        if not should_plot:
+            print(f'Saved VLA joint tracking CSV to {csv_path}')
+            return
+        self._last_joint_tracking_plot_time = now
+
+        try:
+            import matplotlib
+
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            print(f'Saved VLA joint tracking CSV to {csv_path}; '
+                  f'failed to plot: {exc}')
+            return
+
+        times = np.asarray(
+            [row['time'] for row in self._joint_tracking_rows],
+            dtype=np.float64)
+        fig, axes = plt.subplots(7, 2, figsize=(16, 18), sharex=True)
+        for col, side in enumerate(('left', 'right')):
+            for joint_idx, joint_name in enumerate(self.joint_names):
+                ax = axes[joint_idx, col]
+                target = np.asarray([
+                    row[f'{side}_target'][joint_idx]
+                    for row in self._joint_tracking_rows
+                ])
+                actual = np.asarray([
+                    np.nan if row[f'{side}_actual'] is None else
+                    row[f'{side}_actual'][joint_idx]
+                    for row in self._joint_tracking_rows
+                ])
+                ax.plot(times, target, label='target', linewidth=1.2)
+                ax.plot(times, actual, label='actual', linewidth=1.0)
+                ax.set_ylabel(joint_name)
+                ax.grid(True, alpha=0.3)
+                if joint_idx == 0:
+                    ax.set_title(f'{side} arm')
+                if joint_idx == 6:
+                    ax.set_xlabel('time [s]')
+                if joint_idx == 0 and col == 0:
+                    ax.legend(loc='best')
+        fig.suptitle('VLA Inference Target vs Actual Joint State')
+        fig.tight_layout(rect=(0, 0, 1, 0.98))
+        fig.savefig(png_path, dpi=150)
+        plt.close(fig)
+        print(f'Saved VLA joint tracking CSV to {csv_path}')
+        print(f'Saved VLA joint tracking plot to {png_path}')
+        if final:
+            self._joint_tracking_saved = True
+
     def _build_joint_state(self, qpos):
         import rospy
         from sensor_msgs.msg import JointState
@@ -741,11 +895,33 @@ class FrankaDualOperator:
     def _execute_joint_step(self, left_joint, right_joint):
         self.left_joint_pub.publish(self._build_joint_state(left_joint))
         self.right_joint_pub.publish(self._build_joint_state(right_joint))
+        self._record_joint_tracking_sample(left_joint, right_joint)
 
         if len(left_joint) > 7:
             self._send_gripper_command('left', left_joint[7])
         if len(right_joint) > 7:
             self._send_gripper_command('right', right_joint[7])
+
+    def hold_current_joints(self, repeats=3, sleep_dt=0.02):
+        if self.command_mode != 'joint':
+            return
+
+        import rospy
+
+        left_actual, _ = self._latest_joint_actual('left')
+        right_actual, _ = self._latest_joint_actual('right')
+        if left_actual is None and right_actual is None:
+            return
+
+        for _ in range(repeats):
+            if rospy.is_shutdown():
+                break
+            if left_actual is not None:
+                self.left_joint_pub.publish(self._build_joint_state(left_actual))
+            if right_actual is not None:
+                self.right_joint_pub.publish(
+                    self._build_joint_state(right_actual))
+            rospy.sleep(sleep_dt)
 
     def execute_step(self, left_eepose, right_eepose):
         if self.command_mode == 'joint':
@@ -845,6 +1021,7 @@ class FrankaDualOperator:
                            base_velocity=None):
         left_traj = np.asarray(left_trajectory)
         right_traj = np.asarray(right_trajectory)
+        exec_dt = dt
 
         self.stop_trajectory(join_timeout=0.2)
         self._traj_stop_event = threading.Event()
@@ -853,11 +1030,11 @@ class FrankaDualOperator:
         if async_exec:
             self._traj_thread = threading.Thread(
                 target=self._run_trajectory,
-                args=(left_traj, right_traj, dt, stop_event),
+                args=(left_traj, right_traj, exec_dt, stop_event),
                 daemon=True)
             self._traj_thread.start()
         else:
-            self._run_trajectory(left_traj, right_traj, dt, stop_event)
+            self._run_trajectory(left_traj, right_traj, exec_dt, stop_event)
 
     def _run_trajectory(self, left_traj, right_traj, dt, stop_event):
         import rospy
@@ -867,12 +1044,15 @@ class FrankaDualOperator:
                 break
             self.execute_step(left_traj[i], right_traj[i])
             rate.sleep()
+        self.save_joint_tracking_outputs(final=False)
 
-    def stop_trajectory(self, join_timeout=None):
+    def stop_trajectory(self, join_timeout=None, hold_current=False):
         self._traj_stop_event.set()
         if (join_timeout is not None and self._traj_thread is not None
                 and self._traj_thread.is_alive()):
             self._traj_thread.join(timeout=join_timeout)
+        if hold_current:
+            self.hold_current_joints()
 
     def is_trajectory_running(self):
         return (self._traj_thread is not None and self._traj_thread.is_alive())

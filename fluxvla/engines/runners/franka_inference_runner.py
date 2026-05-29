@@ -119,6 +119,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             self.prepare_pose = None
         else:
             self.prepare_pose = prepare_pose
+        self._remaining_instruction_chunks = None
 
     @staticmethod
     def _joint_state_to_arm_qpos(joint_state, gripper_width):
@@ -329,6 +330,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 continue
 
             task_description = self._get_task_description(task_id)
+            self._remaining_instruction_chunks = num_times
             return [task_description] * num_times
 
     def _prompt_task_id(
@@ -391,6 +393,9 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             return
 
         ctx = self._action_ctx
+        final_chunk = False
+        if self._remaining_instruction_chunks is not None:
+            final_chunk = self._remaining_instruction_chunks <= 1
 
         if self.async_execution and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
@@ -409,6 +414,17 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
         if self.async_execution and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
+            if final_chunk and hasattr(self.ros_operator, 'stop_trajectory'):
+                try:
+                    self.ros_operator.stop_trajectory(
+                        join_timeout=1.0, hold_current=True)
+                except TypeError:
+                    self.ros_operator.stop_trajectory(join_timeout=1.0)
+
+        if self._remaining_instruction_chunks is not None:
+            self._remaining_instruction_chunks -= 1
+            if self._remaining_instruction_chunks <= 0:
+                self._remaining_instruction_chunks = None
 
     def cleanup(self):
         """Clean up resources."""

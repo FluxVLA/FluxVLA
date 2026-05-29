@@ -132,7 +132,7 @@ class BaseInferenceRunner:
                     state_dict = checkpoint['model']
                 else:
                     state_dict = checkpoint
-            self.vla.load_state_dict(state_dict, strict=True)
+            self.vla.load_state_dict(state_dict, strict=False)
         else:
             self.dataset = None
             self.denormalize_action = None

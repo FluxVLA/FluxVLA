@@ -148,8 +148,8 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
-        name_mappings={'observation.state': ['proprio', 'action']},
-        statistic_keys=['observation.state', 'timestamp'],
+        name_mappings={'observation.eepose': ['proprio', 'action']},
+        statistic_keys=['observation.eepose', 'timestamp'],
         datasets=[
             dict(
                 type='ParquetDataset',
@@ -157,12 +157,12 @@ train_dataloader = dict(
                 [
                     './datasets/RealRobot_franka_dual_lerobotv2.1/20260519_dual_franka_teleop'  # noqa: E501
                 ],
-                action_key='observation.state',
+                action_key='observation.eepose',
                 transforms=[
                     dict(
                         type='ProcessParquetInputs',
                         parquet_keys=[
-                            'observation.state', 'timestamp', 'actions',
+                            'observation.eepose', 'timestamp', 'actions',
                             'info', 'stats', 'action_masks'
                         ],
                         video_keys=[
@@ -171,7 +171,7 @@ train_dataloader = dict(
                             'observation.images.cam_wrist_right'
                         ],
                         name_mappings={
-                            'observation.state': ['states'],
+                            'observation.eepose': ['states'],
                             'actions': ['actions']
                         }),
                     dict(
@@ -238,12 +238,12 @@ inference = dict(
         'The right arm picks up the shuttlecock bucket, hands it to the left arm, and places it on the plate.'  # noqa: E501
     },
     seed=7,
-    action_mode='joint',
+    action_mode='cartesian',
     async_execution=False,
-    execute_horizon=50,
-    # Prepare joints: [left_arm_joints, right_arm_joints]
-    # Each arm: [joint1..joint7, gripper_width]
-    prepare_pose=None,  # Set to None to home, or provide joints to enable
+    execute_horizon=20,
+    # Prepare end-effector poses: [left_arm_pose, right_arm_pose]
+    # Each arm: [x, y, z, qx, qy, qz, qw, gripper_width]
+    prepare_pose=None,  # Set to None to home, or provide poses to enable
     dataset=dict(
         type='PrivateInferenceDataset',
         img_keys=['cam_front', 'cam_wrist_left', 'cam_wrist_right'],
@@ -274,7 +274,7 @@ inference = dict(
     action_chunk=50,
     operator=dict(
         type='FrankaDualOperator',
-        command_mode='joint',
+        command_mode='cartesian',
         img_left_topic='/camera_left_wrist/color/image_raw',
         img_right_topic='/camera_right_wrist/color/image_raw',
         img_front_topic='/camera_front/color/image_raw',
@@ -282,10 +282,14 @@ inference = dict(
         puppet_arm_right_topic='/right_arm/joint_states',
         puppet_gripper_left_topic='/left_arm/franka_gripper/joint_states',
         puppet_gripper_right_topic='/right_arm/franka_gripper/joint_states',
-        joint_cmd_left_topic=(
-            '/left_arm/joint_ruckig_position_controller/target_joint_state'),
-        joint_cmd_right_topic=(
-            '/right_arm/joint_ruckig_position_controller/target_joint_state'),
+        puppet_franka_state_left_topic=(
+            '/left_arm/franka_state_controller/franka_states'),
+        puppet_franka_state_right_topic=(
+            '/right_arm/franka_state_controller/franka_states'),
+        cartesian_cmd_left_topic=(
+            '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
+        cartesian_cmd_right_topic=(
+            '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
         gripper_action_left_name='/left_arm/franka_gripper/move',
         gripper_action_right_name='/right_arm/franka_gripper/move',
     ))
