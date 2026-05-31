@@ -13,6 +13,7 @@ import torch
 import wandb
 from peft import LoraConfig, PeftModel, get_peft_model
 from torch.nn.parallel import DistributedDataParallel as DDP
+from transformers.pytorch_utils import Conv1D
 
 from fluxvla.engines.utils import build_vla_from_cfg
 from fluxvla.engines.utils.overwatch import initialize_overwatch
@@ -20,6 +21,48 @@ from ..utils.root import RUNNERS
 from .base_train_runner import BaseTrainRunner
 
 overwatch = initialize_overwatch(__name__)
+
+_ALL_LINEAR_TARGET = 'all-linear'
+
+
+def _collect_output_embedding_ids(model: torch.nn.Module) -> set:
+    output_embedding_ids = set()
+    for module in model.modules():
+        get_output_embeddings = getattr(module, 'get_output_embeddings', None)
+        if not callable(get_output_embeddings):
+            continue
+
+        try:
+            output_embeddings = get_output_embeddings()
+        except (AttributeError, NotImplementedError):
+            continue
+
+        if output_embeddings is not None:
+            output_embedding_ids.add(id(output_embeddings))
+    return output_embedding_ids
+
+
+def _resolve_lora_target_modules(model: torch.nn.Module, target_modules):
+    if not (isinstance(target_modules, str)
+            and target_modules.lower() == _ALL_LINEAR_TARGET):
+        return target_modules
+
+    output_embedding_ids = _collect_output_embedding_ids(model)
+    linear_classes = (torch.nn.Linear, Conv1D)
+    target_module_names = [
+        name for name, module in model.named_modules()
+        if isinstance(module, linear_classes)
+        and id(module) not in output_embedding_ids
+    ]
+
+    if not target_module_names:
+        raise ValueError(
+            "No linear modules found for LoRA target_modules='all-linear'.")
+
+    if overwatch.is_rank_zero():
+        overwatch.info("Resolved LoRA target_modules='all-linear' to "
+                       f'{len(target_module_names)} linear modules.')
+    return target_module_names
 
 
 @RUNNERS.register_module()
@@ -144,11 +187,13 @@ class DDPTrainRunner(BaseTrainRunner):
                                  self.cfg.model.lora_rank)
             # Get modules_to_save for full fine-tuning of specific modules
             modules_to_save = getattr(self.cfg.model, 'modules_to_save', None)
+            target_modules = _resolve_lora_target_modules(
+                self.vla, self.cfg.model.lora_target_modules)
             lora_config = LoraConfig(
                 r=self.cfg.model.lora_rank,
                 lora_alpha=lora_alpha,
                 lora_dropout=self.cfg.model.lora_dropout,
-                target_modules=self.cfg.model.lora_target_modules,
+                target_modules=target_modules,
                 modules_to_save=modules_to_save,
                 init_lora_weights='gaussian',
             )
