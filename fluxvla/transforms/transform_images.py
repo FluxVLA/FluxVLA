@@ -443,6 +443,112 @@ class AugImage:
 
 
 @TRANSFORMS.register_module()
+class OpenVLAImageAugment:
+    """OpenVLA LIBERO training image augmentation.
+
+    Matches the official OpenVLA RLDS fine-tuning recipe:
+    random resized crop with fixed 0.9 area and 1.0 aspect ratio, followed by
+    random brightness, contrast, saturation, and hue jitter.
+    """
+
+    def __init__(self,
+                 crop_scale: Tuple[float, float] = (0.9, 0.9),
+                 crop_ratio: Tuple[float, float] = (1.0, 1.0),
+                 brightness_delta: float = 0.2,
+                 contrast_range: Tuple[float, float] = (0.8, 1.2),
+                 saturation_range: Tuple[float, float] = (0.8, 1.2),
+                 hue_delta: float = 0.05,
+                 share_across_dinosiglip: bool = True,
+                 *args,
+                 **kwargs):
+        self.crop_scale = crop_scale
+        self.crop_ratio = crop_ratio
+        self.brightness_delta = brightness_delta
+        self.contrast_range = contrast_range
+        self.saturation_range = saturation_range
+        self.hue_delta = hue_delta
+        self.share_across_dinosiglip = share_across_dinosiglip
+
+    def _sample_params(self, height: int, width: int) -> Dict:
+        area = float(height * width)
+        crop_area = area * np.random.uniform(*self.crop_scale)
+        aspect_ratio = np.random.uniform(*self.crop_ratio)
+
+        crop_h = int(round(np.sqrt(crop_area / aspect_ratio)))
+        crop_w = int(round(np.sqrt(crop_area * aspect_ratio)))
+        crop_h = min(max(crop_h, 1), height)
+        crop_w = min(max(crop_w, 1), width)
+
+        return dict(
+            crop_h=crop_h,
+            crop_w=crop_w,
+            top=np.random.randint(0, height - crop_h + 1),
+            left=np.random.randint(0, width - crop_w + 1),
+            brightness_delta=np.random.uniform(-self.brightness_delta,
+                                               self.brightness_delta),
+            contrast_factor=np.random.uniform(*self.contrast_range),
+            saturation_factor=np.random.uniform(*self.saturation_range),
+            hue_delta=np.random.uniform(-self.hue_delta, self.hue_delta),
+        )
+
+    def _random_resized_crop(self, image: np.ndarray,
+                             params: Dict) -> np.ndarray:
+        _, height, width = image.shape
+        top = params['top']
+        left = params['left']
+        crop_h = params['crop_h']
+        crop_w = params['crop_w']
+        cropped = image[:, top:top + crop_h, left:left + crop_w]
+        resized = cv2.resize(
+            cropped.transpose(1, 2, 0), (width, height),
+            interpolation=cv2.INTER_LINEAR)
+        return resized.transpose(2, 0, 1)
+
+    def _color_jitter(self, image: np.ndarray, params: Dict) -> np.ndarray:
+        import tensorflow as tf
+
+        img = image.transpose(1, 2, 0)
+        orig_dtype = img.dtype
+        img = tf.convert_to_tensor(img)
+        img = tf.image.convert_image_dtype(img, tf.float32)
+        img = tf.image.adjust_brightness(img, params['brightness_delta'])
+        img = tf.image.adjust_contrast(img, params['contrast_factor'])
+        img = tf.image.adjust_saturation(img, params['saturation_factor'])
+        img = tf.image.adjust_hue(img, params['hue_delta'])
+        img = tf.clip_by_value(img, 0.0, 1.0)
+        img = tf.image.convert_image_dtype(img, orig_dtype, saturate=True)
+        return img.numpy().transpose(2, 0, 1)
+
+    def _augment_one(self, image: np.ndarray, params: Dict) -> np.ndarray:
+        image = self._random_resized_crop(image, params)
+        return self._color_jitter(image, params)
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        original_shape = data['images'].shape
+        images = data['images'].reshape(-1, 3, original_shape[-2],
+                                        original_shape[-1])
+
+        augmented_images = [None] * len(images)
+        if self.share_across_dinosiglip and len(images) % 2 == 0:
+            half = len(images) // 2
+            for idx in range(half):
+                params = self._sample_params(images[idx].shape[1],
+                                             images[idx].shape[2])
+                augmented_images[idx] = self._augment_one(images[idx], params)
+                augmented_images[idx + half] = self._augment_one(
+                    images[idx + half], params)
+        else:
+            for idx, image in enumerate(images):
+                params = self._sample_params(image.shape[1], image.shape[2])
+                augmented_images[idx] = self._augment_one(image, params)
+
+        data['images'] = np.stack(
+            augmented_images, axis=0).reshape(original_shape)
+        return data
+
+
+@TRANSFORMS.register_module()
 class NormalizeImages:
     """Normalize images in the dataset using specified
     means and standard deviations. This transform normalizes

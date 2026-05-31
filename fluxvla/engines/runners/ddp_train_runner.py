@@ -76,6 +76,7 @@ class DDPTrainRunner(BaseTrainRunner):
                  mixed_precision_dtype: str = 'bf16',
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None,
+                 static_graph: bool = True,
                  **kwargs) -> None:
 
         device_id = overwatch.local_rank()
@@ -105,6 +106,7 @@ class DDPTrainRunner(BaseTrainRunner):
         self.args = args
         self.weight_decay = weight_decay
         self.max_grad_norm = max_grad_norm
+        self.static_graph = static_graph
         self.distributed_state = overwatch.distributed_state
         self.recent_losses = deque(maxlen=self.grad_accumulation_steps)
 
@@ -226,7 +228,7 @@ class DDPTrainRunner(BaseTrainRunner):
             device_ids=[device_id],
             find_unused_parameters=True,
             gradient_as_bucket_view=True,
-            static_graph=True)
+            static_graph=self.static_graph)
 
         if overwatch.is_rank_zero():
             overwatch.info(
@@ -239,11 +241,14 @@ class DDPTrainRunner(BaseTrainRunner):
                 f'|-> Distributed World Size = {overwatch.world_size()}\n'
                 f'|-> Gradient Accumulation Steps = {self.grad_accumulation_steps}\n\n'  # noqa: E501
                 f'|-> Gradient Checkpointing = {self.enable_gradient_checkpointing}\n'  # noqa: E501
+                f'|-> DDP Static Graph = {self.static_graph}\n'
                 f'|-> Mixed Precision Training = {self.enable_mixed_precision_training}\n'  # noqa: E501
-                f'     |-> Dtype = {self.mixed_precision_dtype}\n')
+                f'|-> Mixed Precision Dtype = {self.mixed_precision_dtype}\n')
 
     def clip_grad_norm(self):
         """Clip gradient norm for DDP model."""
+        if self.max_grad_norm is None:
+            return
         torch.nn.utils.clip_grad_norm_(
             self.vla.parameters(), max_norm=self.max_grad_norm)
 
@@ -293,10 +298,13 @@ class DDPTrainRunner(BaseTrainRunner):
             os.makedirs(checkpoint_dir, exist_ok=True)
 
             # Create checkpoint filename (unified format)
-            checkpoint_name = f'step-{global_step:06d}-epoch-{epoch:03d}'
+            step_name = str(global_step).zfill(6)
+            epoch_name = str(epoch).zfill(3)
+            checkpoint_name = f'step-{step_name}-epoch-{epoch_name}'
 
             if train_loss is not None:
-                checkpoint_name += f'-loss={train_loss:.4f}'
+                loss_name = format(train_loss, '.4f')
+                checkpoint_name += f'-loss={loss_name}'
             checkpoint_name += '.pt'
 
             checkpoint_path = os.path.join(checkpoint_dir, checkpoint_name)
@@ -521,15 +529,14 @@ class DDPTrainRunner(BaseTrainRunner):
 
             if param_name not in current_name_to_idx:
                 if overwatch.is_rank_zero():
-                    overwatch.debug(
-                        f'Parameter {param_name} not found in current model')
+                    overwatch.debug(f'Parameter {param_name} is missing from '
+                                    'current model')
                 continue
 
             if ckpt_state_idx not in checkpoint_state:
                 if overwatch.is_rank_zero():
-                    overwatch.debug(
-                        f'State index {ckpt_state_idx} not found in checkpoint'
-                    )
+                    overwatch.debug(f'State index {ckpt_state_idx} is missing '
+                                    'from checkpoint')
                 continue
 
             current_idx = current_name_to_idx[param_name]
@@ -749,7 +756,7 @@ class DDPTrainRunner(BaseTrainRunner):
             overwatch.info(f'Loading checkpoint from: {checkpoint_path}')
 
         checkpoint = torch.load(
-            checkpoint_path, map_location=f'cuda:{self.device_id}')
+            checkpoint_path, map_location='cuda:' + str(self.device_id))
 
         # Load model state dict (DDP-specific)
         if 'model' in checkpoint:

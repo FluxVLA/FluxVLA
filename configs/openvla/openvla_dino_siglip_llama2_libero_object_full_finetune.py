@@ -65,7 +65,7 @@ train_dataloader = dict(
             data_root_path='./datasets/libero_object_no_noops_lerobotv2.1',
             repeat_to_full_length=True,
             statistic_name='libero_object_no_noops',
-            train_episode_fraction=1.0,
+            train_episode_fraction=0.95,
             transforms=[
                 dict(
                     dataset_name='libero_object_no_noops',
@@ -125,6 +125,7 @@ train_dataloader = dict(
                     type='ProcessPrompts',
                     with_labels=True),
                 dict(height=224, type='ResizeImagesLanczos', width=224),
+                dict(type='OpenVLAImageAugment'),
                 dict(
                     means=[
                         [
@@ -214,7 +215,8 @@ runner = dict(
                         'agentview_image',
                         'agentview_image',
                     ],
-                    type='ProcessLiberoEvalInputs'),
+                    type='ProcessLiberoEvalInputs',
+                    center_crop=True),
                 dict(
                     image_resize_strategy='resize-naive',
                     input_sizes=[
@@ -311,7 +313,8 @@ eval = dict(
                     'agentview_image',
                     'agentview_image',
                 ],
-                type='ProcessLiberoEvalInputs'),
+                type='ProcessLiberoEvalInputs',
+                center_crop=True),
             dict(
                 image_resize_strategy='resize-naive',
                 input_sizes=[

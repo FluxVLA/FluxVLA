@@ -606,13 +606,23 @@ class OpenVLA(BaseVLA):
         Returns:
             torch.FloatTensor: The predicted action logits.
         """
-        output = self.generate(
-            lang_tokens,
-            images,
-            max_new_tokens=self.get_action_dim(unnorm_key) + 1,
-            **kwargs)
+        if not torch.all(lang_tokens[:, -1] == 29871):
+            empty_token = torch.full((lang_tokens.shape[0], 1),
+                                     29871,
+                                     dtype=lang_tokens.dtype,
+                                     device=lang_tokens.device)
+            lang_tokens = torch.cat((lang_tokens, empty_token), dim=1)
+            if lang_masks is not None:
+                empty_mask = torch.ones((lang_masks.shape[0], 1),
+                                        dtype=lang_masks.dtype,
+                                        device=lang_masks.device)
+                lang_masks = torch.cat((lang_masks, empty_mask), dim=1)
 
-        action_preds = output[:, -self.get_action_dim(unnorm_key) - 1:-1]
+        action_dim = self.get_action_dim(unnorm_key)
+        output = self.generate(
+            lang_tokens, images, max_new_tokens=action_dim, **kwargs)
+
+        action_preds = output[:, -action_dim:]
 
         # action_preds = action_preds[:, ~lang_masks.squeeze(0)[1:]]
         # action_preds = action_preds[:, :7]

@@ -180,46 +180,58 @@ class BaseTrainRunner(ABC):
             assert check_bloat16_supported(), \
                 'BFloat16 is not supported on this hardware; unset `mixed_precision`'  # noqa: E501
 
-    def _convert_batch_to_dtype(self, batch: Dict, dtype: torch.dtype) -> Dict:
-        """Convert floating point tensors in batch to specified dtype.
+    def _prepare_batch(self,
+                       batch: Dict,
+                       device: torch.device | int,
+                       dtype: Optional[torch.dtype] = None) -> Dict:
+        """Move tensor batch values to device and optionally cast floats.
 
-        This method automatically converts all floating point tensors in
-        the batch to the target dtype (e.g., bfloat16), while preserving
-        integer tensors and other data types.
+        Floating point tensors are cast to ``dtype`` when provided. Integer
+        and bool tensors keep their dtype.
 
         Args:
             batch (Dict): Input batch dictionary.
-            dtype (torch.dtype): Target dtype (e.g., torch.bfloat16).
+            device: Target device.
+            dtype (torch.dtype): Optional floating point target dtype.
 
         Returns:
-            Dict: Batch with converted dtypes.
+            Dict: Batch with tensors on the target device.
         """
         converted_batch = {}
+        target_device = (
+            torch.device('cuda', device)
+            if isinstance(device, int) else device)
 
         for key, value in batch.items():
             if isinstance(value, torch.Tensor):
-                # Convert floating point tensors to target dtype
-                # Keep integer tensors (int, long, bool) as is
-                if value.dtype.is_floating_point:
-                    converted_batch[key] = value.to(dtype=dtype)
+                if dtype is not None and value.dtype.is_floating_point:
+                    converted_batch[key] = value.to(
+                        device=target_device, dtype=dtype, non_blocking=True)
                 else:
-                    # Keep integer tensors unchanged
-                    converted_batch[key] = value
+                    converted_batch[key] = value.to(
+                        device=target_device, non_blocking=True)
             elif isinstance(value, dict):
                 # Recursively handle nested dictionaries
-                converted_batch[key] = self._convert_batch_to_dtype(
-                    value, dtype)
+                converted_batch[key] = self._prepare_batch(
+                    value, device, dtype)
             elif isinstance(value, (list, tuple)):
                 # Handle lists/tuples that may contain tensors
                 converted_list = []
                 for item in value:
-                    if isinstance(
-                            item,
-                            torch.Tensor) and item.dtype.is_floating_point:
-                        converted_list.append(item.to(dtype=dtype))
+                    if isinstance(item, torch.Tensor):
+                        if dtype is not None and item.dtype.is_floating_point:
+                            converted_list.append(
+                                item.to(
+                                    device=target_device,
+                                    dtype=dtype,
+                                    non_blocking=True))
+                        else:
+                            converted_list.append(
+                                item.to(
+                                    device=target_device, non_blocking=True))
                     elif isinstance(item, dict):
                         converted_list.append(
-                            self._convert_batch_to_dtype(item, dtype))
+                            self._prepare_batch(item, device, dtype))
                     else:
                         converted_list.append(item)
                 converted_batch[key] = (
@@ -230,6 +242,10 @@ class BaseTrainRunner(ABC):
                 converted_batch[key] = value
 
         return converted_batch
+
+    def _convert_batch_to_dtype(self, batch: Dict, dtype: torch.dtype) -> Dict:
+        """Convert floating point tensors in batch to specified dtype."""
+        return self._prepare_batch(batch, self.device_id, dtype)
 
     @staticmethod
     def _shutdown_dataloader(dataloader: Optional[DataLoader]) -> None:
@@ -834,9 +850,9 @@ class BaseTrainRunner(ABC):
 
     def _training_step(self, batch) -> torch.Tensor:
         """Execute single training step: forward, backward, optimize."""
-        if self.enable_mixed_precision_training:
-            batch = self._convert_batch_to_dtype(batch,
-                                                 self.mixed_precision_dtype)
+        batch = self._prepare_batch(
+            batch, self.device_id, self.mixed_precision_dtype
+            if self.enable_mixed_precision_training else None)
         if ('sample_weight' in batch
                 and not self._vla_accepts_kwarg('sample_weight')):
             batch = dict(batch)
