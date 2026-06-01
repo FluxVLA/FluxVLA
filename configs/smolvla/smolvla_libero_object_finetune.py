@@ -169,8 +169,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler_type='linear-warmup+cosine-decay',
-    warmup_ratio=0.03,
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.03,
+    ),
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
@@ -191,7 +193,6 @@ eval = dict(
             dict(
                 type='ProcessLiberoEvalInputs',
                 img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
-                resize_size=512,
             ),
             dict(
                 type='TransformImage',

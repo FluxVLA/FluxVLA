@@ -12,4 +12,5 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .lr_scheduler_policies import *  # noqa: F401, F403
 from .schedulers import get_scheduler  # noqa: F401, F403

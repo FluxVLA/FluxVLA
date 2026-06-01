@@ -57,16 +57,7 @@ class FSDPTrainRunner(BaseTrainRunner):
             Defaults to 2.
         save_full_model (bool, optional): Whether to save the full model.
             Defaults to True.
-        lr_scheduler_type (str, optional): Type of learning rate scheduler.
-            Supported types: 'constant', 'linear-warmup+cosine-decay',
-            'step-based'. Defaults to 'constant'.
-        warmup_ratio (int, optional): Ratio of warm-up steps.
-            Defaults to 0.
-        lr_schedule (Dict[float, float], optional): Dictionary mapping ratio
-            (0-1) to learning rate for step-based scheduler. Required when
-            lr_scheduler_type is 'step-based'. Format: {ratio: lr}, e.g.,
-            {0: 1e-4, 0.8: 1e-5} means 0-80% of steps use 1e-4, 80%-100% use
-            1e-5. Defaults to None.
+        lr_scheduler (Dict): Learning rate scheduler policy configuration.
         enable_gradient_checkpointing (bool, optional): Enable gradient
             checkpointing. Defaults to True.
         enable_mixed_precision_training (bool, optional): Enable mixed
@@ -93,15 +84,8 @@ class FSDPTrainRunner(BaseTrainRunner):
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
                  save_full_model: bool = True,
-                 lr_scheduler_type: str = 'constant',
-                 warmup_ratio: int = 0,
-                 lr_schedule: Optional[Dict[float, float]] = None,
-                 freeze_steps: int = 0,
-                 warmup_steps: int = 0,
-                 lr_coef: float = 1.0,
+                 lr_scheduler: Optional[Dict] = None,
                  betas: tuple = (0.9, 0.999),
-                 use_cosine_decay: bool = False,
-                 min_lr_ratio: float = 0.1,
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
                  convert_batch_float_to_mixed_precision: bool = True,
@@ -127,15 +111,8 @@ class FSDPTrainRunner(BaseTrainRunner):
             save_iter_interval=save_iter_interval,
             max_keep_ckpts=max_keep_ckpts,
             save_full_model=save_full_model,
-            lr_scheduler_type=lr_scheduler_type,
-            lr_schedule=lr_schedule,
-            warmup_ratio=warmup_ratio,
-            freeze_steps=freeze_steps,
-            warmup_steps=warmup_steps,
-            lr_coef=lr_coef,
+            lr_scheduler=lr_scheduler,
             betas=betas,
-            use_cosine_decay=use_cosine_decay,
-            min_lr_ratio=min_lr_ratio,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
             enable_mixed_precision_training=enable_mixed_precision_training,
             convert_batch_float_to_mixed_precision=(
@@ -146,7 +123,6 @@ class FSDPTrainRunner(BaseTrainRunner):
             resume_from=resume_from)
         self.weight_decay = weight_decay
         self.max_grad_norm = max_grad_norm
-        self.lr_schedule = lr_schedule
         self.sharding_strategy = sharding_strategy
         if self.sharding_strategy == 'shard-grad-op':
             self.fsdp_sharding_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
@@ -430,9 +406,7 @@ class FSDPTrainRunner(BaseTrainRunner):
         # Create Optimizer and LR Scheduler
         # Use base class method to setup optimizer and scheduler
         self._setup_optimizer_and_scheduler(
-            n_train_examples,
-            weight_decay=self.weight_decay,
-            lr_schedule=self.lr_schedule)
+            n_train_examples, weight_decay=self.weight_decay)
 
         # Calculate values for logging
         n_train_examples_rounded = math.ceil(
@@ -442,7 +416,15 @@ class FSDPTrainRunner(BaseTrainRunner):
                                   self.max_epochs) // self.global_batch_size
         else:
             num_training_steps = self.max_steps
-        num_warmup_steps = int(num_training_steps * self.warmup_ratio)
+        scheduler_type = self.lr_scheduler_cfg.get('type', 'unknown')
+        if 'warmup_ratio' in self.lr_scheduler_cfg:
+            warmup_ratio = self.lr_scheduler_cfg['warmup_ratio']
+            warmup_info = (
+                f'{int(num_training_steps * warmup_ratio)} ({warmup_ratio})')
+        elif 'warmup_steps' in self.lr_scheduler_cfg:
+            warmup_info = f"{self.lr_scheduler_cfg['warmup_steps']} steps"
+        else:
+            warmup_info = '0'
         # Finalize Setup =>> Log!
         overwatch.info(
             'FSDP Full-Shard Strategy =>> Finalized Training Setup:\n'  # noqa: E501
@@ -457,8 +439,8 @@ class FSDPTrainRunner(BaseTrainRunner):
             f'                 |-> Buffer Precision = {fsdp_precision_policy.buffer_dtype}\n\n'  # noqa: E221, E501
             f'         |-> Default AdamW LR = {self.learning_rate}\n'  # noqa: E221, E501
             f'         |-> AdamW Weight Decay = {self.weight_decay}\n'  # noqa: E221, E501
-            f'         |-> LR Scheduler Type = {self.lr_scheduler_type}\n'  # noqa: E221, E501
-            f'         |-> LR Scheduler Warm-up Steps (Ratio) = {num_warmup_steps} ({self.warmup_ratio})\n'  # noqa: E221, E501
+            f'         |-> LR Scheduler Type = {scheduler_type}\n'  # noqa: E221, E501
+            f'         |-> LR Scheduler Warm-up = {warmup_info}\n'  # noqa: E221, E501
             f'         |-> Dataset Size = {n_train_examples} Examples\n'  # noqa: E221, E501
             f'         |-> Max Steps = {num_training_steps}\n\n'  # noqa: E221, E501
         )
