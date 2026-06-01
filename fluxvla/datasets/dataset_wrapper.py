@@ -72,9 +72,11 @@ class DistributedRepeatingDataset(IterableDataset):
                  dataset_statistics: Optional[Dict] = None,
                  statistics_overrides: Optional[Dict] = None,
                  dataset_statistics_path: Optional[str] = None) -> None:
-        if dataset_statistics is not None and dataset_statistics_path is not None:
+        if (dataset_statistics is not None
+                and dataset_statistics_path is not None):
             raise ValueError(
-                'dataset_statistics and dataset_statistics_path are mutually exclusive')
+                'dataset_statistics and dataset_statistics_path are mutually '
+                'exclusive')
         if dataset_statistics_path is not None:
             with open(dataset_statistics_path, 'r', encoding='utf-8') as f:
                 dataset_statistics = json.load(f)
@@ -145,8 +147,9 @@ class DistributedRepeatingDataset(IterableDataset):
         else:
             if dataset_statistics is not None:
                 raise ValueError(
-                    'dataset_statistics_path is only supported for single/list '
-                    'dataset configs; grouped datasets should use grouped stats.')
+                    'dataset_statistics_path is only supported for '
+                    'single/list dataset configs; grouped datasets should use '
+                    'grouped stats.')
             # Case 3: Grouped datasets (dict of list of dict)
             self.grouped_datasets = {}
             self.grouped_dataset_lens = {}
@@ -524,7 +527,7 @@ class DistributedRepeatingDataset(IterableDataset):
                 rng = np.random.default_rng(self.seed + epoch_offset)
                 rng.shuffle(indices)
 
-            # Distribute indices across distributed ranks and DataLoader workers.
+            # Distribute indices across distributed ranks and workers.
             shard = indices[total_rank::total_world].tolist()
 
             for idx in shard:
