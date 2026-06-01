@@ -169,8 +169,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler_type='linear-warmup+cosine-decay',
-    warmup_ratio=0.03,
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.03,
+    ),
     sharding_strategy='full-shard',
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
@@ -204,6 +206,7 @@ eval = dict(
                 image_mean=[0.48145466, 0.4578275, 0.40821073],
                 image_std=[0.26862954, 0.26130258, 0.27577711],
                 img_key='pixel_values',
+                exact_resize_size=(224, 224),
                 to_tensor=True),
             dict(
                 type='LiberoPromptFromInputs',
