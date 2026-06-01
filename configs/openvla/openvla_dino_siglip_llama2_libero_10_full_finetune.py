@@ -58,7 +58,10 @@ model = dict(
         'llm_backbone.llm': 'language_model',
         'vision_backbone.siglip_featurizer':
         'vision_backbone.fused_featurizer',
-        'vision_backbone.dino_featurizer': 'vision_backbone.featurizer'
+        'vision_backbone.dino_featurizer': 'vision_backbone.featurizer',
+        'projector.projector.0': 'projector.fc1',
+        'projector.projector.2': 'projector.fc2',
+        'projector.projector.4': 'projector.fc3'
     })
 
 train_dataloader = dict(
