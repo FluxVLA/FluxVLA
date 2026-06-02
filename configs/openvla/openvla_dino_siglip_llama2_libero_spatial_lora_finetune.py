@@ -54,6 +54,11 @@ model = dict(
     freeze_vision_backbone=False,
     freeze_llm_backbone=False,
     freeze_projector=False,
+    use_lora=True,
+    lora_rank=32,
+    lora_alpha=16,
+    lora_dropout=0.0,
+    lora_target_modules='all-linear',
     name_mapping={
         'llm_backbone.llm': 'language_model',
         'vision_backbone.siglip_featurizer':
@@ -65,8 +70,8 @@ model = dict(
     })
 
 train_dataloader = dict(
-    per_device_batch_size=8,
-    per_device_num_workers=4,
+    per_device_batch_size=16,
+    per_device_num_workers=8,
     dataset=dict(
         type='DistributedRepeatingDataset',
         name_mappings={
@@ -74,33 +79,33 @@ train_dataloader = dict(
             'action': ['action'],
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
-        statistic_name='libero_10_no_noops',
+        statistic_name='libero_spatial_no_noops',
         reshuffle_each_epoch=True,
         statistics_overrides=dict(
-            libero_10_no_noops=dict(
+            libero_spatial_no_noops=dict(
                 action=dict(
                     q01=[
-                        -0.6348214149475098,
-                        -0.7741071581840515,
-                        -0.7633928656578064,
-                        -0.09749999642372131,
-                        -0.14819999992847435,
-                        -0.2742857038974762,
+                        -0.7454732114076613,
+                        -0.6616071462631226,
+                        -0.9375,
+                        -0.1071428582072258,
+                        -0.20678570866584778,
+                        -0.1842857152223587,
                         0.0,
                     ],
                     q99=[
-                        0.7714285850524902,
-                        0.8464285731315613,
                         0.9375,
-                        0.13928571343421936,
-                        0.15964286029338837,
-                        0.3246428668498993,
+                        0.8758928775787354,
+                        0.9321428537368774,
+                        0.1039285734295845,
+                        0.17678570747375488,
+                        0.14571428298950195,
                         1.0,
                     ],
                 ), ), ),
         datasets=dict(
             type='ParquetDataset',
-            data_root_path='./datasets/libero_10_no_noops_lerobotv2.1',
+            data_root_path='./datasets/libero_spatial_no_noops_lerobotv2.1',
             transforms=[
                 dict(
                     type='ProcessParquetInputs',
@@ -120,7 +125,7 @@ train_dataloader = dict(
                         'observation.state': ['states'],
                         'actions': ['actions'],
                     },
-                    dataset_name='libero_10_no_noops',
+                    dataset_name='libero_spatial_no_noops',
                 ),
                 dict(
                     type='NormalizeStatesAndActions',
@@ -159,7 +164,6 @@ train_dataloader = dict(
                         type='PretrainedTokenizer',
                         model_path=  # noqa: E251
                         './checkpoints/openvla-7b',  # noqa: E501
-                        # special_tokens={'pad_token': '<PAD>'}
                     ),
                     max_len=None,
                     with_labels=True,
@@ -177,21 +181,22 @@ train_dataloader = dict(
             action_window_size=1,
             action_key='action',
             use_delta=False,
-            statistic_name='libero_10_no_noops',
+            statistic_name='libero_spatial_no_noops',
             window_start_idx=0,
-            train_episode_fraction=0.95,
+            train_episode_fraction=1.0,
             repeat_to_full_length=True,
         ),
     ))
 
 runner = dict(
-    type='FSDPTrainRunner',
-    max_epochs=24,
-    learning_rate=2e-5,
-    weight_decay=0.0,
-    max_grad_norm=1.0,
-    save_epoch_interval=4,
-    max_keep_ckpts=6,
+    type='DDPTrainRunner',
+    max_epochs=None,
+    max_steps=80000,
+    learning_rate=5e-4,
+    weight_decay=None,
+    max_grad_norm=None,
+    save_iter_interval=5000,
+    max_keep_ckpts=1,
     sampler=None,
     collator=dict(
         type='PaddedCollatorForActionPrediction',
@@ -211,52 +216,12 @@ runner = dict(
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
-    eval=dict(
-        type='LiberoEvalRunner',
-        model_family='openvla',
-        task_suite_name='libero_10',
-        dataset=dict(
-            type='LiberoParquetEvalDataset',
-            transforms=[
-                dict(
-                    type='ProcessLiberoEvalInputs',
-                    img_keys=['agentview_image', 'agentview_image'],
-                    center_crop=True,
-                ),
-                dict(
-                    type='TransformImage',
-                    image_resize_strategy='resize-naive',
-                    input_sizes=[[3, 224, 224], [3, 224, 224]],
-                    means=[[123.515625, 116.04492188, 103.59375],
-                           [128, 128, 128]],
-                    stds=[[58.27148438, 57.02636719, 57.27539062],
-                          [128, 128, 128]],
-                ),
-                dict(
-                    type='LiberoPromptFromInputs',
-                    prompt_suffix=' ',
-                    max_len=None,
-                    tokenizer=dict(
-                        type='PretrainedTokenizer',
-                        model_path=  # noqa: E251
-                        './checkpoints/openvla-7b',  # noqa: E501
-                        # special_tokens={'pad_token': '<PAD>'}
-                    )),
-            ]),
-        denormalize_action=dict(
-            type='DenormalizeLiberoAction',
-            norm_type='quantile',
-            action_norm_mask=[True, True, True, True, True, True, False],
-        ),
-        resize_size=224,
-        num_trials_per_task=50,
-        num_steps_wait=10,
-        seed=7))
+    static_graph=False)
 
 eval = dict(
     type='LiberoEvalRunner',
     model_family='openvla',
-    task_suite_name='libero_10',
+    task_suite_name='libero_spatial',
     dataset=dict(
         type='LiberoParquetEvalDataset',
         transforms=[
@@ -281,7 +246,6 @@ eval = dict(
                     type='PretrainedTokenizer',
                     model_path=  # noqa: E251
                     './checkpoints/openvla-7b',  # noqa: E501
-                    # special_tokens={'pad_token': '<PAD>'}
                 )),
         ]),
     denormalize_action=dict(

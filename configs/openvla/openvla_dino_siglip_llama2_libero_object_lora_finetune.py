@@ -79,33 +79,33 @@ train_dataloader = dict(
             'action': ['action'],
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
-        statistic_name='libero_10_no_noops',
+        statistic_name='libero_object_no_noops',
         reshuffle_each_epoch=True,
         statistics_overrides=dict(
-            libero_10_no_noops=dict(
+            libero_object_no_noops=dict(
                 action=dict(
                     q01=[
-                        -0.6348214149475098,
-                        -0.7741071581840515,
-                        -0.7633928656578064,
-                        -0.09749999642372131,
-                        -0.14819999992847435,
-                        -0.2742857038974762,
+                        -0.5383928418159485,
+                        -0.8758928775787354,
+                        -0.9375,
+                        -0.06964285671710968,
+                        -0.11678571254014969,
+                        -0.15964286029338837,
                         0.0,
                     ],
                     q99=[
-                        0.7714285850524902,
                         0.8464285731315613,
+                        0.84375,
                         0.9375,
-                        0.13928571343421936,
-                        0.15964286029338837,
-                        0.3246428668498993,
+                        0.08142857253551483,
+                        0.14892856776714325,
+                        0.0867857113480568,
                         1.0,
                     ],
                 ), ), ),
         datasets=dict(
             type='ParquetDataset',
-            data_root_path='./datasets/libero_10_no_noops_lerobotv2.1',
+            data_root_path='./datasets/libero_object_no_noops_lerobotv2.1',
             transforms=[
                 dict(
                     type='ProcessParquetInputs',
@@ -125,7 +125,7 @@ train_dataloader = dict(
                         'observation.state': ['states'],
                         'actions': ['actions'],
                     },
-                    dataset_name='libero_10_no_noops',
+                    dataset_name='libero_object_no_noops',
                 ),
                 dict(
                     type='NormalizeStatesAndActions',
@@ -181,7 +181,7 @@ train_dataloader = dict(
             action_window_size=1,
             action_key='action',
             use_delta=False,
-            statistic_name='libero_10_no_noops',
+            statistic_name='libero_object_no_noops',
             window_start_idx=0,
             train_episode_fraction=1.0,
             repeat_to_full_length=True,
@@ -221,7 +221,7 @@ runner = dict(
 eval = dict(
     type='LiberoEvalRunner',
     model_family='openvla',
-    task_suite_name='libero_10',
+    task_suite_name='libero_object',
     dataset=dict(
         type='LiberoParquetEvalDataset',
         transforms=[
