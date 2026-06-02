@@ -45,8 +45,6 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 🛠️ 安装
 
-以下安装指南以 NVCC 12.4 为例。如果你的环境不同，请相应调整 CUDA 版本。
-
 <details>
 <summary><b>1. 创建 conda 环境</b></summary>
 
@@ -63,10 +61,11 @@ conda activate fluxvla
 > **重要**：在执行 `pip install -r requirements.txt` 之前，**必须**先从官方 CUDA 索引安装 PyTorch。默认 PyPI 索引无法获取 CUDA 版本构建。
 
 ```bash
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# CUDA 12.8
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 ```
 
-对于其他 CUDA 版本，请将 `cu124` 替换为对应值（例如 `cu118`、`cu121`）。详见 [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) 。
+对于其他 CUDA 版本，请将 `cu128` 替换为对应值（例如 `cu118`、`cu121`）。详见 [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) 和 [https://pytorch.org/get-started/previous-versions/](https://pytorch.org/get-started/previous-versions/)。
 
 </details>
 
@@ -110,7 +109,7 @@ pip install -r requirements.txt
 pip install --no-build-isolation -e .
 ```
 
-> **说明**：`requirements.txt` 固定了 `torch==2.6.0`，以避免 pip 意外替换掉第 2 步安装的 CUDA 版 PyTorch。若需使用其他 torch 版本，请同时更新第 2 步命令与 `requirements.txt` 中的版本。
+> **说明**：`requirements.txt` 固定了 `torch==2.8.0`，以避免 pip 意外替换掉第 2 步安装的 CUDA 版 PyTorch。若需使用其他 torch 版本，请同时更新第 2 步命令与 `requirements.txt` 中的版本。
 
 </details>
 
@@ -574,17 +573,6 @@ A：安装过程中某些依赖可能覆盖了固定的 NumPy 版本。直接重
 
 ```bash
 pip install numpy==1.26.4
-```
-
-</details>
-
-<details>
-<summary><b>Q：在 RTX 5090 上推理失败（如 Triton kernel 错误或 CUDA 兼容性问题）。</b></summary>
-
-A：RTX 5090（Blackwell 架构）需要更新版本的 Triton。请升级到 Triton 3.2.0 或更高版本：
-
-```bash
-pip install triton==3.2.0
 ```
 
 </details>

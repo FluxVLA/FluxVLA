@@ -45,8 +45,6 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 ## 🛠️ インストール
 
-以下のインストール手順は NVCC 12.4 を例にしています。環境が異なる場合は、CUDA バージョンに応じて適宜調整してください。
-
 <details>
 <summary><b>1. conda 環境を作成する</b></summary>
 
@@ -63,10 +61,11 @@ conda activate fluxvla
 > **重要**：`pip install -r requirements.txt` を実行する前に、必ず公式の CUDA インデックスから PyTorch を先にインストールしてください。デフォルトの PyPI インデックスでは CUDA 対応ビルドを取得できません。
 
 ```bash
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# CUDA 12.8
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 ```
 
-他の CUDA バージョンの場合は、`cu124` を該当する値（例：`cu118`、`cu121`）に置き換えてください。詳細は [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) を参照してください。
+他の CUDA バージョンの場合は、`cu128` を該当する値（例：`cu118`、`cu121`）に置き換えてください。詳細は [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) および [https://pytorch.org/get-started/previous-versions/](https://pytorch.org/get-started/previous-versions/) を参照してください。
 
 </details>
 
@@ -110,7 +109,7 @@ pip install -r requirements.txt
 pip install --no-build-isolation -e .
 ```
 
-> **補足**：`requirements.txt` では `torch==2.6.0` を固定しています。これにより、2 番目の手順でインストールした CUDA 対応 PyTorch を pip が意図せず置き換えるのを防ぎます。別の torch バージョンを使う必要がある場合は、2 番目のコマンドと `requirements.txt` 内のバージョンの両方を更新してください。
+> **補足**：`requirements.txt` では `torch==2.8.0` を固定しています。これにより、2 番目の手順でインストールした CUDA 対応 PyTorch を pip が意図せず置き換えるのを防ぎます。別の torch バージョンを使う必要がある場合は、2 番目のコマンドと `requirements.txt` 内のバージョンの両方を更新してください。
 
 </details>
 
@@ -574,17 +573,6 @@ CMAKE_POLICY_VERSION_MINIMUM=3.5 pip install -r requirements.txt
 
 ```bash
 pip install numpy==1.26.4
-```
-
-</details>
-
-<details>
-<summary><b>Q：RTX 5090（推論）で失敗する（例：Triton カーネルのエラーや CUDA 互換性の問題）。</b></summary>
-
-<b>A：</b> RTX 5090（Blackwell アーキテクチャ）は更新された Triton が必要です。Triton 3.2.0 以上にアップグレードしてください：
-
-```bash
-pip install triton==3.2.0
 ```
 
 </details>

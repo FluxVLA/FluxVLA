@@ -580,7 +580,6 @@ pip install numpy==1.26.4
 
 </details>
 
-
 ## Contributing
 
 Please see the contribution workflow and guidelines in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
