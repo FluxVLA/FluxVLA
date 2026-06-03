@@ -122,7 +122,10 @@ class FrankaDualOperator:
             left_home_joint_state_topic=None,
             right_home_joint_state_topic=None,
             enable_joint_tracking_plot=True,
-            joint_tracking_output_dir='/home/franka/Data/raw_data/vla_tracking'):
+            joint_tracking_output_dir='/home/franka/Data/raw_data/vla_tracking',
+            qpos_stream_rate=50.0,
+            qpos_smoothing_tau=0.0,
+            joint_deadband=0.005):
         self.img_left_topic = img_left_topic
         self.img_right_topic = img_right_topic
         self.img_front_topic = img_front_topic
@@ -185,6 +188,9 @@ class FrankaDualOperator:
             or f'{self.right_arm_ns}/franka_state_controller/joint_states')
         self.enable_joint_tracking_plot = enable_joint_tracking_plot
         self.joint_tracking_output_dir = joint_tracking_output_dir
+        self.qpos_stream_rate = float(qpos_stream_rate)
+        self.qpos_smoothing_tau = float(qpos_smoothing_tau)
+        self.joint_deadband = float(joint_deadband)
 
         if len(self.home_joint_names) != 7 or len(
                 self.home_target_joint_positions) != 7:
@@ -219,6 +225,7 @@ class FrankaDualOperator:
         self._init()
         self._init_ros()
         atexit.register(self.save_joint_tracking_outputs)
+        atexit.register(self.save_joint_action_outputs)
 
     def _init(self):
         from cv_bridge import CvBridge
@@ -251,6 +258,12 @@ class FrankaDualOperator:
         self._joint_tracking_saved = False
         self._joint_tracking_base = None
         self._last_joint_tracking_plot_time = 0.0
+        self._joint_action_rows = []
+        self._joint_action_start_time = None
+        self._joint_action_saved = False
+        self._last_joint_action_plot_time = 0.0
+        self._last_stable_left_qpos = None
+        self._last_stable_right_qpos = None
 
     def get_frame(self, slop=0.7):
         """Get synchronized frame data from all sensors."""
@@ -879,6 +892,128 @@ class FrankaDualOperator:
         if final:
             self._joint_tracking_saved = True
 
+    def _record_joint_action_rows(self, source, left_traj, right_traj, dt,
+                                  base_time):
+        if not self.enable_joint_tracking_plot or self.command_mode != 'joint':
+            return
+
+        left_traj = np.asarray(left_traj, dtype=np.float64)
+        right_traj = np.asarray(right_traj, dtype=np.float64)
+        for idx in range(len(left_traj)):
+            left = left_traj[idx]
+            right = right_traj[idx]
+            self._joint_action_rows.append({
+                'source':
+                source,
+                'time':
+                base_time + idx * dt,
+                'left':
+                left[:7].copy(),
+                'right':
+                right[:7].copy(),
+                'left_gripper':
+                np.nan if left.shape[0] <= 7 else float(left[7]),
+                'right_gripper':
+                np.nan if right.shape[0] <= 7 else float(right[7]),
+            })
+
+    def record_joint_action_trajectories(self, raw_left, raw_right, sent_left,
+                                         sent_right, raw_dt, sent_dt):
+        if not self.enable_joint_tracking_plot or self.command_mode != 'joint':
+            return
+
+        now = time.monotonic()
+        if self._joint_action_start_time is None:
+            self._joint_action_start_time = now
+        base_time = now - self._joint_action_start_time
+
+        self._record_joint_action_rows('raw_action', raw_left, raw_right,
+                                       raw_dt, base_time)
+        self._record_joint_action_rows('sent_trajectory', sent_left,
+                                       sent_right, sent_dt, base_time)
+
+    def save_joint_action_outputs(self, final=True):
+        if (not self.enable_joint_tracking_plot or not self._joint_action_rows
+                or (final and self._joint_action_saved)):
+            return
+
+        base = self._joint_tracking_output_base()
+        csv_path = base.with_name(f'{base.name}_actions.csv')
+        png_path = base.with_name(f'{base.name}_actions.png')
+
+        fieldnames = ['source', 'time']
+        for side in ('left', 'right'):
+            for joint_name in self.joint_names:
+                fieldnames.append(f'{side}_{joint_name}')
+            fieldnames.append(f'{side}_gripper')
+
+        with csv_path.open('w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for row in self._joint_action_rows:
+                flat = {'source': row['source'], 'time': row['time']}
+                for side in ('left', 'right'):
+                    values = row[side]
+                    for idx, joint_name in enumerate(self.joint_names):
+                        flat[f'{side}_{joint_name}'] = float(values[idx])
+                    flat[f'{side}_gripper'] = row[f'{side}_gripper']
+                writer.writerow(flat)
+
+        now = time.monotonic()
+        should_plot = final or now - self._last_joint_action_plot_time > 10.0
+        if not should_plot:
+            print(f'Saved VLA action CSV to {csv_path}')
+            return
+        self._last_joint_action_plot_time = now
+
+        try:
+            import matplotlib
+
+            matplotlib.use('Agg')
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            print(f'Saved VLA action CSV to {csv_path}; '
+                  f'failed to plot: {exc}')
+            return
+
+        fig, axes = plt.subplots(7, 2, figsize=(16, 18), sharex=True)
+        for col, side in enumerate(('left', 'right')):
+            for joint_idx, joint_name in enumerate(self.joint_names):
+                ax = axes[joint_idx, col]
+                for source, style in (
+                    ('raw_action', dict(marker='o', linestyle='None',
+                                        markersize=2.0, alpha=0.7)),
+                    ('sent_trajectory', dict(linewidth=1.2, alpha=0.9)),
+                ):
+                    rows = [
+                        row for row in self._joint_action_rows
+                        if row['source'] == source
+                    ]
+                    if not rows:
+                        continue
+                    times = np.asarray([row['time'] for row in rows],
+                                       dtype=np.float64)
+                    values = np.asarray(
+                        [row[side][joint_idx] for row in rows],
+                        dtype=np.float64)
+                    ax.plot(times, values, label=source, **style)
+                ax.set_ylabel(joint_name)
+                ax.grid(True, alpha=0.3)
+                if joint_idx == 0:
+                    ax.set_title(f'{side} arm')
+                if joint_idx == 6:
+                    ax.set_xlabel('time [s]')
+                if joint_idx == 0 and col == 0:
+                    ax.legend(loc='best')
+        fig.suptitle('VLA Raw Actions vs Sent Joint Trajectory')
+        fig.tight_layout(rect=(0, 0, 1, 0.98))
+        fig.savefig(png_path, dpi=150)
+        plt.close(fig)
+        print(f'Saved VLA action CSV to {csv_path}')
+        print(f'Saved VLA action plot to {png_path}')
+        if final:
+            self._joint_action_saved = True
+
     def _build_joint_state(self, qpos):
         import rospy
         from sensor_msgs.msg import JointState
@@ -1013,6 +1148,112 @@ class FrankaDualOperator:
         self._send_gripper_command(
             'right', self.gripper_open_width, force=True, wait=wait)
 
+    @staticmethod
+    def _enforce_strict_monotone(times, min_gap=1e-4):
+        times = np.asarray(times, dtype=np.float64).copy()
+        for idx in range(1, times.shape[0]):
+            if times[idx] <= times[idx - 1]:
+                times[idx] = times[idx - 1] + min_gap
+        return times
+
+    @classmethod
+    def _one_pole_lowpass(cls, values, times, tau):
+        filtered = np.asarray(values, dtype=np.float64).copy()
+        if filtered.shape[0] < 2 or tau <= 0.0:
+            return filtered
+
+        times = cls._enforce_strict_monotone(times, min_gap=1e-4)
+        for idx in range(1, filtered.shape[0]):
+            dt = max(float(times[idx] - times[idx - 1]), 1e-4)
+            alpha = dt / (tau + dt)
+            filtered[idx] = (
+                filtered[idx - 1] + alpha *
+                (filtered[idx] - filtered[idx - 1]))
+        return filtered
+
+    @classmethod
+    def _smooth_qpos_waypoints(cls, qpos, schedule, tau):
+        qpos = np.asarray(qpos, dtype=np.float64)
+        if tau <= 0.0 or qpos.shape[0] < 3:
+            return qpos.copy()
+
+        times = cls._enforce_strict_monotone(schedule, min_gap=1e-4)
+        forward = cls._one_pole_lowpass(qpos, times, tau)
+        reverse_times = times[-1] - times[::-1]
+        smoothed = cls._one_pole_lowpass(forward[::-1], reverse_times,
+                                         tau)[::-1]
+        smoothed[0] = qpos[0]
+        smoothed[-1] = qpos[-1]
+        return smoothed
+
+    @staticmethod
+    def _interp_trajectory(schedule, output_times, trajectory):
+        trajectory = np.asarray(trajectory, dtype=np.float64)
+        if trajectory.shape[0] <= 1:
+            return trajectory.copy()
+
+        interpolated = np.empty((len(output_times), trajectory.shape[1]),
+                                dtype=np.float64)
+        for dim in range(trajectory.shape[1]):
+            interpolated[:, dim] = np.interp(output_times, schedule,
+                                             trajectory[:, dim])
+        return interpolated
+
+    def _apply_joint_deadband(self, trajectory, side):
+        trajectory = np.asarray(trajectory, dtype=np.float64).copy()
+        if self.joint_deadband <= 0.0 or len(trajectory) == 0:
+            return trajectory
+        if trajectory.shape[1] < 7:
+            return trajectory
+
+        stable_attr = (
+            '_last_stable_left_qpos'
+            if side == 'left' else '_last_stable_right_qpos')
+        stable = getattr(self, stable_attr)
+        if stable is None:
+            stable = trajectory[0, :7].copy()
+
+        for idx in range(len(trajectory)):
+            qpos = trajectory[idx, :7]
+            if np.max(np.abs(qpos - stable)) < self.joint_deadband:
+                trajectory[idx, :7] = stable
+            else:
+                stable = qpos.copy()
+
+        setattr(self, stable_attr, stable)
+        return trajectory
+
+    def _prepare_joint_trajectory(self, left_traj, right_traj, dt):
+        left_traj = np.asarray(left_traj, dtype=np.float64)
+        right_traj = np.asarray(right_traj, dtype=np.float64)
+        left_traj = self._apply_joint_deadband(left_traj, 'left')
+        right_traj = self._apply_joint_deadband(right_traj, 'right')
+        if len(left_traj) <= 1 or self.qpos_stream_rate <= 0.0:
+            return left_traj, right_traj, dt
+
+        schedule = np.arange(len(left_traj), dtype=np.float64) * float(dt)
+        schedule = self._enforce_strict_monotone(schedule, min_gap=1e-4)
+
+        left_q = self._smooth_qpos_waypoints(left_traj[:, :7], schedule,
+                                             self.qpos_smoothing_tau)
+        right_q = self._smooth_qpos_waypoints(right_traj[:, :7], schedule,
+                                              self.qpos_smoothing_tau)
+        left_processed = left_traj.copy()
+        right_processed = right_traj.copy()
+        left_processed[:, :7] = left_q
+        right_processed[:, :7] = right_q
+
+        stream_dt = 1.0 / self.qpos_stream_rate
+        output_times = np.arange(0.0, schedule[-1] + 1e-9, stream_dt)
+        if output_times.size == 0 or output_times[-1] < schedule[-1]:
+            output_times = np.append(output_times, schedule[-1])
+
+        return (
+            self._interp_trajectory(schedule, output_times, left_processed),
+            self._interp_trajectory(schedule, output_times, right_processed),
+            stream_dt,
+        )
+
     def execute_trajectory(self,
                            left_trajectory,
                            right_trajectory,
@@ -1021,7 +1262,15 @@ class FrankaDualOperator:
                            base_velocity=None):
         left_traj = np.asarray(left_trajectory)
         right_traj = np.asarray(right_trajectory)
+        raw_left_traj = left_traj.copy()
+        raw_right_traj = right_traj.copy()
         exec_dt = dt
+        if self.command_mode == 'joint':
+            left_traj, right_traj, exec_dt = self._prepare_joint_trajectory(
+                left_traj, right_traj, dt)
+            self.record_joint_action_trajectories(
+                raw_left_traj, raw_right_traj, left_traj, right_traj, dt,
+                exec_dt)
 
         self.stop_trajectory(join_timeout=0.2)
         self._traj_stop_event = threading.Event()
@@ -1045,6 +1294,7 @@ class FrankaDualOperator:
             self.execute_step(left_traj[i], right_traj[i])
             rate.sleep()
         self.save_joint_tracking_outputs(final=False)
+        self.save_joint_action_outputs(final=False)
 
     def stop_trajectory(self, join_timeout=None, hold_current=False):
         self._traj_stop_event.set()
