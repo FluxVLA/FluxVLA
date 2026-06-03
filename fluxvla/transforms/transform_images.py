@@ -326,8 +326,8 @@ class ResizeImagesWithPad:
 
 @TRANSFORMS.register_module()
 class AugImage:
-    """Augment images with random transformations including
-    rotation, brightness/contrast adjustment, and random cropping.
+    """Augment images with random transformations including rotation,
+    brightness/contrast/saturation/hue adjustment, and random resized cropping.
     This transform applies various augmentations to all images
     in the 'images' dictionary of the input data.
 
@@ -341,8 +341,19 @@ class AugImage:
             adjustment as (min, max) multipliers. Default: (0.8, 1.2).
         crop_scale (Tuple[float, float]): Range for random crop scale
             as (min, max) fractions of original size. Default: (0.8, 1.0).
+        crop_ratio (Tuple[float, float]): Range for random crop aspect ratio.
+            Default: (1.0, 1.0).
         prob (float): Probability of applying each augmentation.
             Default: 0.5.
+        brightness_delta (Optional[float]): If set, use TensorFlow-style
+            brightness delta in [-brightness_delta, brightness_delta] instead
+            of multiplicative brightness_range.
+        saturation_range (Optional[Tuple[float, float]]): If set, enable
+            TensorFlow-style saturation jitter.
+        hue_delta (Optional[float]): If set, enable TensorFlow-style
+            hue jitter.
+        share_across_dinosiglip (bool): Share one sampled augmentation between
+            paired DINO/SigLIP image batches.
     """
 
     def __init__(self,
@@ -350,18 +361,28 @@ class AugImage:
                  brightness_range: Tuple[float, float] = (0.8, 1.2),
                  contrast_range: Tuple[float, float] = (0.8, 1.2),
                  crop_scale: Tuple[float, float] = (0.8, 1.0),
+                 crop_ratio: Tuple[float, float] = (1.0, 1.0),
                  prob: float = 0.5,
+                 brightness_delta: Optional[float] = None,
+                 saturation_range: Optional[Tuple[float, float]] = None,
+                 hue_delta: Optional[float] = None,
+                 share_across_dinosiglip: bool = False,
                  *args,
                  **kwargs):
         self.rotation_range = rotation_range
         self.brightness_range = brightness_range
         self.contrast_range = contrast_range
         self.crop_scale = crop_scale
+        self.crop_ratio = crop_ratio
         self.prob = prob
+        self.brightness_delta = brightness_delta
+        self.saturation_range = saturation_range
+        self.hue_delta = hue_delta
+        self.share_across_dinosiglip = share_across_dinosiglip
 
     def _random_rotate(self, image: np.ndarray) -> np.ndarray:
         """Apply random rotation to the image."""
-        if np.random.random() > self.prob:
+        if self.rotation_range == 0 or np.random.random() > self.prob:
             return image
         # image shape: (C, H, W)
         h, w = image.shape[1], image.shape[2]
@@ -376,7 +397,7 @@ class AugImage:
 
     def _random_brightness(self, image: np.ndarray) -> np.ndarray:
         """Apply random brightness adjustment to the image."""
-        if np.random.random() > self.prob:
+        if self.brightness_delta is not None or np.random.random() > self.prob:
             return image
         factor = np.random.uniform(self.brightness_range[0],
                                    self.brightness_range[1])
@@ -397,7 +418,7 @@ class AugImage:
         if np.random.random() > self.prob:
             return image
         # image shape: (C, H, W)
-        c, h, w = image.shape
+        _, h, w = image.shape
         scale = np.random.uniform(self.crop_scale[0], self.crop_scale[1])
         new_h, new_w = int(h * scale), int(w * scale)
 
@@ -413,61 +434,10 @@ class AugImage:
         resized = cv2.resize(img_hwc, (w, h), interpolation=cv2.INTER_LINEAR)
         return resized.transpose(2, 0, 1)
 
-    def __call__(self, data: dict):
-        assert 'images' in data, "Input data must contain 'images' key"
-        if isinstance(data['images'], np.ndarray):
-            if data['images'].ndim == 3:
-                images = data['images'].reshape(-1, 3,
-                                                data['images'].shape[-2],
-                                                data['images'].shape[-1])
-            else:
-                images = data['images']
-        else:
-            images = data['images']
-
-        augmented_images = list()
-        for image in images:
-            aug_image = image.copy()
-            aug_image = self._random_rotate(aug_image)
-            aug_image = self._random_brightness(aug_image)
-            aug_image = self._random_contrast(aug_image)
-            aug_image = self._random_crop(aug_image)
-            augmented_images.append(aug_image)
-
-        augmented_images = np.stack(augmented_images, axis=0)
-        # Reshape back to original shape if needed
-        if data['images'].ndim == 3:
-            augmented_images = augmented_images.reshape(data['images'].shape)
-        data['images'] = augmented_images
-        return data
-
-
-@TRANSFORMS.register_module()
-class OpenVLAImageAugment:
-    """OpenVLA LIBERO training image augmentation.
-
-    Matches the official OpenVLA RLDS fine-tuning recipe:
-    random resized crop with fixed 0.9 area and 1.0 aspect ratio, followed by
-    random brightness, contrast, saturation, and hue jitter.
-    """
-
-    def __init__(self,
-                 crop_scale: Tuple[float, float] = (0.9, 0.9),
-                 crop_ratio: Tuple[float, float] = (1.0, 1.0),
-                 brightness_delta: float = 0.2,
-                 contrast_range: Tuple[float, float] = (0.8, 1.2),
-                 saturation_range: Tuple[float, float] = (0.8, 1.2),
-                 hue_delta: float = 0.05,
-                 share_across_dinosiglip: bool = True,
-                 *args,
-                 **kwargs):
-        self.crop_scale = crop_scale
-        self.crop_ratio = crop_ratio
-        self.brightness_delta = brightness_delta
-        self.contrast_range = contrast_range
-        self.saturation_range = saturation_range
-        self.hue_delta = hue_delta
-        self.share_across_dinosiglip = share_across_dinosiglip
+    def _use_tf_color_jitter(self) -> bool:
+        return (self.brightness_delta is not None
+                or self.saturation_range is not None
+                or self.hue_delta is not None)
 
     def _sample_params(self, height: int, width: int) -> Dict:
         area = float(height * width)
@@ -479,16 +449,28 @@ class OpenVLAImageAugment:
         crop_h = min(max(crop_h, 1), height)
         crop_w = min(max(crop_w, 1), width)
 
+        brightness_delta = 0.0
+        if self.brightness_delta is not None:
+            brightness_delta = np.random.uniform(-self.brightness_delta,
+                                                 self.brightness_delta)
+
+        saturation_factor = 1.0
+        if self.saturation_range is not None:
+            saturation_factor = np.random.uniform(*self.saturation_range)
+
+        hue_delta = 0.0
+        if self.hue_delta is not None:
+            hue_delta = np.random.uniform(-self.hue_delta, self.hue_delta)
+
         return dict(
             crop_h=crop_h,
             crop_w=crop_w,
             top=np.random.randint(0, height - crop_h + 1),
             left=np.random.randint(0, width - crop_w + 1),
-            brightness_delta=np.random.uniform(-self.brightness_delta,
-                                               self.brightness_delta),
+            brightness_delta=brightness_delta,
             contrast_factor=np.random.uniform(*self.contrast_range),
-            saturation_factor=np.random.uniform(*self.saturation_range),
-            hue_delta=np.random.uniform(-self.hue_delta, self.hue_delta),
+            saturation_factor=saturation_factor,
+            hue_delta=hue_delta,
         )
 
     def _random_resized_crop(self, image: np.ndarray,
@@ -504,7 +486,7 @@ class OpenVLAImageAugment:
             interpolation=cv2.INTER_LINEAR)
         return resized.transpose(2, 0, 1)
 
-    def _color_jitter(self, image: np.ndarray, params: Dict) -> np.ndarray:
+    def _tf_color_jitter(self, image: np.ndarray, params: Dict) -> np.ndarray:
         import tensorflow as tf
 
         img = image.transpose(1, 2, 0)
@@ -519,32 +501,65 @@ class OpenVLAImageAugment:
         img = tf.image.convert_image_dtype(img, orig_dtype, saturate=True)
         return img.numpy().transpose(2, 0, 1)
 
-    def _augment_one(self, image: np.ndarray, params: Dict) -> np.ndarray:
+    def _augment_one(self,
+                     image: np.ndarray,
+                     params: Optional[Dict] = None) -> np.ndarray:
+        if params is None:
+            aug_image = image.copy()
+            aug_image = self._random_rotate(aug_image)
+            aug_image = self._random_brightness(aug_image)
+            aug_image = self._random_contrast(aug_image)
+            return self._random_crop(aug_image)
+
         image = self._random_resized_crop(image, params)
-        return self._color_jitter(image, params)
+        if self._use_tf_color_jitter():
+            return self._tf_color_jitter(image, params)
+        return self._random_contrast(image)
 
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
-        original_shape = data['images'].shape
-        images = data['images'].reshape(-1, 3, original_shape[-2],
-                                        original_shape[-1])
-
-        augmented_images = [None] * len(images)
-        if self.share_across_dinosiglip and len(images) % 2 == 0:
-            half = len(images) // 2
-            for idx in range(half):
-                params = self._sample_params(images[idx].shape[1],
-                                             images[idx].shape[2])
-                augmented_images[idx] = self._augment_one(images[idx], params)
-                augmented_images[idx + half] = self._augment_one(
-                    images[idx + half], params)
+        if isinstance(data['images'], np.ndarray):
+            original_shape = data['images'].shape
+            if data['images'].ndim == 3:
+                images = data['images'].reshape(-1, 3,
+                                                data['images'].shape[-2],
+                                                data['images'].shape[-1])
+            else:
+                images = data['images']
         else:
-            for idx, image in enumerate(images):
-                params = self._sample_params(image.shape[1], image.shape[2])
-                augmented_images[idx] = self._augment_one(image, params)
+            original_shape = None
+            images = data['images']
 
-        data['images'] = np.stack(
-            augmented_images, axis=0).reshape(original_shape)
+        use_shared_params = (
+            self.share_across_dinosiglip or self._use_tf_color_jitter())
+        if use_shared_params:
+            augmented_images = [None] * len(images)
+            if self.share_across_dinosiglip and len(images) % 2 == 0:
+                half = len(images) // 2
+                for idx in range(half):
+                    params = self._sample_params(images[idx].shape[1],
+                                                 images[idx].shape[2])
+                    augmented_images[idx] = self._augment_one(
+                        images[idx], params)
+                    augmented_images[idx + half] = self._augment_one(
+                        images[idx + half], params)
+            else:
+                for idx, image in enumerate(images):
+                    params = self._sample_params(image.shape[1],
+                                                 image.shape[2])
+                    augmented_images[idx] = self._augment_one(image, params)
+        else:
+            augmented_images = list()
+            for image in images:
+                augmented_images.append(self._augment_one(image))
+
+        augmented_images = np.stack(augmented_images, axis=0)
+        # Reshape back to original shape if needed
+        if isinstance(data['images'], np.ndarray) and data['images'].ndim == 3:
+            augmented_images = augmented_images.reshape(data['images'].shape)
+        elif use_shared_params and original_shape is not None:
+            augmented_images = augmented_images.reshape(original_shape)
+        data['images'] = augmented_images
         return data
 
 

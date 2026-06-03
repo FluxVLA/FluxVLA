@@ -64,6 +64,8 @@ model = dict(
         'vision_backbone.siglip_featurizer':
         'vision_backbone.fused_featurizer',
         'vision_backbone.dino_featurizer': 'vision_backbone.featurizer',
+        'ls1.gamma': 'ls1.scale_factor',
+        'ls2.gamma': 'ls2.scale_factor',
         'projector.projector.0': 'projector.fc1',
         'projector.projector.2': 'projector.fc2',
         'projector.projector.4': 'projector.fc3'
@@ -169,7 +171,18 @@ train_dataloader = dict(
                     with_labels=True,
                 ),
                 dict(type='ResizeImagesLanczos', height=224, width=224),
-                dict(type='OpenVLAImageAugment'),
+                dict(
+                    type='AugImage',
+                    rotation_range=0.0,
+                    crop_scale=(0.9, 0.9),
+                    crop_ratio=(1.0, 1.0),
+                    prob=1.0,
+                    brightness_delta=0.2,
+                    contrast_range=(0.8, 1.2),
+                    saturation_range=(0.8, 1.2),
+                    hue_delta=0.05,
+                    share_across_dinosiglip=True,
+                ),
                 dict(
                     type='NormalizeImages',
                     means=[[123.515625, 116.04492188, 103.59375],

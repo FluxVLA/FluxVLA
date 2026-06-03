@@ -92,6 +92,30 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         # Instance Attributes for a generic VLM
         self.all_module_keys = None
 
+    def _mapped_name_candidates(self, name: str) -> List:
+        candidates = []
+        replacements = []
+        for key, val in self.name_mapping.items():
+            if key in name:
+                replacements.append((key, val))
+                candidates.append((f'{key}->{val}', name.replace(key, val)))
+
+        if len(replacements) > 1:
+            mapped_name = name
+            desc = []
+            for key, val in replacements:
+                mapped_name = mapped_name.replace(key, val)
+                desc.append(f'{key}->{val}')
+            candidates.append((' + '.join(desc), mapped_name))
+
+        deduped = []
+        seen = set()
+        for desc, mapped_name in candidates:
+            if mapped_name not in seen:
+                deduped.append((desc, mapped_name))
+                seen.add(mapped_name)
+        return deduped
+
     @property
     def device(self) -> torch.device:
         """Borrowed from `transformers.modeling_utils.py` -- checks
@@ -244,30 +268,31 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                         )
                 else:
                     matched = False
-                    for key, val in self.name_mapping.items():
-                        if key in name:
-                            mapped_name = name.replace(key, val)
-                            if mapped_name not in pretrained_weights:
-                                continue
-                            if matched:
-                                raise ValueError(
-                                    f"Parameter '{name}' matched multiple times in name_mapping."  # noqa: E501
+                    matched_name = None
+                    candidates = self._mapped_name_candidates(name)
+                    for _, mapped_name in candidates:
+                        if mapped_name not in pretrained_weights:
+                            continue
+                        if matched:
+                            raise ValueError(
+                                f"Parameter '{name}' matched multiple "
+                                f"pretrained weights: '{matched_name}' and "
+                                f"'{mapped_name}'.")
+                        with torch.no_grad():
+                            if param.size(
+                            ) == pretrained_weights[mapped_name].size():
+                                param.copy_(pretrained_weights[mapped_name].to(
+                                    param.dtype))
+                            else:
+                                overwatch.info(
+                                    f"[*] Size mismatch for '{name}': "
+                                    f'model={list(param.size())} vs '
+                                    f"ckpt '{mapped_name}'="
+                                    f'{list(pretrained_weights[mapped_name].size())}'  # noqa: E501
                                 )
-                            with torch.no_grad():
-                                if param.size(
-                                ) == pretrained_weights[mapped_name].size():
-                                    param.copy_(
-                                        pretrained_weights[mapped_name].to(
-                                            param.dtype))
-                                else:
-                                    overwatch.info(
-                                        f"[*] Size mismatch for '{name}': "
-                                        f'model={list(param.size())} vs '
-                                        f"ckpt '{mapped_name}'="
-                                        f'{list(pretrained_weights[mapped_name].size())}'  # noqa: E501
-                                    )
-                                    continue
-                            matched = True
+                                continue
+                        matched = True
+                        matched_name = mapped_name
                     if not matched:
                         if self.strict_mapping:
                             raise ValueError(
@@ -275,13 +300,11 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                             )
                         else:
                             # Debug: show what mapping was attempted
-                            attempted = []
-                            for key, val in self.name_mapping.items():
-                                if key in name:
-                                    mn = name.replace(key, val)
-                                    in_ckpt = mn in pretrained_weights
-                                    attempted.append(f"{key}->{val}: '{mn}' "
-                                                     f'(in_ckpt={in_ckpt})')
+                            attempted = [
+                                f"{desc}: '{mn}' "
+                                f'(in_ckpt={mn in pretrained_weights})'
+                                for desc, mn in candidates
+                            ]
                             overwatch.info(
                                 f"[*] Parameter '{name}' not found in "  # noqa: E713, E501
                                 f'pretrained weights, skipping. '
