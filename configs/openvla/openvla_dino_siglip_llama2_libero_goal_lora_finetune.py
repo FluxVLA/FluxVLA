@@ -170,7 +170,13 @@ train_dataloader = dict(
                     max_len=None,
                     with_labels=True,
                 ),
-                dict(type='ResizeImagesLanczos', height=224, width=224),
+                dict(
+                    type='ResizeImagesLanczos',
+                    height=224,
+                    width=224,
+                    jpeg_roundtrip=True,
+                    backend='tensorflow',
+                ),
                 dict(
                     type='AugImage',
                     rotation_range=0.0,
@@ -204,7 +210,7 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,
-    max_steps=80000,
+    max_steps=40000,
     learning_rate=5e-4,
     weight_decay=None,
     max_grad_norm=None,
@@ -242,6 +248,8 @@ eval = dict(
                 type='ProcessLiberoEvalInputs',
                 img_keys=['agentview_image', 'agentview_image'],
                 center_crop=True,
+                resize_size=224,
+                jpeg_roundtrip=True,
             ),
             dict(
                 type='TransformImage',
