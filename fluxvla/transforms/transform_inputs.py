@@ -369,7 +369,7 @@ class ProcessLiberoEvalInputs:
         replay_img = None
         for img_key in self.img_keys:
             if img_key not in inputs:
-                raise KeyError(f'Image key `{img_key}` not found in inputs!')
+                raise KeyError(f'Image key {img_key!r} missing from inputs!')
             img = np.asarray(inputs[img_key])
             img = img[::-1, ::-1].copy()
             if replay_img is None:

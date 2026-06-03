@@ -380,8 +380,8 @@ class NormalizeStatesAndActions:
             actions = np.asarray(data['actions'], dtype=np.float32)
 
         needs_state_stats = self.state_norm_type != 'none'
-        needs_action_stats = (actions is not None
-                              and self.action_norm_type != 'none')
+        needs_action_stats = (
+            actions is not None and self.action_norm_type != 'none')
         if needs_state_stats or needs_action_stats:
             assert 'stats' in data, "Input data must contain 'stats' key"
 
