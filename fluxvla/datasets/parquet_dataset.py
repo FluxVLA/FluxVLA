@@ -36,7 +36,8 @@ class ParquetDataset(Dataset):
                  statistic_name: str = 'private',
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
-                 expose_index: bool = False) -> None:
+                 expose_index: bool = False,
+                 image_frame_offset: int = 0) -> None:
         """Initialize the Parquet dataset.
 
         Args:
@@ -67,8 +68,14 @@ class ParquetDataset(Dataset):
                 to each raw sample before transforms. This is useful for
                 offline sample-weight transforms such as SARM RA-BC.
                 Defaults to False.
+            frame_window_size (int): Number of frame timestamps to expose to
+                downstream video transforms. Defaults to 1.
+            image_frame_offset (int): Row offset for the first decoded frame.
+                Defaults to 0 to preserve the original current-frame behavior.
         """
         super().__init__()
+        if image_frame_offset < 0:
+            raise ValueError('`image_frame_offset` must be non-negative.')
         self.action_window_size = action_window_size
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
@@ -133,6 +140,7 @@ class ParquetDataset(Dataset):
         self.window_start_idx = window_start_idx
         self.frame_window_size = frame_window_size
         self.expose_index = expose_index
+        self.image_frame_offset = image_frame_offset
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
 
@@ -156,6 +164,41 @@ class ParquetDataset(Dataset):
             self.dataset_cumulative_sizes, index, side='right') - 1
         return dataset_idx
 
+    def _same_episode_and_dataset(self, base_data: Dict, index: int,
+                                  dataset_idx: int) -> bool:
+        if index >= len(self.dataset):
+            return False
+        return (base_data['episode_index']
+                == self.dataset[index]['episode_index']
+                and self._get_dataset_index(index) == dataset_idx)
+
+    def _has_frame_at_offset(self, index: int, dataset_idx: int) -> bool:
+        if self.image_frame_offset == 0:
+            return True
+        data = self.dataset[index]
+        return self._same_episode_and_dataset(data,
+                                              index + self.image_frame_offset,
+                                              dataset_idx)
+
+    def _build_frame_timestamps(self, index: int,
+                                dataset_idx: int) -> tuple[List, np.ndarray]:
+        data = self.dataset[index]
+        frame_timestamps = []
+        frame_masks = []
+        last_timestamp = data['timestamp']
+
+        for frame_offset in range(self.frame_window_size):
+            frame_idx = index + self.image_frame_offset + frame_offset
+            if self._same_episode_and_dataset(data, frame_idx, dataset_idx):
+                last_timestamp = self.dataset[frame_idx]['timestamp']
+                frame_timestamps.append(last_timestamp)
+                frame_masks.append(1)
+            else:
+                frame_timestamps.append(last_timestamp)
+                frame_masks.append(0)
+
+        return frame_timestamps, np.array(frame_masks, dtype=np.float32)
+
     def __getitem__(self, index, dataset_statistics):
         data = self.dataset[index]
         # Determine which dataset the data belongs to
@@ -169,7 +212,8 @@ class ParquetDataset(Dataset):
                == 'empty' or
                self.tasks[dataset_idx][self.dataset[index +
                                                     1]['task_index']]['task']
-               == 'static'):
+               == 'static'
+               or not self._has_frame_at_offset(index, dataset_idx)):
 
             index = self._rand_another()
             data = self.dataset[index]
@@ -219,24 +263,12 @@ class ParquetDataset(Dataset):
                     actions.append(data[self.action_key])
                 action_masks.append(0)
             window_idx += 1
-        # Collect forward-looking frame timestamps for video models
-        if self.frame_window_size > 1:
-            frame_timestamps = [data['timestamp']]
-            frame_masks = [1]
-            for fi in range(1, self.frame_window_size):
-                future_idx = index + fi
-                if (future_idx < len(self.dataset)
-                        and self.dataset[future_idx]['episode_index']
-                        == data['episode_index'] and
-                        self._get_dataset_index(future_idx) == dataset_idx):
-                    frame_timestamps.append(
-                        self.dataset[future_idx]['timestamp'])
-                    frame_masks.append(1)
-                else:
-                    frame_timestamps.append(frame_timestamps[-1])
-                    frame_masks.append(0)
+        if self.image_frame_offset > 0 or self.frame_window_size > 1:
+            frame_timestamps, frame_masks = self._build_frame_timestamps(
+                index, dataset_idx)
             data['frame_timestamps'] = frame_timestamps
-            data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
+            if self.frame_window_size > 1:
+                data['frame_masks'] = frame_masks
 
         data['info'] = self.info[dataset_idx]
         data['stats'] = dataset_statistics[self.statistic_name]

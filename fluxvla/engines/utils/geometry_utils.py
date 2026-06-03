@@ -12,5 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .lr_scheduler_policies import *  # noqa: F401, F403
-from .schedulers import get_scheduler  # noqa: F401, F403
+import numpy as np
+
+
+def rotmat_to_rot6d(rot_mat: np.ndarray) -> np.ndarray:
+    """Convert a 3x3 rotation matrix to a 6D rotation representation."""
+    rot_mat = np.asarray(rot_mat, dtype=np.float32)
+    return np.concatenate([rot_mat[:3, 0], rot_mat[:3, 1]],
+                          axis=-1).astype(np.float32)

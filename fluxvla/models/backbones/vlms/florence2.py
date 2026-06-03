@@ -30,11 +30,13 @@ from torch import nn
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
 from fluxvla.engines import VLM_BACKBONES
-from fluxvla.models.third_party_models.xvla_models.modeling_florence2 import (
-    Florence2EncoderLayer, Florence2ForConditionalGeneration)
+from fluxvla.models.third_party_models.xvla_models import (
+    configuration_florence2, modeling_florence2)
 
-from fluxvla.models.third_party_models.xvla_models.configuration_florence2 import (  # isort: skip  # noqa: E501
-    Florence2Config)
+Florence2Config = configuration_florence2.Florence2Config
+Florence2EncoderLayer = modeling_florence2.Florence2EncoderLayer
+Florence2ForConditionalGeneration = (
+    modeling_florence2.Florence2ForConditionalGeneration)
 
 
 @VLM_BACKBONES.register_module()
@@ -98,8 +100,8 @@ class Florence2Backbone(nn.Module):
 
         if vlm_path is None:
             raise ValueError(
-                'Florence2Backbone requires either `vlm_config` or `vlm_path`.'
-            )
+                'Florence2Backbone requires either `vlm_config` or '
+                '`vlm_path`.')
         load_kwargs = {'trust_remote_code': True}
         if target_dtype is not None:
             load_kwargs['torch_dtype'] = target_dtype
@@ -112,8 +114,8 @@ class Florence2Backbone(nn.Module):
 
     def _reshape_images(self, images: torch.Tensor) -> torch.Tensor:
         if images.ndim == 4:
-            batch_size, views_channels, image_height, image_width = \
-                images.shape
+            batch_size, views_channels, image_height, image_width = (
+                images.shape)
             num_views = views_channels // 3
             images = images.view(batch_size, num_views, 3, image_height,
                                  image_width)

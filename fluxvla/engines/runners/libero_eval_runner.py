@@ -18,7 +18,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.distributed as dist
@@ -60,6 +60,8 @@ class LiberoEvalRunner:
         num_steps_wait (int): Number of steps to wait before
             starting evaluation.
             Default is 10.
+        controller_use_delta (Optional[bool]): Optional LIBERO controller
+            delta-mode override after the initial wait phase.
         mixed_precision_dtype (str): Data type for mixed precision training.
             Default is 'bf16'.
         enable_mixed_precision_training (bool): Whether to enable mixed
@@ -80,6 +82,7 @@ class LiberoEvalRunner:
                  resize_size: int = 224,
                  num_trials_per_task: int = 50,
                  num_steps_wait: int = 10,
+                 controller_use_delta: Optional[bool] = None,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
         from fluxvla.engines import (build_dataset_from_cfg,
@@ -150,6 +153,7 @@ class LiberoEvalRunner:
         self.resize_size = resize_size
         self.num_trials_per_task = num_trials_per_task
         self.num_steps_wait = num_steps_wait
+        self.controller_use_delta = controller_use_delta
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.distributed_state = overwatch.distributed_state
@@ -164,6 +168,12 @@ class LiberoEvalRunner:
                 'You can ignore this if you are loading the base VLA (i.e. not fine-tuned) checkpoint.'  # noqa: E501
                 'Otherwise, you may run into errors when trying to call `predict_action()` due to an absent `unnorm_key`.'  # noqa: E501
             )
+
+    def _set_controller_use_delta(self, env) -> None:
+        if self.controller_use_delta is None:
+            return
+        for robot in env.env.robots:
+            robot.controller.use_delta = self.controller_use_delta
 
     def run_setup(self):
         """Set up the evaluation environment and model."""
@@ -272,13 +282,15 @@ class LiberoEvalRunner:
                 elif self.task_suite_name == 'libero_goal':
                     max_steps = 300  # longest training demo has 270 steps
                 elif self.task_suite_name == 'libero_10':
-                    max_steps = 520  # longest training demo has 505 steps
+                    max_steps = 900  # longest training demo has 505 steps
                 elif self.task_suite_name == 'libero_90':
                     max_steps = 400  # longest training demo has 373 steps
 
                 overwatch.info(f'Starting episode {trial_id+1}...')
 
                 log_file.write(f'Starting episode {trial_id+1}...\n')
+                if self.num_steps_wait <= 0:
+                    self._set_controller_use_delta(env)
                 while t < max_steps + self.num_steps_wait:
                     # IMPORTANT: Do nothing for the first
                     # few timesteps
@@ -288,6 +300,8 @@ class LiberoEvalRunner:
                         obs, reward, done, info = env.step(
                             get_libero_dummy_action())
                         t += 1
+                        if t >= self.num_steps_wait:
+                            self._set_controller_use_delta(env)
                         continue
                     if next_batch is None:
                         obs['task_description'] = task_description
@@ -305,6 +319,11 @@ class LiberoEvalRunner:
                             dtype=self.mixed_precision_dtype,
                             enabled=self.enable_mixed_precision_training):
                         with torch.no_grad():
+                            build_eval_kwargs = getattr(
+                                self.vla, 'build_eval_predict_action_kwargs',
+                                None)
+                            if callable(build_eval_kwargs):
+                                batch.update(build_eval_kwargs(batch, env=env))
                             actions = self.vla.predict_action(**batch)
                     if len(actions.shape) == 3:
                         actions = actions[
@@ -322,6 +341,11 @@ class LiberoEvalRunner:
                         action_denormed = self.denormalize_action(inputs)
                         obs, reward, done, info = env.step(
                             action_denormed.tolist())
+                        after_eval_env_step = getattr(self.vla,
+                                                      'after_eval_env_step',
+                                                      None)
+                        if callable(after_eval_env_step):
+                            after_eval_env_step(action)
                         obs['task_description'] = task_description
                         batch, replay_img = self.dataset(obs)
                         replay_images.append(replay_img)

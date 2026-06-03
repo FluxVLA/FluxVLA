@@ -174,8 +174,8 @@ class EE6DActionSpace(BaseActionSpace):
                 _select_mask(action_masks, gi),
             ) for gi in self.gripper_idx
         ]
-        gripper_loss = sum(g_losses) / len(
-            self.gripper_idx) * self.GRIPPER_SCALE
+        gripper_loss = (
+            sum(g_losses) / len(self.gripper_idx) * self.GRIPPER_SCALE)
 
         pos_loss = (_masked_mse(
             pred[:, :, self.POS_IDX_1], target[:, :, self.POS_IDX_1],
@@ -237,8 +237,8 @@ class JointActionSpace(BaseActionSpace):
                 _select_mask(action_masks, gi),
             ) for gi in self.gripper_idx
         ]
-        gripper_loss = sum(g_losses) / len(
-            self.gripper_idx) * self.GRIPPER_SCALE
+        gripper_loss = (
+            sum(g_losses) / len(self.gripper_idx) * self.GRIPPER_SCALE)
 
         joints_idx = tuple(
             i for i in range(D) if i not in set(self.gripper_idx))

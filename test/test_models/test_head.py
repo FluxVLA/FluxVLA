@@ -12,9 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import unittest
 
+import numpy as np
 import torch
+
+XVLA_RESOURCE_PATH = './checkpoints/X-VLA-Pt'
+XVLA_PRETRAINED_PATH = './checkpoints/X-VLA-Pt-fluxvla/model.safetensors'
+XVLA_HEAD_DATA_DIR = 'test/data/models/heads/xvla_head'
+
+
+def _load_xvla_fixture(root, name, dtype=None):
+    path = os.path.join(root, f'{name}.npy')
+    if name.endswith('_bf16'):
+        tensor = torch.from_numpy(np.load(path)).view(torch.bfloat16).cuda()
+    else:
+        tensor = torch.from_numpy(np.load(path, allow_pickle=True)).cuda()
+    if dtype is not None:
+        tensor = tensor.to(dtype)
+    return tensor
+
+
+def _load_xvla_array(root, name):
+    return np.load(os.path.join(root, f'{name}.npy'), allow_pickle=True)
 
 
 # ===================================================================
@@ -203,6 +224,132 @@ class TestDreamZeroHeadTiny(unittest.TestCase):
         self.assertIsNotNone(self.head.inference_kv_cache)
 
         self.head.reset_inference_state()
+
+
+@unittest.skipUnless(
+    torch.cuda.is_available() and os.path.exists(XVLA_RESOURCE_PATH)
+    and os.path.exists(XVLA_PRETRAINED_PATH),
+    f'CUDA not available or checkpoint not found: {XVLA_RESOURCE_PATH} '
+    f'or {XVLA_PRETRAINED_PATH}')
+class TestXVLAHeadGolden(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        from fluxvla.engines import build_vla_from_cfg, set_seed_everywhere
+        cfg = dict(
+            type='X_VLA',
+            pretrained_name_or_path=XVLA_PRETRAINED_PATH,
+            vlm_backbone=dict(
+                type='Florence2Backbone',
+                vlm_path=XVLA_RESOURCE_PATH,
+                dtype='bf16',
+            ),
+            vla_head=dict(
+                type='XVLAFlowMatchingHead',
+                hidden_size=1024,
+                multi_modal_input_size=1024,
+                depth=24,
+                num_heads=16,
+                mlp_ratio=4.0,
+                num_domains=30,
+                dim_action=20,
+                dim_propio=20,
+                len_soft_prompts=32,
+                dim_time=32,
+                max_len_seq=512,
+                use_hetero_proj=False,
+                num_actions=30,
+                num_inference_steps=10,
+                action_mode='ee6d',
+            ),
+            freeze_vlm_backbone=False,
+        )
+        set_seed_everywhere(0)
+        cls.vla = build_vla_from_cfg(cfg).cuda()
+        cls.vla.from_pretrained()
+        cls.vla.vla_head = cls.vla.vla_head.to(dtype=torch.bfloat16)
+        cls.vla.eval()
+        cls.head = cls.vla.vla_head
+
+    def _load(self, name, dtype=None):
+        return _load_xvla_fixture(XVLA_HEAD_DATA_DIR, name, dtype)
+
+    def test_forward(self):
+        input_features = self._load('input_features_bf16', torch.bfloat16)
+        attention_mask = self._load('attention_mask')
+        aux_visual_inputs = self._load('aux_visual_inputs_bf16',
+                                       torch.bfloat16)
+        states = self._load('states', torch.bfloat16)
+        actions = self._load('actions', torch.bfloat16)
+        action_masks = self._load('action_masks')
+        embodiment_ids = self._load('embodiment_ids').long()
+
+        position_loss_ref = _load_xvla_array(XVLA_HEAD_DATA_DIR,
+                                             'position_loss')
+        rotate6d_loss_ref = _load_xvla_array(XVLA_HEAD_DATA_DIR,
+                                             'rotate6D_loss')
+        gripper_loss_ref = _load_xvla_array(XVLA_HEAD_DATA_DIR, 'gripper_loss')
+        loss_ref = _load_xvla_array(XVLA_HEAD_DATA_DIR, 'loss')
+
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        with torch.no_grad():
+            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=True):
+                out = self.head(
+                    input_features=input_features,
+                    states=states,
+                    attention_mask=attention_mask,
+                    actions=actions,
+                    action_masks=action_masks,
+                    embodiment_ids=embodiment_ids,
+                    aux_visual_inputs=aux_visual_inputs,
+                )
+
+        self.assertTrue(
+            np.allclose(
+                out['position_loss'].float().cpu().numpy(),
+                position_loss_ref,
+                atol=1e-2))
+        self.assertTrue(
+            np.allclose(
+                out['rotate6D_loss'].float().cpu().numpy(),
+                rotate6d_loss_ref,
+                atol=1e-2))
+        self.assertTrue(
+            np.allclose(
+                out['gripper_loss'].float().cpu().numpy(),
+                gripper_loss_ref,
+                atol=1e-2))
+        self.assertTrue(
+            np.allclose(
+                out['loss'].float().cpu().numpy(), loss_ref, atol=1e-2))
+
+    def test_predict_action(self):
+        input_features = self._load('input_features_bf16', torch.bfloat16)
+        attention_mask = self._load('attention_mask')
+        aux_visual_inputs = self._load('aux_visual_inputs_bf16',
+                                       torch.bfloat16)
+        states = self._load('states', torch.bfloat16)
+        embodiment_ids = self._load('embodiment_ids').long()
+        pred_actions_ref = _load_xvla_array(XVLA_HEAD_DATA_DIR, 'pred_actions')
+
+        torch.manual_seed(0)
+        torch.cuda.manual_seed_all(0)
+        with torch.no_grad():
+            with torch.autocast('cuda', dtype=torch.bfloat16, enabled=True):
+                pred_actions = self.head.predict_action(
+                    input_features=input_features,
+                    states=states,
+                    attention_mask=attention_mask,
+                    embodiment_ids=embodiment_ids,
+                    aux_visual_inputs=aux_visual_inputs,
+                )
+
+        self.assertTrue(
+            np.allclose(
+                pred_actions.float().cpu().numpy(),
+                pred_actions_ref,
+                atol=1e-2))
 
 
 if __name__ == '__main__':

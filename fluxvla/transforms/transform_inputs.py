@@ -15,7 +15,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import av
 import numpy as np
@@ -333,50 +333,63 @@ class ProcessLiberoEvalInputs:
     """ Process Libero eval inputs.
     This transform loads LIBERO observation images, rotates them, converts
     them to PIL images, and leaves model-specific resizing to later image
-    transforms. If enabled, center crop is applied with the same TensorFlow
-    crop-and-resize path used by the original OpenVLA evaluation.
+    transforms.
 
     Args:
         img_keys (List[str]): Image keys to fetch from inputs.
             Default to ['agentview_image'].
-        center_crop (bool): If True, center crop to 0.9 area and resize back
-            to 224x224 before later model-specific processing.
+        center_crop (bool): If True, center crop at 0.9 area before resize.
+            Default to False.
         use_pil (bool): If True, use PIL to load the images.
             Default to True.
+        rotate_180_keys (List[str], optional): Image keys to rotate 180
+            degrees. If None, rotate all image keys to preserve the previous
+            LIBERO preprocessing behavior.
     """
 
     def __init__(self,
                  img_keys: List[str] = ['agentview_image'],
                  center_crop: bool = False,
                  use_pil: bool = True,
-                 embodiment_id: int = None) -> None:
+                 embodiment_id: int = None,
+                 num_padding_imgs: int = 0,
+                 rotate_180_keys: Optional[List[str]] = None) -> None:
         self.img_keys = img_keys
         self.center_crop = center_crop
         self.use_pil = use_pil
         self.embodiment_id = embodiment_id
+        self.num_padding_imgs = num_padding_imgs
+        self.rotate_180_keys = (None if rotate_180_keys is None else
+                                set(rotate_180_keys))
+
+    def _should_rotate_180(self, img_key: str) -> bool:
+        return self.rotate_180_keys is None or img_key in self.rotate_180_keys
 
     def __call__(self, inputs: Dict) -> Dict:
         # Load raw images
         imgs = list()
-        replay_img = None
         for img_key in self.img_keys:
             if img_key not in inputs:
                 raise KeyError(f'Image key `{img_key}` not found in inputs!')
             img = np.asarray(inputs[img_key])
-            img = img[::-1, ::-1].copy()
-            if replay_img is None:
-                replay_img = img.copy()
+            if self._should_rotate_180(img_key):
+                img = img[::-1, ::-1].copy()
+            else:
+                img = img.copy()
             imgs.append(img)
+        replay_img = imgs[0].copy()
         images = list()
         img_masks = list()
         if self.use_pil:
             for img in imgs:
                 image = Image.fromarray(img)
                 image = image.convert('RGB')
-
+                # If trained with image augmentations, center crop image and
+                # resize back up to original size.
                 if self.center_crop:
                     batch_size = 1
                     crop_scale = 0.9
+
                     image = tf.convert_to_tensor(np.array(image))
                     orig_dtype = image.dtype
                     image = tf.image.convert_image_dtype(image, tf.float32)
@@ -386,12 +399,17 @@ class ProcessLiberoEvalInputs:
                         image, orig_dtype, saturate=True)
                     image = Image.fromarray(image.numpy())
                     image = image.convert('RGB')
-
                 images.append(image)
                 img_masks.append(True)
         else:
             images = imgs
             img_masks = [True] * len(imgs)
+        if self.num_padding_imgs > 0 and len(images) > 0:
+            padding_img = Image.new('RGB', images[0].size) if self.use_pil \
+                else np.zeros_like(images[0])
+            for _ in range(self.num_padding_imgs):
+                images.append(padding_img)
+                img_masks.append(False)
         inputs['pixel_values'] = images
         inputs['img_masks'] = img_masks
         inputs['replay_img'] = replay_img

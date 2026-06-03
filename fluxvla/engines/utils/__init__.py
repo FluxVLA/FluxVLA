@@ -17,6 +17,7 @@ from .builder import build_dataset_from_cfg  # noqa: F401, F403
 from .builder import build_from_cfg  # noqa: F401, F403
 from .builder import build_head_from_cfg  # noqa: F401, F403
 from .builder import build_llm_backbone_from_cfg  # noqa: F401, F403
+from .builder import build_lr_scheduler_from_cfg  # noqa: F401, F403
 from .builder import build_metric_from_cfg  # noqa: F401, F403
 from .builder import build_operator_from_cfg  # noqa: F401, F403
 from .builder import build_processor_from_cfg  # noqa: F401, F403
@@ -27,6 +28,7 @@ from .builder import build_transform_from_cfg  # noqa: F401, F403
 from .builder import build_vision_backbone_from_cfg  # noqa: F401, F403
 from .builder import build_vla_from_cfg  # noqa: F401, F403
 from .builder import build_vlm_backbone_from_cfg  # noqa: F401, F403
+from .geometry_utils import rotmat_to_rot6d  # noqa: F401, F403
 from .name_map import str_to_dtype  # noqa: F401, F403
 from .overwatch import *  # noqa: F401, F403
 from .registry import Registry  # noqa: F401, F403
@@ -34,6 +36,7 @@ from .root import COLLATORS  # noqa: F401, F403
 from .root import DATASETS  # noqa: F401, F403
 from .root import HEADS  # noqa: F401, F403
 from .root import LLM_BACKBONES  # noqa: F401, F403
+from .root import LR_SCHEDULERS  # noqa: F401, F403
 from .root import METRICS  # noqa: F401, F403
 from .root import OPERATORS  # noqa: F401, F403
 from .root import PROCESSORS  # noqa: F401, F403

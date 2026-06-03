@@ -356,6 +356,16 @@ def build_runner_from_cfg(
     return build_from_cfg(cfg, RUNNERS, default_args)
 
 
+def build_lr_scheduler_from_cfg(
+    cfg: Union[dict, ConfigDict, Config],
+    default_args: Optional[Union[dict, 'ConfigDict', 'Config']] = None
+) -> 'nn.Module':
+    """Build a learning rate scheduler policy from config."""
+    from fluxvla.optimizers import lr_scheduler_policies  # noqa: F401
+    from .root import LR_SCHEDULERS
+    return build_from_cfg(cfg, LR_SCHEDULERS, default_args)
+
+
 def build_collator_from_cfg(
     cfg: Union[dict, ConfigDict, Config],
     default_args: Optional[Union[dict, 'ConfigDict', 'Config']] = None
