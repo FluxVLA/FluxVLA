@@ -41,9 +41,9 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 #### RoboCasa GR1
 
-| Model | Training Data | Cabinet | Drawer | Microwave | Generalization | Average |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| FluxVLA(GR00T) | 24 tasks, 30 demos|  27.5% | 37.5% | 45.0% | 50.3% | [46.9%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+| Model          |   Training Data    | Cabinet | Drawer | Microwave | Generalization |                                                       Average                                                        |
+| -------------- | :----------------: | :-----: | :----: | :-------: | :------------: | :------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(GR00T) | 24 tasks, 30 demos |  27.5%  | 37.5%  |   45.0%   |     50.3%      | [46.9%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### Notes
 
@@ -56,6 +56,8 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 ## 📢 Latest News
 
 **\[2026/06/04\]** 🔥 Triton backend for Pi0.5-RTC is now supported, see [inference_acceleration](docs/inference_acceleration.md).
+
+**\[2026/06/04\]** 🔥 RoboCasa GR1 simulation tasks with GR00T are now supported.
 
 **\[2026/05/28\]** 🔥 [FluxDAgger](https://github.com/FluxVLA/FluxDAgger) is now released: a model-decoupled DAgger pipeline for dual-arm manipulation, making it easy to integrate different VLAs and reward models.
 
@@ -150,6 +152,7 @@ pip install --no-build-isolation -e .
 ```
 
 > **Note**: `requirements.txt` pins `torch==2.6.0` to prevent pip from accidentally replacing the CUDA-enabled PyTorch installed in step 2. If you need to use another torch version, update both the step-2 command and the torch version in `requirements.txt`.
+
 </details>
 
 <details>
@@ -305,17 +308,17 @@ Note: event files are saved to `{work_dir}/tensorboard/{run_id}/` per run, enabl
 
 Download the required datasets and place them under `./datasets`. Download only the datasets you need according to your configuration.
 
-| Dataset                | Download link                                                                                                                                                          |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| libero-object          | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)   |
-| libero-spatial         | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1) |
-| libero-10              | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
-| libero-goal            | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
-| modified_libero_rlds   | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                           |
-| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                             |
-| RoboCasa GR1           | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                             |
-| RealRobot_AgileX_aloha | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
-| RealRobot_UR3_Chem     | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
+| Dataset                 | Download link                                                                                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)   |
+| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1) |
+| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
+| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
+| modified_libero_rlds    | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                           |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)           |
+| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                             |
+| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
+| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
 
 For example, download the `libero-10` dataset:
 
@@ -329,7 +332,6 @@ For RoboCasa GR00T training with the released 30-demo subset, download the
 dataset under `./datasets`:
 
 ```bash
-mkdir -p datasets work_dirs
 
 huggingface-cli download limxdynamics/FluxVLAData \
   --repo-type dataset \
@@ -340,17 +342,6 @@ huggingface-cli download limxdynamics/FluxVLAData \
 For full-data RoboCasa GR1 training, replace the include pattern with
 `robocasa_lerobot_V2.1/*`.
 
-RoboCasa GR00T evaluation also needs the official GR1 normalization statistics.
-Place the file at `work_dirs/official_groot_gr1_dataset_statistics.json`:
-
-```bash
-huggingface-cli download limxdynamics/FluxVLAData \
-  --repo-type dataset \
-  --include "official_groot_gr1_dataset_statistics.json" \
-  --local-dir ./work_dirs
-```
-
-
 </details>
 
 <details>
@@ -358,8 +349,8 @@ huggingface-cli download limxdynamics/FluxVLAData \
 
 Download the required assets and place them under the local directories expected by your configuration or simulator.
 
-| Asset                            | Download link                                                                                                       | Local directory                                               |
-| -------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Asset                              | Download link                                                                                                    | Local directory                                               |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
 | RoboCasa tabletop simulator assets | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
 
 Recommended option: run the upstream asset downloader from the RoboCasa GR1
@@ -517,26 +508,6 @@ For SARM workflows, you typically need a CLIP checkpoint for training / inferenc
 > **Tip**: You can speed up downloads with `huggingface-cli download <model-name> --local-dir ./checkpoints/<model-name>`.
 
 For the built-in SARM configs, place the CLIP files under `./checkpoints/clip-vit-base-patch32`. If you use VLM-based SARM annotation, place the official SARM VLM under `./checkpoints/Qwen3-VL-30B-A3B-Instruct`.
-
-</details>
-
-<details>
-<summary><b>Trained models</b></summary>
-
-Checkpoints are available on [🤗 limxdynamics/FluxVLAEngine](https://huggingface.co/limxdynamics/FluxVLAEngine). Linked scores in the [Performance](#performance) table point to the corresponding checkpoints.
-
-You can also download models that have been trained with FluxVLA for inference or evaluation directly. Place them under `./work_dirs`.
-
-| Model                     | Download link                                                                                                              |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| PI0.5 PaliGemma Libero-10 | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |
-| GR00T Eagle 3B Libero-10  | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |
-| GR00T Eagle 3B RoboCasa   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)            |
-
-```bash
-# Example: download the PI0.5 checkpoint from limxdynamics/FluxVLAEngine
-huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_libero_10_full_finetune_bs64/*" --local-dir ./checkpoints/pi05_paligemma_libero_10_full_finetune_bs64
-```
 
 </details>
 

@@ -39,9 +39,25 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 *带链接的分数可跳转到对应 checkpoint。*
 
+#### RoboCasa GR1
+
+| 模型           |       训练数据       | Cabinet | Drawer | Microwave | Generalization |                                                       Average                                                        |
+| -------------- | :------------------: | :-----: | :----: | :-------: | :------------: | :------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(GR00T) | 24 个任务，30 条演示 |  27.5%  | 37.5%  |   45.0%   |     50.3%      | [46.9%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+
+#### 说明
+
+- `Cabinet`：`PnPBottleToCabinetClose` + `PnPWineToCabinetClose`。
+- `Drawer`：`PnPCanToDrawerClose` + `PnPCupToDrawerClose`。
+- `Microwave`：`PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`。
+- `Generalization`：剩余的 18 个后训练新任务。
+- 所有成功率均按 episode 做 micro-average。
+
 ## 📢 最新动态
 
 **\[2026/06/04\]** 🔥 现已支持 Pi0.5-RTC 的 Triton 后端，详见 [inference_acceleration](docs/inference_acceleration.md)。
+
+**\[2026/06/04\]** 🔥 现已支持基于 GR00T 的 RoboCasa GR1 仿真任务。
 
 **\[2026/05/28\]** 🔥 正式发布面向双臂操作的模型解耦 DAgger 流水线 [FluxDAgger](https://github.com/FluxVLA/FluxDAgger)，便于接入不同 VLA 与奖励模型。
 
@@ -124,6 +140,36 @@ pip install --no-build-isolation -e .
 ```
 
 > **说明**：`requirements.txt` 固定了 `torch==2.8.0`，以避免 pip 意外替换掉第 2 步安装的 CUDA 版 PyTorch。若需使用其他 torch 版本，请同时更新第 2 步命令与 `requirements.txt` 中的版本。
+
+</details>
+
+<details>
+<summary><b>RoboCasa GR00T 支持（可选）</b></summary>
+
+仅当你需要训练或评估 RoboCasa GR00T 配置（如 `configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`）时，才需要安装这些额外依赖。
+
+首先安装打过补丁的 robosuite：
+
+```bash
+pip install git+https://github.com/yinchimaoliang/robosuite.git@7264a82
+```
+
+然后从本地 checkout 安装 Isaac-GR00T 与 RoboCasa GR1 任务包：
+
+```bash
+git clone https://github.com/NVIDIA/Isaac-GR00T.git /path/to/Isaac-GR00T
+cd /path/to/Isaac-GR00T
+git checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
+pip install --no-deps -e /path/to/Isaac-GR00T
+
+git clone https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git \
+  /path/to/robocasa-gr1-tabletop-tasks
+cd /path/to/robocasa-gr1-tabletop-tasks
+git checkout 4840e671596f93ca03651524b9f72ffb1aadfeff
+pip install --no-deps -e /path/to/robocasa-gr1-tabletop-tasks
+```
+
+可编辑安装建议加 `--no-deps`，避免 RoboCasa 相关包替换掉 FluxVLA 模型栈已固定的依赖。RoboCasa 的资产与数据集准备见[数据与资产准备](#数据与资产准备)。
 
 </details>
 
@@ -243,21 +289,24 @@ tensorboard --logdir work_dirs/tensorboard
 
 </details>
 
-## 数据准备
+## 数据与资产准备
 
 <details>
 <summary><b>直接使用我们准备好的数据</b></summary>
 
 下载所需数据集并放到 `./datasets` 目录。请根据配置仅下载你需要的数据集。
 
-| 数据集                 | 下载链接                                                                                                                                                               |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| libero-object          | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)   |
-| libero-spatial         | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1) |
-| libero-10              | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
-| libero-goal            | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
-| RealRobot_AgileX_aloha | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
-| RealRobot_UR3_Chem     | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
+| 数据集                  | 下载链接                                                                                                                                                               |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)   |
+| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1) |
+| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
+| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
+| modified_libero_rlds    | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                           |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)           |
+| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                             |
+| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
+| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
 
 例如，下载 libero-10 数据集：
 
@@ -266,6 +315,37 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 ```
 
 将 `libero_10_no_noops_lerobotv2.1` 替换为其他数据集对应的文件夹名即可下载。
+
+如需用已发布的 30 条演示子集训练 RoboCasa GR00T，将数据集下载到 `./datasets`：
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "robocasa_gr1_24tasks_first30ep/*" \
+  --local-dir ./datasets
+```
+
+如需使用全量 RoboCasa GR1 数据训练，将 include 模式替换为 `robocasa_lerobot_V2.1/*`。
+
+</details>
+
+<details>
+<summary><b>准备资产</b></summary>
+
+下载所需资产，并放到配置或仿真器期望的本地目录下。
+
+| 资产                  | 下载链接                                                                                                         | 本地目录                                                      |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| RoboCasa 桌面仿真资产 | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+
+推荐方式：在 RoboCasa GR1 任务 checkout 中运行上游资产下载脚本：
+
+```bash
+cd /path/to/robocasa-gr1-tabletop-tasks
+python robocasa/scripts/download_tabletop_assets.py -y
+```
+
+备选方式：从 Hugging Face 下载镜像资产，直接放到 `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets`。无需软链接；仅当资产已存放在其他本地磁盘或共享存储时，软链接才作为一种便利手段。
 
 </details>
 
@@ -404,18 +484,6 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 </details>
 
-<details>
-<summary><b>已训练模型</b></summary>
-
-Checkpoint 可在 [🤗 limxdynamics/FluxVLAEngine](https://huggingface.co/limxdynamics/FluxVLAEngine) 获取。可通过[性能](#性能)表格中带链接的分数直达对应 checkpoint。
-
-```bash
-# 示例：从 limxdynamics/FluxVLAEngine 下载 PI0.5 checkpoint
-huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_libero_10_full_finetune_bs64/*" --local-dir ./checkpoints/pi05_paligemma_libero_10_full_finetune_bs64
-```
-
-</details>
-
 ## 🌟 特性
 
 <details>
@@ -495,6 +563,24 @@ export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/train.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --work-dir ./checkpoints/pi05_paligemma_libero_10_full_finetune --cfg-options train_dataloader.per_device_batch_size=2
 ```
 
+RoboCasa GR00T 冒烟训练示例：
+
+```bash
+WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
+  --config configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
+  --work-dir work_dirs/smoke_groot_robocasa_train \
+  --cfg-options \
+    runner.type=FSDPTrainRunner \
+    runner.sharding_strategy=no-shard \
+    train_dataloader.per_device_batch_size=1 \
+    runner.enable_gradient_checkpointing=False \
+    runner.max_steps=2 \
+    runner.save_iter_interval=1 \
+    runner.max_keep_ckpts=2 \
+    "runner.metric.active_trackers=('jsonl',)"
+```
+
 </details>
 
 <details>
@@ -509,6 +595,19 @@ export WANDB_MODE=disabled
 ```
 export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --ckpt-path checkpoints/pi05_paligemma_libero_10_full_finetune_bs64/checkpoints/step-028548-epoch-18-loss=0.0111.safetensors
+```
+
+RoboCasa GR00T 评估示例：
+
+```bash
+MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
+  --config configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
+  --ckpt-path work_dirs/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64/checkpoints/step-010000.safetensors \
+  --cfg-options \
+    eval.norm_stats_path=work_dirs/official_groot_gr1_dataset_statistics.json \
+    eval.output_dir=work_dirs/gr00t_eagle_3b_robocasa_eval \
+    eval.num_trials_per_task=20
 ```
 
 </details>
