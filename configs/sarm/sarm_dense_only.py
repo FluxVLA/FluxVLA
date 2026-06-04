@@ -1,7 +1,11 @@
-clip_pretrained_name_or_path = './checkpoints/clip-vit-base-patch32'
+pretrained_name_or_path = './checkpoints/clip-vit-base-patch32'
 data_root_path = './datasets/SARM_manual_test_10Episodes_lerobotv3.0'
 
 current_transforms = [
+    dict(
+        type='DecodeLeRobotVideoSequence',
+        video_keys=['observation.images.cam_high'],
+    ),
     dict(
         type='ResizeImages', height=224, width=224,
         preserve_leading_dims=True),
@@ -22,7 +26,7 @@ current_transforms = [
         type='TokenizeText',
         tokenizer=dict(
             type='PretrainedTokenizer',
-            model_path=clip_pretrained_name_or_path,
+            model_path=pretrained_name_or_path,
         ),
         max_length=77),
 ]
@@ -46,7 +50,7 @@ model = dict(
     max_rewind_steps=4,
     llm_backbone=dict(
         type='SARMBackbone',
-        pretrained_name_or_path=clip_pretrained_name_or_path,
+        pretrained_name_or_path=pretrained_name_or_path,
         hidden_dim=768,
         num_heads=12,
         num_layers=8,

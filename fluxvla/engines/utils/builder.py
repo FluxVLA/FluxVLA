@@ -438,3 +438,12 @@ def build_operator_from_cfg(
     """
     from .root import OPERATORS
     return build_from_cfg(cfg, OPERATORS, default_args)
+
+
+def build_weighter_from_cfg(
+        cfg: Union[dict, ConfigDict, Config],
+        default_args: Optional[Union[dict, 'ConfigDict',
+                                     'Config']] = None) -> Any:
+    """Build an RA-BC sample weighter from a config dict."""
+    from .root import WEIGHTERS
+    return build_from_cfg(cfg, WEIGHTERS, default_args)

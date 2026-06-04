@@ -13,6 +13,11 @@
 # limitations under the License.
 """SARM RA-BC utilities."""
 
-from .weights import SarmRABCWeights, resolve_rabc_progress_path
+from fluxvla.weighters import (SarmRABCWeighter, SarmRABCWeights,
+                               resolve_rabc_progress_path)
 
-__all__ = ['SarmRABCWeights', 'resolve_rabc_progress_path']
+__all__ = [
+    'SarmRABCWeighter',
+    'SarmRABCWeights',
+    'resolve_rabc_progress_path',
+]

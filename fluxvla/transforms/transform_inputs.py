@@ -24,6 +24,8 @@ import torch
 import torchvision
 from PIL import Image
 
+from fluxvla.datasets.utils.video_decode import (
+    build_lerobot_video_path, decode_video_frames_torchvision)
 from fluxvla.engines import TRANSFORMS
 from fluxvla.engines.utils.eval_utils import crop_and_resize
 from .utils import pad_to_dim, parse_image
@@ -436,4 +438,48 @@ class PadKeyToDim():
                 repeat_target[-1] = repeat_times
                 tensor_padded = np.tile(tensor, repeat_target)
                 inputs[key] = tensor_padded
+        return inputs
+
+
+@TRANSFORMS.register_module()
+class DecodeLeRobotVideoSequence():
+    """Decode multi-frame LeRobot episode videos into ``images``.
+
+    Expects ``lerobot_video`` metadata emitted by :class:`SARMDataset` /
+    :class:`ARMDataset` and writes ``images`` as ``[T, N, C, H, W]`` numpy.
+    """
+
+    def __init__(self,
+                 video_keys: List[str],
+                 tolerance_s: float = 0.1,
+                 backend: str = 'pyav') -> None:
+        self.video_keys = video_keys
+        self.tolerance_s = tolerance_s
+        self.backend = backend
+
+    def __call__(self, inputs: Dict) -> Dict:
+        ctx = inputs.pop('lerobot_video')
+        data_root_path = ctx['data_root_path']
+        info = ctx['info']
+        episode_meta = ctx['episode_meta']
+        episode_index = int(ctx['episode_index'])
+        timestamps = ctx['timestamps']
+
+        images_per_camera = []
+        for video_key in self.video_keys:
+            video_path = build_lerobot_video_path(
+                data_root_path,
+                info,
+                episode_meta,
+                episode_index,
+                video_key,
+            )
+            frames = decode_video_frames_torchvision(
+                video_path,
+                timestamps,
+                tolerance_s=self.tolerance_s,
+                backend=self.backend,
+            )
+            images_per_camera.append(frames.numpy())
+        inputs['images'] = np.stack(images_per_camera, axis=1)
         return inputs

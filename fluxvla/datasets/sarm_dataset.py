@@ -13,12 +13,9 @@
 # limitations under the License.
 
 import os
-from pathlib import Path
 from typing import Dict, List, Optional, Union
 
 import numpy as np
-import torch
-import torchvision
 
 from fluxvla.datasets.parquet_dataset_v3 import ParquetDatasetV3
 from fluxvla.datasets.utils.sarm_utils import (apply_rewind_augmentation,
@@ -26,6 +23,7 @@ from fluxvla.datasets.utils.sarm_utils import (apply_rewind_augmentation,
                                                find_stage_and_tau,
                                                load_episode_annotations,
                                                load_temporal_proportions)
+from fluxvla.datasets.utils.video_decode import make_lerobot_video_context
 from fluxvla.engines import DATASETS
 
 
@@ -37,7 +35,7 @@ class SARMDataset(ParquetDatasetV3):
     Hugging Face parquet dataset, and layers SARM-specific logic on top:
 
     * multi-frame observation sequence construction from ``frame_gap``
-    * video decoding via ``torchvision`` from ``videos/<key>/...mp4``
+    * ``lerobot_video`` metadata for :class:`DecodeLeRobotVideoSequence`
     * sparse/dense stage-aware target computation
     * optional rewind augmentation at training time
     """
@@ -168,99 +166,19 @@ class SARMDataset(ParquetDatasetV3):
             self.dense_annotations[dataset_idx] = load_episode_annotations(
                 meta_root, 'dense')
 
-    def _decode_video_frames_torchvision(
-            self,
-            video_path: Union[Path, str],
-            timestamps: List[float],
-            tolerance_s: float = 0.1,
-            backend: str = 'pyav') -> torch.Tensor:
-        video_path = str(video_path)
-        first_ts = min(timestamps)
-        last_ts = max(timestamps)
-
-        def _load_candidates(
-                seek_ts: float) -> tuple[List[torch.Tensor], List[float]]:
-            keyframes_only = backend == 'pyav'
-            torchvision.set_video_backend(backend)
-            reader = torchvision.io.VideoReader(video_path, 'video')
-            reader.seek(seek_ts, keyframes_only=keyframes_only)
-
-            loaded_frames: List[torch.Tensor] = []
-            loaded_ts: List[float] = []
-            try:
-                for frame in reader:
-                    current_ts = float(frame['pts'])
-                    loaded_frames.append(frame['data'])
-                    loaded_ts.append(current_ts)
-                    if current_ts >= last_ts:
-                        break
-            finally:
-                if backend == 'pyav':
-                    reader.container.close()
-            return loaded_frames, loaded_ts
-
-        def _match_candidates(
-                loaded_frames: List[torch.Tensor],
-                loaded_ts: List[float]) -> Optional[torch.Tensor]:
-            if not loaded_ts:
-                return None
-            query_ts = torch.tensor(timestamps, dtype=torch.float32)
-            loaded_ts_tensor = torch.tensor(loaded_ts, dtype=torch.float32)
-            dist = torch.cdist(
-                query_ts[:, None], loaded_ts_tensor[:, None], p=1)
-            min_dist, argmin = dist.min(1)
-            if not (min_dist <= tolerance_s).all():
-                return None
-            return torch.stack([loaded_frames[idx] for idx in argmin])
-
-        loaded_frames, loaded_ts = _load_candidates(first_ts)
-        matched_frames = _match_candidates(loaded_frames, loaded_ts)
-        if matched_frames is None and backend == 'pyav' and first_ts > 0:
-            # torchvision warns that accurate seek is not implemented for pyav.
-            loaded_frames, loaded_ts = _load_candidates(0.0)
-            matched_frames = _match_candidates(loaded_frames, loaded_ts)
-        if matched_frames is None:
-            raise ValueError(
-                f'Failed to find frames within tolerance for {video_path}')
-        return matched_frames
-
-    def _build_video_path(self, dataset_idx: int, episode_index: int,
-                          video_key: str) -> str:
-        info = self.info[dataset_idx]
-        episode_meta = self.episodes_meta[dataset_idx][episode_index]
-        video_root_path = info['video_path']
-        format_kwargs = {
-            'video_key': video_key,
-            'episode_index': episode_index,
-        }
-
-        def _first_available_int(keys: List[str]) -> Optional[int]:
-            for key in keys:
-                if key in episode_meta:
-                    return int(episode_meta[key])
-            return None
-
-        chunk_index = _first_available_int([
-            f'videos/{video_key}/chunk_index',
-            'meta/episodes/chunk_index',
-            'data/chunk_index',
-            'chunk_index',
-        ])
-        file_index = _first_available_int([
-            f'videos/{video_key}/file_index',
-            'meta/episodes/file_index',
-            'data/file_index',
-            'file_index',
-        ])
-        if chunk_index is not None:
-            format_kwargs['chunk_index'] = chunk_index
-        if file_index is not None:
-            format_kwargs['file_index'] = file_index
-        if 'chunks_size' in info:
-            format_kwargs['episode_chunk'] = episode_index // int(
-                info['chunks_size'])
-        return os.path.join(self.data_root_path[dataset_idx],
-                            video_root_path.format(**format_kwargs))
+    def _make_lerobot_video_context(
+        self,
+        dataset_idx: int,
+        episode_index: int,
+        timestamps: List[float],
+    ) -> Dict[str, object]:
+        return make_lerobot_video_context(
+            self.data_root_path[dataset_idx],
+            self.info[dataset_idx],
+            self.episodes_meta[dataset_idx][episode_index],
+            episode_index,
+            timestamps,
+        )
 
     def _get_annotation(self, dataset_idx: int, episode_index: int,
                         annotation_type: str) -> Optional[Dict]:
@@ -358,29 +276,26 @@ class SARMDataset(ParquetDatasetV3):
         ],
                           axis=0)
 
-        images_per_camera = []
-        for video_key in self.video_keys:
-            video_path = self._build_video_path(dataset_idx, episode_index,
-                                                video_key)
-            frames = self._decode_video_frames_torchvision(
-                video_path, timestamps)
-            images_per_camera.append(frames.numpy())
-        images = np.stack(images_per_camera, axis=1)
-
         relative_indices = [
             seq_idx - episode_start
             for seq_idx in sequence_indices[:valid_length]
         ]
         output = {
-            'images': images,
-            'states': states,
-            'stats': self._get_state_statistics(dataset_idx,
-                                                dataset_statistics),
+            'lerobot_video':
+            self._make_lerobot_video_context(dataset_idx, episode_index,
+                                             timestamps),
+            'states':
+            states,
+            'stats':
+            self._get_state_statistics(dataset_idx, dataset_statistics),
             'task_description':
             self._resolve_task_description(dataset_idx, data),
-            'lengths': np.asarray(valid_length, dtype=np.int64),
-            'episode_index': np.asarray(episode_index, dtype=np.int64),
-            'current_index': np.asarray(index, dtype=np.int64),
+            'lengths':
+            np.asarray(valid_length, dtype=np.int64),
+            'episode_index':
+            np.asarray(episode_index, dtype=np.int64),
+            'current_index':
+            np.asarray(index, dtype=np.int64),
         }
         output['sparse_targets'] = self._compute_targets(
             dataset_idx, episode_index, episode_length, relative_indices,

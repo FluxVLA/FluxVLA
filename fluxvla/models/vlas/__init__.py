@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .arm_reward_model import ARMRewardModel  # noqa: F401, F403
 from .llava_vla import LlavaVLA  # noqa: F401, F403
 from .open_vla import OpenVLA  # noqa: F401, F403
 from .pi0_flowmatching import PI0FlowMatching  # noqa: F401, F403

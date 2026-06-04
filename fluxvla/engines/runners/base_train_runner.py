@@ -101,8 +101,8 @@ class BaseTrainRunner(ABC):
 
         metric['hparams'] = cfg
         timestamp = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
-        metric[
-            'run_id'] = f"{os.path.basename(cfg.filename).replace('.py', '')}_{timestamp}"  # noqa: E501
+        metric['run_id'] = (
+            f"{os.path.basename(cfg.filename).replace('.py', '')}_{timestamp}")
         self.metric = build_metric_from_cfg(metric)
 
         # Ensure only one training mode is set
@@ -439,6 +439,13 @@ class BaseTrainRunner(ABC):
             return math.ceil(dataset_len / self.global_batch_size)
 
     @staticmethod
+    def _tensor_for_safetensors(tensor):
+        """Return a contiguous tensor for safetensors export."""
+        if isinstance(tensor, torch.Tensor) and not tensor.is_contiguous():
+            return tensor.contiguous()
+        return tensor
+
+    @staticmethod
     def _save_model_safetensors(model_state_dicts, safetensors_path):
         """Save model weights as safetensors alongside the .pt checkpoint.
 
@@ -449,9 +456,10 @@ class BaseTrainRunner(ABC):
         for key, value in model_state_dicts.items():
             if isinstance(value, dict):
                 for sub_key, tensor in value.items():
-                    flat_dict[f'{key}.{sub_key}'] = tensor
+                    flat_dict[f'{key}.{sub_key}'] = (
+                        BaseTrainRunner._tensor_for_safetensors(tensor))
             elif isinstance(value, torch.Tensor):
-                flat_dict[key] = value
+                flat_dict[key] = BaseTrainRunner._tensor_for_safetensors(value)
         if flat_dict:
             save_file(flat_dict, safetensors_path)
 
