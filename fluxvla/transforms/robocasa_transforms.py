@@ -455,7 +455,21 @@ class RobocasaEvalDataset:
         token_mask = data['lang_masks'].tolist() if hasattr(
             data['lang_masks'], 'tolist') else list(data['lang_masks'])
 
+        # NormalizeImages returns float HWC numpy arrays, but the model expects
+        # the CHW (3 * num_imgs, H, W) tensor layout used by the LIBERO eval
+        # path. Convert and reorder before assembling the batch.
         pixel_values = data['pixel_values']
+        if isinstance(pixel_values, torch.Tensor):
+            pixel_values = pixel_values.detach().cpu().numpy()
+        pixel_values = np.asarray(pixel_values)
+        if pixel_values.ndim == 3 and pixel_values.shape[-1] == 3:
+            pixel_values = np.transpose(pixel_values, (2, 0, 1))
+        elif pixel_values.ndim == 4 and pixel_values.shape[-1] == 3:
+            pixel_values = np.transpose(pixel_values, (0, 3, 1, 2))
+            pixel_values = pixel_values.reshape(-1, *pixel_values.shape[-2:])
+        pixel_values = torch.from_numpy(
+            np.ascontiguousarray(pixel_values)).float()
+
         img_masks = data.get('img_masks', None)
         if img_masks is None:
             num_imgs = pixel_values.shape[0] // 3
