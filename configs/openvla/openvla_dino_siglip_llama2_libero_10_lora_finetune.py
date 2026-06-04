@@ -174,8 +174,6 @@ train_dataloader = dict(
                     type='ResizeImagesLanczos',
                     height=224,
                     width=224,
-                    jpeg_roundtrip=True,
-                    backend='tensorflow',
                 ),
                 dict(
                     type='AugImage',
@@ -210,7 +208,7 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,
-    max_steps=40000,
+    max_steps=80000,
     learning_rate=5e-4,
     weight_decay=None,
     max_grad_norm=None,
