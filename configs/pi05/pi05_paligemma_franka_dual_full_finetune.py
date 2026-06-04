@@ -275,20 +275,21 @@ inference = dict(
     operator=dict(
         type='FrankaDualOperator',
         command_mode='joint',
-        qpos_stream_rate=50.0,
-        qpos_smoothing_tau=0.0,
-        joint_deadband=0.01,
         img_left_topic='/camera_left_wrist/color/image_raw',
         img_right_topic='/camera_right_wrist/color/image_raw',
         img_front_topic='/camera_front/color/image_raw',
         puppet_arm_left_topic='/left_arm/joint_states',
         puppet_arm_right_topic='/right_arm/joint_states',
-        puppet_gripper_left_topic='/left_arm/franka_gripper/joint_states',
-        puppet_gripper_right_topic='/right_arm/franka_gripper/joint_states',
+        cartesian_cmd_left_topic=(
+            '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
+        cartesian_cmd_right_topic=(
+            '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
         joint_cmd_left_topic=(
             '/left_arm/joint_ruckig_position_controller/target_joint_state'),
         joint_cmd_right_topic=(
             '/right_arm/joint_ruckig_position_controller/target_joint_state'),
         gripper_action_left_name='/left_arm/franka_gripper/move',
         gripper_action_right_name='/right_arm/franka_gripper/move',
+        home_service='/cmd/home',
+        auto_switch_controller=True,
     ))

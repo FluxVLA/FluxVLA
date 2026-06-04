@@ -19,20 +19,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from ..utils.root import RUNNERS
+from ..utils.trajectory_utils import resample_remaining
 from .base_inference_runner import BaseInferenceRunner
-
-
-def resample_remaining(traj, offset):
-    """Linearly interpolate remaining trajectory from a fractional offset."""
-    N = traj.shape[0]
-    M = N - int(offset)
-    if M <= 0:
-        return traj[:0]
-    idx = np.clip(offset + np.arange(M), 0.0, N - 1.0)
-    lo = np.floor(idx).astype(int)
-    hi = np.minimum(lo + 1, N - 1)
-    alpha = (idx - lo)[:, np.newaxis]
-    return traj[lo] + alpha * (traj[hi] - traj[lo])
 
 
 @RUNNERS.register_module()
@@ -82,15 +70,12 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         if 'operator' not in kwargs or kwargs['operator'] is None:
             kwargs['operator'] = {
                 'type': 'FrankaDualOperator',
+                'command_mode': self.action_mode,
                 'img_front_topic': '/camera_front/color/image_raw',
                 'img_left_topic': '/camera_left/color/image_raw',
                 'img_right_topic': '/camera_right/color/image_raw',
                 'puppet_arm_left_topic': '/left_arm/joint_states',
                 'puppet_arm_right_topic': '/right_arm/joint_states',
-                'puppet_gripper_left_topic':
-                '/left_arm/franka_gripper/joint_states',
-                'puppet_gripper_right_topic':
-                '/right_arm/franka_gripper/joint_states',
                 'puppet_franka_state_left_topic':
                 '/left_arm/franka_state_controller/franka_states',
                 'puppet_franka_state_right_topic':
@@ -197,8 +182,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
             return (img_front, img_left, img_right, puppet_arm_left,
                     puppet_arm_right, puppet_ee_pose_left,
-                    puppet_ee_pose_right, puppet_gripper_left.data,
-                    puppet_gripper_right.data)
+                    puppet_ee_pose_right, puppet_gripper_left,
+                    puppet_gripper_right)
 
     def update_observation_window(self) -> Dict:
         """Update the observation window with latest sensor data.
@@ -277,14 +262,9 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         from ..utils import initialize_overwatch
         overwatch = initialize_overwatch(__name__)
 
-        if hasattr(self.ros_operator, 'stop_trajectory'):
-            try:
-                self.ros_operator.stop_trajectory(join_timeout=1.0)
-            except TypeError:
-                self.ros_operator.stop_trajectory()
+        self.ros_operator.stop_trajectory()
 
-        if self.prepare_pose is None and hasattr(self.ros_operator,
-                                                 'home_both_arms'):
+        if self.prepare_pose is None:
             overwatch.info('Returning Franka arms to home pose...')
             self.ros_operator.home_both_arms()
             self.observation_window = None
@@ -302,14 +282,21 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                     f'for the configured action mode, '
                     f'got left={len(left_pose)}, right={len(right_pose)}')
 
-            self.ros_operator.move_to_joints(left_pose, right_pose)
+            self._send_prepare_pose(left_pose, right_pose)
             self.observation_window = None
             overwatch.info('Prepare pose reached')
             return
 
-        overwatch.warning(
-            'No prepare_pose is configured and the operator has no '
-            'home_both_arms method')
+        overwatch.warning('No prepare_pose is configured')
+
+    def _send_prepare_pose(self, left_pose, right_pose):
+        if self.action_mode == 'cartesian':
+            self.ros_operator.send_eepose(left_pose[:7], right_pose[:7])
+        else:
+            self.ros_operator.send_joints(left_pose[:7], right_pose[:7])
+
+        self.ros_operator.send_gripper(
+            left_width=left_pose[7], right_width=right_pose[7], wait=True)
 
     def _get_user_task_instruction(self,
                                    default_instruction: str) -> List[str]:
@@ -407,19 +394,17 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 actions = actions[:self.execute_horizon]
 
         self.ros_operator.execute_trajectory(
-            actions[:, :8],
-            actions[:, 8:16],
+            actions[:, :7],
+            actions[:, 8:15],
+            actions[:, 7],
+            actions[:, 15],
             dt=self.dt,
             async_exec=self.async_execution)
 
         if self.async_execution and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
-            if final_chunk and hasattr(self.ros_operator, 'stop_trajectory'):
-                try:
-                    self.ros_operator.stop_trajectory(
-                        join_timeout=1.0, hold_current=True)
-                except TypeError:
-                    self.ros_operator.stop_trajectory(join_timeout=1.0)
+            if final_chunk:
+                self.ros_operator.stop_trajectory()
 
         if self._remaining_instruction_chunks is not None:
             self._remaining_instruction_chunks -= 1
@@ -433,8 +418,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         overwatch = initialize_overwatch(__name__)
         overwatch.info('Cleaning up FrankaInferenceRunner')
 
-        if hasattr(self.ros_operator, 'stop_trajectory'):
-            self.ros_operator.stop_trajectory()
+        self.ros_operator.stop_trajectory()
 
         super().cleanup()
 
