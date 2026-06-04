@@ -26,6 +26,7 @@ from PIL import Image
 
 from fluxvla.engines import TRANSFORMS
 from fluxvla.engines.utils.eval_utils import crop_and_resize
+from .transform_images import _resize_hwc_lanczos3_numpy
 from .utils import pad_to_dim, parse_image
 
 
@@ -351,16 +352,24 @@ class ProcessLiberoEvalInputs:
             to 224x224 before later model-specific processing.
         use_pil (bool): If True, use PIL to load the images.
             Default to True.
+        resize_size (int | None): If set, lanczos-resize the rotated raw image
+            to ``(resize_size, resize_size)`` before center crop, using the
+            same numpy lanczos policy as the training-time
+            ``ResizeImagesLanczos``. This keeps eval image resampling aligned
+            with training (and the official OpenVLA pipeline). Default None
+            keeps the legacy behavior (crop directly from the raw frame).
     """
 
     def __init__(self,
                  img_keys: List[str] = ['agentview_image'],
                  center_crop: bool = False,
                  use_pil: bool = True,
+                 resize_size: int = None,
                  embodiment_id: int = None) -> None:
         self.img_keys = img_keys
         self.center_crop = center_crop
         self.use_pil = use_pil
+        self.resize_size = resize_size
         self.embodiment_id = embodiment_id
 
     def __call__(self, inputs: Dict) -> Dict:
@@ -372,6 +381,9 @@ class ProcessLiberoEvalInputs:
                 raise KeyError(f'Image key {img_key!r} missing from inputs!')
             img = np.asarray(inputs[img_key])
             img = img[::-1, ::-1].copy()
+            if self.resize_size is not None:
+                img = _resize_hwc_lanczos3_numpy(img, self.resize_size,
+                                                 self.resize_size)
             if replay_img is None:
                 replay_img = img.copy()
             imgs.append(img)

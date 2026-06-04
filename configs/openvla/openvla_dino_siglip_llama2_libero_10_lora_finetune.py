@@ -245,7 +245,8 @@ eval = dict(
             dict(
                 type='ProcessLiberoEvalInputs',
                 img_keys=['agentview_image', 'agentview_image'],
-                center_crop=True),
+                center_crop=True,
+                resize_size=224),
             dict(
                 type='TransformImage',
                 image_resize_strategy='resize-naive',
