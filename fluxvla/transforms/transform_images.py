@@ -86,14 +86,46 @@ class ResizeImages:
     Args:
         height (int): The target height for the images.
         width (int): The target width for the images.
+        preserve_leading_dims (bool): If True, treat the last three
+            dimensions as CHW and preserve all leading dimensions.
     """
 
-    def __init__(self, height, width, *args, **kwargs):
+    def __init__(self,
+                 height,
+                 width,
+                 preserve_leading_dims: bool = False,
+                 *args,
+                 **kwargs):
         self.height = height
         self.width = width
+        self.preserve_leading_dims = preserve_leading_dims
+
+    def _resize_single_image(self, image: np.ndarray) -> np.ndarray:
+        return cv2.resize(
+            image.transpose(1, 2, 0), (self.width, self.height),
+            interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)
+
+    def _resize_preserve_leading_dims(self, images: np.ndarray) -> np.ndarray:
+        original_shape = images.shape
+        if images.ndim < 4:
+            raise ValueError(
+                'Input image sequence must have at least 4 dimensions')
+        flat_images = images.reshape(-1, original_shape[-3],
+                                     original_shape[-2], original_shape[-1])
+        resized_images = [
+            self._resize_single_image(image) for image in flat_images
+        ]
+        return np.stack(
+            resized_images, axis=0).reshape(*original_shape[:-2], self.height,
+                                            self.width)
 
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
+        if self.preserve_leading_dims:
+            data['images'] = self._resize_preserve_leading_dims(
+                np.asarray(data['images']))
+            return data
+
         if isinstance(data['images'], np.ndarray):
             assert data['images'].ndim == 3, \
                 "Input 'images' must be a 4D numpy array"
@@ -104,10 +136,7 @@ class ResizeImages:
             images = data['images']
         resized_images = list()
         for image in images:
-            resized_images.append(
-                cv2.resize(
-                    image.transpose(1, 2, 0), (self.width, self.height),
-                    interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1))
+            resized_images.append(self._resize_single_image(image))
 
         resized_images = np.concatenate(resized_images, axis=0)
         data['images'] = resized_images
@@ -295,23 +324,60 @@ class NormalizeImages:
             where each element is a list of stds for each channel.
     """
 
-    def __init__(self, means: List, stds: List, *args, **kwargs):
-        self.means = np.array(means)
-        self.stds = np.array(stds)
+    def __init__(self,
+                 means: List,
+                 stds: List,
+                 preserve_leading_dims: bool = False,
+                 scale_to_unit_interval: bool = False,
+                 *args,
+                 **kwargs):
+        self.means = np.asarray(means, dtype=np.float32)
+        self.stds = np.asarray(stds, dtype=np.float32)
+        self.preserve_leading_dims = preserve_leading_dims
+        self.scale_to_unit_interval = scale_to_unit_interval
+
+    def _normalize_flat_images(self, flat_images: np.ndarray) -> np.ndarray:
+        if self.scale_to_unit_interval:
+            flat_images = flat_images / 255.0
+
+        means = self.means
+        stds = self.stds
+        if means.ndim == 1:
+            means = np.broadcast_to(means[None, :], (flat_images.shape[0], 3))
+        if stds.ndim == 1:
+            stds = np.broadcast_to(stds[None, :], (flat_images.shape[0], 3))
+        if means.shape[0] == 1:
+            means = np.broadcast_to(means, (flat_images.shape[0], 3))
+        if stds.shape[0] == 1:
+            stds = np.broadcast_to(stds, (flat_images.shape[0], 3))
+        if (means.shape[0] != flat_images.shape[0]
+                or stds.shape[0] != flat_images.shape[0]):
+            raise ValueError(
+                'Means/stds must have length 1 or match the number '
+                'of images after flattening.')
+
+        normalized_images = []
+        for idx, image in enumerate(flat_images):
+            normalized_images.append((image - means[idx][:, None, None]) /
+                                     (stds[idx][:, None, None] + 1e-8))
+        return np.stack(normalized_images, axis=0)
 
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
-        images = data['images'].reshape(-1, 3, data['images'].shape[-2],
-                                        data['images'].shape[-1])
+        images = np.asarray(data['images'])
+        if self.preserve_leading_dims:
+            original_shape = images.shape
+            flat_images = images.reshape(-1, original_shape[-3],
+                                         original_shape[-2],
+                                         original_shape[-1]).astype(np.float32)
+            data['images'] = self._normalize_flat_images(flat_images).reshape(
+                original_shape)
+            return data
 
-        normalized_images = list()
-        for idx, image in enumerate(images):
-            normalized_image = (image - self.means[idx][:, None, None]) / (
-                self.stds[idx][:, None, None] + 1e-8)
-            normalized_images.append(normalized_image)
-
-        normalized_images = np.concatenate(normalized_images, axis=0)
-        data['images'] = normalized_images
+        flat_images = images.reshape(-1, 3, images.shape[-2],
+                                     images.shape[-1]).astype(np.float32)
+        data['images'] = np.concatenate(
+            self._normalize_flat_images(flat_images), axis=0)
         return data
 
 
@@ -835,6 +901,7 @@ class QWen2VLImageTransform:
         merge_size: int = 2,
         img_key: str = 'images',
         to_tensor: bool = False,
+        exact_resize_size: Optional[Tuple[int, int]] = None,
         **kwargs,
     ) -> None:
         self.img_transform = Qwen2VLImageProcessorHF(
@@ -855,11 +922,29 @@ class QWen2VLImageTransform:
             **kwargs)
         self.img_key = img_key
         self.to_tensor = to_tensor
+        self.exact_resize_size = exact_resize_size
+
+    def _exact_resize(self, images: np.ndarray) -> np.ndarray:
+        if self.exact_resize_size is None:
+            return images
+        if len(self.exact_resize_size) != 2:
+            raise ValueError(
+                'exact_resize_size must be a (height, width) pair.')
+        height, width = self.exact_resize_size
+        resized_images = []
+        for image in images:
+            resized_images.append(
+                cv2.resize(
+                    image.transpose(1, 2, 0), (width, height),
+                    interpolation=cv2.INTER_CUBIC).transpose(2, 0, 1))
+        return np.stack(resized_images, axis=0)
 
     def __call__(self, inputs):
-        ret_dict = self.img_transform(inputs[self.img_key].reshape(
-            -1, 3, inputs[self.img_key].shape[-2],
-            inputs[self.img_key].shape[-1]))
+        images = inputs[self.img_key].reshape(-1, 3,
+                                              inputs[self.img_key].shape[-2],
+                                              inputs[self.img_key].shape[-1])
+        images = self._exact_resize(images)
+        ret_dict = self.img_transform(images)
         if self.to_tensor:
             inputs[self.img_key] = torch.from_numpy(ret_dict['pixel_values'])
             inputs['image_grid_thw'] = torch.from_numpy(

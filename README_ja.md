@@ -41,6 +41,14 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 ## 📢 最新情報
 
+**\[2026/05/28\]** 🔥 双腕操作向けのモデル分離型 DAgger パイプライン [FluxDAgger](https://github.com/FluxVLA/FluxDAgger) を公開しました。さまざまな VLA と報酬モデルを容易に接続できます。
+
+**\[2026/05/28\]** 🔥 具身操作シミュレーション Benchmark [FluxBisim](https://github.com/FluxVLA/FluxBisim) を公開しました。
+
+**\[2026/05/09\]** 🔥 SmolVLA をサポートしました。
+
+**\[2026/04/24\]** 🔥 Pi0.5-RTC をサポートしました。
+
 **\[2026/04/22\]** 🔥 ZMQ ベースのリモート推論フレームワークをサポートしました。
 
 **\[2026/04/15\]** 🔥 DreamZero WAM をサポートしました。
@@ -48,8 +56,6 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 **\[2026/04/08\]** 🔥 FluxVLA をオープンソース化しました。
 
 ## 🛠️ インストール
-
-以下のインストール手順は NVCC 12.4 を例にしています。環境が異なる場合は、CUDA バージョンに応じて適宜調整してください。
 
 <details>
 <summary><b>1. conda 環境を作成する</b></summary>
@@ -67,10 +73,11 @@ conda activate fluxvla
 > **重要**：`pip install -r requirements.txt` を実行する前に、必ず公式の CUDA インデックスから PyTorch を先にインストールしてください。デフォルトの PyPI インデックスでは CUDA 対応ビルドを取得できません。
 
 ```bash
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# CUDA 12.8
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 ```
 
-他の CUDA バージョンの場合は、`cu124` を該当する値（例：`cu118`、`cu121`）に置き換えてください。詳細は [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) を参照してください。
+他の CUDA バージョンの場合は、`cu128` を該当する値（例：`cu118`、`cu121`）に置き換えてください。詳細は [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) および [https://pytorch.org/get-started/previous-versions/](https://pytorch.org/get-started/previous-versions/) を参照してください。
 
 </details>
 
@@ -114,7 +121,7 @@ pip install -r requirements.txt
 pip install --no-build-isolation -e .
 ```
 
-> **補足**：`requirements.txt` では `torch==2.6.0` を固定しています。これにより、2 番目の手順でインストールした CUDA 対応 PyTorch を pip が意図せず置き換えるのを防ぎます。別の torch バージョンを使う必要がある場合は、2 番目のコマンドと `requirements.txt` 内のバージョンの両方を更新してください。
+> **補足**：`requirements.txt` では `torch==2.8.0` を固定しています。これにより、2 番目の手順でインストールした CUDA 対応 PyTorch を pip が意図せず置き換えるのを防ぎます。別の torch バージョンを使う必要がある場合は、2 番目のコマンドと `requirements.txt` 内のバージョンの両方を更新してください。
 
 </details>
 
@@ -262,9 +269,50 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 </details>
 
 <details>
+<summary><b>SARM データセット</b></summary>
+
+FluxVLA の SARM ワークフローは、標準的な LeRobot v2.1 / v3.x データセットをサポートします。通常の observation / action フィールドに加えて、episodes メタデータに SARM subtask アノテーション列が必要です。
+
+公開済みの SARM サンプルデータセット:
+
+- LeRobot v3.x 版の学習 / 推論向け手動 sparse+dense アノテーション付きデータ: [limxdynamics/FluxVLAData/SARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_manual_test_10Episodes_lerobotv3.0)
+- LeRobot v3.x 版の手動または VLM アノテーション用未注釈データ: [limxdynamics/FluxVLAData/SARM_vlm_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_vlm_test_10Episodes_lerobotv3.0)
+- 新しい LeRobot v2.1 manual 変換版。学習 / 推論や旧来ツール互換向け: [limxdynamics/FluxVLAData/SARM_manual_test_10Episodes_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_manual_test_10Episodes_lerobotv2.1)
+- 新しい LeRobot v2.1 vlm 変換版。手動 stage 書き込みや VLM 自動アノテーション向け: [limxdynamics/FluxVLAData/SARM_vlm_test_10Episodes_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_vlm_test_10Episodes_lerobotv2.1)
+
+`./datasets` へは次のようにダウンロードできます:
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_manual_test_10Episodes_lerobotv3.0/*" --local-dir ./datasets
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_vlm_test_10Episodes_lerobotv3.0/*" --local-dir ./datasets
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_manual_test_10Episodes_lerobotv2.1/*" --local-dir ./datasets
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_vlm_test_10Episodes_lerobotv2.1/*" --local-dir ./datasets
+```
+
+`manual_*` はそのまま学習 / 推論に使えます。`vlm_*` は手動 stage 書き込みや VLM 自動アノテーションの開始点として使います。`meta/episodes.jsonl` と episode 単位動画を前提とするツールでは v2.1 を、ネイティブな LeRobot v3.x metadata を保ちたい場合は v3.0 を優先してください。
+
+LeRobot v3.x の SARM データセットを使う前に、動画メタデータを確認してください:
+
+- LeRobot v3.x では、複数 episode を 1 本の MP4 にまとめても、1 episode ごとに 1 本の MP4 でも構いません。
+
+- 複数 episode が同じ MP4 を共有する場合は、各 episode の `from_timestamp` / `to_timestamp` がその動画内の区間を正しく表している必要があります。
+
+- 動画がすでに `file-000.mp4`、`file-001.mp4` のように episode ごとに分かれている場合は、各 episode が対応する `file_index` を指し、`from_timestamp` は通常 `0.0` に戻ります。
+
+- ディレクトリ内に複数の MP4 があるのに、すべての episode が `file-000.mp4` を指している場合、その metadata は壊れているため、使用前に修正してください。
+
+- SARM データセット構成、アノテーション列の契約、progress 推論の使い方は [docs/sarm.md](docs/sarm.md) を参照してください。
+
+- 手動 stage 書き込みや VLM ベースの自動アノテーションは [tools/sarm_annotate/README.md](tools/sarm_annotate/README.md) を参照してください。
+
+</details>
+
+<details>
 <summary><b>プライベートデータセットのディレクトリ構造</b></summary>
 
 fluxvla をプライベートデータセットで学習する場合、まず生データ（例：ALOHA ロボットで収集した HDF5 ファイル）を LeRobot Dataset v2.1 形式に変換する必要があります。変換手順の詳細は [データ変換ガイド](docs/data_convert.md) をご覧ください。
+
+SARM については、必要な SARM アノテーション列が含まれていれば、FluxVLA は LeRobot v2.1 と v3.x の両方を扱えます。必要なメタデータ形式は [docs/sarm.md](docs/sarm.md) にまとめています。
 
 変換後のデータセットのディレクトリ構造は次のとおりです：
 
@@ -302,6 +350,8 @@ fluxvla をプライベートデータセットで学習する場合、まず生
 
 必要な事前学習済みチェックポイントをダウンロードし、`./checkpoints` ディレクトリに配置してください。設定に応じて必要なチェックポイントだけをダウンロードします。
 
+SARM ワークフローでは、通常は学習 / 推論用の CLIP チェックポイントが必要です。VLM ベースの自動アノテーションを使う場合は、公式 SARM で使われている Qwen3-VL チェックポイントも必要です。詳細は [docs/sarm.md](docs/sarm.md) を参照してください。
+
 <details>
 <summary><b>VLA モデル</b></summary>
 
@@ -318,9 +368,10 @@ fluxvla をプライベートデータセットで学習する場合、まず生
 <details>
 <summary><b>視覚言語モデル（VLM）</b></summary>
 
-| モデル     | サイズ | ダウンロードリンク                                                    |
-| ---------- | ------ | --------------------------------------------------------------------- |
-| Qwen2.5-VL | 3B     | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct) |
+| モデル     | サイズ | ダウンロードリンク                                                       |
+| ---------- | ------ | ------------------------------------------------------------------------ |
+| Qwen2.5-VL | 3B     | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct)    |
+| Qwen3-VL   | 30B    | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct) |
 
 </details>
 
@@ -340,12 +391,15 @@ fluxvla をプライベートデータセットで学習する場合、まず生
 
 | モデル              | ダウンロードリンク                                                                   |
 | ------------------- | ------------------------------------------------------------------------------------ |
+| CLIP ViT-B/32       | [🤗 Hugging Face](https://huggingface.co/openai/clip-vit-base-patch32)               |
 | ViT-Large (DINOv2)  | [🤗 Hugging Face](https://huggingface.co/timm/vit_large_patch14_reg4_dinov2.lvd142m) |
 | ViT-SO400M (SigLIP) | [🤗 Hugging Face](https://huggingface.co/timm/ViT-SO400M-14-SigLIP)                  |
 | SigLIP2             | [🤗 Hugging Face](https://huggingface.co/google/siglip2-base-patch16-224)            |
 | paligemma           | [🤗 Hugging Face](https://huggingface.co/google/paligemma-3b-pt-224)                 |
 
 > **ヒント**：`huggingface-cli download <model-name> --local-dir ./checkpoints/<model-name>` を使うとダウンロードを高速化できます。
+
+組み込みの SARM 設定では、CLIP ファイルを `./checkpoints/clip-vit-base-patch32` に配置してください。VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM を `./checkpoints/Qwen3-VL-30B-A3B-Instruct` に配置してください。
 
 </details>
 
@@ -383,6 +437,13 @@ huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_li
 - Llama、Gemma、Qwen 系の LLM バックボーンをサポートします。
 - DINOv2、SigLIP の視覚バックボーンをサポートします。
 - PaliGemma、Qwen-VL の VLM バックボーンをサポートします。
+
+</details>
+
+<details>
+<summary><b>SARM ワークフローに対応</b></summary>
+
+- [SARM](https://github.com/xdofai/opensarm) の学習、アノテーション、progress 推論をサポートし、LeRobot v2.1/v3.x データセットに対応しています。詳細は [docs/sarm.md](docs/sarm.md) を参照してください。
 
 </details>
 
@@ -577,17 +638,6 @@ pip install numpy==1.26.4
 
 </details>
 
-<details>
-<summary><b>Q：RTX 5090（推論）で失敗する（例：Triton カーネルのエラーや CUDA 互換性の問題）。</b></summary>
-
-<b>A：</b> RTX 5090（Blackwell アーキテクチャ）は更新された Triton が必要です。Triton 3.2.0 以上にアップグレードしてください：
-
-```bash
-pip install triton==3.2.0
-```
-
-</details>
-
 ## コントリビューション
 
 貢献の手順とガイドラインは [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md) を参照してください。
@@ -631,4 +681,3 @@ FluxVLA を研究やプロジェクトで利用した場合は、以下の形式
 - RLDS データセットは廃止され、Parquet データセットに置き換えられます。
 - logger 機能を完全実装。
 - Isaac Sim に対応。
-- SARM に対応。
