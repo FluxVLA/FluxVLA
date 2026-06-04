@@ -39,6 +39,20 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 *Linked scores point to the corresponding checkpoints.*
 
+#### RoboCasa GR1
+
+| Model | Training Data | Cabinet | Drawer | Microwave | Generalization | Average |
+|---|:---:|:---:|:---:|:---:|:---:|:---:|
+| FluxVLA(GR00T) | 24 tasks, 30 demos|  27.5% | 37.5% | 45.0% | 50.3% | [46.9%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+
+#### Notes
+
+- `Cabinet`: `PnPBottleToCabinetClose` + `PnPWineToCabinetClose`.
+- `Drawer`: `PnPCanToDrawerClose` + `PnPCupToDrawerClose`.
+- `Microwave`: `PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`.
+- `Generalization`: the remaining 18 post-train novel tasks.
+- All rates are micro-averaged over episodes.
+
 ## 📢 Latest News
 
 **\[2026/06/04\]** 🔥 Triton backend for Pi0.5-RTC is now supported, see [inference_acceleration](docs/inference_acceleration.md).
@@ -136,6 +150,35 @@ pip install --no-build-isolation -e .
 ```
 
 > **Note**: `requirements.txt` pins `torch==2.6.0` to prevent pip from accidentally replacing the CUDA-enabled PyTorch installed in step 2. If you need to use another torch version, update both the step-2 command and the torch version in `requirements.txt`.
+</details>
+
+<details>
+<summary><b>RoboCasa GR00T support (optional)</b></summary>
+
+Install these extra dependencies only if you want to train or evaluate RoboCasa GR00T configs such as `configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`.
+
+First install the patched robosuite build:
+
+```bash
+pip install git+https://github.com/yinchimaoliang/robosuite.git@7264a82
+```
+
+Then install Isaac-GR00T and the RoboCasa GR1 task package from local checkouts:
+
+```bash
+git clone https://github.com/NVIDIA/Isaac-GR00T.git /path/to/Isaac-GR00T
+cd /path/to/Isaac-GR00T
+git checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
+pip install --no-deps -e /path/to/Isaac-GR00T
+
+git clone https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git \
+  /path/to/robocasa-gr1-tabletop-tasks
+cd /path/to/robocasa-gr1-tabletop-tasks
+git checkout 4840e671596f93ca03651524b9f72ffb1aadfeff
+pip install --no-deps -e /path/to/robocasa-gr1-tabletop-tasks
+```
+
+`--no-deps` is recommended for editable installs so the RoboCasa packages do not replace the pinned FluxVLA model stack dependencies. RoboCasa assets and datasets are covered in [Data & Assets Preparation](#data--assets-preparation).
 
 </details>
 
@@ -255,7 +298,7 @@ Note: event files are saved to `{work_dir}/tensorboard/{run_id}/` per run, enabl
 
 </details>
 
-## Data Preparation
+## Data & Assets Preparation
 
 <details>
 <summary><b>Use the datasets we prepared directly</b></summary>
@@ -269,6 +312,7 @@ Download the required datasets and place them under `./datasets`. Download only 
 | libero-10              | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
 | libero-goal            | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
 | modified_libero_rlds   | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                           |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                             |
 | RoboCasa GR1           | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                             |
 | RealRobot_AgileX_aloha | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
 | RealRobot_UR3_Chem     | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
@@ -281,7 +325,56 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 Replace `libero_10_no_noops_lerobotv2.1` with the corresponding folder name of the dataset you want to download.
 
-For RoboCasa GR00T environment setup and assets, see [RoboCasa GR00T Environment Setup](docs/robocasa_gr00t_env_setup.md).
+For RoboCasa GR00T training with the released 30-demo subset, download the
+dataset under `./datasets`:
+
+```bash
+mkdir -p datasets work_dirs
+
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "robocasa_gr1_24tasks_first30ep/*" \
+  --local-dir ./datasets
+```
+
+For full-data RoboCasa GR1 training, replace the include pattern with
+`robocasa_lerobot_V2.1/*`.
+
+RoboCasa GR00T evaluation also needs the official GR1 normalization statistics.
+Place the file at `work_dirs/official_groot_gr1_dataset_statistics.json`:
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "official_groot_gr1_dataset_statistics.json" \
+  --local-dir ./work_dirs
+```
+
+
+</details>
+
+<details>
+<summary><b>Prepare assets</b></summary>
+
+Download the required assets and place them under the local directories expected by your configuration or simulator.
+
+| Asset                            | Download link                                                                                                       | Local directory                                               |
+| -------------------------------- | ------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| RoboCasa tabletop simulator assets | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+
+Recommended option: run the upstream asset downloader from the RoboCasa GR1
+task checkout:
+
+```bash
+cd /path/to/robocasa-gr1-tabletop-tasks
+python robocasa/scripts/download_tabletop_assets.py -y
+```
+
+Alternative option: download the mirrored assets from Hugging Face and place
+them directly under
+`/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets`.
+Symlinks are not required; they are only a convenience when the assets already
+live on another local disk or shared storage.
 
 </details>
 
@@ -438,7 +531,7 @@ You can also download models that have been trained with FluxVLA for inference o
 | ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | PI0.5 PaliGemma Libero-10 | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |
 | GR00T Eagle 3B Libero-10  | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |
-| GR00T Eagle 3B RoboCasa   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_finetune)            |
+| GR00T Eagle 3B RoboCasa   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)            |
 
 ```bash
 # Example: download the PI0.5 checkpoint from limxdynamics/FluxVLAEngine
@@ -526,6 +619,24 @@ export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/train.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --work-dir ./checkpoints/pi05_paligemma_libero_10_full_finetune --cfg-options train_dataloader.per_device_batch_size=2
 ```
 
+RoboCasa GR00T smoke training example:
+
+```bash
+WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
+  --config configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
+  --work-dir work_dirs/smoke_groot_robocasa_train \
+  --cfg-options \
+    runner.type=FSDPTrainRunner \
+    runner.sharding_strategy=no-shard \
+    train_dataloader.per_device_batch_size=1 \
+    runner.enable_gradient_checkpointing=False \
+    runner.max_steps=2 \
+    runner.save_iter_interval=1 \
+    runner.max_keep_ckpts=2 \
+    "runner.metric.active_trackers=('jsonl',)"
+```
+
 </details>
 
 <details>
@@ -540,6 +651,19 @@ Example:
 ```
 export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --ckpt-path checkpoints/pi05_paligemma_libero_10_full_finetune_bs64/checkpoints/step-028548-epoch-18-loss=0.0111.safetensors
+```
+
+RoboCasa GR00T evaluation example:
+
+```bash
+MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
+  --config configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
+  --ckpt-path work_dirs/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64/checkpoints/step-010000.safetensors \
+  --cfg-options \
+    eval.norm_stats_path=work_dirs/official_groot_gr1_dataset_statistics.json \
+    eval.output_dir=work_dirs/gr00t_eagle_3b_robocasa_eval \
+    eval.num_trials_per_task=20
 ```
 
 </details>

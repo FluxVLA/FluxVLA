@@ -14,19 +14,21 @@ einops==0.4.1
 future==0.18.2
 gcsfs
 gym==0.25.2
+gymnasium
 hydra-core==1.2.0
 imageio
 imageio-ffmpeg==0.6.0
 jsonlines==4.0.0
 -e git+https://github.com/yinchimaoliang/LIBERO.git#egg=libero
+lxml
 matplotlib
 mmengine==0.10.7
-mujoco==3.3.2
+mujoco==3.2.6
 numpy==1.26.4
 opencv-python
 peft==0.11.1
 robomimic==0.2.0
-robosuite==1.4.1
+robosuite==1.5.1
 sentencepiece==0.1.99
 sentry-sdk==2.27.0
 tensorflow==2.15.0

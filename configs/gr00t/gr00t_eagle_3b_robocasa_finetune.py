@@ -43,8 +43,10 @@ model = dict(
     freeze_projector=False)
 
 _STAT = 'robocasa_gr1_24tasks_30ep'
+_ROBOCASA_DATA_ROOT = './datasets/robocasa_gr1_24tasks_first30ep'
 _OFFICIAL_GR1_STATS_PATH = (
-    'work_dirs/official_groot_gr1_dataset_statistics.json')
+    f'{_ROBOCASA_DATA_ROOT}/official_groot_gr1_dataset_statistics.json')
+
 
 _ROBOCASA_TASK_DIRS = [
     'PnPBottleToCabinetClose',
@@ -89,7 +91,7 @@ train_dataloader = dict(
             dict(
                 type='ParquetDataset',
                 data_root_path=[
-                    f'./datasets/robocasa_fluxvla/{task_dir}'
+                    f'{_ROBOCASA_DATA_ROOT}/{task_dir}'
                     for task_dir in _ROBOCASA_TASK_DIRS
                 ],
                 statistic_name=_STAT,
