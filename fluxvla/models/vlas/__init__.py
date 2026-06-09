@@ -22,6 +22,7 @@ import_heterogeneous_runtime_symbols(
     globals(),
     {
         'arm_reward_model': ['ARMRewardModel'],
+        'dit4dit_vla': ['DiT4DiTVLA'],
         'pi0_flowmatching': ['PI0FlowMatching'],
         'pi05_flowmatching': ['PI05FlowMatching'],
         'pi05_flowmatching_inference': ['PI05FlowMatchingInference'],

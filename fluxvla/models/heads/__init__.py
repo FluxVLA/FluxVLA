@@ -22,6 +22,7 @@ import_heterogeneous_runtime_symbols(
     __name__,
     globals(),
     {
+        'dit4dit_action_head': ['DiT4DiTActionHead'],
         'flow_matching_inference_head': ['FlowMatchingInferenceHead'],
         'xvla_head': ['XVLAFlowMatchingHead'],
         'dreamzero_head': ['DreamZeroHead'],

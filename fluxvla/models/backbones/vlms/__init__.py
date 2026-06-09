@@ -20,6 +20,7 @@ import_heterogeneous_runtime_symbols(
     __name__,
     globals(),
     {
+        'cosmos25': ['Cosmos25Backbone'],
         'florence2': ['Florence2Backbone'],
         'paligemma': ['PaliGemma'],
         'qwen2_5_vl': ['QWen2_5VL'],
