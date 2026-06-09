@@ -53,6 +53,8 @@ class SARMRewardModel(BaseVLA):
         llm_backbone (Optional[Dict]): Backbone config passed to the
             registry builder. Set ``pretrained_name_or_path`` here for the
             CLIP checkpoint used by :class:`SARMBackbone`.
+        clip_model_name_or_path (str): CLIP checkpoint path or Hugging Face
+            repo id.
         data_root_path (Optional[str | List[str]]): Optional dataset root
             used to infer stage counts and temporal priors.
         hidden_dim (int): Hidden dimension for SARM transformer heads.
@@ -84,6 +86,8 @@ class SARMRewardModel(BaseVLA):
     def __init__(self,
                  annotation_mode: str = 'single_stage',
                  llm_backbone: Optional[Dict] = None,
+                 clip_model_name_or_path: str = (
+                     './checkpoints/clip-vit-base-patch32'),
                  data_root_path: Optional[str | List[str]] = None,
                  hidden_dim: int = 768,
                  num_heads: int = 12,
@@ -155,7 +159,7 @@ class SARMRewardModel(BaseVLA):
 
         llm_backbone_cfg = dict(
             type='SARMBackbone',
-            pretrained_name_or_path='./checkpoints/clip-vit-base-patch32',
+            pretrained_name_or_path=clip_model_name_or_path,
             hidden_dim=hidden_dim,
             max_state_dim=max_state_dim,
             num_layers=num_layers,
@@ -184,6 +188,7 @@ class SARMRewardModel(BaseVLA):
         )
 
         backbone_cfg = llm_backbone_cfg
+        self.clip_model_name_or_path = backbone_cfg['pretrained_name_or_path']
         self.hidden_dim = backbone_cfg['hidden_dim']
         self.num_heads = backbone_cfg['num_heads']
         self.num_layers = backbone_cfg['num_layers']
