@@ -62,12 +62,16 @@ inference = dict(
         img_front_topic='/camera_front/color/image_raw',
         puppet_arm_left_topic='/left_arm/joint_states',
         puppet_arm_right_topic='/right_arm/joint_states',
-        puppet_gripper_left_topic='/left_arm/franka_gripper/joint_states',
-        puppet_gripper_right_topic='/right_arm/franka_gripper/joint_states',
+        cartesian_cmd_left_topic=(
+            '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
+        cartesian_cmd_right_topic=(
+            '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
         joint_cmd_left_topic=(
-            '/left_arm/joint_ruckig_position_controller/target_joint_state'),
+            '/left_arm/joint_ruckig_smooth_position_controller/target_joint_state'),  # noqa: E501
         joint_cmd_right_topic=(
-            '/right_arm/joint_ruckig_position_controller/target_joint_state'),
-        gripper_action_left_name='/left_arm/franka_gripper/move',
-        gripper_action_right_name='/right_arm/franka_gripper/move',
+            '/right_arm/joint_ruckig_smooth_position_controller/target_joint_state'),  # noqa: E501
+        gripper_left_topic='/left_arm/franka_gripper/move/goal',
+        gripper_right_topic='/right_arm/franka_gripper/move/goal',
+        home_service='/cmd/home',
+        auto_switch_controller=True,
     ))

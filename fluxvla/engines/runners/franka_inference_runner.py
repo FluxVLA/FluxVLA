@@ -84,8 +84,14 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 '/left_arm/cartesian_impedance_controller/equilibrium_pose',
                 'cartesian_cmd_right_topic':
                 '/right_arm/cartesian_impedance_controller/equilibrium_pose',
-                'gripper_action_left_name': '/left_arm/franka_gripper/move',
-                'gripper_action_right_name': '/right_arm/franka_gripper/move',
+                'joint_cmd_left_topic':
+                '/left_arm/joint_ruckig_smooth_position_controller/target_joint_state',  # noqa: E501
+                'joint_cmd_right_topic':
+                '/right_arm/joint_ruckig_smooth_position_controller/target_joint_state',  # noqa: E501
+                'gripper_goal_left_topic':
+                '/left_arm/franka_gripper/move/goal',
+                'gripper_goal_right_topic':
+                '/right_arm/franka_gripper/move/goal',
             }
 
         if 'task_descriptions' not in kwargs or kwargs[
@@ -116,6 +122,49 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         return np.concatenate(
             (positions[:7], np.array([gripper_width], dtype=np.float32)),
             axis=0)
+
+    @staticmethod
+    def _gripper_width_from_joint_state(joint_state):
+        positions = dict(zip(joint_state.name, joint_state.position))
+        finger1 = positions.get('panda_finger_joint1')
+        finger2 = positions.get('panda_finger_joint2')
+        if finger1 is None or finger2 is None:
+            raise ValueError(
+                'Franka JointState must contain panda_finger_joint1 and '
+                'panda_finger_joint2 for gripper width')
+        return float(finger1 + finger2)
+
+    def _pose_from_frame(self, frame, side):
+        pose = frame.get(f'{side}_pose')
+        if pose is not None:
+            return pose
+
+        franka_state = frame.get(f'{side}_franka_state')
+        if franka_state is not None:
+            return self._franka_state_to_pose_stamped(franka_state)
+        return None
+
+    @staticmethod
+    def _franka_state_to_pose_stamped(msg):
+        from geometry_msgs.msg import Point, PoseStamped, Quaternion
+        from tf.transformations import quaternion_from_matrix
+
+        transform = np.asarray(
+            msg.O_T_EE, dtype=np.float64).reshape((4, 4), order='F')
+        quat = quaternion_from_matrix(transform)
+
+        pose_msg = PoseStamped()
+        pose_msg.header = msg.header
+        pose_msg.pose.position = Point(
+            x=float(transform[0, 3]),
+            y=float(transform[1, 3]),
+            z=float(transform[2, 3]))
+        pose_msg.pose.orientation = Quaternion(
+            x=float(quat[0]),
+            y=float(quat[1]),
+            z=float(quat[2]),
+            w=float(quat[3]))
+        return pose_msg
 
     def get_ros_observation(
         self
@@ -175,15 +224,20 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 continue
 
             print_flag = True
-            (img_front, img_left, img_right, img_front_depth, img_left_depth,
-             img_right_depth, puppet_arm_left, puppet_arm_right,
-             puppet_ee_pose_left, puppet_ee_pose_right, puppet_gripper_left,
-             puppet_gripper_right) = result
+            puppet_arm_left = result['left_arm']
+            puppet_arm_right = result['right_arm']
 
-            return (img_front, img_left, img_right, puppet_arm_left,
-                    puppet_arm_right, puppet_ee_pose_left,
-                    puppet_ee_pose_right, puppet_gripper_left,
-                    puppet_gripper_right)
+            return (
+                result['img_front'],
+                result['img_left'],
+                result['img_right'],
+                puppet_arm_left,
+                puppet_arm_right,
+                self._pose_from_frame(result, 'left'),
+                self._pose_from_frame(result, 'right'),
+                self._gripper_width_from_joint_state(puppet_arm_left),
+                self._gripper_width_from_joint_state(puppet_arm_right),
+            )
 
     def update_observation_window(self) -> Dict:
         """Update the observation window with latest sensor data.
@@ -291,12 +345,22 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
     def _send_prepare_pose(self, left_pose, right_pose):
         if self.action_mode == 'cartesian':
-            self.ros_operator.send_eepose(left_pose[:7], right_pose[:7])
+            self.ros_operator.send_eepose({
+                'left': left_pose[:7],
+                'right': right_pose[:7],
+            })
         else:
-            self.ros_operator.send_joints(left_pose[:7], right_pose[:7])
+            self.ros_operator.send_joints({
+                'left': left_pose[:7],
+                'right': right_pose[:7],
+            })
 
         self.ros_operator.send_gripper(
-            left_width=left_pose[7], right_width=right_pose[7], wait=True)
+            {
+                'left': left_pose[7],
+                'right': right_pose[7],
+            },
+            wait=True)
 
     def _get_user_task_instruction(self,
                                    default_instruction: str) -> List[str]:
@@ -394,10 +458,14 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 actions = actions[:self.execute_horizon]
 
         self.ros_operator.execute_trajectory(
-            actions[:, :7],
-            actions[:, 8:15],
-            actions[:, 7],
-            actions[:, 15],
+            arm_trajectories={
+                'left': actions[:, :7],
+                'right': actions[:, 8:15],
+            },
+            gripper_trajectories={
+                'left': actions[:, 7],
+                'right': actions[:, 15],
+            },
             dt=self.dt,
             async_exec=self.async_execution)
 
