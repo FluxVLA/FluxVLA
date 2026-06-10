@@ -55,9 +55,9 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 📢 最新动态
 
-**\[2026/06/04\]** 🔥 现已支持 Pi0.5-RTC 的 Triton 后端，详见 [inference_acceleration](docs/inference_acceleration.md)。
+**\[2026/06/10\]** 🔥 现已支持基于 GR00T 的 RoboCasa GR1 仿真任务。
 
-**\[2026/06/04\]** 🔥 现已支持基于 GR00T 的 RoboCasa GR1 仿真任务。
+**\[2026/06/04\]** 🔥 现已支持 Pi0.5-RTC 的 Triton 后端，详见 [inference_acceleration](docs/inference_acceleration.md)。
 
 **\[2026/05/28\]** 🔥 正式发布面向双臂操作的模型解耦 DAgger 流水线 [FluxDAgger](https://github.com/FluxVLA/FluxDAgger)，便于接入不同 VLA 与奖励模型。
 

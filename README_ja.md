@@ -55,9 +55,9 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 ## 📢 最新情報
 
-**\[2026/06/04\]** 🔥 Pi0.5-RTC の Triton バックエンドをサポートしました。詳細は [inference_acceleration](docs/inference_acceleration.md) を参照してください。
+**\[2026/06/10\]** 🔥 GR00T による RoboCasa GR1 シミュレーションタスクに対応しました。
 
-**\[2026/06/04\]** 🔥 GR00T による RoboCasa GR1 シミュレーションタスクに対応しました。
+**\[2026/06/04\]** 🔥 Pi0.5-RTC の Triton バックエンドをサポートしました。詳細は [inference_acceleration](docs/inference_acceleration.md) を参照してください。
 
 **\[2026/05/28\]** 🔥 双腕操作向けのモデル分離型 DAgger パイプライン [FluxDAgger](https://github.com/FluxVLA/FluxDAgger) を公開しました。さまざまな VLA と報酬モデルを容易に接続できます。
 

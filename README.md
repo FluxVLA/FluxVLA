@@ -55,9 +55,9 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## 📢 Latest News
 
-**\[2026/06/04\]** 🔥 Triton backend for Pi0.5-RTC is now supported, see [inference_acceleration](docs/inference_acceleration.md).
+**\[2026/06/10\]** 🔥 RoboCasa GR1 simulation tasks with GR00T are now supported.
 
-**\[2026/06/04\]** 🔥 RoboCasa GR1 simulation tasks with GR00T are now supported.
+**\[2026/06/04\]** 🔥 Triton backend for Pi0.5-RTC is now supported, see [inference_acceleration](docs/inference_acceleration.md).
 
 **\[2026/05/28\]** 🔥 [FluxDAgger](https://github.com/FluxVLA/FluxDAgger) is now released: a model-decoupled DAgger pipeline for dual-arm manipulation, making it easy to integrate different VLAs and reward models.
 
