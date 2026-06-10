@@ -21,7 +21,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Union
 
 import torch
 import torch.nn.functional as F
-from torch.distributed.fsdp.wrap import _module_wrap_policy
+from torch.distributed.fsdp.wrap import _or_policy
 from transformers import PretrainedConfig
 
 from fluxvla.engines import VLAS
@@ -88,6 +88,9 @@ class DiT4DiTVLA(BaseVLA):
         if hasattr(self.vlm_backbone, 'trainable'):
             self.vlm_backbone.trainable = not self.freeze_vlm_backbone
         super().freeze_backbones()
+        if (not self.freeze_vlm_backbone and hasattr(
+                self.vlm_backbone, 'freeze_configured_submodules')):
+            self.vlm_backbone.freeze_configured_submodules()
 
     def _resolve_prompts(
         self,
@@ -327,14 +330,22 @@ class DiT4DiTVLA(BaseVLA):
         return self.vla_head.predict_action(last_hidden, state=states)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
-        module_classes = set()
-        if hasattr(self.vlm_backbone, 'transformer_layer_cls'):
-            module_classes.add(self.vlm_backbone.transformer_layer_cls)
-        if hasattr(self.vla_head, 'transformer_layer_cls'):
-            module_classes.add(self.vla_head.transformer_layer_cls)
-        if not module_classes:
+        wrapping_policies = []
+        if (self.vlm_backbone is not None
+                and hasattr(self.vlm_backbone, 'get_fsdp_wrapping_policy')):
+            policy = self.vlm_backbone.get_fsdp_wrapping_policy()
+            if policy is not None:
+                wrapping_policies.append(policy)
+        if self.vla_head is not None and hasattr(self.vla_head,
+                                                 'get_fsdp_wrapping_policy'):
+            policy = self.vla_head.get_fsdp_wrapping_policy()
+            if policy is not None:
+                wrapping_policies.append(policy)
+        if not wrapping_policies:
             return None
-        return partial(_module_wrap_policy, module_classes=module_classes)
+        if len(wrapping_policies) == 1:
+            return wrapping_policies[0]
+        return partial(_or_policy, policies=wrapping_policies)
 
 
 __all__ = ['DiT4DiTVLA']

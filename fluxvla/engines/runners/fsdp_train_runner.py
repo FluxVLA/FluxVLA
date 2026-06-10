@@ -25,6 +25,7 @@ from torch.distributed.fsdp import (MixedPrecision, ShardingStrategy,
                                     StateDictType)
 
 from ..utils import initialize_overwatch
+from ..utils.name_map import str_to_dtype
 from ..utils.root import RUNNERS
 from .base_train_runner import BaseTrainRunner
 
@@ -102,6 +103,7 @@ class FSDPTrainRunner(BaseTrainRunner):
                  evaluator: Optional[Dict] = None,
                  sharding_strategy: str = 'hybrid-shard',
                  fsdp_wrap_policy: str = 'model',
+                 pre_fsdp_param_dtype: Optional[str] = None,
                  change_key_name: bool = False,
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None,
@@ -141,6 +143,9 @@ class FSDPTrainRunner(BaseTrainRunner):
         self.args = args
         self.max_grad_norm = max_grad_norm
         self.sharding_strategy = sharding_strategy
+        self.pre_fsdp_param_dtype = (
+            str_to_dtype(pre_fsdp_param_dtype)
+            if pre_fsdp_param_dtype is not None else None)
         if self.sharding_strategy == 'global-shard-grad-op':
             # Use the default global process group. Unlike the private
             # hybrid Zero2 strategy below, this does not create one extra
@@ -415,7 +420,9 @@ class FSDPTrainRunner(BaseTrainRunner):
 
         self.vla.freeze_backbones()
 
-        if is_no_shard and not self.keep_params_fp32:
+        if self.pre_fsdp_param_dtype is not None:
+            target_dtype = self.pre_fsdp_param_dtype
+        elif is_no_shard and not self.keep_params_fp32:
             target_dtype = torch.bfloat16
         else:
             target_dtype = torch.float32

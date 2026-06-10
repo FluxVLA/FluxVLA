@@ -342,6 +342,94 @@ class ProcessLiberoEvalInputs:
 
 
 @TRANSFORMS.register_module()
+class PadActionsAndActionMasks:
+    """Pad action vectors and expand temporal masks to per-dim masks."""
+
+    def __init__(self,
+                 action_dim: int,
+                 action_key: str = 'actions',
+                 action_mask_key: str = 'action_masks',
+                 valid_action_dim: int = None,
+                 pad_value: float = 0.0) -> None:
+        self.action_dim = int(action_dim)
+        self.action_key = action_key
+        self.action_mask_key = action_mask_key
+        self.valid_action_dim = valid_action_dim
+        self.pad_value = pad_value
+
+    def __call__(self, inputs: Dict) -> Dict:
+        if self.action_key not in inputs:
+            raise KeyError(f"Action key '{self.action_key}' is missing.")
+
+        actions = inputs[self.action_key]
+        is_tensor = torch.is_tensor(actions)
+        action_array = actions.detach().cpu().numpy(
+        ) if is_tensor else np.asarray(actions)
+        original_action_dim = action_array.shape[-1]
+        padded_actions = self._pad_or_truncate(action_array, self.action_dim,
+                                               self.pad_value)
+
+        if self.action_mask_key in inputs:
+            action_masks = inputs[self.action_mask_key]
+            mask_array = (
+                action_masks.detach().cpu().numpy()
+                if torch.is_tensor(action_masks) else np.asarray(action_masks))
+        else:
+            mask_array = np.ones(action_array.shape[:-1], dtype=np.float32)
+
+        expanded_mask = self._expand_mask(mask_array, original_action_dim,
+                                          padded_actions.shape[:-1])
+
+        if is_tensor:
+            inputs[self.action_key] = torch.from_numpy(padded_actions).to(
+                device=actions.device, dtype=actions.dtype)
+            inputs[self.action_mask_key] = torch.from_numpy(expanded_mask).to(
+                device=actions.device)
+        else:
+            inputs[self.action_key] = padded_actions
+            inputs[self.action_mask_key] = expanded_mask
+        return inputs
+
+    def _pad_or_truncate(self, values: np.ndarray, target_dim: int,
+                         pad_value: float) -> np.ndarray:
+        if values.shape[-1] >= target_dim:
+            return values[..., :target_dim]
+        padded = np.full((*values.shape[:-1], target_dim),
+                         pad_value,
+                         dtype=values.dtype)
+        padded[..., :values.shape[-1]] = values
+        return padded
+
+    def _expand_mask(self, mask: np.ndarray, original_action_dim: int,
+                     action_shape: tuple) -> np.ndarray:
+        valid_dim = self.valid_action_dim
+        if valid_dim is None:
+            valid_dim = min(original_action_dim, self.action_dim)
+        valid_dim = min(int(valid_dim), self.action_dim)
+
+        mask = mask.astype(bool, copy=False)
+        if mask.shape == action_shape:
+            expanded = mask[..., None].repeat(self.action_dim, axis=-1)
+        elif mask.shape == (*action_shape, original_action_dim):
+            expanded = self._pad_or_truncate(
+                mask.astype(np.float32), self.action_dim, 0.0).astype(bool)
+        elif mask.shape == (*action_shape, self.action_dim):
+            expanded = mask
+        else:
+            expected_action_mask_shape = (*action_shape, original_action_dim)
+            expected_padded_mask_shape = (*action_shape, self.action_dim)
+            raise ValueError(
+                f'Unsupported action mask shape {mask.shape}. Expected '
+                f'{action_shape}, {expected_action_mask_shape}, '
+                f'or {expected_padded_mask_shape}.')
+
+        valid_dims = np.zeros((self.action_dim, ), dtype=bool)
+        valid_dims[:valid_dim] = True
+        expanded = np.logical_and(expanded, valid_dims)
+        return expanded.astype(np.float32)
+
+
+@TRANSFORMS.register_module()
 class PadKeyToDim():
     """
     Pad the tensor of the specified keys in the input to an integer

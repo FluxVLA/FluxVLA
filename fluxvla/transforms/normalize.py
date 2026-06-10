@@ -468,8 +468,9 @@ class NormalizeStatesAndActions:
             raise ValueError(
                 f'output_dtype must be a floating dtype, got {output_dtype!r}')
         if action_norm_mask is not None:
-            assert len(action_norm_mask) == action_dim, \
-                f'Action norm mask must be of length {action_dim}'
+            if action_dim is not None:
+                assert len(action_norm_mask) == action_dim, \
+                    f'Action norm mask must be of length {action_dim}'
             self.action_norm_mask = action_norm_mask
         else:
             self.action_norm_mask = None
@@ -656,6 +657,80 @@ class NormalizeStatesAndActions:
 
 
 @TRANSFORMS.register_module()
+class SinCosKeys:
+    """Apply sin/cos encoding to vector-valued keys.
+
+    This is useful for source datasets that encode each scalar state dimension
+    as ``[sin(x), cos(x)]`` before concatenating the final proprio vector.
+    """
+
+    def __init__(self,
+                 keys: List[str],
+                 target_dims=None,
+                 interleave: bool = True,
+                 dtype: str = 'float32',
+                 pad_value: float = 0.0) -> None:
+        if isinstance(keys, str):
+            keys = [keys]
+        self.keys = keys
+        self.target_dims = target_dims
+        self.interleave = interleave
+        self.dtype = np.dtype(dtype)
+        self.pad_value = pad_value
+
+    def __call__(self, data: Dict) -> Dict:
+        for key in self.keys:
+            if key not in data:
+                raise KeyError(f"Key '{key}' not found for SinCosKeys.")
+            data[key] = self._encode_value(key, data[key])
+        return data
+
+    def _target_dim(self, key: str):
+        if self.target_dims is None:
+            return None
+        if isinstance(self.target_dims, dict):
+            return self.target_dims.get(key)
+        return int(self.target_dims)
+
+    def _encode_value(self, key: str, value):
+        is_tensor = torch.is_tensor(value)
+        device = value.device if is_tensor else None
+        tensor_dtype = value.dtype if is_tensor else None
+        arr = value.detach().cpu().numpy() if is_tensor else np.asarray(value)
+        if arr.ndim == 0:
+            raise ValueError(f"SinCosKeys expects vector input for '{key}'.")
+        arr = arr.astype(np.float32, copy=False)
+
+        sin_value = np.sin(arr)
+        cos_value = np.cos(arr)
+        if self.interleave:
+            encoded = np.stack([sin_value, cos_value],
+                               axis=-1).reshape(*arr.shape[:-1],
+                                                arr.shape[-1] * 2)
+        else:
+            encoded = np.concatenate([sin_value, cos_value], axis=-1)
+
+        target_dim = self._target_dim(key)
+        if target_dim is not None:
+            encoded = self._pad_or_truncate_last_dim(encoded, int(target_dim))
+
+        if is_tensor:
+            dtype = tensor_dtype if tensor_dtype.is_floating_point else None
+            return torch.from_numpy(encoded).to(device=device, dtype=dtype)
+        return encoded.astype(self.dtype, copy=False)
+
+    def _pad_or_truncate_last_dim(self, values: np.ndarray,
+                                  target_dim: int) -> np.ndarray:
+        current_dim = values.shape[-1]
+        if current_dim >= target_dim:
+            return values[..., :target_dim]
+        padded_shape = (*values.shape[:-1], target_dim)
+        padded = np.full(padded_shape, self.pad_value, dtype=values.dtype)
+        padded[..., :current_dim] = values
+        return padded
+
+
+@TRANSFORMS.register_module()
 class LiberoProprioFromInputs:
     """Build and normalize Libero proprio state from inputs.
 
@@ -725,6 +800,8 @@ class LiberoProprioFromInputs:
             state_t = torch.as_tensor(state, dtype=torch.float32)
             state = torch.clamp(state_t * scale + offset, -self.clamp,
                                 self.clamp).numpy()
+        elif self.norm_type == 'none':
+            state = state.astype(np.float32, copy=False)
         else:
             stats = data['norm_stats'][self.stat_key]
             if self.norm_type == 'quantile':
@@ -736,7 +813,7 @@ class LiberoProprioFromInputs:
 
         out = dict(data)
         if self.state_dim is not None:
-            out[self.out_key] = np.zeros((self.state_dim))
+            out[self.out_key] = np.zeros((self.state_dim), dtype=state.dtype)
             out[self.out_key][:state.shape[0]] = state
         else:
             out[self.out_key] = state

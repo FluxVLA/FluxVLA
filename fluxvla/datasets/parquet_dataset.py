@@ -442,6 +442,8 @@ class LiberoParquetEvalDataset:
                  norm_stats_key: str,
                  num_padding_imgs: int = 0,
                  img_buffer_len: int = 1,
+                 include_task_description: bool = False,
+                 require_lang_tokens: bool = True,
                  extra_tensor_keys: Optional[List[str]] = None) -> None:
 
         # Build image/token transforms (parquet-style sequential list)
@@ -449,6 +451,8 @@ class LiberoParquetEvalDataset:
         self.task_suite_name = task_suite_name
         self.norm_stats_key = norm_stats_key
         self.num_padding_imgs = num_padding_imgs
+        self.include_task_description = include_task_description
+        self.require_lang_tokens = require_lang_tokens
         assert img_buffer_len >= 1, 'img_buffer_len must be >= 1'
         self.img_buffer_len = img_buffer_len
         self.extra_tensor_keys = extra_tensor_keys or []
@@ -527,11 +531,14 @@ class LiberoParquetEvalDataset:
             data = t(data)
         replay_img = data.get('replay_img', None)
 
-        assert 'lang_tokens' in data and 'lang_masks' in data, \
-            'Prompt transform must provide lang_tokens and lang_masks'
-        tokens = torch.tensor(data['lang_tokens'])
-        token_mask = data['lang_masks'].tolist() if hasattr(
-            data['lang_masks'], 'tolist') else list(data['lang_masks'])
+        has_lang_tokens = 'lang_tokens' in data and 'lang_masks' in data
+        if self.require_lang_tokens:
+            assert has_lang_tokens, \
+                'Prompt transform must provide lang_tokens and lang_masks'
+        if has_lang_tokens:
+            tokens = torch.tensor(data['lang_tokens'])
+            token_mask = data['lang_masks'].tolist() if hasattr(
+                data['lang_masks'], 'tolist') else list(data['lang_masks'])
 
         # Proprio
         img_masks = data.get('img_masks', None)
@@ -555,9 +562,10 @@ class LiberoParquetEvalDataset:
         batch: Dict[str, Any] = dict(
             images=pixel_values.cuda().unsqueeze(0),
             img_masks=torch.tensor([img_masks]).cuda(),
-            lang_tokens=tokens.unsqueeze(0).cuda(),
-            lang_masks=torch.tensor(token_mask).unsqueeze(0).cuda(),
         )
+        if has_lang_tokens:
+            batch['lang_tokens'] = tokens.unsqueeze(0).cuda()
+            batch['lang_masks'] = torch.tensor(token_mask).unsqueeze(0).cuda()
 
         if 'states' in data:
             batch['states'] = torch.from_numpy(
@@ -571,6 +579,8 @@ class LiberoParquetEvalDataset:
             batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
 
         batch['reset_history'] = is_new_episode
+        if self.include_task_description:
+            batch['task_description'] = [data.get('task_description', '')]
 
         return batch, replay_img
 

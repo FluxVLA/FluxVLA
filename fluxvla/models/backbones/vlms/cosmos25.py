@@ -22,6 +22,7 @@ from typing import Any, List, Optional, Sequence, Type, Union
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 from fluxvla.engines import VLM_BACKBONES
 from fluxvla.engines.utils.name_map import str_to_dtype
@@ -70,6 +71,8 @@ class Cosmos25Backbone(nn.Module):
             use frame 0 as conditioning and the remaining frames only to infer
             the training output horizon.
         fixed_seed: Optional deterministic noise seed for latent extraction.
+        fsdp_min_num_params: Auto-wrap large non-block Cosmos modules above
+            this parameter count when building an FSDP policy.
     """
 
     def __init__(
@@ -82,8 +85,17 @@ class Cosmos25Backbone(nn.Module):
         extract_layer: int = 17,
         max_sequence_length: int = 512,
         trainable: bool = False,
+        frozen_submodules: Optional[Sequence[str]] = None,
         split_future_frames: bool = True,
         fixed_seed: Optional[int] = 42,
+        num_inference_steps: int = 1,
+        conditional_frame_timestep: float = 0.001,
+        future_loss_type: Optional[str] = None,
+        detach_hidden_states: bool = False,
+        flow_matching_time_distribution: str = 'logit_normal',
+        flow_matching_high_sigma_ratio: Optional[float] = 0.05,
+        flow_matching_high_sigma_min: Optional[float] = 0.98,
+        fsdp_min_num_params: int = 10_000_000,
         device: Optional[Union[str, torch.device]] = None,
         safety_checker: Optional[Any] = None,
         **kwargs,
@@ -104,8 +116,20 @@ class Cosmos25Backbone(nn.Module):
         self.extract_layer = int(extract_layer)
         self.max_sequence_length = int(max_sequence_length)
         self.trainable = bool(trainable)
+        self.frozen_submodules = tuple(frozen_submodules or ())
         self.split_future_frames = bool(split_future_frames)
         self.fixed_seed = fixed_seed
+        self.num_inference_steps = int(num_inference_steps)
+        self.conditional_frame_timestep = float(conditional_frame_timestep)
+        self.future_loss_type = (
+            str(future_loss_type).lower()
+            if future_loss_type is not None else None)
+        self.detach_hidden_states = bool(detach_hidden_states)
+        self.flow_matching_time_distribution = str(
+            flow_matching_time_distribution)
+        self.flow_matching_high_sigma_ratio = flow_matching_high_sigma_ratio
+        self.flow_matching_high_sigma_min = flow_matching_high_sigma_min
+        self.fsdp_min_num_params = int(fsdp_min_num_params)
 
         self._hook_handle = None
         self._cached_hidden: list[torch.Tensor] = []
@@ -129,6 +153,8 @@ class Cosmos25Backbone(nn.Module):
         self._register_hidden_hook()
         if not self.trainable:
             self.requires_grad_(False)
+        else:
+            self.freeze_configured_submodules()
         if device is not None:
             self.to(device)
         del pipe
@@ -137,11 +163,21 @@ class Cosmos25Backbone(nn.Module):
         try:
             from diffusers import Cosmos2_5_PredictBasePipeline
         except Exception as exc:
+            try:
+                import diffusers
+
+                diffusers_version = getattr(diffusers, '__version__',
+                                            'unknown')
+            except Exception:
+                diffusers_version = 'not installed'
             raise ImportError(
                 'Cosmos25Backbone requires a diffusers build that provides '
-                '`Cosmos2_5_PredictBasePipeline`. DiT4DiT pins a git '
-                'diffusers revision. Install a compatible diffusers package '
-                'before instantiating this backbone.') from exc
+                '`Cosmos2_5_PredictBasePipeline`. Installed diffusers: '
+                f'{diffusers_version}. Install the DiT4DiT-compatible build '
+                'with: pip install --upgrade '
+                '"diffusers @ git+https://github.com/huggingface/'
+                'diffusers.git@3996788b602eaae4da41a1d45726b62e662b73cf"'
+            ) from exc
 
         if safety_checker is None:
             safety_checker = _DefaultDummySafetyChecker()
@@ -188,23 +224,114 @@ class Cosmos25Backbone(nn.Module):
     def set_frozen_modules_to_eval_mode(self) -> None:
         if not self.trainable:
             self.eval()
+            return
+        for module in self._iter_frozen_submodules():
+            module.eval()
+
+    def freeze_configured_submodules(self) -> None:
+        for module in self._iter_frozen_submodules():
+            module.requires_grad_(False)
+            module.eval()
+
+    def _iter_frozen_submodules(self):
+        aliases = {
+            'backbone_interface.extractor.text_encoder': 'text_encoder',
+            'backbone_interface.extractor.vae': 'vae',
+            'backbone_interface.extractor.transformer': 'transformer',
+            'extractor.text_encoder': 'text_encoder',
+            'extractor.vae': 'vae',
+            'extractor.transformer': 'transformer',
+        }
+        for name in self.frozen_submodules:
+            module_name = aliases.get(name, name)
+            module = self
+            for part in module_name.split('.'):
+                module = getattr(module, part, None)
+                if module is None:
+                    break
+            if module is None:
+                raise ValueError(
+                    f"Cannot freeze unknown Cosmos submodule '{name}'.")
+            yield module
+
+    @staticmethod
+    def _enable_module_gradient_checkpointing(module: nn.Module) -> None:
+        fn = getattr(module, 'enable_gradient_checkpointing', None)
+        if callable(fn):
+            supports = getattr(module, '_supports_gradient_checkpointing',
+                               True)
+            if supports is False:
+                return
+            try:
+                fn()
+            except ValueError as exc:
+                if 'does not support gradient checkpointing' in str(exc):
+                    return
+                raise
+        elif hasattr(module, 'gradient_checkpointing'):
+            module.gradient_checkpointing = True
 
     def enable_gradient_checkpointing(self) -> None:
+        # AutoencoderKLWan advertises enable_gradient_checkpointing through
+        # diffusers.ModelMixin but explicitly does not support it. The VAE is
+        # frozen/no-grad for DiT4DiT, so checkpoint only supported modules.
         for module in (self.transformer, self.text_encoder, self.vae):
-            fn = getattr(module, 'enable_gradient_checkpointing', None)
-            if callable(fn):
-                fn()
-            elif hasattr(module, 'gradient_checkpointing'):
-                module.gradient_checkpointing = True
+            self._enable_module_gradient_checkpointing(module)
 
     def get_fsdp_wrapping_policy(self):
         from functools import partial
 
-        from torch.distributed.fsdp.wrap import _module_wrap_policy
+        from torch.distributed.fsdp.wrap import (_module_wrap_policy,
+                                                 _or_policy,
+                                                 size_based_auto_wrap_policy)
 
+        module_classes = set()
+        if self.transformer_layer_cls is not nn.Module:
+            module_classes.add(self.transformer_layer_cls)
+
+        optional_fsdp_classes = {
+            'transformers.models.qwen2_5_vl.modeling_qwen2_5_vl': (
+                'Qwen2_5_VLDecoderLayer',
+                'Qwen2_5_VLVisionBlock',
+            ),
+            'diffusers.models.autoencoders.autoencoder_kl_wan': (
+                'WanResidualBlock',
+                'WanAttentionBlock',
+                'WanResidualDownBlock',
+                'WanResidualUpBlock',
+                'WanMidBlock',
+            ),
+        }
+        for module_path, class_names in optional_fsdp_classes.items():
+            try:
+                module = __import__(module_path, fromlist=list(class_names))
+            except Exception:
+                continue
+            for class_name in class_names:
+                cls = getattr(module, class_name, None)
+                if cls is not None:
+                    module_classes.add(cls)
+
+        policies = []
+        if module_classes:
+            policies.append(
+                partial(
+                    _module_wrap_policy,
+                    module_classes=module_classes,
+                ))
+        if self.fsdp_min_num_params > 0:
+            policies.append(
+                partial(
+                    size_based_auto_wrap_policy,
+                    min_num_params=self.fsdp_min_num_params,
+                ))
+        if not policies:
+            return None
+        if len(policies) == 1:
+            return policies[0]
         return partial(
-            _module_wrap_policy,
-            module_classes={self.transformer_layer_cls},
+            _or_policy,
+            policies=policies,
         )
 
     def _register_hidden_hook(self) -> None:
@@ -228,7 +355,7 @@ class Cosmos25Backbone(nn.Module):
                 hidden = out[0]
             else:
                 return
-            if not self.trainable:
+            if not self.trainable or self.detach_hidden_states:
                 hidden = hidden.detach()
             self._cached_hidden.append(hidden)
 
@@ -422,6 +549,39 @@ class Cosmos25Backbone(nn.Module):
         device: torch.device,
         dtype: torch.dtype,
     ) -> torch.Tensor:
+
+        def to_input_ids(conversations) -> torch.Tensor:
+            ids = self.tokenizer.apply_chat_template(
+                conversations,
+                tokenize=True,
+                add_generation_prompt=False,
+                add_vision_id=False,
+                max_length=self.max_sequence_length,
+                truncation=True,
+                padding='max_length',
+            )
+            if isinstance(ids, str):
+                ids = self.tokenizer(
+                    ids,
+                    add_special_tokens=False,
+                    max_length=self.max_sequence_length,
+                    truncation=True,
+                    padding='max_length',
+                )
+            if isinstance(ids, dict):
+                ids = ids['input_ids']
+            elif hasattr(ids, 'input_ids'):
+                ids = ids.input_ids
+
+            ids = torch.as_tensor(ids, dtype=torch.long)
+            if ids.ndim == 2 and ids.shape[0] == 1:
+                ids = ids.squeeze(0)
+            if ids.ndim != 1:
+                raise ValueError(
+                    'Cosmos tokenizer must return one input-id sequence per '
+                    f'prompt, got shape {tuple(ids.shape)}.')
+            return ids
+
         input_ids = []
         for prompt in prompts:
             conversations = [
@@ -443,16 +603,7 @@ class Cosmos25Backbone(nn.Module):
                     }]
                 },
             ]
-            ids = self.tokenizer.apply_chat_template(
-                conversations,
-                tokenize=True,
-                add_generation_prompt=False,
-                add_vision_id=False,
-                max_length=self.max_sequence_length,
-                truncation=True,
-                padding='max_length',
-            )
-            input_ids.append(torch.as_tensor(ids, dtype=torch.long))
+            input_ids.append(to_input_ids(conversations))
 
         input_ids = torch.stack(input_ids, dim=0).to(device)
         outputs = self.text_encoder(input_ids, output_hidden_states=True)
@@ -488,6 +639,48 @@ class Cosmos25Backbone(nn.Module):
             latents = encoded
         return latents.to(dtype=dtype)
 
+    def _latent_mean_std(
+        self,
+        latents: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        mean = self._to_tensor(
+            self.latents_mean, device=latents.device, dtype=latents.dtype)
+        std = self._to_tensor(
+            self.latents_std, device=latents.device, dtype=latents.dtype)
+        if (mean.ndim == 5 and latents.ndim == 5
+                and mean.shape[2] >= latents.shape[2]):
+            mean = mean[:, :, :latents.shape[2]]
+        if (std.ndim == 5 and latents.ndim == 5
+                and std.shape[2] >= latents.shape[2]):
+            std = std[:, :, :latents.shape[2]]
+        return mean, std
+
+    def _encode_video_to_latents_norm(
+        self,
+        video_bcthw: torch.Tensor,
+    ) -> torch.Tensor:
+        """Encode pixel video [B,3,T,H,W] into normalized VAE latents."""
+        if video_bcthw.ndim != 5 or video_bcthw.shape[1] != 3:
+            raise ValueError('`video_bcthw` must be [B,3,T,H,W], got '
+                             f'{tuple(video_bcthw.shape)}.')
+        if self.latents_mean is None or self.latents_std is None:
+            raise ValueError(
+                'Cosmos VAE must expose `latents_mean` and `latents_std`.')
+
+        vae_dtype = getattr(self.vae, 'dtype', self.dtype)
+        video = video_bcthw.to(device=self.device, dtype=vae_dtype)
+        if video.min() >= 0.0:
+            video = video * 2.0 - 1.0
+
+        encoded = self.vae.encode(video)
+        if hasattr(encoded, 'latent_dist'):
+            latents = encoded.latent_dist.mean
+        else:
+            latents = encoded
+        latents = latents.to(dtype=torch.float32)
+        mean, std = self._latent_mean_std(latents)
+        return (latents - mean) / std
+
     def _prepare_latents(
         self,
         video_bcthw: torch.Tensor,
@@ -515,10 +708,7 @@ class Cosmos25Backbone(nn.Module):
 
         cond_latents = self._encode_condition_latents(video_bcthw,
                                                       num_frames_out, dtype)
-        mean = self._to_tensor(
-            self.latents_mean, device=self.device, dtype=dtype)
-        std = self._to_tensor(
-            self.latents_std, device=self.device, dtype=dtype)
+        mean, std = self._latent_mean_std(cond_latents)
         cond_latents = (cond_latents - mean) / std
 
         if cond_latents.shape != latents.shape:
@@ -539,6 +729,135 @@ class Cosmos25Backbone(nn.Module):
         cond_indicator[:, :, :cond_latent_frames] = 1.0
         cond_mask = cond_indicator.expand(b, 1, t_lat, h_lat, w_lat)
         return latents, cond_latents, cond_mask, cond_indicator
+
+    @staticmethod
+    def _future_video_to_btchw(video: torch.Tensor) -> torch.Tensor:
+        if video.ndim != 5:
+            raise ValueError('`future_videos` must be 5D, got '
+                             f'{tuple(video.shape)}.')
+        if video.shape[2] == 3:
+            return video
+        if video.shape[1] == 3:
+            return video.permute(0, 2, 1, 3, 4).contiguous()
+        raise ValueError('`future_videos` must be [B, T, 3, H, W] or '
+                         f'[B, 3, T, H, W], got {tuple(video.shape)}.')
+
+    @staticmethod
+    def _is_flow_matching_loss(loss_type: Optional[str]) -> bool:
+        return loss_type in {
+            'flow_matching',
+            'latent_flow_matching',
+            'rectified_flow',
+            'rf',
+        }
+
+    def _sample_flow_time(
+        self,
+        batch_size: int,
+        device: torch.device,
+    ) -> torch.Tensor:
+        if self.flow_matching_time_distribution == 'logit_normal':
+            t = torch.sigmoid(
+                torch.randn((batch_size, ), device=device,
+                            dtype=torch.float32))
+        else:
+            t = torch.rand((batch_size, ), device=device, dtype=torch.float32)
+
+        high_sigma_ratio = self.flow_matching_high_sigma_ratio
+        high_sigma_min = self.flow_matching_high_sigma_min
+        if high_sigma_ratio is not None and float(high_sigma_ratio) > 0:
+            high_sigma_min = 0.98 if high_sigma_min is None else float(
+                high_sigma_min)
+            high_mask = torch.rand(
+                (batch_size, ), device=device) < float(high_sigma_ratio)
+            high_t = (
+                torch.rand(
+                    (batch_size, ), device=device, dtype=torch.float32) *
+                (1.0 - high_sigma_min) + high_sigma_min)
+            t = torch.where(high_mask, high_t, t)
+        return t
+
+    def _future_video_flow_matching_loss(
+        self,
+        condition_video: torch.Tensor,
+        future_videos: torch.Tensor,
+        latents: torch.Tensor,
+        cond_latents: torch.Tensor,
+        cond_mask_t: torch.Tensor,
+        cond_indicator: torch.Tensor,
+        cond_timestep: torch.Tensor,
+        prompt_embeds: torch.Tensor,
+        padding_mask: torch.Tensor,
+        transformer_dtype: torch.dtype,
+    ) -> torch.Tensor:
+        gt = self._future_video_to_btchw(future_videos)
+        gt_bcthw = gt.permute(0, 2, 1, 3, 4).contiguous()
+        if gt_bcthw.min() >= 0.0:
+            gt_bcthw = gt_bcthw * 2.0 - 1.0
+
+        cond = condition_video.to(device=gt_bcthw.device, dtype=gt_bcthw.dtype)
+        if cond.min() >= 0.0:
+            cond = cond * 2.0 - 1.0
+        full_bcthw = torch.cat([cond, gt_bcthw], dim=2)
+
+        temporal_factor = max(1, int(self.vae_scale_factor_temporal))
+        min_full_frames = 1 + temporal_factor
+        if full_bcthw.shape[2] < min_full_frames:
+            pad_len = min_full_frames - int(full_bcthw.shape[2])
+            last = full_bcthw[:, :, -1:].repeat(1, 1, pad_len, 1, 1)
+            full_bcthw = torch.cat([full_bcthw, last], dim=2)
+
+        with torch.no_grad():
+            gt_latents = self._encode_video_to_latents_norm(full_bcthw)
+
+        cond_count = int(cond_indicator[0, 0, :, 0, 0].sum().item())
+        pred_latents_future = latents[:, :, cond_count:]
+        gt_latents_future = gt_latents[:, :, cond_count:cond_count +
+                                       pred_latents_future.shape[2]]
+        no_future_latents = (
+            pred_latents_future.numel() == 0 or gt_latents_future.numel() == 0)
+        if no_future_latents:
+            return torch.tensor(
+                0.0, device=latents.device, dtype=latents.dtype)
+
+        time_steps = min(pred_latents_future.shape[2],
+                         gt_latents_future.shape[2])
+        x0_future = gt_latents_future[:, :, :time_steps].to(
+            device=latents.device, dtype=torch.float32)
+        batch_size = latents.shape[0]
+        t = self._sample_flow_time(batch_size, latents.device).view(
+            batch_size, 1, 1, 1, 1)
+        z_future = torch.randn_like(x0_future)
+        xt_future = (1.0 - t) * x0_future + t * z_future
+
+        xt_full = torch.randn_like(latents.float())
+        xt_full[:, :, cond_count:cond_count + time_steps] = xt_future
+
+        t_b1t11 = latents.new_zeros(cond_indicator.shape, dtype=torch.float32)
+        t_b1t11[:, :, cond_count:cond_count + time_steps] = t
+        t_b1t11 = t_b1t11.to(dtype=transformer_dtype)
+
+        in_latents = (
+            cond_mask_t * cond_latents.to(transformer_dtype) +
+            (1.0 - cond_mask_t) * xt_full.to(transformer_dtype))
+        in_timestep = (
+            cond_indicator.to(transformer_dtype) *
+            cond_timestep.to(transformer_dtype) +
+            (1.0 - cond_indicator.to(transformer_dtype)) * t_b1t11)
+
+        v_pred = self.transformer(
+            hidden_states=in_latents,
+            condition_mask=cond_mask_t,
+            timestep=in_timestep,
+            encoder_hidden_states=prompt_embeds,
+            padding_mask=padding_mask,
+            return_dict=False,
+        )[0]
+
+        v_target = (z_future - x0_future).to(
+            device=v_pred.device, dtype=v_pred.dtype)
+        v_pred_future = v_pred[:, :, cond_count:cond_count + time_steps]
+        return F.mse_loss(v_pred_future.float(), v_target.float())
 
     @staticmethod
     def _hidden_to_bsd(hidden: torch.Tensor) -> torch.Tensor:
@@ -572,8 +891,8 @@ class Cosmos25Backbone(nn.Module):
         task_description: Optional[Union[str, Sequence[str]]] = None,
         future_videos: Optional[torch.Tensor] = None,
         num_frames_out: Optional[int] = None,
-        num_inference_steps: int = 1,
-        conditional_frame_timestep: float = 0.001,
+        num_inference_steps: Optional[int] = None,
+        conditional_frame_timestep: Optional[float] = None,
         output_hidden_states: bool = True,
         return_dict: bool = True,
         **kwargs,
@@ -603,7 +922,7 @@ class Cosmos25Backbone(nn.Module):
                 f'Cosmos requires height/width divisible by 16, got '
                 f'{height}x{width}.')
 
-        if self.training and not self.trainable:
+        if self.training:
             self.set_frozen_modules_to_eval_mode()
 
         transformer_dtype = getattr(self.transformer, 'dtype', self.dtype)
@@ -612,6 +931,22 @@ class Cosmos25Backbone(nn.Module):
         num_frames_out = self._infer_num_frames_out(condition_video,
                                                     future_videos,
                                                     num_frames_out)
+        compute_future_loss = (
+            future_videos is not None
+            and self._is_flow_matching_loss(self.future_loss_type))
+        if future_videos is not None and self.future_loss_type is not None \
+                and not compute_future_loss:
+            raise NotImplementedError(
+                'Cosmos25Backbone currently supports future video loss only '
+                f'for flow-matching types, got {self.future_loss_type!r}.')
+        if compute_future_loss:
+            num_frames_out = max(
+                int(num_frames_out),
+                1 + max(1, self.vae_scale_factor_temporal))
+        if num_inference_steps is None:
+            num_inference_steps = self.num_inference_steps
+        if conditional_frame_timestep is None:
+            conditional_frame_timestep = self.conditional_frame_timestep
         latents, cond_latents, cond_mask, cond_indicator = (
             self._prepare_latents(condition_video, num_frames_out,
                                   torch.float32))
@@ -668,10 +1003,25 @@ class Cosmos25Backbone(nn.Module):
                     '`extract_layer` and the installed Cosmos transformer.')
             hidden_first = self._cached_hidden[-1]
 
+        future_video_loss = None
+        if compute_future_loss:
+            future_video_loss = self._future_video_flow_matching_loss(
+                condition_video=condition_video,
+                future_videos=future_videos,
+                latents=latents,
+                cond_latents=cond_latents,
+                cond_mask_t=cond_mask_t,
+                cond_indicator=cond_indicator,
+                cond_timestep=cond_timestep,
+                prompt_embeds=prompt_embeds,
+                padding_mask=padding_mask,
+                transformer_dtype=transformer_dtype,
+            )
+
         hidden = self._hidden_to_bsd(hidden_first)
         return Cosmos25BackboneOutput(
             hidden_states=[hidden],
-            future_video_loss=None,
+            future_video_loss=future_video_loss,
             pred_future_video=None,
         )
 

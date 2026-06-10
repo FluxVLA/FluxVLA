@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import diffusers
 import transformers
 from mmengine.utils import digit_version
 
@@ -24,6 +25,18 @@ assert (transformers_version >= digit_version(transformers_minimum_version) and
     f'Transformers=={transformers.__version__} is used but incompatible. ' \
     f'Please install transformers>={transformers_minimum_version}, ' \
     f'<{transformers_maximum_version}.'
+
+diffusers_minimum_version = '0.37.0.dev0'
+diffusers_maximum_version = '0.38.0'
+diffusers_version = digit_version(diffusers.__version__)
+
+assert (diffusers_version >= digit_version(diffusers_minimum_version) and
+        diffusers_version < digit_version(diffusers_maximum_version)), \
+    f'Diffusers=={diffusers.__version__} is used but incompatible. ' \
+    f'Please install diffusers>={diffusers_minimum_version}, ' \
+    f'<{diffusers_maximum_version}. For DiT4DiT/Cosmos2.5, use ' \
+    '"diffusers @ git+https://github.com/huggingface/' \
+    'diffusers.git@3996788b602eaae4da41a1d45726b62e662b73cf".'
 
 from .collators import *  # noqa: E402, F401, F403
 from .datasets import *  # noqa: E402, F401, F403

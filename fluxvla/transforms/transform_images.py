@@ -1300,6 +1300,117 @@ class SimpleNormalizeImages:
 
 
 @TRANSFORMS.register_module()
+class ConcatImagesHorizontally:
+    """Concat camera views width-wise while preserving temporal frames.
+
+    FluxVLA parquet loading stores frames view-first:
+    ``[view0_t0, view0_t1, ..., view1_t0, view1_t1, ...]``. DiT4DiT's
+    LIBERO preprocessing resizes each view and concatenates primary + wrist
+    images horizontally for each timestep.
+    """
+
+    def __init__(self,
+                 key: str = 'images',
+                 num_views: int = 2,
+                 frame_stride: int = 1,
+                 views_first: bool = True,
+                 keep_time_dim: bool = True,
+                 mask_key: str = 'img_masks') -> None:
+        self.key = key
+        self.num_views = int(num_views)
+        self.frame_stride = int(frame_stride)
+        self.views_first = views_first
+        self.keep_time_dim = keep_time_dim
+        self.mask_key = mask_key
+
+    def __call__(self, data: dict):
+        if self.key not in data:
+            raise KeyError(f"Image key '{self.key}' is missing.")
+        items, is_tensor, device, dtype = self._to_items(data[self.key])
+        if items.shape[0] % self.num_views != 0:
+            raise ValueError(f'Cannot split {items.shape[0]} images into '
+                             f'{self.num_views} views.')
+
+        num_frames = items.shape[0] // self.num_views
+        view_time = self._reshape_view_time(items, num_frames, is_tensor)
+        view_time = view_time[:, ::self.frame_stride]
+        num_frames = view_time.shape[1]
+
+        frames = []
+        for frame_idx in range(num_frames):
+            views = [
+                view_time[view_idx, frame_idx]
+                for view_idx in range(self.num_views)
+            ]
+            if is_tensor:
+                frames.append(torch.cat(views, dim=-1))
+            else:
+                frames.append(np.concatenate(views, axis=-1))
+
+        output = torch.stack(
+            frames, dim=0) if is_tensor else np.stack(
+                frames, axis=0)
+        if not self.keep_time_dim and output.shape[0] == 1:
+            output = output[0]
+        if is_tensor:
+            output = output.to(device=device, dtype=dtype)
+        data[self.key] = output
+
+        if self.mask_key is not None and self.mask_key in data:
+            data[self.mask_key] = self._concat_masks(data[self.mask_key],
+                                                     num_frames)
+        return data
+
+    def _to_items(self, images):
+        is_tensor = isinstance(images, torch.Tensor)
+        device = images.device if is_tensor else None
+        dtype = images.dtype if is_tensor else None
+        if is_tensor:
+            arr = images
+        else:
+            arr = np.asarray(images)
+
+        if arr.ndim == 3:
+            channels, height, width = arr.shape
+            if channels % 3 != 0:
+                raise ValueError(
+                    f'Expected flattened CHW images, got {arr.shape}.')
+            arr = arr.reshape(channels // 3, 3, height, width)
+        elif arr.ndim != 4 or arr.shape[1] != 3:
+            raise ValueError(
+                f'Expected [N, 3, H, W] or [N*3, H, W], got {arr.shape}.')
+        return arr, is_tensor, device, dtype
+
+    def _reshape_view_time(self, items, num_frames: int, is_tensor: bool):
+        shape = (self.num_views, num_frames, 3, items.shape[-2],
+                 items.shape[-1])
+        if self.views_first:
+            return items.reshape(shape)
+        items = items.reshape(num_frames, self.num_views, 3, items.shape[-2],
+                              items.shape[-1])
+        return items.permute(1, 0, 2, 3, 4) if is_tensor else items.transpose(
+            1, 0, 2, 3, 4)
+
+    def _concat_masks(self, masks, num_frames: int):
+        mask_array = np.asarray(masks).astype(bool)
+        if mask_array.ndim != 1:
+            return masks
+        total = mask_array.shape[0]
+        if total % self.num_views != 0:
+            return masks
+
+        source_frames = total // self.num_views
+        if self.views_first:
+            view_time = mask_array.reshape(self.num_views, source_frames)
+        else:
+            view_time = mask_array.reshape(source_frames,
+                                           self.num_views).transpose(1, 0)
+        view_time = view_time[:, ::self.frame_stride]
+        combined = view_time.all(axis=0)[:num_frames]
+        return combined.astype(bool)
+
+
+@TRANSFORMS.register_module()
 class TransformImage:
     """Image processor for Prismatic models.
     This class applies a series of transformations to images,
