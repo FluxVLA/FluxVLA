@@ -1,0 +1,42 @@
+{
+  "checkpoint_dir": "checkpoints/dit4dit-model/dit4dit_libero",
+  "checkpoint_revision": "46237aebd3df427fcfb6a8ddc5ba5a3ab7b04a44",
+  "seeds": {
+    "base": 42,
+    "forward": 43,
+    "predict": 44
+  },
+  "source_repo": "/tmp/dit4dit-audit",
+  "source_vs_flux_head_actions": {
+    "max_abs": 0.0,
+    "max_rel": 0.0,
+    "shape": [
+      1,
+      8,
+      8
+    ]
+  },
+  "source_vs_flux_head_loss": {
+    "max_abs": 0.0,
+    "max_rel": 0.0,
+    "shape": [
+      1
+    ]
+  },
+  "source_vs_fluxvla_actions": {
+    "max_abs": 0.0,
+    "max_rel": 0.0,
+    "shape": [
+      1,
+      8,
+      8
+    ]
+  },
+  "source_vs_fluxvla_loss": {
+    "max_abs": 0.0,
+    "max_rel": 0.0,
+    "shape": [
+      1
+    ]
+  }
+}

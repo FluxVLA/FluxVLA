@@ -13,15 +13,20 @@
 # limitations under the License.
 
 import gc
+import json
 import os
+import pickle
 import unittest
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
-from fluxvla.engines import build_vla_from_cfg, set_seed_everywhere
+from fluxvla.engines import (VLM_BACKBONES, build_vla_from_cfg,
+                             set_seed_everywhere)
 
 OPENVLA_CKPT_PATH = './checkpoints/openvla-7b-finetuned-libero-10'
 LLAMA2_CKPT_PATH = './checkpoints/Llama-2-7b-hf'
@@ -32,13 +37,65 @@ PI05_CKPT_PATH = './checkpoints/pi05_base/model.safetensors'
 GR00T_CKPT_PATH = './checkpoints/GR00T-N1.5-3B'
 DREAMZERO_CKPT_PATH = './checkpoints/DreamZero-AgiBot'
 SMOLVLA_CKPT_PATH = './checkpoints/smolvla_base/model.safetensors'
+DIT4DIT_CKPT_PATH = './checkpoints/dit4dit-model/dit4dit_libero/final_model/pytorch_model.pt'  # noqa: E501
 OPENVLA_DATA_DIR = 'test/data/models/vlas/openvla'
 LLAVAVLA_DATA_DIR = 'test/data/models/vlas/llavavla'
 GR00T_DATA_DIR = 'test/data/models/vlas/gr00t'
 PI0_DATA_DIR = 'test/data/models/vlas/pi0'
 PI05_DATA_DIR = 'test/data/models/vlas/pi05'
 DREAMZERO_DATA_DIR = 'test/data/models/vlas/dreamzero'
+DIT4DIT_DATA_DIR = 'test/data/models/vlas/dit4dit'
 DREAMZERO_NUM_INFERENCE_STEPS = 2
+
+
+def _load_dit4dit_pickle(path):
+    with open(path, 'rb') as handle:
+        return pickle.load(handle)
+
+
+def _load_dit4dit_action_state_dict(ckpt_path):
+    checkpoint = torch.load(ckpt_path, map_location='cpu', mmap=True)
+    state_dict = checkpoint.get('model', checkpoint)
+    prefixes = ('action_model.', 'module.action_model.')
+    action_state = {}
+    for key, value in state_dict.items():
+        for prefix in prefixes:
+            if key.startswith(prefix):
+                action_state[key[len(prefix):]] = value
+                break
+    if not action_state:
+        raise KeyError('Could not find action_model weights in checkpoint.')
+    return action_state
+
+
+def _dit4dit_artifacts_exist():
+    return all(
+        os.path.exists(path) for path in (
+            DIT4DIT_CKPT_PATH,
+            os.path.join(DIT4DIT_DATA_DIR, 'inputs.pkl'),
+            os.path.join(DIT4DIT_DATA_DIR, 'source_outputs.pkl'),
+            os.path.join(DIT4DIT_DATA_DIR, 'metadata.json'),
+        ))
+
+
+@VLM_BACKBONES.register_module(name='DiT4DiTParityBackbone', force=True)
+class DiT4DiTParityBackbone(nn.Module):
+
+    def __init__(self, inputs_path):
+        super().__init__()
+        self.inputs_path = inputs_path
+
+    @property
+    def transformer_layer_cls(self):
+        return nn.Identity
+
+    def forward(self, images=None, **kwargs):
+        data = _load_dit4dit_pickle(self.inputs_path)
+        hidden_states = data['vl_embs']
+        if torch.is_tensor(images):
+            hidden_states = hidden_states.to(
+                device=images.device, dtype=images.dtype)
+        return SimpleNamespace(hidden_states=[hidden_states])
 
 
 @pytest.mark.skipif(
@@ -1076,6 +1133,81 @@ class TestDreamZero(unittest.TestCase):
                 pred_actions.float().cpu().numpy(),
                 pred_actions_ref,
                 atol=1e-2))
+
+
+@pytest.mark.skipif(
+    not torch.cuda.is_available() or not _dit4dit_artifacts_exist(),
+    reason='DiT4DiT checkpoint or test data not found.')
+class TestDiT4DiT(unittest.TestCase):
+
+    def setUp(self):
+        gc.collect()
+        torch.cuda.empty_cache()
+
+        inputs_path = os.path.join(DIT4DIT_DATA_DIR, 'inputs.pkl')
+        outputs_path = os.path.join(DIT4DIT_DATA_DIR, 'source_outputs.pkl')
+        metadata_path = os.path.join(DIT4DIT_DATA_DIR, 'metadata.json')
+        self.inputs = _load_dit4dit_pickle(inputs_path)
+        self.expected = _load_dit4dit_pickle(outputs_path)
+        with open(metadata_path, 'r') as handle:
+            self.metadata = json.load(handle)
+
+        self.cfg = dict(
+            type='DiT4DiTVLA',
+            image_layout='auto',
+            repeated_diffusion_steps=1,
+            vlm_backbone=dict(
+                type='DiT4DiTParityBackbone',
+                inputs_path=inputs_path,
+            ),
+            vla_head=self.metadata['head_cfg'],
+            freeze_vlm_backbone=True,
+        )
+        action_state = _load_dit4dit_action_state_dict(DIT4DIT_CKPT_PATH)
+        self.vla = build_vla_from_cfg(self.cfg).cuda().eval()
+        self.vla.vla_head.load_state_dict(action_state, strict=True)
+
+    def _cuda_inputs(self):
+        return {
+            key: value.cuda()
+            for key, value in self.inputs.items() if torch.is_tensor(value)
+        }
+
+    def test_forward(self):
+        data = self._cuda_inputs()
+        set_seed_everywhere(self.metadata['seeds']['forward'])
+        with torch.no_grad():
+            output = self.vla.forward(
+                images=data['images'],
+                states=data['state'],
+                actions=data['actions'],
+                action_masks=data['action_mask'],
+                task_description=self.inputs['task_description'],
+            )
+
+        self.assertTrue(
+            np.allclose(
+                output['loss'].cpu().numpy(),
+                self.expected['loss'].cpu().numpy(),
+                atol=1e-5,
+                rtol=1e-4))
+
+    def test_predict_action(self):
+        data = self._cuda_inputs()
+        set_seed_everywhere(self.metadata['seeds']['predict'])
+        with torch.no_grad():
+            pred_actions = self.vla.predict_action(
+                images=data['images'],
+                states=data['state'],
+                task_description=self.inputs['task_description'],
+            )
+
+        self.assertTrue(
+            np.allclose(
+                pred_actions.cpu().numpy(),
+                self.expected['pred_actions'].cpu().numpy(),
+                atol=1e-5,
+                rtol=1e-4))
 
 
 @pytest.mark.skipif(

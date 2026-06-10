@@ -1,0 +1,50 @@
+{
+  "artifact_files": [
+    "inputs.pkl",
+    "source_outputs.pkl",
+    "fluxvla_outputs.pkl",
+    "parity_report.json"
+  ],
+  "config": "dit4dit_libero/config.yaml",
+  "head_cfg": {
+    "action_dim": 8,
+    "action_horizon": 8,
+    "action_model_type": "DiT-B",
+    "add_pos_embed": true,
+    "diffusion_model_cfg": {
+      "cross_attention_dim": 2048,
+      "dropout": 0.2,
+      "final_dropout": true,
+      "interleave_self_attention": true,
+      "norm_type": "ada_norm",
+      "num_layers": 16,
+      "output_dim": 2560,
+      "positional_embeddings": null
+    },
+    "future_action_window_size": 7,
+    "hidden_size": 2560,
+    "max_seq_len": 1024,
+    "noise_beta_alpha": 1.5,
+    "noise_beta_beta": 1.0,
+    "noise_s": 0.999,
+    "num_inference_timesteps": 4,
+    "num_timestep_buckets": 1000,
+    "state_dim": 16,
+    "type": "DiT4DiTActionHead"
+  },
+  "hf_repo": "mondo-robotics/dit4dit-model",
+  "hf_revision": "46237aebd3df427fcfb6a8ddc5ba5a3ab7b04a44",
+  "input_mapping": {
+    "action": "actions",
+    "action_mask": "action_masks",
+    "image": "images",
+    "lang": "task_description",
+    "state": "states",
+    "vl_embs": "DiT4DiTParityBackbone.hidden_states[-1]"
+  },
+  "seeds": {
+    "base": 42,
+    "forward": 43,
+    "predict": 44
+  }
+}
