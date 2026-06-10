@@ -47,7 +47,6 @@ _ROBOCASA_DATA_ROOT = './datasets/robocasa_gr1_24tasks_first30ep'
 _OFFICIAL_GR1_STATS_PATH = (
     f'{_ROBOCASA_DATA_ROOT}/official_groot_gr1_dataset_statistics.json')
 
-
 _ROBOCASA_TASK_DIRS = [
     'PnPBottleToCabinetClose',
     'PnPCanToDrawerClose',
