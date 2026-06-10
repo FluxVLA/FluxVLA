@@ -78,13 +78,21 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 > **Note for existing installations**
 >
 > If you already cloned and installed FluxVLA(v0.1.0), you do not need to
-> recreate the conda environment for the `transformers==5.3.0` update. Pull
-> the latest code and upgrade only Transformers:
+> recreate the conda environment. Pull the latest code and upgrade
+> Transformers:
 >
 > ```bash
 > git pull
 > python -m pip install --upgrade "transformers==5.3.0"
 > python -c "import transformers; print(transformers.__version__)"
+> ```
+>
+> If you also want to use RoboCasa GR00T configs, install the RoboCasa-specific
+> runtime dependencies in the same environment:
+>
+> ```bash
+> python -m pip install "mujoco==3.2.6" gymnasium lxml
+> python -m pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@7264a82"
 > ```
 
 <details>
@@ -160,10 +168,11 @@ pip install --no-build-isolation -e .
 
 Install these extra dependencies only if you want to train or evaluate RoboCasa GR00T configs such as `configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`.
 
-First install the patched robosuite build:
+First install the RoboCasa runtime dependencies and the patched robosuite build:
 
 ```bash
-pip install git+https://github.com/yinchimaoliang/robosuite.git@7264a82
+pip install "mujoco==3.2.6" gymnasium lxml
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@7264a82"
 ```
 
 Then install Isaac-GR00T and the RoboCasa GR1 task package from local checkouts:

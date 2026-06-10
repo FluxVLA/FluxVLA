@@ -28,7 +28,7 @@ numpy==1.26.4
 opencv-python
 peft==0.11.1
 robomimic==0.2.0
-robosuite==1.5.1
+robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@7264a82
 sentencepiece==0.1.99
 sentry-sdk==2.27.0
 tensorflow==2.15.0
