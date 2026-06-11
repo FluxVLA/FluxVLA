@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import gc
+import inspect
 import math
 import os
 from abc import ABC, abstractmethod
@@ -58,8 +59,6 @@ class BaseTrainRunner(ABC):
             based on epochs. Defaults to 10000.
         max_keep_ckpts (int, optional): Maximum number of checkpoints to keep.
             Defaults to 2.
-        save_full_model (bool, optional): Whether to save the full model.
-            Defaults to True.
         lr_scheduler_type (str, optional): Type of learning rate scheduler.
             Defaults to 'constant'.
         warmup_ratio (int, optional): Warm-up ratio for learning rate
@@ -88,7 +87,6 @@ class BaseTrainRunner(ABC):
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
-                 save_full_model: bool = True,
                  lr_scheduler_type: str = 'constant',
                  lr_schedule: Optional[Dict[float, float]] = None,
                  warmup_ratio: int = 0,
@@ -118,7 +116,6 @@ class BaseTrainRunner(ABC):
 
         self.vla = build_vla_from_cfg(cfg.model)
         self.all_module_keys = self.vla.all_module_keys
-        self.trainable_module_keys = list()
         if self.vla.llm_backbone is not None:
             self.llm_transformer_layer_cls = self.vla.llm_backbone.transformer_layer_cls  # noqa: E501
         elif (self.vla.vlm_backbone is not None
@@ -136,7 +133,6 @@ class BaseTrainRunner(ABC):
         self.save_iter_interval = save_iter_interval
         self.save_epoch_interval = save_epoch_interval
         self.max_keep_ckpts = max_keep_ckpts
-        self.save_full_model = save_full_model
         self.lr_scheduler_type = lr_scheduler_type
         self.warmup_ratio = warmup_ratio
         self.enable_gradient_checkpointing = enable_gradient_checkpointing
@@ -184,46 +180,58 @@ class BaseTrainRunner(ABC):
             assert check_bloat16_supported(), \
                 'BFloat16 is not supported on this hardware; unset `mixed_precision`'  # noqa: E501
 
-    def _convert_batch_to_dtype(self, batch: Dict, dtype: torch.dtype) -> Dict:
-        """Convert floating point tensors in batch to specified dtype.
+    def _prepare_batch(self,
+                       batch: Dict,
+                       device: torch.device | int,
+                       dtype: Optional[torch.dtype] = None) -> Dict:
+        """Move tensor batch values to device and optionally cast floats.
 
-        This method automatically converts all floating point tensors in
-        the batch to the target dtype (e.g., bfloat16), while preserving
-        integer tensors and other data types.
+        Floating point tensors are cast to ``dtype`` when provided. Integer
+        and bool tensors keep their dtype.
 
         Args:
             batch (Dict): Input batch dictionary.
-            dtype (torch.dtype): Target dtype (e.g., torch.bfloat16).
+            device: Target device.
+            dtype (torch.dtype): Optional floating point target dtype.
 
         Returns:
-            Dict: Batch with converted dtypes.
+            Dict: Batch with tensors on the target device.
         """
         converted_batch = {}
+        target_device = (
+            torch.device('cuda', device)
+            if isinstance(device, int) else device)
 
         for key, value in batch.items():
             if isinstance(value, torch.Tensor):
-                # Convert floating point tensors to target dtype
-                # Keep integer tensors (int, long, bool) as is
-                if value.dtype.is_floating_point:
-                    converted_batch[key] = value.to(dtype=dtype)
+                if dtype is not None and value.dtype.is_floating_point:
+                    converted_batch[key] = value.to(
+                        device=target_device, dtype=dtype, non_blocking=True)
                 else:
-                    # Keep integer tensors unchanged
-                    converted_batch[key] = value
+                    converted_batch[key] = value.to(
+                        device=target_device, non_blocking=True)
             elif isinstance(value, dict):
                 # Recursively handle nested dictionaries
-                converted_batch[key] = self._convert_batch_to_dtype(
-                    value, dtype)
+                converted_batch[key] = self._prepare_batch(
+                    value, device, dtype)
             elif isinstance(value, (list, tuple)):
                 # Handle lists/tuples that may contain tensors
                 converted_list = []
                 for item in value:
-                    if isinstance(
-                            item,
-                            torch.Tensor) and item.dtype.is_floating_point:
-                        converted_list.append(item.to(dtype=dtype))
+                    if isinstance(item, torch.Tensor):
+                        if dtype is not None and item.dtype.is_floating_point:
+                            converted_list.append(
+                                item.to(
+                                    device=target_device,
+                                    dtype=dtype,
+                                    non_blocking=True))
+                        else:
+                            converted_list.append(
+                                item.to(
+                                    device=target_device, non_blocking=True))
                     elif isinstance(item, dict):
                         converted_list.append(
-                            self._convert_batch_to_dtype(item, dtype))
+                            self._prepare_batch(item, device, dtype))
                     else:
                         converted_list.append(item)
                 converted_batch[key] = (
@@ -234,6 +242,10 @@ class BaseTrainRunner(ABC):
                 converted_batch[key] = value
 
         return converted_batch
+
+    def _convert_batch_to_dtype(self, batch: Dict, dtype: torch.dtype) -> Dict:
+        """Convert floating point tensors in batch to specified dtype."""
+        return self._prepare_batch(batch, self.device_id, dtype)
 
     @staticmethod
     def _shutdown_dataloader(dataloader: Optional[DataLoader]) -> None:
@@ -291,7 +303,6 @@ class BaseTrainRunner(ABC):
         global_step: int,
         epoch: int,
         train_loss: Optional[float] = None,
-        only_trainable: bool = True,
     ) -> None:
         """Save checkpoint including model, optimizer, and scheduler states.
 
@@ -416,7 +427,7 @@ class BaseTrainRunner(ABC):
         return (self.current_epoch % self.save_epoch_interval) == 0
 
     def _get_effective_dataset_size(self, dataset, sampler):
-        """Get effective dataset size, handling RLDS datasets
+        """Get effective dataset size for finite and sampler-backed datasets.
 
         Args:
             dataset: The dataset object.
@@ -434,7 +445,7 @@ class BaseTrainRunner(ABC):
                 return None
 
     def _estimate_steps_per_epoch(self, dataset, sampler):
-        """Estimate steps per epoch, handling RLDS datasets"""
+        """Estimate steps per epoch for finite and sampler-backed datasets."""
         if sampler is not None:
             # Effective size after DistributedSampler processing
             return len(sampler)
@@ -700,6 +711,7 @@ class BaseTrainRunner(ABC):
 
                 # Get next batch
                 try:
+
                     batch = next(dataloader_iter)
                 except StopIteration:
                     # Finite dataloader exhausted, start new epoch
@@ -717,7 +729,7 @@ class BaseTrainRunner(ABC):
                     global_step=self.metric.global_step + 1,
                     epoch=self.current_epoch,
                     lr=self.lr_scheduler.get_last_lr()[0])
-                progress.set_description(self.metric.push())
+                progress.set_description(self.metric.push(), refresh=False)
                 progress.update()
 
                 # Save checkpoint
@@ -821,11 +833,30 @@ class BaseTrainRunner(ABC):
             f'batch={self.global_batch_size} '
             f'({self.per_device_batch_size}x{overwatch.world_size()})')
 
+    def _vla_accepts_kwarg(self, key: str) -> bool:
+        """Return whether the wrapped VLA forward accepts ``key``."""
+        cache = getattr(self, '_vla_accepts_kwarg_cache', {})
+        if key in cache:
+            return cache[key]
+
+        module = self.vla.module if hasattr(self.vla, 'module') else self.vla
+        signature = inspect.signature(module.forward)
+        accepts = key in signature.parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values())
+        cache[key] = accepts
+        self._vla_accepts_kwarg_cache = cache
+        return accepts
+
     def _training_step(self, batch) -> torch.Tensor:
         """Execute single training step: forward, backward, optimize."""
-        if self.enable_mixed_precision_training:
-            batch = self._convert_batch_to_dtype(batch,
-                                                 self.mixed_precision_dtype)
+        batch = self._prepare_batch(
+            batch, self.device_id, self.mixed_precision_dtype
+            if self.enable_mixed_precision_training else None)
+        if ('sample_weight' in batch
+                and not self._vla_accepts_kwarg('sample_weight')):
+            batch = dict(batch)
+            batch.pop('sample_weight')
         with torch.autocast(
                 'cuda',
                 dtype=self.mixed_precision_dtype,
@@ -893,12 +924,8 @@ class BaseTrainRunner(ABC):
         else:
             avg_loss = loss_value
 
-        self.save_checkpoint(
-            self.metric.run_dir,
-            self.metric.global_step,
-            self.current_epoch,
-            avg_loss,
-            only_trainable=not self.save_full_model)
+        self.save_checkpoint(self.metric.run_dir, self.metric.global_step,
+                             self.current_epoch, avg_loss)
         dist.barrier()
 
     def _get_checkpoint_path(self) -> str:

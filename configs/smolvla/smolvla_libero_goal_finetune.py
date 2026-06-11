@@ -147,9 +147,9 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=36,
-    learning_rate=1e-4,
+    learning_rate=2e-4,
     weight_decay=0.0,
-    max_grad_norm=1.0,
+    max_grad_norm=10.0,
     collator=dict(
         type='DictCollator',
         keys=[
@@ -191,7 +191,6 @@ eval = dict(
             dict(
                 type='ProcessLiberoEvalInputs',
                 img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
-                resize_size=512,
             ),
             dict(
                 type='TransformImage',

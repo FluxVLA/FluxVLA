@@ -28,15 +28,44 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## Performance
 
-| Codebase                    | Libero-Spatial | Libero-Object | Libero-Goal | Libero-Long | Libero-Average |
-| --------------------------- | :------------: | :-----------: | :---------: | :---------: | :------------: |
-| FluxVLA(GR00T)              |      96.2      |     96.8      |    93.4     |  89.4±1.5   |     93.95      |
-| FluxVLA(Pi)                 |      98.6      |     99.0      |    97.8     |   96±1.0    |     97.85      |
-| FluxVLA(Qwen3VL 0.6B+GR00T) |      98.6      |     99.6      |    95.6     |  92.2±1.8   |     96.50      |
-| FluxVLA(DreamZero)          |      96.8      |     97.4      |  90.8±1.5   |    93.6     |     94.65      |
-| FluxVLA(SmolVLA)            |      87.4      |     93.2      |    92.0     |    63.4     |      84.0      |
+| Codebase                    |                                                     Libero-Spatial                                                      |                                                     Libero-Object                                                      |                                                     Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
+| --------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :------------: |
+| FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)      |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)      |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
+| FluxVLA(GR00T)              |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |  [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |  [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
+| FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64) | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64) | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
+| FluxVLA(Qwen3VL 0.6B+GR00T) |                                                          98.6                                                           |                                                          99.6                                                          |                                                         95.6                                                         |                                                      92.2±1.8                                                       |     96.50      |
+| FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)   |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)   |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
+| FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |  [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |  [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
+
+*Linked scores point to the corresponding checkpoints.*
+
+#### RoboCasa GR1
+
+| Model          |   Training Data    | Cabinet | Drawer | Microwave | Generalization |                                                       Average                                                        |
+| -------------- | :----------------: | :-----: | :----: | :-------: | :------------: | :------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(GR00T) | 24 tasks, 30 demos |  27.5%  | 37.5%  |   45.0%   |     50.3%      | [46.9%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+
+#### Notes
+
+- `Cabinet`: `PnPBottleToCabinetClose` + `PnPWineToCabinetClose`.
+- `Drawer`: `PnPCanToDrawerClose` + `PnPCupToDrawerClose`.
+- `Microwave`: `PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`.
+- `Generalization`: the remaining 18 post-train novel tasks.
+- All rates are micro-averaged over episodes.
 
 ## 📢 Latest News
+
+**\[2026/06/10\]** 🔥 RoboCasa GR1 simulation tasks with GR00T are now supported.
+
+**\[2026/06/04\]** 🔥 Triton backend for Pi0.5-RTC is now supported, see [inference_acceleration](docs/inference_acceleration.md).
+
+**\[2026/05/28\]** 🔥 [FluxDAgger](https://github.com/FluxVLA/FluxDAgger) is now released: a model-decoupled DAgger pipeline for dual-arm manipulation, making it easy to integrate different VLAs and reward models.
+
+**\[2026/05/28\]** 🔥 The embodied manipulation simulation benchmark [FluxBisim](https://github.com/FluxVLA/FluxBisim) is now released.
+
+**\[2026/05/09\]** 🔥 SmolVLA is now supported.
+
+**\[2026/04/24\]** 🔥 Pi0.5-RTC is now supported.
 
 **\[2026/04/22\]** 🔥 ZMQ-based remote inference framework is now supported.
 
@@ -46,7 +75,25 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## 🛠️ Installation
 
-The installation guide below uses NVCC 12.4 as an example. If your environment differs, adjust the CUDA version accordingly.
+> **Note for existing installations**
+>
+> If you already cloned and installed FluxVLA(v0.1.0), you do not need to
+> recreate the conda environment. Pull the latest code and upgrade
+> Transformers:
+>
+> ```bash
+> git pull
+> python -m pip install --upgrade "transformers==5.3.0"
+> python -c "import transformers; print(transformers.__version__)"
+> ```
+>
+> If you also want to use RoboCasa GR00T configs, install the RoboCasa-specific
+> runtime dependencies in the same environment:
+>
+> ```bash
+> python -m pip install "mujoco==3.2.6" gymnasium lxml
+> python -m pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@7264a82"
+> ```
 
 <details>
 <summary><b>1. Create a conda environment</b></summary>
@@ -64,10 +111,11 @@ conda activate fluxvla
 > **Important**: Before running `pip install -r requirements.txt`, you must install PyTorch from the official CUDA index first. The default PyPI index cannot fetch CUDA-enabled builds.
 
 ```bash
-pip install torch==2.6.0 torchvision==0.21.0 torchaudio==2.6.0 --index-url https://download.pytorch.org/whl/cu124
+# CUDA 12.8
+pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https://download.pytorch.org/whl/cu128
 ```
 
-For other CUDA versions, replace `cu124` with the corresponding value (e.g., `cu118`, `cu121`). See: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) .
+For other CUDA versions, replace `cu128` with the corresponding value (e.g., `cu118`, `cu121`). See: [https://pytorch.org/get-started/locally/](https://pytorch.org/get-started/locally/) and [https://pytorch.org/get-started/previous-versions/](https://pytorch.org/get-started/previous-versions/).
 
 </details>
 
@@ -112,6 +160,37 @@ pip install --no-build-isolation -e .
 ```
 
 > **Note**: `requirements.txt` pins `torch==2.6.0` to prevent pip from accidentally replacing the CUDA-enabled PyTorch installed in step 2. If you need to use another torch version, update both the step-2 command and the torch version in `requirements.txt`.
+
+</details>
+
+<details>
+<summary><b>RoboCasa GR00T support (optional)</b></summary>
+
+Install these extra dependencies only if you want to train or evaluate RoboCasa GR00T configs such as `configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`.
+
+First install the RoboCasa runtime dependencies and the patched robosuite build:
+
+```bash
+pip install "mujoco==3.2.6" gymnasium lxml
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@7264a82"
+```
+
+Then install Isaac-GR00T and the RoboCasa GR1 task package from local checkouts:
+
+```bash
+git clone https://github.com/NVIDIA/Isaac-GR00T.git /path/to/Isaac-GR00T
+cd /path/to/Isaac-GR00T
+git checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
+pip install --no-deps -e /path/to/Isaac-GR00T
+
+git clone https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git \
+  /path/to/robocasa-gr1-tabletop-tasks
+cd /path/to/robocasa-gr1-tabletop-tasks
+git checkout 4840e671596f93ca03651524b9f72ffb1aadfeff
+pip install --no-deps -e /path/to/robocasa-gr1-tabletop-tasks
+```
+
+`--no-deps` is recommended for editable installs so the RoboCasa packages do not replace the pinned FluxVLA model stack dependencies. RoboCasa assets and datasets are covered in [Data & Assets Preparation](#data--assets-preparation).
 
 </details>
 
@@ -231,22 +310,24 @@ Note: event files are saved to `{work_dir}/tensorboard/{run_id}/` per run, enabl
 
 </details>
 
-## Data Preparation
+## Data & Assets Preparation
 
 <details>
 <summary><b>Use the datasets we prepared directly</b></summary>
 
 Download the required datasets and place them under `./datasets`. Download only the datasets you need according to your configuration.
 
-| Dataset                | Download link                                                                                                                                                          |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| libero-object          | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)   |
-| libero-spatial         | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1) |
-| libero-10              | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
-| libero-goal            | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
-| modified_libero_rlds   | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                           |
-| RealRobot_AgileX_aloha | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
-| RealRobot_UR3_Chem     | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
+| Dataset                 | Download link                                                                                                                                                          |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)   |
+| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1) |
+| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
+| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
+| modified_libero_rlds    | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                           |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)           |
+| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                             |
+| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
+| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
 
 For example, download the `libero-10` dataset:
 
@@ -256,12 +337,97 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 Replace `libero_10_no_noops_lerobotv2.1` with the corresponding folder name of the dataset you want to download.
 
+For RoboCasa GR00T training with the released 30-demo subset, download the
+dataset under `./datasets`:
+
+```bash
+
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "robocasa_gr1_24tasks_first30ep/*" \
+  --local-dir ./datasets
+```
+
+For full-data RoboCasa GR1 training, replace the include pattern with
+`robocasa_lerobot_V2.1/*`.
+
+</details>
+
+<details>
+<summary><b>Prepare assets</b></summary>
+
+Download the required assets and place them under the local directories expected by your configuration or simulator.
+
+| Asset                              | Download link                                                                                                    | Local directory                                               |
+| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| RoboCasa tabletop simulator assets | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+
+Recommended option: run the upstream asset downloader from the RoboCasa GR1
+task checkout:
+
+```bash
+cd /path/to/robocasa-gr1-tabletop-tasks
+python robocasa/scripts/download_tabletop_assets.py -y
+```
+
+Alternative option: download the mirrored assets from Hugging Face and place
+them directly under
+`/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets`.
+Symlinks are not required; they are only a convenience when the assets already
+live on another local disk or shared storage.
+
+</details>
+
+<details>
+<summary><b>SARM datasets</b></summary>
+
+FluxVLA SARM workflows accept standard LeRobot v2.1 or v3.x datasets. Besides the usual observation / action fields, the dataset must carry SARM subtask annotations in episodes metadata.
+
+Published SARM example datasets on Hugging Face:
+
+- LeRobot v3.x manual sparse+dense annotations for training / inference: [limxdynamics/FluxVLAData/SARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_manual_test_10Episodes_lerobotv3.0)
+- LeRobot v3.x unlabeled dataset kept for manual or VLM labeling: [limxdynamics/FluxVLAData/SARM_vlm_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_vlm_test_10Episodes_lerobotv3.0)
+- New LeRobot v2.1 manual conversion for training / inference and legacy-tool compatibility: [limxdynamics/FluxVLAData/SARM_manual_test_10Episodes_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_manual_test_10Episodes_lerobotv2.1)
+- New LeRobot v2.1 unlabeled conversion for manual or VLM labeling workflows: [limxdynamics/FluxVLAData/SARM_vlm_test_10Episodes_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/SARM_vlm_test_10Episodes_lerobotv2.1)
+
+Download them under `./datasets` with:
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_manual_test_10Episodes_lerobotv3.0/*" --local-dir ./datasets
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_vlm_test_10Episodes_lerobotv3.0/*" --local-dir ./datasets
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_manual_test_10Episodes_lerobotv2.1/*" --local-dir ./datasets
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include "SARM_vlm_test_10Episodes_lerobotv2.1/*" --local-dir ./datasets
+```
+
+Use the `manual_*` datasets directly for training / inference. Use the `vlm_*` datasets as clean starting points for manual stage writing or VLM auto-annotation. Prefer the v2.1 pair when another tool expects `meta/episodes.jsonl` plus per-episode videos; prefer the v3.0 pair when you want to keep native LeRobot v3.x metadata layout.
+
+Before using a LeRobot v3.x SARM dataset, sanity-check the video metadata:
+
+- LeRobot v3.x allows either many episodes in one MP4 or one MP4 per episode.
+
+- If many episodes share one MP4, each episode that points to that file must
+  use correct `from_timestamp` / `to_timestamp` offsets.
+
+- If videos are already split as `file-000.mp4`, `file-001.mp4`, ..., each
+  episode should point to its own `file_index`, and `from_timestamp` will
+  usually reset to `0.0`.
+
+- If the directory contains multiple MP4 files but all episodes still point to
+  `file-000.mp4`, the dataset metadata is malformed and should be fixed before
+  use.
+
+- For ready-to-use SARM dataset structure, annotation columns, and progress inference usage, see [docs/sarm.md](docs/sarm.md).
+
+- For writing manual stages or generating VLM-based annotations, see [tools/sarm_annotate/README.md](tools/sarm_annotate/README.md).
+
 </details>
 
 <details>
 <summary><b>Private dataset directory structure</b></summary>
 
 If you train with fluxvla on private datasets, you need to convert your raw data (e.g., HDF5 files collected by ALOHA robots) into the LeRobot Dataset v2.1 format. For a step-by-step conversion guide, see [Data Conversion Guide](docs/data_convert.md).
+
+For SARM specifically, FluxVLA supports both LeRobot v2.1 and v3.x datasets as long as the required SARM annotation columns are present. The SARM-specific metadata contract is documented in [docs/sarm.md](docs/sarm.md).
 
 The converted dataset should follow this directory structure:
 
@@ -299,13 +465,15 @@ The converted dataset should follow this directory structure:
 
 Download the required pretrained checkpoints and place them under `./checkpoints`. Download only the checkpoints you need based on your configuration.
 
+For SARM workflows, you typically need a CLIP checkpoint for training / inference and optionally a Qwen3-VL checkpoint for VLM-based annotation. Detailed usage is documented in [docs/sarm.md](docs/sarm.md).
+
 <details>
 <summary><b>VLA models</b></summary>
 
 | Model       | Size | Download link                                                                              |
 | ----------- | ---- | ------------------------------------------------------------------------------------------ |
 | GR00T N1.5  | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                   |
-| OpenVLA     | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b-finetuned-libero-10)           |
+| OpenVLA     | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                               |
 | PI0_base    | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)    |
 | PI05_base   | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)   |
 | PI05_libero | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero) |
@@ -319,6 +487,7 @@ Download the required pretrained checkpoints and place them under `./checkpoints
 | Model      | Size | Download link                                                                        |
 | ---------- | ---- | ------------------------------------------------------------------------------------ |
 | Qwen2.5-VL | 3B   | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct)                |
+| Qwen3-VL   | 30B  | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct)             |
 | SmolVLM2   | 500M | [🤗 Hugging Face](https://huggingface.co/HuggingFaceTB/SmolVLM2-500M-Video-Instruct) |
 
 </details>
@@ -339,6 +508,7 @@ Download the required pretrained checkpoints and place them under `./checkpoints
 
 | Model               | Download link                                                                        |
 | ------------------- | ------------------------------------------------------------------------------------ |
+| CLIP ViT-B/32       | [🤗 Hugging Face](https://huggingface.co/openai/clip-vit-base-patch32)               |
 | ViT-Large (DINOv2)  | [🤗 Hugging Face](https://huggingface.co/timm/vit_large_patch14_reg4_dinov2.lvd142m) |
 | ViT-SO400M (SigLIP) | [🤗 Hugging Face](https://huggingface.co/timm/ViT-SO400M-14-SigLIP)                  |
 | SigLIP2             | [🤗 Hugging Face](https://huggingface.co/google/siglip2-base-patch16-224)            |
@@ -346,22 +516,7 @@ Download the required pretrained checkpoints and place them under `./checkpoints
 
 > **Tip**: You can speed up downloads with `huggingface-cli download <model-name> --local-dir ./checkpoints/<model-name>`.
 
-</details>
-
-<details>
-<summary><b>Trained models</b></summary>
-
-You can also download models that have been trained with FluxVLA for inference or evaluation directly. Place them under `./work_dirs`.
-
-| Model                     | Download link                                                                                                              |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| PI0.5 PaliGemma Libero-10 | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |
-| GR00T Eagle 3B Libero-10  | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |
-
-```bash
-# Example: download the PI0.5 checkpoint from limxdynamics/FluxVLAEngine
-huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_libero_10_full_finetune_bs64/*" --local-dir ./checkpoints/pi05_paligemma_libero_10_full_finetune_bs64
-```
+For the built-in SARM configs, place the CLIP files under `./checkpoints/clip-vit-base-patch32`. If you use VLM-based SARM annotation, place the official SARM VLM under `./checkpoints/Qwen3-VL-30B-A3B-Instruct`.
 
 </details>
 
@@ -387,6 +542,13 @@ huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_li
 - Supports Llama, Gemma, and Qwen-family LLM backbones.
 - Supports DINOv2 and SigLIP vision backbones.
 - Supports PaliGemma and Qwen-VL VLM backbones.
+
+</details>
+
+<details>
+<summary><b>Supports SARM workflows</b></summary>
+
+- Supports [SARM](https://github.com/xdofai/opensarm) training, annotation, and progress inference on LeRobot v2.1/v3.x datasets. See [docs/sarm.md](docs/sarm.md) for details.
 
 </details>
 
@@ -437,6 +599,24 @@ export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/train.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --work-dir ./checkpoints/pi05_paligemma_libero_10_full_finetune --cfg-options train_dataloader.per_device_batch_size=2
 ```
 
+RoboCasa GR00T smoke training example:
+
+```bash
+WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
+  --config configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
+  --work-dir work_dirs/smoke_groot_robocasa_train \
+  --cfg-options \
+    runner.type=FSDPTrainRunner \
+    runner.sharding_strategy=no-shard \
+    train_dataloader.per_device_batch_size=1 \
+    runner.enable_gradient_checkpointing=False \
+    runner.max_steps=2 \
+    runner.save_iter_interval=1 \
+    runner.max_keep_ckpts=2 \
+    "runner.metric.active_trackers=('jsonl',)"
+```
+
 </details>
 
 <details>
@@ -451,6 +631,19 @@ Example:
 ```
 export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --ckpt-path checkpoints/pi05_paligemma_libero_10_full_finetune_bs64/checkpoints/step-028548-epoch-18-loss=0.0111.safetensors
+```
+
+RoboCasa GR00T evaluation example:
+
+```bash
+MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
+  --config configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
+  --ckpt-path work_dirs/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64/checkpoints/step-010000.safetensors \
+  --cfg-options \
+    eval.norm_stats_path=work_dirs/official_groot_gr1_dataset_statistics.json \
+    eval.output_dir=work_dirs/gr00t_eagle_3b_robocasa_eval \
+    eval.num_trials_per_task=20
 ```
 
 </details>
@@ -581,17 +774,6 @@ pip install numpy==1.26.4
 
 </details>
 
-<details>
-<summary><b>Q: Inference fails on RTX 5090 (e.g., Triton kernel errors or CUDA compatibility issues).</b></summary>
-
-<b>A:</b> RTX 5090 (Blackwell architecture) requires an updated Triton version. Upgrade to Triton 3.2.0 or higher:
-
-```bash
-pip install triton==3.2.0
-```
-
-</details>
-
 ## Contributing
 
 Please see the contribution workflow and guidelines in [docs/CONTRIBUTING.md](docs/CONTRIBUTING.md).
@@ -632,7 +814,5 @@ If you use FluxVLA in your research or projects, please cite it as:
 - Support more VLM backbones.
 - Support more VLA methods.
 - Support training with VLM data or reasoning-chain-of-thought (CoT) data.
-- RLDS datasets will be deprecated and replaced by Parquet datasets.
 - Full implementation of the logger feature.
 - Support Isaac Sim.
-- Support SARM.

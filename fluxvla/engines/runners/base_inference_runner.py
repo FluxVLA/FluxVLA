@@ -285,7 +285,12 @@ class BaseInferenceRunner:
             if self.enable_mixed_precision:
                 self.vla.to(device='cuda', dtype=self.mixed_precision_dtype)
             else:
-                self.vla.cuda()
+                if self.vla.__class__.__name__ in (
+                        'PI05FlowMatchingInference',
+                        'PI05FlowMatchingRTCInference'):
+                    pass
+                else:
+                    self.vla.cuda()
             overwatch.info(
                 f'Model loaded (dtype={self.mixed_precision_dtype}). '
                 f'Seed set to {self.seed}')

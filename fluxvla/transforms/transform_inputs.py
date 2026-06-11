@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import logging
 import os
 from pathlib import Path
@@ -26,7 +25,8 @@ import torchvision
 from PIL import Image
 
 from fluxvla.engines import TRANSFORMS
-from fluxvla.engines.utils.eval_utils import crop_and_resize, get_libero_image
+from fluxvla.engines.utils.eval_utils import crop_and_resize
+from .transform_images import _resize_hwc_lanczos3_numpy
 from .utils import pad_to_dim, parse_image
 
 
@@ -113,13 +113,15 @@ class ProcessParquetInputs():
                  name_mappings: Dict = None,
                  embodiment_id: int = None,
                  embodiment_dim: int = None,
-                 num_padding_imgs: int = 0):
+                 num_padding_imgs: int = 0,
+                 dataset_name: str = None):
         self.parquet_keys = parquet_keys
         self.video_keys = video_keys
         self.name_mappings = name_mappings
         self.embodiment_id = embodiment_id
         self.embodiment_dim = embodiment_dim
         self.num_padding_imgs = num_padding_imgs
+        self.dataset_name = dataset_name
 
     def decode_video_frames_torchvision(
         self,
@@ -174,7 +176,7 @@ class ProcessParquetInputs():
         for frame in reader:
             current_ts = frame['pts']
             if log_loaded_timestamps:
-                logging.info(f'frame loaded at timestamp={current_ts:.4f}')
+                logging.info('frame loaded at timestamp=%.4f', current_ts)
             loaded_frames.append(frame['data'])
             loaded_ts.append(current_ts)
             if current_ts >= last_ts:
@@ -226,26 +228,30 @@ class ProcessParquetInputs():
         assert 'video_path' in info, "Input data must contain 'video_path' key"
         video_root_path = info['video_path']
         for key in self.parquet_keys:
-            assert key in data, f'Key {key} not found in input data'
-            if self.name_mappings is not None and key in self.name_mappings:
-                if isinstance(self.name_mappings[key], str):
-                    if isinstance(data[key], list) or isinstance(
-                            data[key], float):
-                        inputs[self.name_mappings[key]] = np.array(data[key])
+            try:
+                value = data[key]
+            except KeyError as exc:
+                raise KeyError(f'Missing input data key: {key}') from exc
+            mapped_names = None
+            if self.name_mappings is not None:
+                mapped_names = self.name_mappings.get(key)
+            if mapped_names is not None:
+                if isinstance(mapped_names, str):
+                    if isinstance(value, list) or isinstance(value, float):
+                        inputs[mapped_names] = np.array(value)
                     else:
-                        inputs[self.name_mappings[key]] = data[key]
+                        inputs[mapped_names] = value
                 else:
-                    for mapped_key in self.name_mappings[key]:
-                        if isinstance(data[key], list) or isinstance(
-                                data[key], float):
-                            inputs[mapped_key] = np.array(data[key])
+                    for mapped_key in mapped_names:
+                        if isinstance(value, list) or isinstance(value, float):
+                            inputs[mapped_key] = np.array(value)
                         else:
-                            inputs[mapped_key] = data[key]
+                            inputs[mapped_key] = value
             else:
-                if isinstance(data[key], list) or isinstance(data[key], float):
-                    inputs[key] = np.array(data[key])
+                if isinstance(value, list) or isinstance(value, float):
+                    inputs[key] = np.array(value)
                 else:
-                    inputs[key] = data[key]
+                    inputs[key] = value
         images = list()
         img_masks = list()
         timestamps = data.get('frame_timestamps', [data['timestamp']])
@@ -282,10 +288,15 @@ class ProcessParquetInputs():
         inputs['images'] = images
         inputs['img_masks'] = np.array(img_masks)
         inputs['task_description'] = data.get('task_description', '')
+        if self.dataset_name is not None:
+            inputs['dataset_name'] = self.dataset_name
         if self.embodiment_id is not None:
             inputs['embodiment_ids'] = np.array(self.embodiment_id)
         if 'frame_masks' in data:
             inputs['frame_masks'] = data['frame_masks']
+        if 'sample_weight' in data:
+            inputs['sample_weight'] = np.asarray(
+                data['sample_weight'], dtype=np.float32)
 
         return inputs
 
@@ -329,38 +340,53 @@ class ProcessOBSInputs():
 @TRANSFORMS.register_module()
 class ProcessLiberoEvalInputs:
     """ Process Libero eval inputs.
-    This class processes the Libero eval inputs by loading the images,
-    applying the center crop, and returning the processed inputs.
+    This transform loads LIBERO observation images, rotates them, converts
+    them to PIL images, and leaves model-specific resizing to later image
+    transforms. If enabled, center crop is applied with the same TensorFlow
+    crop-and-resize path used by the original OpenVLA evaluation.
 
     Args:
         img_keys (List[str]): Image keys to fetch from inputs.
             Default to ['agentview_image'].
-        center_crop (bool): If True, center crop at 0.9 area before resize.
-            Default to False.
+        center_crop (bool): If True, center crop to 0.9 area and resize back
+            to 224x224 before later model-specific processing.
         use_pil (bool): If True, use PIL to load the images.
             Default to True.
+        resize_size (int | None): If set, lanczos-resize the rotated raw image
+            to ``(resize_size, resize_size)`` before center crop, using the
+            same numpy lanczos policy as the training-time
+            ``ResizeImagesLanczos``. This keeps eval image resampling aligned
+            with training (and the official OpenVLA pipeline). Default None
+            keeps the legacy behavior (crop directly from the raw frame).
     """
 
     def __init__(self,
                  img_keys: List[str] = ['agentview_image'],
-                 resize_size: int = 224,
                  center_crop: bool = False,
                  use_pil: bool = True,
+                 resize_size: int = None,
                  embodiment_id: int = None) -> None:
         self.img_keys = img_keys
-        self.resize_size = resize_size
         self.center_crop = center_crop
         self.use_pil = use_pil
+        self.resize_size = resize_size
         self.embodiment_id = embodiment_id
 
     def __call__(self, inputs: Dict) -> Dict:
         # Load raw images
         imgs = list()
+        replay_img = None
         for img_key in self.img_keys:
             if img_key not in inputs:
-                raise KeyError(f'Image key `{img_key}` not found in inputs!')
-            imgs.append(get_libero_image(inputs, self.resize_size, img_key))
-        replay_img = copy.deepcopy(imgs[0])
+                raise KeyError(f'Image key {img_key!r} missing from inputs!')
+            img = np.asarray(inputs[img_key])
+            img = img[::-1, ::-1].copy()
+            if self.resize_size is not None:
+                img = _resize_hwc_lanczos3_numpy(img, self.resize_size,
+                                                 self.resize_size)
+            if replay_img is None:
+                replay_img = img.copy()
+            imgs.append(img)
         images = list()
         img_masks = list()
         if self.use_pil:
@@ -368,35 +394,19 @@ class ProcessLiberoEvalInputs:
                 image = Image.fromarray(img)
                 image = image.convert('RGB')
 
-                # (If trained with image augmentations)
-                # Center crop image and then
-                # resize back up to original size.
-                # IMPORTANT: Let's say crop scale == 0.9. To get the new height
-                # and width (post-crop), multiply
-                # the original height and width by sqrt(0.9) -- not 0.9!
                 if self.center_crop:
                     batch_size = 1
                     crop_scale = 0.9
-
-                    # Convert to TF Tensor and record original data type
-                    # (should be tf.uint8)
                     image = tf.convert_to_tensor(np.array(image))
                     orig_dtype = image.dtype
-
-                    # Convert to data type tf.float32 and values between [0,1]
                     image = tf.image.convert_image_dtype(image, tf.float32)
-
-                    # Crop and then resize back to original size
                     image = crop_and_resize(image, crop_scale, batch_size)
-
-                    # Convert back to original data type
                     image = tf.clip_by_value(image, 0, 1)
                     image = tf.image.convert_image_dtype(
                         image, orig_dtype, saturate=True)
-
-                    # Convert back to PIL Image
                     image = Image.fromarray(image.numpy())
                     image = image.convert('RGB')
+
                 images.append(image)
                 img_masks.append(True)
         else:

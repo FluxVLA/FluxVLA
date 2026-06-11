@@ -20,7 +20,8 @@ def invert_gripper_action(action):
     Invert the gripper action in the last dimension of the action array.
     This is necessary for some environments where the gripper action is
     represented as a single value, and we need to invert it for the
-    RLDS dataloader to align the gripper actions such that 0 = close, 1 = open.
+    training data convention to align the gripper actions such that
+    0 = close, 1 = open.
 
     Args:
         action (np.ndarray): The action array, expected to have the gripper
@@ -37,7 +38,8 @@ def normalize_gripper_action(action, binarize=True):
     """Normalize the gripper action to be in the range [-1, +1] and optionally
     binarize it to -1 or +1.
     This is necessary for some environments where -1 = open, +1 = close, since
-    the RLDS dataloader aligns gripper actions such that 0 = close, 1 = open.
+    the training data convention aligns gripper actions such that
+    0 = close, 1 = open.
 
     Args:
         action (np.ndarray): The action array, expected to have the gripper

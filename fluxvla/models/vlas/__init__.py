@@ -18,7 +18,11 @@ from .pi0_flowmatching import PI0FlowMatching  # noqa: F401, F403
 from .pi05_flowmatching import PI05FlowMatching  # noqa: F401, F403
 from .pi05_flowmatching_inference import \
     PI05FlowMatchingInference  # noqa: F401, F403
+from .pi05_flowmatching_inference_rtc import \
+    PI05FlowMatchingRTCInference  # noqa: F401, F403
+from .sarm_reward_model import SARMRewardModel  # noqa: F401, F403
 from .smolvla_flowmatching import SmolVLAFlowMatching  # noqa: F401, F403
+from .x_vla import X_VLA  # noqa: F401, F403
 
 try:
     from .dreamzero_vla import DreamZeroVLA  # noqa: F401

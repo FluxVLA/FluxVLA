@@ -19,7 +19,7 @@ import numpy as np
 import timm
 import torch
 from PIL import Image
-from torchvision.transforms import Compose, Resize
+from torchvision.transforms import ColorJitter, Compose, Resize
 from transformers import AutoImageProcessor
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import \
     PILImageResampling
@@ -36,6 +36,90 @@ PAD_POSITIONS = (
     'center',
 )
 PAD_POSITIONS_TEXT = ', '.join(PAD_POSITIONS)
+
+
+def _sinc(x: np.ndarray) -> np.ndarray:
+    out = np.ones_like(x, dtype=np.float64)
+    nonzero = x != 0
+    out[nonzero] = np.sin(np.pi * x[nonzero]) / (np.pi * x[nonzero])
+    return out
+
+
+def _lanczos3_kernel(x: np.ndarray) -> np.ndarray:
+    abs_x = np.abs(x)
+    return np.where(abs_x < 3.0, _sinc(x) * _sinc(x / 3.0), 0.0)
+
+
+def _lanczos3_weights(in_size: int,
+                      out_size: int) -> Tuple[np.ndarray, np.ndarray]:
+    scale = out_size / in_size
+    inv_scale = in_size / out_size
+    sample_positions = (np.arange(out_size, dtype=np.float64) +
+                        0.5) * inv_scale - 0.5
+
+    kernel_scale = scale if scale < 1.0 else 1.0
+    radius = 3.0 / kernel_scale
+    span = int(np.ceil(radius) * 2 + 1)
+    left = np.floor(sample_positions - radius).astype(np.int64)
+    indices = left[:, None] + np.arange(span, dtype=np.int64)[None, :]
+
+    weights = _lanczos3_kernel(
+        (indices - sample_positions[:, None]) * kernel_scale)
+    weights = np.where((indices >= 0) & (indices < in_size), weights, 0.0)
+    weight_sums = weights.sum(axis=1, keepdims=True)
+    weights = np.divide(
+        weights,
+        weight_sums,
+        out=np.zeros_like(weights),
+        where=np.abs(weight_sums) > 1e-12)
+
+    return np.clip(indices, 0, in_size - 1), weights
+
+
+def _resize_hwc_lanczos3_numpy(image: np.ndarray, height: int,
+                               width: int) -> np.ndarray:
+    if image.ndim != 3:
+        raise ValueError(f'Expected HWC image, got shape {image.shape}')
+
+    image = image.astype(np.float64, copy=False)
+    x_indices, x_weights = _lanczos3_weights(image.shape[1], width)
+    resized_x = (image[:, x_indices, :] *
+                 x_weights[None, :, :, None]).sum(axis=2)
+
+    y_indices, y_weights = _lanczos3_weights(image.shape[0], height)
+    resized = (resized_x[y_indices, :, :] *
+               y_weights[:, :, None, None]).sum(axis=1)
+
+    return np.clip(np.round(resized), 0, 255).astype(np.uint8)
+
+
+def _jpeg_roundtrip_numpy(image: np.ndarray) -> np.ndarray:
+    encoded = cv2.imencode('.jpg', cv2.cvtColor(image, cv2.COLOR_RGB2BGR))[1]
+    decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+    return cv2.cvtColor(decoded, cv2.COLOR_BGR2RGB)
+
+
+def _resize_hwc_lanczos3_tensorflow(
+        image: np.ndarray,
+        height: int,
+        width: int,
+        jpeg_roundtrip: bool = False) -> np.ndarray:
+    import tensorflow as tf
+
+    try:
+        tf.config.set_visible_devices([], 'GPU')
+    except RuntimeError:
+        pass
+
+    img = image
+    if jpeg_roundtrip:
+        encoded = tf.image.encode_jpeg(img)
+        img = tf.io.decode_image(
+            encoded, expand_animations=False, dtype=tf.uint8)
+    img = tf.image.resize(
+        img, (height, width), method='lanczos3', antialias=True)
+    img = tf.cast(tf.clip_by_value(tf.round(img), 0, 255), tf.uint8)
+    return img.numpy()
 
 
 def _resize_chw_with_pad(image: np.ndarray, height: int, width: int,
@@ -86,14 +170,46 @@ class ResizeImages:
     Args:
         height (int): The target height for the images.
         width (int): The target width for the images.
+        preserve_leading_dims (bool): If True, treat the last three
+            dimensions as CHW and preserve all leading dimensions.
     """
 
-    def __init__(self, height, width, *args, **kwargs):
+    def __init__(self,
+                 height,
+                 width,
+                 preserve_leading_dims: bool = False,
+                 *args,
+                 **kwargs):
         self.height = height
         self.width = width
+        self.preserve_leading_dims = preserve_leading_dims
+
+    def _resize_single_image(self, image: np.ndarray) -> np.ndarray:
+        return cv2.resize(
+            image.transpose(1, 2, 0), (self.width, self.height),
+            interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)
+
+    def _resize_preserve_leading_dims(self, images: np.ndarray) -> np.ndarray:
+        original_shape = images.shape
+        if images.ndim < 4:
+            raise ValueError(
+                'Input image sequence must have at least 4 dimensions')
+        flat_images = images.reshape(-1, original_shape[-3],
+                                     original_shape[-2], original_shape[-1])
+        resized_images = [
+            self._resize_single_image(image) for image in flat_images
+        ]
+        return np.stack(
+            resized_images, axis=0).reshape(*original_shape[:-2], self.height,
+                                            self.width)
 
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
+        if self.preserve_leading_dims:
+            data['images'] = self._resize_preserve_leading_dims(
+                np.asarray(data['images']))
+            return data
+
         if isinstance(data['images'], np.ndarray):
             assert data['images'].ndim == 3, \
                 "Input 'images' must be a 4D numpy array"
@@ -104,13 +220,59 @@ class ResizeImages:
             images = data['images']
         resized_images = list()
         for image in images:
-            resized_images.append(
-                cv2.resize(
-                    image.transpose(1, 2, 0), (self.width, self.height),
-                    interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1))
+            resized_images.append(self._resize_single_image(image))
 
         resized_images = np.concatenate(resized_images, axis=0)
         data['images'] = resized_images
+        return data
+
+
+@TRANSFORMS.register_module()
+class ResizeImagesLanczos:
+    """Resize CHW uint8 images with the training-time Lanczos policy."""
+
+    def __init__(self,
+                 height,
+                 width,
+                 jpeg_roundtrip: bool = False,
+                 backend: str = 'numpy',
+                 *args,
+                 **kwargs):
+        self.height = height
+        self.width = width
+        self.jpeg_roundtrip = jpeg_roundtrip
+        if backend not in ('numpy', 'tensorflow'):
+            raise ValueError(
+                f"Unsupported ResizeImagesLanczos backend '{backend}'. "
+                "Expected 'numpy' or 'tensorflow'.")
+        self.backend = backend
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        if isinstance(data['images'], np.ndarray):
+            assert data['images'].ndim == 3, \
+                "Input 'images' must be a 3D numpy array"
+            images = data['images'].reshape(-1, 3, data['images'].shape[-2],
+                                            data['images'].shape[-1])
+        else:
+            images = data['images']
+
+        resized_images = list()
+        for image in images:
+            img = image.transpose(1, 2, 0)
+            if self.backend == 'tensorflow':
+                img = _resize_hwc_lanczos3_tensorflow(
+                    img,
+                    self.height,
+                    self.width,
+                    jpeg_roundtrip=self.jpeg_roundtrip)
+            else:
+                if self.jpeg_roundtrip:
+                    img = _jpeg_roundtrip_numpy(img)
+                img = _resize_hwc_lanczos3_numpy(img, self.height, self.width)
+            resized_images.append(img.transpose(2, 0, 1))
+
+        data['images'] = np.concatenate(resized_images, axis=0)
         return data
 
 
@@ -163,9 +325,139 @@ class ResizeImagesWithPad:
 
 
 @TRANSFORMS.register_module()
+class RandomCropImages:
+    """Random-crop CHW images by a fixed scale.
+
+    This mirrors official GR00T ``VideoCrop(scale=0.95)`` in train mode,
+    where torchvision uses a random crop before resizing.
+    """
+
+    def __init__(self, scale: float = 0.95, *args, **kwargs):
+        if not (0 < scale <= 1):
+            raise ValueError(f'scale must be in (0, 1], got {scale}')
+        self.scale = scale
+
+    def _as_image_list(self, images):
+        if isinstance(images, list):
+            return images, 'list', None
+        arr = np.asarray(images)
+        if arr.ndim == 3:
+            original_shape = arr.shape
+            if arr.shape[0] % 3 == 0 and arr.shape[-1] != 3:
+                arr = arr.reshape(-1, 3, arr.shape[-2], arr.shape[-1])
+                return list(arr), 'array', original_shape
+            return [arr], 'array', original_shape
+        if arr.ndim == 4:
+            return list(arr), 'array', arr.shape
+        raise ValueError(
+            f'RandomCropImages: unsupported image shape {arr.shape}')
+
+    def _restore_images(self, cropped, kind, original_shape):
+        if kind == 'list':
+            return cropped
+        arr = np.stack(cropped, axis=0)
+        if original_shape is not None and len(original_shape) == 3:
+            return arr.reshape(original_shape)
+        return arr
+
+    def _crop_one(self, image: np.ndarray) -> np.ndarray:
+        arr = np.asarray(image)
+        if self.scale == 1:
+            return arr
+
+        channel_first = arr.ndim == 3 and arr.shape[0] == 3
+        if channel_first:
+            h, w = arr.shape[-2:]
+        elif arr.ndim == 3 and arr.shape[-1] == 3:
+            h, w = arr.shape[:2]
+        else:
+            raise ValueError(
+                f'RandomCropImages expects CHW or HWC image, got {arr.shape}')
+
+        crop_h = max(1, int(h * self.scale))
+        crop_w = max(1, int(w * self.scale))
+        top = np.random.randint(0, h - crop_h + 1)
+        left = np.random.randint(0, w - crop_w + 1)
+        if channel_first:
+            return arr[:, top:top + crop_h, left:left + crop_w]
+        return arr[top:top + crop_h, left:left + crop_w, :]
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        images, kind, original_shape = self._as_image_list(data['images'])
+        cropped = [self._crop_one(image) for image in images]
+        data['images'] = self._restore_images(cropped, kind, original_shape)
+        return data
+
+
+@TRANSFORMS.register_module()
+class ColorJitterImages:
+    """Apply official GR00T-style torchvision color jitter to CHW images."""
+
+    def __init__(self,
+                 brightness: float = 0.3,
+                 contrast: float = 0.4,
+                 saturation: float = 0.5,
+                 hue: float = 0.08,
+                 *args,
+                 **kwargs):
+        self.transform = ColorJitter(
+            brightness=brightness,
+            contrast=contrast,
+            saturation=saturation,
+            hue=hue)
+
+    def _as_image_list(self, images):
+        if isinstance(images, list):
+            return images, 'list', None
+        arr = np.asarray(images)
+        if arr.ndim == 3:
+            original_shape = arr.shape
+            if arr.shape[0] % 3 == 0 and arr.shape[-1] != 3:
+                arr = arr.reshape(-1, 3, arr.shape[-2], arr.shape[-1])
+                return list(arr), 'array', original_shape
+            return [arr], 'array', original_shape
+        if arr.ndim == 4:
+            return list(arr), 'array', arr.shape
+        raise ValueError(
+            f'ColorJitterImages: unsupported image shape {arr.shape}')
+
+    def _restore_images(self, jittered, kind, original_shape):
+        if kind == 'list':
+            return jittered
+        arr = np.stack(jittered, axis=0)
+        if original_shape is not None and len(original_shape) == 3:
+            return arr.reshape(original_shape)
+        return arr
+
+    def _jitter_one(self, image: np.ndarray) -> np.ndarray:
+        arr = np.asarray(image)
+        channel_first = arr.ndim == 3 and arr.shape[0] == 3
+        if not channel_first and arr.ndim == 3 and arr.shape[-1] == 3:
+            arr = np.transpose(arr, (2, 0, 1))
+        elif not channel_first:
+            raise ValueError(
+                f'ColorJitterImages expects CHW or HWC image, got {arr.shape}')
+
+        tensor = torch.from_numpy(np.ascontiguousarray(arr))
+        jittered = self.transform(tensor).detach().cpu().numpy()
+        if channel_first:
+            return jittered.astype(arr.dtype, copy=False)
+        jittered = np.transpose(jittered, (1, 2, 0))
+        return jittered.astype(image.dtype, copy=False)
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        images, kind, original_shape = self._as_image_list(data['images'])
+        jittered = [self._jitter_one(image) for image in images]
+        data['images'] = self._restore_images(jittered, kind, original_shape)
+        return data
+
+
+@TRANSFORMS.register_module()
 class AugImage:
-    """Augment images with random transformations including
-    rotation, brightness/contrast adjustment, and random cropping.
+    """Augment images with random transformations including rotation,
+    brightness/contrast/saturation/hue adjustment, and random resized cropping.
     This transform applies various augmentations to all images
     in the 'images' dictionary of the input data.
 
@@ -179,8 +471,19 @@ class AugImage:
             adjustment as (min, max) multipliers. Default: (0.8, 1.2).
         crop_scale (Tuple[float, float]): Range for random crop scale
             as (min, max) fractions of original size. Default: (0.8, 1.0).
+        crop_ratio (Tuple[float, float]): Range for random crop aspect ratio.
+            Default: (1.0, 1.0).
         prob (float): Probability of applying each augmentation.
             Default: 0.5.
+        brightness_delta (Optional[float]): If set, use TensorFlow-style
+            brightness delta in [-brightness_delta, brightness_delta] instead
+            of multiplicative brightness_range.
+        saturation_range (Optional[Tuple[float, float]]): If set, enable
+            TensorFlow-style saturation jitter.
+        hue_delta (Optional[float]): If set, enable TensorFlow-style
+            hue jitter.
+        share_across_dinosiglip (bool): Share one sampled augmentation between
+            paired DINO/SigLIP image batches.
     """
 
     def __init__(self,
@@ -188,18 +491,28 @@ class AugImage:
                  brightness_range: Tuple[float, float] = (0.8, 1.2),
                  contrast_range: Tuple[float, float] = (0.8, 1.2),
                  crop_scale: Tuple[float, float] = (0.8, 1.0),
+                 crop_ratio: Tuple[float, float] = (1.0, 1.0),
                  prob: float = 0.5,
+                 brightness_delta: Optional[float] = None,
+                 saturation_range: Optional[Tuple[float, float]] = None,
+                 hue_delta: Optional[float] = None,
+                 share_across_dinosiglip: bool = False,
                  *args,
                  **kwargs):
         self.rotation_range = rotation_range
         self.brightness_range = brightness_range
         self.contrast_range = contrast_range
         self.crop_scale = crop_scale
+        self.crop_ratio = crop_ratio
         self.prob = prob
+        self.brightness_delta = brightness_delta
+        self.saturation_range = saturation_range
+        self.hue_delta = hue_delta
+        self.share_across_dinosiglip = share_across_dinosiglip
 
     def _random_rotate(self, image: np.ndarray) -> np.ndarray:
         """Apply random rotation to the image."""
-        if np.random.random() > self.prob:
+        if self.rotation_range == 0 or np.random.random() > self.prob:
             return image
         # image shape: (C, H, W)
         h, w = image.shape[1], image.shape[2]
@@ -214,7 +527,7 @@ class AugImage:
 
     def _random_brightness(self, image: np.ndarray) -> np.ndarray:
         """Apply random brightness adjustment to the image."""
-        if np.random.random() > self.prob:
+        if self.brightness_delta is not None or np.random.random() > self.prob:
             return image
         factor = np.random.uniform(self.brightness_range[0],
                                    self.brightness_range[1])
@@ -235,7 +548,7 @@ class AugImage:
         if np.random.random() > self.prob:
             return image
         # image shape: (C, H, W)
-        c, h, w = image.shape
+        _, h, w = image.shape
         scale = np.random.uniform(self.crop_scale[0], self.crop_scale[1])
         new_h, new_w = int(h * scale), int(w * scale)
 
@@ -251,9 +564,92 @@ class AugImage:
         resized = cv2.resize(img_hwc, (w, h), interpolation=cv2.INTER_LINEAR)
         return resized.transpose(2, 0, 1)
 
+    def _use_tf_color_jitter(self) -> bool:
+        return (self.brightness_delta is not None
+                or self.saturation_range is not None
+                or self.hue_delta is not None)
+
+    def _sample_params(self, height: int, width: int) -> Dict:
+        area = float(height * width)
+        crop_area = area * np.random.uniform(*self.crop_scale)
+        aspect_ratio = np.random.uniform(*self.crop_ratio)
+
+        crop_h = int(round(np.sqrt(crop_area / aspect_ratio)))
+        crop_w = int(round(np.sqrt(crop_area * aspect_ratio)))
+        crop_h = min(max(crop_h, 1), height)
+        crop_w = min(max(crop_w, 1), width)
+
+        brightness_delta = 0.0
+        if self.brightness_delta is not None:
+            brightness_delta = np.random.uniform(-self.brightness_delta,
+                                                 self.brightness_delta)
+
+        saturation_factor = 1.0
+        if self.saturation_range is not None:
+            saturation_factor = np.random.uniform(*self.saturation_range)
+
+        hue_delta = 0.0
+        if self.hue_delta is not None:
+            hue_delta = np.random.uniform(-self.hue_delta, self.hue_delta)
+
+        return dict(
+            crop_h=crop_h,
+            crop_w=crop_w,
+            top=np.random.randint(0, height - crop_h + 1),
+            left=np.random.randint(0, width - crop_w + 1),
+            brightness_delta=brightness_delta,
+            contrast_factor=np.random.uniform(*self.contrast_range),
+            saturation_factor=saturation_factor,
+            hue_delta=hue_delta,
+        )
+
+    def _random_resized_crop(self, image: np.ndarray,
+                             params: Dict) -> np.ndarray:
+        _, height, width = image.shape
+        top = params['top']
+        left = params['left']
+        crop_h = params['crop_h']
+        crop_w = params['crop_w']
+        cropped = image[:, top:top + crop_h, left:left + crop_w]
+        resized = cv2.resize(
+            cropped.transpose(1, 2, 0), (width, height),
+            interpolation=cv2.INTER_LINEAR)
+        return resized.transpose(2, 0, 1)
+
+    def _tf_color_jitter(self, image: np.ndarray, params: Dict) -> np.ndarray:
+        import tensorflow as tf
+
+        img = image.transpose(1, 2, 0)
+        orig_dtype = img.dtype
+        img = tf.convert_to_tensor(img)
+        img = tf.image.convert_image_dtype(img, tf.float32)
+        img = tf.image.adjust_brightness(img, params['brightness_delta'])
+        img = tf.image.adjust_contrast(img, params['contrast_factor'])
+        img = tf.image.adjust_saturation(img, params['saturation_factor'])
+        img = tf.image.adjust_hue(img, params['hue_delta'])
+        img = tf.clip_by_value(img, 0.0, 1.0)
+        img = tf.image.convert_image_dtype(img, orig_dtype, saturate=True)
+        return img.numpy().transpose(2, 0, 1)
+
+    def _augment_one(self,
+                     image: np.ndarray,
+                     params: Optional[Dict] = None) -> np.ndarray:
+        if params is None:
+            aug_image = image.copy()
+            aug_image = self._random_rotate(aug_image)
+            aug_image = self._random_brightness(aug_image)
+            aug_image = self._random_contrast(aug_image)
+            return self._random_crop(aug_image)
+
+        image = self._random_resized_crop(image, params)
+        if self._use_tf_color_jitter():
+            return self._tf_color_jitter(image, params)
+        return self._random_contrast(image)
+
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
         if isinstance(data['images'], np.ndarray):
+            original_shape = data['images'].shape
             if data['images'].ndim == 3:
                 images = data['images'].reshape(-1, 3,
                                                 data['images'].shape[-2],
@@ -261,21 +657,38 @@ class AugImage:
             else:
                 images = data['images']
         else:
+            original_shape = None
             images = data['images']
 
-        augmented_images = list()
-        for image in images:
-            aug_image = image.copy()
-            aug_image = self._random_rotate(aug_image)
-            aug_image = self._random_brightness(aug_image)
-            aug_image = self._random_contrast(aug_image)
-            aug_image = self._random_crop(aug_image)
-            augmented_images.append(aug_image)
+        use_shared_params = (
+            self.share_across_dinosiglip or self._use_tf_color_jitter())
+        if use_shared_params:
+            augmented_images = [None] * len(images)
+            if self.share_across_dinosiglip and len(images) % 2 == 0:
+                half = len(images) // 2
+                for idx in range(half):
+                    params = self._sample_params(images[idx].shape[1],
+                                                 images[idx].shape[2])
+                    augmented_images[idx] = self._augment_one(
+                        images[idx], params)
+                    augmented_images[idx + half] = self._augment_one(
+                        images[idx + half], params)
+            else:
+                for idx, image in enumerate(images):
+                    params = self._sample_params(image.shape[1],
+                                                 image.shape[2])
+                    augmented_images[idx] = self._augment_one(image, params)
+        else:
+            augmented_images = list()
+            for image in images:
+                augmented_images.append(self._augment_one(image))
 
         augmented_images = np.stack(augmented_images, axis=0)
         # Reshape back to original shape if needed
-        if data['images'].ndim == 3:
+        if isinstance(data['images'], np.ndarray) and data['images'].ndim == 3:
             augmented_images = augmented_images.reshape(data['images'].shape)
+        elif use_shared_params and original_shape is not None:
+            augmented_images = augmented_images.reshape(original_shape)
         data['images'] = augmented_images
         return data
 
@@ -295,23 +708,105 @@ class NormalizeImages:
             where each element is a list of stds for each channel.
     """
 
-    def __init__(self, means: List, stds: List, *args, **kwargs):
-        self.means = np.array(means)
-        self.stds = np.array(stds)
+    def __init__(self,
+                 means: List,
+                 stds: List,
+                 preserve_leading_dims: bool = False,
+                 scale_to_unit_interval: bool = False,
+                 *args,
+                 **kwargs):
+        self.means = np.asarray(means, dtype=np.float32)
+        self.stds = np.asarray(stds, dtype=np.float32)
+        self.preserve_leading_dims = preserve_leading_dims
+        self.scale_to_unit_interval = scale_to_unit_interval
+
+    def _normalize_flat_images(self, flat_images: np.ndarray) -> np.ndarray:
+        if self.scale_to_unit_interval:
+            flat_images = flat_images / 255.0
+
+        means = self.means
+        stds = self.stds
+        if means.ndim == 1:
+            means = np.broadcast_to(means[None, :], (flat_images.shape[0], 3))
+        if stds.ndim == 1:
+            stds = np.broadcast_to(stds[None, :], (flat_images.shape[0], 3))
+        if means.shape[0] == 1:
+            means = np.broadcast_to(means, (flat_images.shape[0], 3))
+        if stds.shape[0] == 1:
+            stds = np.broadcast_to(stds, (flat_images.shape[0], 3))
+        if (means.shape[0] != flat_images.shape[0]
+                or stds.shape[0] != flat_images.shape[0]):
+            raise ValueError(
+                'Means/stds must have length 1 or match the number '
+                'of images after flattening.')
+
+        normalized_images = []
+        for idx, image in enumerate(flat_images):
+            normalized_images.append((image - means[idx][:, None, None]) /
+                                     (stds[idx][:, None, None] + 1e-8))
+        return np.stack(normalized_images, axis=0)
 
     def __call__(self, data: dict):
-        assert 'images' in data, "Input data must contain 'images' key"
-        images = data['images'].reshape(-1, 3, data['images'].shape[-2],
-                                        data['images'].shape[-1])
+        if 'images' in data:
+            img_key = 'images'
+        elif 'pixel_values' in data:
+            img_key = 'pixel_values'
+        else:
+            raise AssertionError(
+                "NormalizeImages: need 'images' or 'pixel_values' in data")
 
-        normalized_images = list()
-        for idx, image in enumerate(images):
-            normalized_image = (image - self.means[idx][:, None, None]) / (
-                self.stds[idx][:, None, None] + 1e-8)
-            normalized_images.append(normalized_image)
+        src = data[img_key]
+        if isinstance(src, torch.Tensor):
+            images = src.detach().cpu().float().numpy()
+        else:
+            images = np.asarray(src)
+            if images.dtype == np.uint8:
+                images = images.astype(np.float32)
+        if self.preserve_leading_dims:
+            original_shape = images.shape
+            if original_shape[-3] == 3:
+                flat_images = images.reshape(
+                    -1, original_shape[-3], original_shape[-2],
+                    original_shape[-1]).astype(np.float32)
+                data[img_key] = self._normalize_flat_images(
+                    flat_images).reshape(original_shape)
+            elif original_shape[-1] == 3:
+                flat_images = images.reshape(-1, original_shape[-3],
+                                             original_shape[-2],
+                                             original_shape[-1])
+                flat_images = np.transpose(flat_images,
+                                           (0, 3, 1, 2)).astype(np.float32)
+                normalized_images = self._normalize_flat_images(flat_images)
+                normalized_images = np.transpose(normalized_images,
+                                                 (0, 2, 3, 1))
+                data[img_key] = normalized_images.reshape(original_shape)
+            else:
+                raise ValueError(f'NormalizeImages: unsupported image shape '
+                                 f'{original_shape}')
+            return data
 
-        normalized_images = np.concatenate(normalized_images, axis=0)
-        data['images'] = normalized_images
+        original_shape = images.shape
+        if (images.ndim == 3 and images.shape[0] % 3 == 0
+                and images.shape[-1] != 3):
+            flat_images = images.reshape(-1, 3, images.shape[-2],
+                                         images.shape[-1]).astype(np.float32)
+            normalized_images = self._normalize_flat_images(flat_images)
+            data[img_key] = np.concatenate(normalized_images, axis=0)
+        elif images.ndim == 3 and images.shape[-1] == 3:
+            flat_images = np.transpose(images[None],
+                                       (0, 3, 1, 2)).astype(np.float32)
+            normalized_images = self._normalize_flat_images(flat_images)
+            data[img_key] = np.transpose(normalized_images, (0, 2, 3, 1))[0]
+        elif images.ndim == 4 and images.shape[1] == 3:
+            flat_images = images.astype(np.float32)
+            data[img_key] = self._normalize_flat_images(flat_images)
+        elif images.ndim == 4 and images.shape[-1] == 3:
+            flat_images = np.transpose(images, (0, 3, 1, 2)).astype(np.float32)
+            normalized_images = self._normalize_flat_images(flat_images)
+            data[img_key] = np.transpose(normalized_images, (0, 2, 3, 1))
+        else:
+            raise ValueError(
+                f'NormalizeImages: unsupported image shape {original_shape}')
         return data
 
 
@@ -835,6 +1330,7 @@ class QWen2VLImageTransform:
         merge_size: int = 2,
         img_key: str = 'images',
         to_tensor: bool = False,
+        exact_resize_size: Optional[Tuple[int, int]] = None,
         **kwargs,
     ) -> None:
         self.img_transform = Qwen2VLImageProcessorHF(
@@ -855,11 +1351,29 @@ class QWen2VLImageTransform:
             **kwargs)
         self.img_key = img_key
         self.to_tensor = to_tensor
+        self.exact_resize_size = exact_resize_size
+
+    def _exact_resize(self, images: np.ndarray) -> np.ndarray:
+        if self.exact_resize_size is None:
+            return images
+        if len(self.exact_resize_size) != 2:
+            raise ValueError(
+                'exact_resize_size must be a (height, width) pair.')
+        height, width = self.exact_resize_size
+        resized_images = []
+        for image in images:
+            resized_images.append(
+                cv2.resize(
+                    image.transpose(1, 2, 0), (width, height),
+                    interpolation=cv2.INTER_CUBIC).transpose(2, 0, 1))
+        return np.stack(resized_images, axis=0)
 
     def __call__(self, inputs):
-        ret_dict = self.img_transform(inputs[self.img_key].reshape(
-            -1, 3, inputs[self.img_key].shape[-2],
-            inputs[self.img_key].shape[-1]))
+        images = inputs[self.img_key].reshape(-1, 3,
+                                              inputs[self.img_key].shape[-2],
+                                              inputs[self.img_key].shape[-1])
+        images = self._exact_resize(images)
+        ret_dict = self.img_transform(images)
         if self.to_tensor:
             inputs[self.img_key] = torch.from_numpy(ret_dict['pixel_values'])
             inputs['image_grid_thw'] = torch.from_numpy(

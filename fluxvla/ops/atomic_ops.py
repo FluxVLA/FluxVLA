@@ -15,12 +15,14 @@ from fluxvla.ops.triton.attention_triton_ops import (
     matmul_n_2048_2560_qkv_rope, matmul_rope_qkv, scaled_matmul_rope_qkv)
 from fluxvla.ops.triton.matmul_triton_ops import (matmul_small,
                                                   matmul_small_bias,
+                                                  matmul_small_bias_res,
                                                   matmul_small_bias_silu,
                                                   matmul_small_gate,
                                                   matmul_small_res,
                                                   matmul_small_res_gate)
 from fluxvla.ops.triton.norm_triton_ops import (ada_layer_norm_kernel,
                                                 adarms_norm_kernel,
+                                                adarms_norm_kernel_rowwise,
                                                 rms_norm_kernel,
                                                 rmsnorm_factor_kernel)
 
@@ -300,6 +302,57 @@ def adarms_norm_style_proj(x, time_emb, mod_w, mod_b, x_normed, gate, style,
 
 
 # ---------------------------------------------------------------------------
+# AdaRMSNorm rowwise (per-token modulation for decoder)
+# ---------------------------------------------------------------------------
+
+
+def adarms_norm_mod_proj_rowwise(
+    x: torch.Tensor,
+    adarms_mod: torch.Tensor,
+    x_normed: torch.Tensor,
+    gate: torch.Tensor,
+) -> None:
+    seq_len = x.shape[0]
+    adarms_norm_kernel_rowwise[(seq_len, )](
+        x,
+        adarms_mod,
+        x_normed,
+        gate,
+        seq_len=seq_len,
+        features=1024,
+        adarms_mod_stride=3072,
+        BLOCK_SIZE=512,
+    )
+
+
+def adarms_matmul_k_1024_32_bias_res_rowwise(
+    x: torch.Tensor,
+    x_normed: torch.Tensor,
+    gate: torch.Tensor,
+    adarms_mod: torch.Tensor,
+    weight: torch.Tensor,
+    bias: torch.Tensor,
+    out: torch.Tensor,
+    res: torch.Tensor,
+) -> None:
+    adarms_norm_mod_proj_rowwise(x, adarms_mod, x_normed, gate)
+    seq_len = x.shape[0]
+    matmul_small_bias_res[((seq_len + 15) // 16) * (32 // 16), ](
+        x_normed,
+        weight,
+        out,
+        bias,
+        res,
+        seq_len=seq_len,
+        features=1024,
+        hidden=32,
+        BLOCK_SIZE_N=16,
+        BLOCK_SIZE_M=16,
+        BLOCK_SIZE_K=256,
+    )
+
+
+# ---------------------------------------------------------------------------
 # Matmul → QKV + RoPE (no norm)
 # ---------------------------------------------------------------------------
 
@@ -309,6 +362,12 @@ def matmul_qkv_rope(x_normed, weight_qkv, rope_weight, Q, K, V, hidden_dim,
     seq_len = x_normed.shape[0]
     matmul_rope_qkv[(128, )](x_normed, seq_len, hidden_dim, head_dim,
                              num_kv_heads, weight_qkv, rope_weight, Q, K, V)
+
+
+def matmul_k_1024_2560_qkv_rope(x_normed, weight_qkv, rope_weight, Q, K, V):
+    seq_len = x_normed.shape[0]
+    matmul_rope_qkv[(128, )](x_normed, seq_len, 1024, 256, 8, weight_qkv,
+                             rope_weight, Q, K, V)
 
 
 # ---------------------------------------------------------------------------

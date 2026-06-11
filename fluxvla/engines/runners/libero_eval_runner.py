@@ -33,12 +33,13 @@ from fluxvla.engines.utils.eval_utils import (get_libero_dummy_action,
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils.root import RUNNERS
+from .base_eval_runner import BaseEvalRunner
 
 overwatch = initialize_overwatch(__name__)
 
 
 @RUNNERS.register_module()
-class LiberoEvalRunner:
+class LiberoEvalRunner(BaseEvalRunner):
     """Runner for evaluating models using Hugging Face Transformers.
     This class sets up the evaluation environment, loads the model,
     and runs the evaluation process.
@@ -67,6 +68,16 @@ class LiberoEvalRunner:
             Default is True.
     """
 
+    @staticmethod
+    def _inject_checkpoint_tokenizer(dataset: Dict, ckpt_path: str) -> None:
+        model_path = Path(ckpt_path).resolve().parent.parent
+        if not (model_path / 'tokenizer').is_dir():
+            return
+
+        for transform in dataset.get('transforms', []):
+            if 'tokenizer' in transform:
+                transform['model_path'] = model_path.as_posix()
+
     def __init__(self,
                  cfg: Dict,
                  seed: int,
@@ -83,13 +94,9 @@ class LiberoEvalRunner:
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
         from fluxvla.engines import (build_dataset_from_cfg,
-                                     build_transform_from_cfg,
-                                     build_vla_from_cfg)
+                                     build_transform_from_cfg)
         self.device_id = overwatch.local_rank()
-        if hasattr(cfg, 'inference_model'):
-            self.vla = build_vla_from_cfg(cfg.inference_model).eval()
-        else:
-            self.vla = build_vla_from_cfg(cfg.model).eval()
+        self.vla = self.build_eval_vla(cfg)
         # Load checkpoint weights if ckpt_path is provided
         if ckpt_path is not None:
             assert Path.exists(Path(ckpt_path)), \
@@ -142,6 +149,7 @@ class LiberoEvalRunner:
         dataset['task_suite_name'] = task_suite_name
         dataset['norm_stats_key'] = self.norm_stats_key
         dataset['norm_stats'] = data_stat_path
+        self._inject_checkpoint_tokenizer(dataset, ckpt_path)
         self.dataset = build_dataset_from_cfg(dataset)
         self.denormalize_action = build_transform_from_cfg(denormalize_action)
         self.eval_chunk_size = eval_chunk_size
