@@ -34,7 +34,8 @@ class BaseOperator:
                  sync_warning_enabled=True,
                  sync_warning_target_hz=30.0,
                  sync_warning_window=2.0,
-                 sync_warning_min_hz_ratio=0.9):
+                 sync_warning_min_hz_ratio=0.9,
+                 sync_warning_warmup=3.0):
         self.sync_slop = float(sync_slop)
         self.sync_queue_size = int(sync_queue_size)
         self.synced_frame_queue_size = int(synced_frame_queue_size)
@@ -42,6 +43,7 @@ class BaseOperator:
         self.sync_warning_target_hz = float(sync_warning_target_hz)
         self.sync_warning_window = float(sync_warning_window)
         self.sync_warning_min_hz_ratio = float(sync_warning_min_hz_ratio)
+        self.sync_warning_warmup = float(sync_warning_warmup)
 
         self._init_base_runtime()
 
@@ -56,6 +58,7 @@ class BaseOperator:
         self._sync_image_names = set()
         self._sync_subscribers = []
         self._sync = None
+        self._sync_warning_started_at = time.monotonic()
         self._sync_window_started_at = time.monotonic()
         self._sync_window_count = 0
         self._traj_thread = None
@@ -124,6 +127,7 @@ class BaseOperator:
     def clear_observation_queues(self):
         with self._lock:
             self._frames.clear()
+            self._sync_warning_started_at = time.monotonic()
             self._sync_window_started_at = time.monotonic()
             self._sync_window_count = 0
 
@@ -167,6 +171,11 @@ class BaseOperator:
             return
 
         now = time.monotonic()
+        if now - self._sync_warning_started_at < self.sync_warning_warmup:
+            self._sync_window_started_at = now
+            self._sync_window_count = 0
+            return
+
         self._sync_window_count += 1
         elapsed = now - self._sync_window_started_at
         if elapsed < self.sync_warning_window:
@@ -305,6 +314,3 @@ class BaseOperator:
 
     def gohome(self):
         raise NotImplementedError
-
-    def home_both_arms(self):
-        return self.gohome()

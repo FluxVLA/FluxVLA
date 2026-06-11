@@ -85,12 +85,12 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 'cartesian_cmd_right_topic':
                 '/right_arm/cartesian_impedance_controller/equilibrium_pose',
                 'joint_cmd_left_topic':
-                '/left_arm/joint_ruckig_smooth_position_controller/target_joint_state',  # noqa: E501
+                '/left_arm/ruckig_joint_impedance_controller/target_joint_state',  # noqa: E501
                 'joint_cmd_right_topic':
-                '/right_arm/joint_ruckig_smooth_position_controller/target_joint_state',  # noqa: E501
-                'gripper_goal_left_topic':
+                '/right_arm/ruckig_joint_impedance_controller/target_joint_state',  # noqa: E501
+                'gripper_left_topic':
                 '/left_arm/franka_gripper/move/goal',
-                'gripper_goal_right_topic':
+                'gripper_right_topic':
                 '/right_arm/franka_gripper/move/goal',
             }
 
@@ -320,7 +320,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
         if self.prepare_pose is None:
             overwatch.info('Returning Franka arms to home pose...')
-            self.ros_operator.home_both_arms()
+            self.ros_operator.gohome()
             self.observation_window = None
             overwatch.info('Franka home pose reached')
             return

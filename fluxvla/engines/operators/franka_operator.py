@@ -26,11 +26,20 @@ DEFAULT_JOINT_NAMES = [
     'panda_joint6',
     'panda_joint7',
 ]
+DEFAULT_HOME_JOINT_POSITIONS = [
+    0.0,
+    -0.7853981633974483,
+    0.0,
+    -2.356194490192345,
+    0.0,
+    1.5707963267948966,
+    0.7853981633974483,
+]
 
 CARTESIAN_IMPEDANCE_CONTROLLER = 'cartesian_impedance_controller'
-JOINT_RUCKIG_POSITION_CONTROLLER = 'joint_ruckig_position_controller'
-JOINT_RUCKIG_SMOOTH_POSITION_CONTROLLER = (
-    'joint_ruckig_smooth_position_controller')
+JOINT_RUCKIG_IMPEDANCE_CONTROLLER = 'ruckig_joint_impedance_controller'
+CONTROLLER_CHECK_TIMEOUT = 1.0
+HOME_COMMAND_DURATION = 5.0
 
 
 @OPERATORS.register_module()
@@ -42,7 +51,6 @@ class FrankaOperator(BaseOperator):
             img_left_topic,
             img_front_topic,
             puppet_arm_left_topic,
-            puppet_gripper_left_topic=None,  # kept for config compatibility
             puppet_franka_state_left_topic=None,
             puppet_ee_pose_left_topic=None,
             use_depth_image=False,
@@ -56,25 +64,17 @@ class FrankaOperator(BaseOperator):
             sync_warning_target_hz=30.0,
             sync_warning_window=2.0,
             sync_warning_min_hz_ratio=0.9,
+            sync_warning_warmup=3.0,
             command_mode='joint',
             arm_ns='',
             cartesian_cmd_topic=None,
             joint_cmd_topic=None,
             joint_names=None,
             gripper_left_topic=None,
-            gripper_goal_left_topic=None,
-            gripper_action_name=None,  # kept for config compatibility
             gripper_speed=1.0,
             gripper_max_width=0.098,
             gripper_open_width=0.08,
-            home_service='/cmd/home',
-            home_service_wait_timeout=1.0,
-            auto_switch_controller=True,
-            controller_switch_strict=False,
-            controller_switch_timeout=1.0,
             **unused_kwargs):
-        del puppet_gripper_left_topic, unused_kwargs
-
         self.img_left_topic = img_left_topic
         self.img_front_topic = img_front_topic
         self.puppet_arm_left_topic = puppet_arm_left_topic
@@ -92,7 +92,8 @@ class FrankaOperator(BaseOperator):
             sync_warning_enabled=sync_warning_enabled,
             sync_warning_target_hz=sync_warning_target_hz,
             sync_warning_window=sync_warning_window,
-            sync_warning_min_hz_ratio=sync_warning_min_hz_ratio)
+            sync_warning_min_hz_ratio=sync_warning_min_hz_ratio,
+            sync_warning_warmup=sync_warning_warmup)
 
         if command_mode not in {'joint', 'cartesian'}:
             raise ValueError(
@@ -106,28 +107,20 @@ class FrankaOperator(BaseOperator):
         self.joint_cmd_topic = (
             joint_cmd_topic or self._namespaced_default_topic(
                 self.arm_ns,
-                f'{JOINT_RUCKIG_SMOOTH_POSITION_CONTROLLER}/target_joint_state'
-            ))
+                f'{JOINT_RUCKIG_IMPEDANCE_CONTROLLER}/target_joint_state'))
         self.joint_names = joint_names or DEFAULT_JOINT_NAMES
-        self.gripper_goal_left_topic = self._resolve_gripper_goal_topic(
-            gripper_left_topic or gripper_goal_left_topic,
-            gripper_action_name,
-            self._namespaced_default_topic(self.arm_ns,
-                                           'franka_gripper/move/goal'))
+        self.gripper_goal_left_topic = (
+            gripper_left_topic or self._namespaced_default_topic(
+                self.arm_ns, 'franka_gripper/move/goal'))
         self.gripper_speed = float(gripper_speed)
         self.gripper_max_width = float(gripper_max_width)
         self.gripper_open_width = float(gripper_open_width)
-        self.home_service = home_service
-        self.home_service_wait_timeout = float(home_service_wait_timeout)
-        self.auto_switch_controller = bool(auto_switch_controller)
-        self.controller_switch_strict = bool(controller_switch_strict)
-        self.controller_switch_timeout = float(controller_switch_timeout)
+        self.controller_check_timeout = CONTROLLER_CHECK_TIMEOUT
         self.ee_pub = None
         self.joint_pub = None
         self.gripper_pub = None
         self.MoveActionGoal = None
-        self._active_command_controller = None
-        self._controller_switch_warning_shown = False
+        self._controller_checks_done = set()
 
         if self.use_depth_image and not all(
             [img_left_depth_topic, img_front_depth_topic]):
@@ -149,14 +142,6 @@ class FrankaOperator(BaseOperator):
         if not namespace:
             return f'/{relative_topic}'
         return f'{namespace}/{relative_topic}'
-
-    @staticmethod
-    def _resolve_gripper_goal_topic(goal_topic, action_name, default_topic):
-        if goal_topic:
-            return goal_topic
-        if action_name:
-            return f'{action_name.rstrip("/")}/goal'
-        return default_topic
 
     def _init_ros(self):
         import rospy
@@ -235,13 +220,14 @@ class FrankaOperator(BaseOperator):
             self.gripper_goal_left_topic, MoveActionGoal, queue_size=1)
 
     def send_joints(self, arm_targets):
-        self._ensure_command_controller(
-            JOINT_RUCKIG_SMOOTH_POSITION_CONTROLLER)
+        self._check_command_controller(JOINT_RUCKIG_IMPEDANCE_CONTROLLER,
+                                       'joint')
         self._validate_single_left_target(arm_targets, 'arm')
         self.joint_pub.publish(self._build_joint_state(arm_targets['left']))
 
     def send_eepose(self, arm_targets):
-        self._ensure_command_controller(CARTESIAN_IMPEDANCE_CONTROLLER)
+        self._check_command_controller(CARTESIAN_IMPEDANCE_CONTROLLER,
+                                       'cartesian')
         self._validate_single_left_target(arm_targets, 'arm')
         self.ee_pub.publish(self._build_pose_stamped(arm_targets['left']))
 
@@ -259,31 +245,29 @@ class FrankaOperator(BaseOperator):
                 f'Single Franka {target_type} target must use only "left"; '
                 f'got {sorted(targets)}')
 
-    def home_both_arms(self):
-        return self.gohome()
-
     def gohome(self):
         import rospy
-        import rosservice
 
         self.clear_observation_queues()
-        rospy.wait_for_service(
-            self.home_service, timeout=self.home_service_wait_timeout)
-        service_cls = rosservice.get_service_class_by_name(self.home_service)
-        if service_cls is None:
-            raise rospy.ROSException(
-                f'Unable to resolve service type for {self.home_service}')
+        restore_cartesian = self.command_mode == 'cartesian'
+        if restore_cartesian:
+            self._switch_command_controller(
+                JOINT_RUCKIG_IMPEDANCE_CONTROLLER,
+                CARTESIAN_IMPEDANCE_CONTROLLER)
 
-        rospy.loginfo('Homing Franka arm via %s service', self.home_service)
-        response = rospy.ServiceProxy(self.home_service, service_cls)()
-        if getattr(response, 'success', True) is False:
-            message = getattr(response, 'message', '')
-            raise rospy.ROSException(f'{self.home_service} failed: {message}')
-
-        self._active_command_controller = None
-        self.open_gripper(wait=True)
-        self.clear_observation_queues()
-        return response
+        home_targets = {'left': DEFAULT_HOME_JOINT_POSITIONS}
+        try:
+            rospy.loginfo('Homing Franka arm via joint command')
+            self.send_joints(home_targets)
+            self.open_gripper(wait=True)
+            rospy.sleep(HOME_COMMAND_DURATION)
+            return home_targets
+        finally:
+            if restore_cartesian:
+                self._switch_command_controller(
+                    CARTESIAN_IMPEDANCE_CONTROLLER,
+                    JOINT_RUCKIG_IMPEDANCE_CONTROLLER)
+            self.clear_observation_queues()
 
     def open_gripper(self, wait=False):
         del wait
@@ -352,28 +336,16 @@ class FrankaOperator(BaseOperator):
         msg.goal.speed = max(self.gripper_speed, 0.0)
         return msg
 
-    def _ensure_command_controller(self, controller_name):
-        if (not self.auto_switch_controller
-                or self._active_command_controller == controller_name):
-            return
+    def _check_command_controller(self, controller_name, command_mode):
+        self._check_arm_controller(self.arm_ns, controller_name, command_mode)
 
-        stop_controllers = self._controllers_to_stop(controller_name)
-        if not self._switch_arm_controller(self.arm_ns, controller_name,
-                                           stop_controllers):
-            return
-        self._active_command_controller = controller_name
-
-    @staticmethod
-    def _controllers_to_stop(controller_name):
-        known_controllers = {
-            CARTESIAN_IMPEDANCE_CONTROLLER,
-            JOINT_RUCKIG_POSITION_CONTROLLER,
-            JOINT_RUCKIG_SMOOTH_POSITION_CONTROLLER,
-        }
-        return sorted(known_controllers - {controller_name})
+    def _switch_command_controller(self, start_controller, stop_controller):
+        if self._switch_arm_controller(self.arm_ns, start_controller,
+                                       stop_controller):
+            self._controller_checks_done.clear()
 
     def _switch_arm_controller(self, namespace, start_controller,
-                               stop_controllers):
+                               stop_controller):
         import rospy
 
         service_name = self._controller_service_name(namespace,
@@ -384,14 +356,14 @@ class FrankaOperator(BaseOperator):
                 SwitchControllerRequest,
             )
             rospy.wait_for_service(
-                service_name, timeout=self.controller_switch_timeout)
+                service_name, timeout=self.controller_check_timeout)
             request = SwitchControllerRequest()
             request.start_controllers = [start_controller]
-            request.stop_controllers = list(stop_controllers)
+            request.stop_controllers = [stop_controller]
             request.strictness = getattr(SwitchControllerRequest,
                                          'BEST_EFFORT', 1)
             request.start_asap = True
-            request.timeout = self.controller_switch_timeout
+            request.timeout = self.controller_check_timeout
             response = rospy.ServiceProxy(service_name, SwitchController)(
                 request)
             if not getattr(response, 'ok', False):
@@ -399,17 +371,68 @@ class FrankaOperator(BaseOperator):
                     f'{service_name} returned ok=False')
             return True
         except Exception as exc:
-            if self.controller_switch_strict:
-                raise
-            self.auto_switch_controller = False
-            if not self._controller_switch_warning_shown:
-                rospy.logwarn(
-                    'Failed to switch Franka controller via %s: %s. '
-                    'Controller auto-switch is disabled for this operator.',
-                    service_name,
-                    exc)
-                self._controller_switch_warning_shown = True
+            rospy.logwarn(
+                'Failed to switch Franka controller on %s: start=%s, stop=%s, '
+                'service=%s, error=%s',
+                namespace,
+                start_controller,
+                stop_controller,
+                service_name,
+                exc)
             return False
+
+    def _check_arm_controller(self, namespace, controller_name, command_mode):
+        import rospy
+
+        service_name = self._controller_service_name(namespace,
+                                                     'list_controllers')
+        check_key = (service_name, controller_name)
+        if check_key in self._controller_checks_done:
+            return
+
+        try:
+            from controller_manager_msgs.srv import ListControllers
+            rospy.wait_for_service(
+                service_name, timeout=self.controller_check_timeout)
+            request = ListControllers._request_class()
+            response = rospy.ServiceProxy(service_name, ListControllers)(
+                request)
+        except Exception as exc:
+            rospy.logwarn('Unable to check Franka %s controller via %s: %s',
+                          command_mode, service_name, exc)
+            self._controller_checks_done.add(check_key)
+            return
+
+        controller = self._find_controller(response.controller,
+                                           controller_name)
+        if controller is None:
+            rospy.logwarn(
+                'Franka %s command expects controller "%s" on %s, but it is '
+                'not loaded. Start the matching launch/controller before '
+                'executing.',
+                command_mode,
+                controller_name,
+                namespace or '/',
+            )
+            self._controller_checks_done.add(check_key)
+            return
+
+        if controller.state != 'running':
+            rospy.logwarn(
+                'Franka %s command expects controller "%s" on %s to be '
+                'running, but state is "%s".',
+                command_mode,
+                controller_name,
+                namespace or '/',
+                controller.state)
+        self._controller_checks_done.add(check_key)
+
+    @staticmethod
+    def _find_controller(controllers, name):
+        for controller in controllers:
+            if controller.name == name:
+                return controller
+        return None
 
     @staticmethod
     def _controller_service_name(namespace, service):

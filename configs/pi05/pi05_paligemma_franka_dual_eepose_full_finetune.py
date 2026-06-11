@@ -290,5 +290,4 @@ inference = dict(
             '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
         gripper_left_topic='/left_arm/franka_gripper/move/goal',
         gripper_right_topic='/right_arm/franka_gripper/move/goal',
-        auto_switch_controller=True,
     ))
