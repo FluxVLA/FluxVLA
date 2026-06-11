@@ -239,6 +239,7 @@ inference = dict(
     },
     seed=7,
     action_mode='joint',
+    active_arms=('left', 'right'),
     async_execution=False,
     execute_horizon=50,
     # Prepare joints: [left_arm_joints, right_arm_joints]

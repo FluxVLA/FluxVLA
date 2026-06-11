@@ -25,18 +25,20 @@ from .base_inference_runner import BaseInferenceRunner
 
 @RUNNERS.register_module()
 class FrankaInferenceRunner(BaseInferenceRunner):
-    """Runner for dual Franka robot inference tasks.
+    """Runner for single-arm or dual-arm Franka inference tasks.
 
-    This runner handles real-time inference tasks for dual-arm Franka robotic
+    This runner handles real-time inference tasks for Franka robotic
     manipulation using Vision-Language-Action (VLA) models. It manages ROS
     communication, observation collection, action prediction, and robot control
-    for both Franka arms in a synchronized manner.
+    for the configured active arm(s) in a synchronized manner.
 
     Args:
         gripper_threshold (float, optional): Threshold for gripper action.
             Defaults to 0.05.
         prepare_pose (List[float], optional): Prepare pose for the robot.
             Defaults to None.
+        active_arms (Tuple[str, ...], optional): Ordered active Franka arms.
+            Defaults to ('left', 'right').
         async_execution (bool, optional): Whether to execute actions
             asynchronously.
             Defaults to False.
@@ -49,6 +51,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                  gripper_threshold: float = 0.05,
                  prepare_pose: List[float] = None,
                  action_mode: str = 'cartesian',
+                 active_arms: Tuple[str, ...] = ('left', 'right'),
                  async_execution: bool = False,
                  execute_horizon: int = None,
                  observation_timeout: float = 15.0,
@@ -58,6 +61,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         if action_mode not in {'cartesian', 'joint'}:
             raise ValueError(f'Unsupported Franka action_mode: {action_mode}')
         self.action_mode = action_mode
+        self.active_arms = self._validate_active_arms(active_arms)
         self.async_execution = async_execution
         self.execute_horizon = execute_horizon
         self.observation_timeout = observation_timeout
@@ -113,6 +117,25 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         self._remaining_instruction_chunks = None
 
     @staticmethod
+    def _validate_active_arms(active_arms):
+        if isinstance(active_arms, str):
+            active_arms = (active_arms, )
+        active_arms = tuple(active_arms)
+        if not active_arms:
+            raise ValueError('active_arms must contain at least one arm')
+        unsupported = set(active_arms) - {'left', 'right'}
+        if unsupported:
+            raise ValueError(f'Unsupported Franka active_arms: {unsupported}')
+        if len(set(active_arms)) != len(active_arms):
+            raise ValueError(f'Duplicate Franka active_arms: {active_arms}')
+        return active_arms
+
+    @staticmethod
+    def _arm_action_slice(arm_index):
+        start = arm_index * 8
+        return slice(start, start + 8)
+
+    @staticmethod
     def _joint_state_to_arm_qpos(joint_state, gripper_width):
         positions = np.asarray(joint_state.position, dtype=np.float32)
         if positions.shape[0] < 7:
@@ -166,25 +189,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             w=float(quat[3]))
         return pose_msg
 
-    def get_ros_observation(
-        self
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Any, Any, float, float]:
-        """Get synchronized observation data from ROS topics.
-
-        Returns:
-            Tuple containing:
-                - img_front (np.ndarray): Front camera RGB image
-                - img_left (np.ndarray): Left wrist camera RGB image
-                - img_right (np.ndarray): Right wrist camera RGB image
-                - puppet_arm_left (JointState): Left arm joint state
-                - puppet_arm_right (JointState): Right arm joint state
-                - puppet_ee_pose_left (PoseStamped | None): Left arm
-                  end-effector pose when available
-                - puppet_ee_pose_right (PoseStamped | None): Right arm
-                  end-effector pose when available
-                - gripper_left_width (float): Left gripper width
-                - gripper_right_width (float): Right gripper width
-        """
+    def get_ros_observation(self) -> Dict[str, Dict[str, Any]]:
+        """Get synchronized observation data from ROS topics."""
         import rospy
 
         from ..utils import initialize_overwatch
@@ -224,28 +230,42 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 continue
 
             print_flag = True
-            puppet_arm_left = result['left_arm']
-            puppet_arm_right = result['right_arm']
+            images = self._images_from_frame(result)
+            arms = {
+                arm: self._arm_observation_from_frame(result, arm)
+                for arm in self.active_arms
+            }
 
-            return (
-                result['img_front'],
-                result['img_left'],
-                result['img_right'],
-                puppet_arm_left,
-                puppet_arm_right,
-                self._pose_from_frame(result, 'left'),
-                self._pose_from_frame(result, 'right'),
-                self._gripper_width_from_joint_state(puppet_arm_left),
-                self._gripper_width_from_joint_state(puppet_arm_right),
-            )
+            return {'images': images, 'arms': arms}
+
+    def _images_from_frame(self, frame):
+        image_key_pairs = (
+            ('img_front', self.camera_names[0]),
+            ('img_left', self.camera_names[1]
+             if len(self.camera_names) > 1 else None),
+            ('img_right', self.camera_names[2]
+             if len(self.camera_names) > 2 else None),
+        )
+        return {
+            camera_name: self._apply_jpeg_compression(frame[frame_key])
+            for frame_key, camera_name in image_key_pairs
+            if camera_name is not None and frame_key in frame
+        }
+
+    def _arm_observation_from_frame(self, frame, arm):
+        joint_state = frame[f'{arm}_arm']
+        return {
+            'joint_state': joint_state,
+            'pose': self._pose_from_frame(frame, arm),
+            'gripper_width': self._gripper_width_from_joint_state(joint_state),
+        }
 
     def update_observation_window(self) -> Dict:
         """Update the observation window with latest sensor data.
 
         Returns:
             Dict: Latest observation containing:
-                - 'qpos': Robot state for both arms. In joint mode this is
-                  16 dimensions: 2 arms x (7 joints + gripper).
+                - 'qpos': Robot state for active arms.
                 - Camera images keyed by camera names
         """
         from collections import deque
@@ -258,60 +278,41 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 dummy_obs[camera_name] = None
             self.observation_window.append(dummy_obs)
 
-        (img_front, img_left, img_right, puppet_arm_left, puppet_arm_right,
-         puppet_ee_pose_left, puppet_ee_pose_right, gripper_left_width,
-         gripper_right_width) = self.get_ros_observation()
+        ros_obs = self.get_ros_observation()
+        qpos = np.concatenate([
+            self._qpos_from_arm_observation(arm, ros_obs['arms'][arm])
+            for arm in self.active_arms
+        ],
+                              axis=0)
 
-        img_front = self._apply_jpeg_compression(img_front)
-        img_left = self._apply_jpeg_compression(img_left)
-        img_right = self._apply_jpeg_compression(img_right)
-
-        if self.action_mode == 'joint':
-            qpos_left = self._joint_state_to_arm_qpos(puppet_arm_left,
-                                                      gripper_left_width)
-            qpos_right = self._joint_state_to_arm_qpos(puppet_arm_right,
-                                                       gripper_right_width)
-        else:
-            if puppet_ee_pose_left is None or puppet_ee_pose_right is None:
-                raise ValueError(
-                    'End-effector poses are required in cartesian mode')
-            left_pose = puppet_ee_pose_left.pose
-            right_pose = puppet_ee_pose_right.pose
-
-            qpos_left = np.array([
-                left_pose.position.x, left_pose.position.y,
-                left_pose.position.z, left_pose.orientation.x,
-                left_pose.orientation.y, left_pose.orientation.z,
-                left_pose.orientation.w, gripper_left_width
-            ])
-
-            qpos_right = np.array([
-                right_pose.position.x, right_pose.position.y,
-                right_pose.position.z, right_pose.orientation.x,
-                right_pose.orientation.y, right_pose.orientation.z,
-                right_pose.orientation.w, gripper_right_width
-            ])
-
-        qpos = np.concatenate((qpos_left, qpos_right), axis=0)
-
-        observation = {
-            'qpos': qpos,
-            self.camera_names[0]: img_front,
-            self.camera_names[1]: img_left,
-            self.camera_names[2]: img_right,
-        }
+        observation = {'qpos': qpos}
+        observation.update(ros_obs['images'])
 
         self.observation_window.append(observation)
         return self.observation_window[-1]
 
+    def _qpos_from_arm_observation(self, arm, arm_obs):
+        if self.action_mode == 'joint':
+            return self._joint_state_to_arm_qpos(arm_obs['joint_state'],
+                                                 arm_obs['gripper_width'])
+
+        pose_msg = arm_obs['pose']
+        if pose_msg is None:
+            raise ValueError(
+                f'End-effector pose is required for {arm} in cartesian mode')
+        pose = pose_msg.pose
+        return np.array([
+            pose.position.x, pose.position.y, pose.position.z,
+            pose.orientation.x, pose.orientation.y, pose.orientation.z,
+            pose.orientation.w, arm_obs['gripper_width']
+        ])
+
     def _move_to_prepare_pose(self):
         """Move robot to predefined preparation pose.
 
-        The prepare_pose should be a tuple of two 8-element arrays.
-
-        In joint mode each arm is [joint1..joint7, gripper_width].
-        In cartesian mode each arm is [x, y, z, qx, qy, qz, qw,
-        gripper_width].
+        Each active arm pose has 8 elements. In joint mode each arm is
+        [joint1..joint7, gripper_width]. In cartesian mode each arm is
+        [x, y, z, qx, qy, qz, qw, gripper_width].
         """
         from ..utils import initialize_overwatch
         overwatch = initialize_overwatch(__name__)
@@ -327,38 +328,55 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
         if self.prepare_pose is not None:
             overwatch.info('Moving to prepare pose...')
-            left_pose, right_pose = self.prepare_pose
-
-            # Validate pose dimensions
-            if len(left_pose) != 8 or len(right_pose) != 8:
-                raise ValueError(
-                    f'Each prepare pose must have 8 elements '
-                    f'for the configured action mode, '
-                    f'got left={len(left_pose)}, right={len(right_pose)}')
-
-            self._send_prepare_pose(left_pose, right_pose)
+            poses = self._prepare_pose_by_arm()
+            self._send_prepare_pose(poses)
             self.observation_window = None
             overwatch.info('Prepare pose reached')
             return
 
         overwatch.warning('No prepare_pose is configured')
 
-    def _send_prepare_pose(self, left_pose, right_pose):
+    def _prepare_pose_by_arm(self):
+        if len(self.active_arms) == 1:
+            arm = self.active_arms[0]
+            pose = self.prepare_pose
+            if (len(pose) == 1 and isinstance(pose[0],
+                                              (list, tuple, np.ndarray))):
+                pose = pose[0]
+            if len(pose) != 8:
+                raise ValueError(
+                    f'Prepare pose for {arm} must have 8 elements, '
+                    f'got {len(pose)}')
+            return {arm: pose}
+
+        if len(self.prepare_pose) != len(self.active_arms):
+            raise ValueError(
+                f'prepare_pose must contain {len(self.active_arms)} arm poses, '
+                f'got {len(self.prepare_pose)}')
+
+        poses = {}
+        for arm, pose in zip(self.active_arms, self.prepare_pose):
+            if len(pose) != 8:
+                raise ValueError(
+                    f'Prepare pose for {arm} must have 8 elements, '
+                    f'got {len(pose)}')
+            poses[arm] = pose
+        return poses
+
+    def _send_prepare_pose(self, poses):
+        arm_targets = {
+            arm: pose[:7]
+            for arm, pose in poses.items()
+        }
         if self.action_mode == 'cartesian':
-            self.ros_operator.send_eepose({
-                'left': left_pose[:7],
-                'right': right_pose[:7],
-            })
+            self.ros_operator.send_eepose(arm_targets)
         else:
-            self.ros_operator.send_joints({
-                'left': left_pose[:7],
-                'right': right_pose[:7],
-            })
+            self.ros_operator.send_joints(arm_targets)
 
         self.ros_operator.send_gripper(
             {
-                'left': left_pose[7],
-                'right': right_pose[7],
+                arm: pose[7]
+                for arm, pose in poses.items()
             },
             wait=True)
 
@@ -425,21 +443,22 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         raw_action = self.vla.predict_action(**inputs)
         return raw_action
 
-    LEFT_GRIPPER_COL = 7
-    RIGHT_GRIPPER_COL = 15
     GRIPPER_CLOSED = 0.0
 
     def _postprocess_actions(self, raw_action):
         """Denormalize and snap near-closed grippers to fully closed."""
         actions = super()._postprocess_actions(raw_action)
-        for col in (self.LEFT_GRIPPER_COL, self.RIGHT_GRIPPER_COL):
+        for arm_index in range(len(self.active_arms)):
+            col = self._arm_action_slice(arm_index).start + 7
+            if col >= actions.shape[1]:
+                continue
             actions[:,
                     col] = np.where(actions[:, col] < self.gripper_threshold,
                                     self.GRIPPER_CLOSED, actions[:, col])
         return actions
 
     def _execute_actions(self, actions, rate):
-        """Execute dual-arm actions (sync or async)."""
+        """Execute active-arm actions (sync or async)."""
         if self.disable_puppet_arm:
             return
 
@@ -457,15 +476,18 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             if self.execute_horizon is not None:
                 actions = actions[:self.execute_horizon]
 
+        self._validate_action_width(actions)
+        arm_trajectories = {}
+        gripper_trajectories = {}
+        for arm_index, arm in enumerate(self.active_arms):
+            arm_slice = self._arm_action_slice(arm_index)
+            arm_trajectories[arm] = actions[:, arm_slice.start:arm_slice.start
+                                            + 7]
+            gripper_trajectories[arm] = actions[:, arm_slice.start + 7]
+
         self.ros_operator.execute_trajectory(
-            arm_trajectories={
-                'left': actions[:, :7],
-                'right': actions[:, 8:15],
-            },
-            gripper_trajectories={
-                'left': actions[:, 7],
-                'right': actions[:, 15],
-            },
+            arm_trajectories=arm_trajectories,
+            gripper_trajectories=gripper_trajectories,
             dt=self.dt,
             async_exec=self.async_execution)
 
@@ -478,6 +500,13 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             self._remaining_instruction_chunks -= 1
             if self._remaining_instruction_chunks <= 0:
                 self._remaining_instruction_chunks = None
+
+    def _validate_action_width(self, actions):
+        required = len(self.active_arms) * 8
+        if actions.shape[1] < required:
+            raise ValueError(
+                f'Franka actions must have at least {required} columns for '
+                f'active_arms={self.active_arms}, got {actions.shape[1]}')
 
     def cleanup(self):
         """Clean up resources."""
