@@ -312,5 +312,5 @@ class BaseOperator:
     def send_gripper(self, gripper_targets, wait=False):
         raise NotImplementedError
 
-    def gohome(self):
+    def gohome(self, prepare_pose):
         raise NotImplementedError

@@ -244,7 +244,7 @@ inference = dict(
     execute_horizon=50,
     # Prepare joints: [left_arm_joints, right_arm_joints]
     # Each arm: [joint1..joint7, gripper_width]
-    prepare_pose=None,  # Set to None to home, or provide joints to enable
+    prepare_pose=None,  # None uses operator default prepare joints
     dataset=dict(
         type='PrivateInferenceDataset',
         img_keys=['cam_front', 'cam_wrist_left', 'cam_wrist_right'],
@@ -281,6 +281,10 @@ inference = dict(
         img_front_topic='/camera_front/color/image_raw',
         puppet_arm_left_topic='/left_arm/joint_states',
         puppet_arm_right_topic='/right_arm/joint_states',
+        puppet_franka_state_left_topic=(
+            '/left_arm/franka_state_controller/franka_states'),
+        puppet_franka_state_right_topic=(
+            '/right_arm/franka_state_controller/franka_states'),
         sync_warning_enabled=True,
         cartesian_cmd_left_topic=(
             '/left_arm/cartesian_impedance_controller/equilibrium_pose'),

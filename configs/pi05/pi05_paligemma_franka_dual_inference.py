@@ -27,7 +27,7 @@ inference = dict(
     action_mode='joint',
     # Prepare joints: [left_arm_joints, right_arm_joints]
     # Each arm: [joint1..joint7, gripper_width]
-    prepare_pose=None,  # Set to None to home, or provide joints to enable
+    prepare_pose=None,  # None uses operator default prepare joints
     dataset=dict(
         type='PrivateInferenceDataset',
         img_keys=['cam_front', 'cam_wrist_left', 'cam_wrist_right'],

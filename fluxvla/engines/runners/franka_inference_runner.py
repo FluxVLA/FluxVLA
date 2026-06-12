@@ -36,7 +36,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         gripper_threshold (float, optional): Threshold for gripper action.
             Defaults to 0.05.
         prepare_pose (List[float], optional): Prepare pose for the robot.
-            Defaults to None.
+            Defaults to the runner's default Franka prepare joints.
         active_arms (Tuple[str, ...], optional): Ordered active Franka arms.
             Defaults to ('left', 'right').
         async_execution (bool, optional): Whether to execute actions
@@ -57,6 +57,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                  observation_timeout: float = 15.0,
                  *args,
                  **kwargs):
+        """Initialize Franka-specific defaults and runtime options."""
         self.gripper_threshold = gripper_threshold
         if action_mode not in {'cartesian', 'joint'}:
             raise ValueError(f'Unsupported Franka action_mode: {action_mode}')
@@ -66,11 +67,14 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         self.execute_horizon = execute_horizon
         self.observation_timeout = observation_timeout
 
+        # Set Franka-specific camera defaults used by the training configs.
         if 'camera_names' not in kwargs or kwargs['camera_names'] is None:
             kwargs['camera_names'] = [
                 'cam_front', 'cam_wrist_left', 'cam_wrist_right'
             ]
 
+        # Use the dual-arm operator by default; active_arms selects which arms
+        # are exposed to the model and executed at runtime.
         if 'operator' not in kwargs or kwargs['operator'] is None:
             kwargs['operator'] = {
                 'type': 'FrankaDualOperator',
@@ -98,6 +102,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 '/right_arm/franka_gripper/move/goal',
             }
 
+        # Initialize Franka-specific task descriptions.
         if 'task_descriptions' not in kwargs or kwargs[
                 'task_descriptions'] is None:
             kwargs['task_descriptions'] = {
@@ -110,84 +115,10 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
         self.dt = 1.0 / self.publish_rate
 
-        if prepare_pose is None:
-            self.prepare_pose = None
-        else:
-            self.prepare_pose = prepare_pose
+        self.prepare_pose = prepare_pose
+        # Tracks remaining instruction repeats so async execution can stop the
+        # controller after the final action chunk.
         self._remaining_instruction_chunks = None
-
-    @staticmethod
-    def _validate_active_arms(active_arms):
-        if isinstance(active_arms, str):
-            active_arms = (active_arms, )
-        active_arms = tuple(active_arms)
-        if not active_arms:
-            raise ValueError('active_arms must contain at least one arm')
-        unsupported = set(active_arms) - {'left', 'right'}
-        if unsupported:
-            raise ValueError(f'Unsupported Franka active_arms: {unsupported}')
-        if len(set(active_arms)) != len(active_arms):
-            raise ValueError(f'Duplicate Franka active_arms: {active_arms}')
-        return active_arms
-
-    @staticmethod
-    def _arm_action_slice(arm_index):
-        start = arm_index * 8
-        return slice(start, start + 8)
-
-    @staticmethod
-    def _joint_state_to_arm_qpos(joint_state, gripper_width):
-        positions = np.asarray(joint_state.position, dtype=np.float32)
-        if positions.shape[0] < 7:
-            raise ValueError(
-                'Franka joint state must contain at least 7 arm joints, '
-                f'got {positions.shape[0]}')
-        return np.concatenate(
-            (positions[:7], np.array([gripper_width], dtype=np.float32)),
-            axis=0)
-
-    @staticmethod
-    def _gripper_width_from_joint_state(joint_state):
-        positions = dict(zip(joint_state.name, joint_state.position))
-        finger1 = positions.get('panda_finger_joint1')
-        finger2 = positions.get('panda_finger_joint2')
-        if finger1 is None or finger2 is None:
-            raise ValueError(
-                'Franka JointState must contain panda_finger_joint1 and '
-                'panda_finger_joint2 for gripper width')
-        return float(finger1 + finger2)
-
-    def _pose_from_frame(self, frame, side):
-        pose = frame.get(f'{side}_pose')
-        if pose is not None:
-            return pose
-
-        franka_state = frame.get(f'{side}_franka_state')
-        if franka_state is not None:
-            return self._franka_state_to_pose_stamped(franka_state)
-        return None
-
-    @staticmethod
-    def _franka_state_to_pose_stamped(msg):
-        from geometry_msgs.msg import Point, PoseStamped, Quaternion
-        from tf.transformations import quaternion_from_matrix
-
-        transform = np.asarray(
-            msg.O_T_EE, dtype=np.float64).reshape((4, 4), order='F')
-        quat = quaternion_from_matrix(transform)
-
-        pose_msg = PoseStamped()
-        pose_msg.header = msg.header
-        pose_msg.pose.position = Point(
-            x=float(transform[0, 3]),
-            y=float(transform[1, 3]),
-            z=float(transform[2, 3]))
-        pose_msg.pose.orientation = Quaternion(
-            x=float(quat[0]),
-            y=float(quat[1]),
-            z=float(quat[2]),
-            w=float(quat[3]))
-        return pose_msg
 
     def get_ros_observation(self) -> Dict[str, Dict[str, Any]]:
         """Get synchronized observation data from ROS topics."""
@@ -206,6 +137,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         while not rospy.is_shutdown():
             result = self.ros_operator.get_frame()
             if not result:
+                # Keep waiting until the operator provides a synchronized
+                # multi-topic frame.
                 if print_flag:
                     overwatch.info(
                         'Synchronization failed in get_ros_observation')
@@ -230,42 +163,23 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 continue
 
             print_flag = True
-            images = self._images_from_frame(result)
+            # Convert the synchronized ROS frame into the runner observation
+            # layout expected by the model pipeline.
+            images = self._build_images_from_frame(result)
             arms = {
-                arm: self._arm_observation_from_frame(result, arm)
+                arm: self._build_arm_observation_from_frame(result, arm)
                 for arm in self.active_arms
             }
 
             return {'images': images, 'arms': arms}
-
-    def _images_from_frame(self, frame):
-        image_key_pairs = (
-            ('img_front', self.camera_names[0]),
-            ('img_left', self.camera_names[1]
-             if len(self.camera_names) > 1 else None),
-            ('img_right', self.camera_names[2]
-             if len(self.camera_names) > 2 else None),
-        )
-        return {
-            camera_name: self._apply_jpeg_compression(frame[frame_key])
-            for frame_key, camera_name in image_key_pairs
-            if camera_name is not None and frame_key in frame
-        }
-
-    def _arm_observation_from_frame(self, frame, arm):
-        joint_state = frame[f'{arm}_arm']
-        return {
-            'joint_state': joint_state,
-            'pose': self._pose_from_frame(frame, arm),
-            'gripper_width': self._gripper_width_from_joint_state(joint_state),
-        }
 
     def update_observation_window(self) -> Dict:
         """Update the observation window with latest sensor data.
 
         Returns:
             Dict: Latest observation containing:
-                - 'qpos': Robot state for active arms.
+                - 'qpos': Model state for active arms.
+                - 'eepose': End-effector pose for active arms.
                 - Camera images keyed by camera names
         """
         from collections import deque
@@ -273,45 +187,44 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         if self.observation_window is None:
             self.observation_window = deque(maxlen=2)
 
-            dummy_obs = {'qpos': None}
+            # Add dummy observation for initialization.
+            dummy_obs = {'qpos': None, 'eepose': None}
             for camera_name in self.camera_names:
                 dummy_obs[camera_name] = None
             self.observation_window.append(dummy_obs)
 
+        # Get current synchronized sensor data.
         ros_obs = self.get_ros_observation()
+        # Concatenate active arms in configured order; each arm contributes
+        # seven arm dimensions plus one gripper width.
         qpos = np.concatenate([
-            self._qpos_from_arm_observation(arm, ros_obs['arms'][arm])
+            self._joint_state_to_qpos(
+                ros_obs['arms'][arm]['joint_state'],
+                ros_obs['arms'][arm]['gripper_width'])
             for arm in self.active_arms
         ],
                               axis=0)
+        eepose = np.concatenate([
+            self._pose_stamped_to_eepose(arm, ros_obs['arms'][arm]['pose'],
+                                         ros_obs['arms'][arm]['gripper_width'])
+            for arm in self.active_arms
+        ],
+                                axis=0)
 
-        observation = {'qpos': qpos}
+        # Match the model state to the selected control interface.
+        state = eepose if self.action_mode == 'cartesian' else qpos
+        observation = {'qpos': state, 'eepose': eepose}
         observation.update(ros_obs['images'])
 
         self.observation_window.append(observation)
         return self.observation_window[-1]
 
-    def _qpos_from_arm_observation(self, arm, arm_obs):
-        if self.action_mode == 'joint':
-            return self._joint_state_to_arm_qpos(arm_obs['joint_state'],
-                                                 arm_obs['gripper_width'])
-
-        pose_msg = arm_obs['pose']
-        if pose_msg is None:
-            raise ValueError(
-                f'End-effector pose is required for {arm} in cartesian mode')
-        pose = pose_msg.pose
-        return np.array([
-            pose.position.x, pose.position.y, pose.position.z,
-            pose.orientation.x, pose.orientation.y, pose.orientation.z,
-            pose.orientation.w, arm_obs['gripper_width']
-        ])
-
     def _move_to_prepare_pose(self):
         """Move robot to predefined preparation pose.
 
-        Each active arm pose has 8 elements. In joint mode each arm is
-        [joint1..joint7, gripper_width]. In cartesian mode each arm is
+        If prepare_pose is not provided, the operator picks the default pose
+        matching its command mode. Joint mode uses
+        [joint1..joint7, gripper_width], while Cartesian mode uses
         [x, y, z, qx, qy, qz, qw, gripper_width].
         """
         from ..utils import initialize_overwatch
@@ -319,66 +232,11 @@ class FrankaInferenceRunner(BaseInferenceRunner):
 
         self.ros_operator.stop_trajectory()
 
-        if self.prepare_pose is None:
-            overwatch.info('Returning Franka arms to home pose...')
-            self.ros_operator.gohome()
-            self.observation_window = None
-            overwatch.info('Franka home pose reached')
-            return
-
-        if self.prepare_pose is not None:
-            overwatch.info('Moving to prepare pose...')
-            poses = self._prepare_pose_by_arm()
-            self._send_prepare_pose(poses)
-            self.observation_window = None
-            overwatch.info('Prepare pose reached')
-            return
-
-        overwatch.warning('No prepare_pose is configured')
-
-    def _prepare_pose_by_arm(self):
-        if len(self.active_arms) == 1:
-            arm = self.active_arms[0]
-            pose = self.prepare_pose
-            if (len(pose) == 1 and isinstance(pose[0],
-                                              (list, tuple, np.ndarray))):
-                pose = pose[0]
-            if len(pose) != 8:
-                raise ValueError(
-                    f'Prepare pose for {arm} must have 8 elements, '
-                    f'got {len(pose)}')
-            return {arm: pose}
-
-        if len(self.prepare_pose) != len(self.active_arms):
-            raise ValueError(
-                f'prepare_pose must contain {len(self.active_arms)} arm poses, '
-                f'got {len(self.prepare_pose)}')
-
-        poses = {}
-        for arm, pose in zip(self.active_arms, self.prepare_pose):
-            if len(pose) != 8:
-                raise ValueError(
-                    f'Prepare pose for {arm} must have 8 elements, '
-                    f'got {len(pose)}')
-            poses[arm] = pose
-        return poses
-
-    def _send_prepare_pose(self, poses):
-        arm_targets = {
-            arm: pose[:7]
-            for arm, pose in poses.items()
-        }
-        if self.action_mode == 'cartesian':
-            self.ros_operator.send_eepose(arm_targets)
-        else:
-            self.ros_operator.send_joints(arm_targets)
-
-        self.ros_operator.send_gripper(
-            {
-                arm: pose[7]
-                for arm, pose in poses.items()
-            },
-            wait=True)
+        overwatch.info('Moving to prepare pose...')
+        self.ros_operator.gohome(self.prepare_pose)
+        self.observation_window = None
+        overwatch.info('Prepare pose reached')
+        return
 
     def _get_user_task_instruction(self,
                                    default_instruction: str) -> List[str]:
@@ -390,6 +248,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 task_id = self._prompt_task_id('Enter task ID after reset: ')
 
             if task_id in self.task_pose_sequences:
+                # Run optional task-specific setup pose before asking the
+                # model to start inference for this task.
                 self.execute_task_pose(task_id)
                 task_id = self._prompt_task_id()
 
@@ -449,7 +309,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         """Denormalize and snap near-closed grippers to fully closed."""
         actions = super()._postprocess_actions(raw_action)
         for arm_index in range(len(self.active_arms)):
-            col = self._arm_action_slice(arm_index).start + 7
+            col = self._get_arm_action_slice(arm_index).start + 7
             if col >= actions.shape[1]:
                 continue
             actions[:,
@@ -470,17 +330,21 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         if self.async_execution and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
             offset = (time.time() - ctx.action_timestamp) / self.dt
+            # Drop actions that are already stale while the previous chunk was
+            # still executing.
             actions = resample_remaining(actions, offset)
         else:
             ctx.action_timestamp = time.time()
             if self.execute_horizon is not None:
+                # Limit synchronous execution to the configured horizon.
                 actions = actions[:self.execute_horizon]
 
         self._validate_action_width(actions)
         arm_trajectories = {}
         gripper_trajectories = {}
         for arm_index, arm in enumerate(self.active_arms):
-            arm_slice = self._arm_action_slice(arm_index)
+            arm_slice = self._get_arm_action_slice(arm_index)
+            # Each arm action is [arm_dim0..arm_dim6, gripper_width].
             arm_trajectories[arm] = actions[:, arm_slice.start:arm_slice.start
                                             + 7]
             gripper_trajectories[arm] = actions[:, arm_slice.start + 7]
@@ -501,13 +365,6 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             if self._remaining_instruction_chunks <= 0:
                 self._remaining_instruction_chunks = None
 
-    def _validate_action_width(self, actions):
-        required = len(self.active_arms) * 8
-        if actions.shape[1] < required:
-            raise ValueError(
-                f'Franka actions must have at least {required} columns for '
-                f'active_arms={self.active_arms}, got {actions.shape[1]}')
-
     def cleanup(self):
         """Clean up resources."""
         from ..utils import initialize_overwatch
@@ -520,3 +377,117 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         super().cleanup()
 
         overwatch.info('FrankaInferenceRunner cleanup completed')
+
+    @staticmethod
+    def _validate_active_arms(active_arms):
+        """Normalize and validate the configured active Franka arms."""
+        if isinstance(active_arms, str):
+            active_arms = (active_arms, )
+        active_arms = tuple(active_arms)
+        if not active_arms:
+            raise ValueError('active_arms must contain at least one arm')
+        unsupported = set(active_arms) - {'left', 'right'}
+        if unsupported:
+            raise ValueError(f'Unsupported Franka active_arms: {unsupported}')
+        if len(set(active_arms)) != len(active_arms):
+            raise ValueError(f'Duplicate Franka active_arms: {active_arms}')
+        return active_arms
+
+    def _validate_action_width(self, actions):
+        """Ensure each active arm has a full 8D action block."""
+        required = len(self.active_arms) * 8
+        if actions.shape[1] < required:
+            raise ValueError(
+                f'Franka actions must have at least {required} columns for '
+                f'active_arms={self.active_arms}, got {actions.shape[1]}')
+
+    @staticmethod
+    def _get_arm_action_slice(arm_index):
+        """Return the action slice for one active arm."""
+        start = arm_index * 8
+        return slice(start, start + 8)
+
+    def _build_images_from_frame(self, frame):
+        """Extract and compress camera images from a synchronized frame."""
+        image_key_pairs = (
+            ('img_front', self.camera_names[0]),
+            ('img_left', self.camera_names[1]
+             if len(self.camera_names) > 1 else None),
+            ('img_right', self.camera_names[2]
+             if len(self.camera_names) > 2 else None),
+        )
+        return {
+            camera_name: self._apply_jpeg_compression(frame[frame_key])
+            for frame_key, camera_name in image_key_pairs
+            if camera_name is not None and frame_key in frame
+        }
+
+    def _build_arm_observation_from_frame(self, frame, arm):
+        """Build joint, pose, and gripper observation for one arm."""
+        joint_state = frame[f'{arm}_arm']
+        return {
+            'joint_state': joint_state,
+            'pose': self._franka_state_to_pose_stamped(
+                frame[f'{arm}_franka_state']),
+            'gripper_width': self._joint_state_to_gripper_width(joint_state),
+        }
+
+    @staticmethod
+    def _joint_state_to_qpos(joint_state, gripper_width):
+        """Convert Franka JointState and gripper width to model qpos."""
+        positions = np.asarray(joint_state.position, dtype=np.float32)
+        if positions.shape[0] < 7:
+            raise ValueError(
+                'Franka joint state must contain at least 7 arm joints, '
+                f'got {positions.shape[0]}')
+        return np.concatenate(
+            (positions[:7], np.array([gripper_width], dtype=np.float32)),
+            axis=0)
+
+    @staticmethod
+    def _joint_state_to_gripper_width(joint_state):
+        """Read total gripper width from the two Franka finger joints."""
+        positions = dict(zip(joint_state.name, joint_state.position))
+        finger1 = positions.get('panda_finger_joint1')
+        finger2 = positions.get('panda_finger_joint2')
+        if finger1 is None or finger2 is None:
+            raise ValueError(
+                'Franka JointState must contain panda_finger_joint1 and '
+                'panda_finger_joint2 for gripper width')
+        return float(finger1 + finger2)
+
+    @staticmethod
+    def _franka_state_to_pose_stamped(msg):
+        """Convert FrankaState O_T_EE transform to PoseStamped."""
+        from geometry_msgs.msg import Point, PoseStamped, Quaternion
+        from tf.transformations import quaternion_from_matrix
+
+        transform = np.asarray(
+            msg.O_T_EE, dtype=np.float64).reshape((4, 4), order='F')
+        quat = quaternion_from_matrix(transform)
+
+        pose_msg = PoseStamped()
+        pose_msg.header = msg.header
+        pose_msg.pose.position = Point(
+            x=float(transform[0, 3]),
+            y=float(transform[1, 3]),
+            z=float(transform[2, 3]))
+        pose_msg.pose.orientation = Quaternion(
+            x=float(quat[0]),
+            y=float(quat[1]),
+            z=float(quat[2]),
+            w=float(quat[3]))
+        return pose_msg
+
+    @staticmethod
+    def _pose_stamped_to_eepose(arm, pose_msg, gripper_width):
+        """Convert PoseStamped and gripper width to model eepose."""
+        if pose_msg is None:
+            raise ValueError(
+                f'End-effector pose is required for {arm} in cartesian mode')
+        pose = pose_msg.pose
+        return np.array([
+            pose.position.x, pose.position.y, pose.position.z,
+            pose.orientation.x, pose.orientation.y, pose.orientation.z,
+            pose.orientation.w, gripper_width
+        ])
