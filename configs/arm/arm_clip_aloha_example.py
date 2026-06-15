@@ -7,7 +7,7 @@
 #
 # Official implementation of https://arxiv.org/abs/2604.03037
 pretrained_name_or_path = './checkpoints/clip-vit-base-patch32'
-data_root_path = './datasets/SARM_manual_test_10Episodes_lerobotv3.0'
+data_root_path = './datasets/ARM_manual_test_10Episodes_lerobotv3.0'
 
 current_transforms = [
     dict(
