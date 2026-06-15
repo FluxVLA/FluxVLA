@@ -96,10 +96,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 '/left_arm/ruckig_joint_impedance_controller/target_joint_state',  # noqa: E501
                 'joint_cmd_right_topic':
                 '/right_arm/ruckig_joint_impedance_controller/target_joint_state',  # noqa: E501
-                'gripper_left_topic':
-                '/left_arm/franka_gripper/move/goal',
-                'gripper_right_topic':
-                '/right_arm/franka_gripper/move/goal',
+                'gripper_left_topic': '/left_arm/franka_gripper/move/goal',
+                'gripper_right_topic': '/right_arm/franka_gripper/move/goal',
             }
 
         # Initialize Franka-specific task descriptions.
@@ -198,9 +196,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         # Concatenate active arms in configured order; each arm contributes
         # seven arm dimensions plus one gripper width.
         qpos = np.concatenate([
-            self._joint_state_to_qpos(
-                ros_obs['arms'][arm]['joint_state'],
-                ros_obs['arms'][arm]['gripper_width'])
+            self._joint_state_to_qpos(ros_obs['arms'][arm]['joint_state'],
+                                      ros_obs['arms'][arm]['gripper_width'])
             for arm in self.active_arms
         ],
                               axis=0)
@@ -345,8 +342,9 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         for arm_index, arm in enumerate(self.active_arms):
             arm_slice = self._get_arm_action_slice(arm_index)
             # Each arm action is [arm_dim0..arm_dim6, gripper_width].
-            arm_trajectories[arm] = actions[:, arm_slice.start:arm_slice.start
-                                            + 7]
+            arm_trajectories[arm] = actions[:,
+                                            arm_slice.start:arm_slice.start +
+                                            7]
             gripper_trajectories[arm] = actions[:, arm_slice.start + 7]
 
         self.ros_operator.execute_trajectory(
@@ -411,10 +409,10 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         """Extract and compress camera images from a synchronized frame."""
         image_key_pairs = (
             ('img_front', self.camera_names[0]),
-            ('img_left', self.camera_names[1]
-             if len(self.camera_names) > 1 else None),
-            ('img_right', self.camera_names[2]
-             if len(self.camera_names) > 2 else None),
+            ('img_left',
+             self.camera_names[1] if len(self.camera_names) > 1 else None),
+            ('img_right',
+             self.camera_names[2] if len(self.camera_names) > 2 else None),
         )
         return {
             camera_name: self._apply_jpeg_compression(frame[frame_key])
@@ -426,10 +424,12 @@ class FrankaInferenceRunner(BaseInferenceRunner):
         """Build joint, pose, and gripper observation for one arm."""
         joint_state = frame[f'{arm}_arm']
         return {
-            'joint_state': joint_state,
-            'pose': self._franka_state_to_pose_stamped(
-                frame[f'{arm}_franka_state']),
-            'gripper_width': self._joint_state_to_gripper_width(joint_state),
+            'joint_state':
+            joint_state,
+            'pose':
+            self._franka_state_to_pose_stamped(frame[f'{arm}_franka_state']),
+            'gripper_width':
+            self._joint_state_to_gripper_width(joint_state),
         }
 
     @staticmethod

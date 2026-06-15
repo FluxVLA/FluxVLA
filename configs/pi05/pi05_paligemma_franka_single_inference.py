@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Self-contained reference config for normal single-arm Franka inference.
 
 Use this with checkpoints trained from single-arm joint-state data, where the
@@ -150,9 +149,7 @@ train_dataloader = dict(
             dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
-                [
-                    './datasets/RealRobot_franka_single_lerobotv2.1'
-                ],
+                ['./datasets/RealRobot_franka_single_lerobotv2.1'],
                 action_key='observation.state',
                 transforms=[
                     dict(

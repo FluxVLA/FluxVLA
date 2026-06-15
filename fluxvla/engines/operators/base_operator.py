@@ -67,7 +67,7 @@ class BaseOperator:
     def build_observation_specs(self):
         """Return topic specs to synchronize.
 
-        Each spec should contain name, topic, and msg_type. A dict is preferred:
+        Each spec needs a name, topic, and msg_type. A dict is preferred:
         {'name': 'img_front', 'topic': '/camera/...', 'msg_type': Image}
         """
         raise NotImplementedError
@@ -93,14 +93,11 @@ class BaseOperator:
             slop=self.sync_slop,
             allow_headerless=False)
         self._sync.registerCallback(self._sync_callback)
-        rospy.loginfo(
-            '%s observation sync: %d topics, slop=%.3fs',
-            self.__class__.__name__,
-            len(normalized_specs),
-            self.sync_slop)
+        rospy.loginfo('%s observation sync: %d topics, slop=%.3fs',
+                      self.__class__.__name__, len(normalized_specs),
+                      self.sync_slop)
         return [
-            replace_last_segment(spec['topic'])
-            for spec in normalized_specs
+            replace_last_segment(spec['topic']) for spec in normalized_specs
             if spec['name'] in self._sync_image_names
         ]
 
@@ -139,8 +136,7 @@ class BaseOperator:
         frame = dict(raw)
         frame['stamps'] = {
             name: msg.header.stamp.to_sec()
-            for name, msg in raw.items()
-            if hasattr(msg, 'header')
+            for name, msg in raw.items() if hasattr(msg, 'header')
         }
         with self._lock:
             self._frames.append(frame)
@@ -194,10 +190,7 @@ class BaseOperator:
 
         rospy.logwarn(
             '%s sync rate low: observed=%.2fHz, minimum=%.2fHz over %.1fs',
-            self.__class__.__name__,
-            observed_hz,
-            min_hz,
-            elapsed)
+            self.__class__.__name__, observed_hz, min_hz, elapsed)
 
     def load_camera_info(self, camera_info_topics):
         import rospy

@@ -79,9 +79,8 @@ class FrankaOperator(BaseOperator):
             command_mode='joint',
             cartesian_cmd_topic=(
                 '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
-            joint_cmd_topic=(
-                '/left_arm/ruckig_joint_impedance_controller/target_joint_state'
-            ),
+            joint_cmd_topic=('/left_arm/ruckig_joint_impedance_controller'
+                             '/target_joint_state'),
             joint_names=None,
             gripper_left_topic='/left_arm/franka_gripper/move/goal',
             **unused_kwargs):
@@ -146,22 +145,22 @@ class FrankaOperator(BaseOperator):
         self.gripper_pub = None
         self.MoveActionGoal = None
 
-        if self.use_depth_image and not all(
-            [img_left_depth_topic, img_front_depth_topic]):
+        depth_topics = [img_left_depth_topic, img_front_depth_topic]
+        if self.use_depth_image and not all(depth_topics):
             raise ValueError(
-                'When use_depth_image=True, both depth topics must be provided')
+                'When use_depth_image=True, both depth topics must be provided'
+            )
         if (self.puppet_ee_pose_left_topic is None
                 and self.puppet_franka_state_left_topic is None):
-            raise ValueError(
-                'Either puppet_ee_pose_left_topic or '
-                'puppet_franka_state_left_topic must be provided')
+            raise ValueError('Either puppet_ee_pose_left_topic or '
+                             'puppet_franka_state_left_topic must be provided')
         if len(self.joint_names) != 7:
             raise ValueError('joint_names must contain exactly 7 joints')
 
         self._init_ros()
 
     def _init_ros(self):
-        """Initialize ROS node, observation sync, control publishers, cameras."""
+        """Initialize ROS node, observation sync, publishers, and cameras."""
         import rospy
         from geometry_msgs.msg import PoseStamped
         from sensor_msgs.msg import JointState
@@ -174,7 +173,7 @@ class FrankaOperator(BaseOperator):
         self.load_camera_info(camera_info_topics)
 
     def build_observation_specs(self):
-        """Build synchronized image, joint, and end-effector observation specs."""
+        """Build synchronized image, joint, and end-effector specs."""
         from geometry_msgs.msg import PoseStamped
         from sensor_msgs.msg import Image, JointState
 
@@ -267,18 +266,12 @@ class FrankaOperator(BaseOperator):
                 f'got {sorted(targets)}')
 
     def gohome(self, prepare_pose):
-        """Move the Franka arm to a prepare pose for the active command mode."""
+        """Move the Franka arm to a prepare pose for the command mode."""
         import rospy
 
         prepare_pose = self._normalize_prepare_pose(prepare_pose)
-        arm_targets = {
-            arm: pose[:7]
-            for arm, pose in prepare_pose.items()
-        }
-        gripper_targets = {
-            arm: pose[7]
-            for arm, pose in prepare_pose.items()
-        }
+        arm_targets = {arm: pose[:7] for arm, pose in prepare_pose.items()}
+        gripper_targets = {arm: pose[7] for arm, pose in prepare_pose.items()}
 
         self.clear_observation_queues()
         try:
@@ -296,7 +289,7 @@ class FrankaOperator(BaseOperator):
             self.clear_observation_queues()
 
     def _normalize_prepare_pose(self, prepare_pose):
-        """Normalize flat or mapping prepare_pose input into a left-arm dict."""
+        """Normalize flat or mapping prepare_pose into a left-arm dict."""
         if prepare_pose is None:
             return {'left': self._default_prepare_pose()}
 
@@ -312,8 +305,7 @@ class FrankaOperator(BaseOperator):
 
         if len(pose) != 8:
             raise ValueError(
-                f'Prepare pose for left must have 8 elements, got {len(pose)}'
-            )
+                f'Prepare pose for left must have 8 elements, got {len(pose)}')
         return poses
 
     def _default_prepare_pose(self):

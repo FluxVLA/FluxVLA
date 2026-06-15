@@ -63,9 +63,9 @@ GRIPPER_OPEN_WIDTH = 0.08
 class FrankaDualOperator(BaseOperator):
     """Dual Franka operator backed by message_filters synchronized observation.
 
-    The action interface is intentionally explicit:
-    left/right arm trajectories are sent separately, and grippers are controlled
-    by separate left/right width trajectories.
+    The action interface is intentionally explicit: left/right arm
+    trajectories are sent separately, and grippers are controlled by
+    separate left/right width trajectories.
     """
 
     def __init__(
@@ -91,12 +91,11 @@ class FrankaDualOperator(BaseOperator):
                 '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
             cartesian_cmd_right_topic=(
                 '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
-            joint_cmd_left_topic=(
-                '/left_arm/ruckig_joint_impedance_controller/target_joint_state'
-            ),
+            joint_cmd_left_topic=('/left_arm/ruckig_joint_impedance_controller'
+                                  '/target_joint_state'),
             joint_cmd_right_topic=(
-                '/right_arm/ruckig_joint_impedance_controller/target_joint_state'
-            ),
+                '/right_arm/ruckig_joint_impedance_controller'
+                '/target_joint_state'),
             joint_names=None,
             gripper_left_topic='/left_arm/franka_gripper/move/goal',
             gripper_right_topic='/right_arm/franka_gripper/move/goal',
@@ -198,7 +197,7 @@ class FrankaDualOperator(BaseOperator):
         self._init_ros()
 
     def _init_ros(self):
-        """Initialize ROS node, observation sync, control publishers, cameras."""
+        """Initialize ROS node, observation sync, publishers, and cameras."""
         import rospy
         from geometry_msgs.msg import PoseStamped
         from sensor_msgs.msg import JointState
@@ -211,7 +210,7 @@ class FrankaDualOperator(BaseOperator):
         self.load_camera_info(camera_info_topics)
 
     def build_observation_specs(self):
-        """Build synchronized image, joint, and end-effector observation specs."""
+        """Build synchronized image, joint, and end-effector specs."""
         from geometry_msgs.msg import PoseStamped
         from sensor_msgs.msg import Image, JointState
 
@@ -340,22 +339,15 @@ class FrankaDualOperator(BaseOperator):
             raise ValueError('At least one gripper width must be provided')
         self._validate_target_names(gripper_targets, 'gripper')
         self._send_gripper_pair(
-            gripper_targets.get('left'),
-            gripper_targets.get('right'))
+            gripper_targets.get('left'), gripper_targets.get('right'))
 
     def gohome(self, prepare_pose):
-        """Move both Franka arms to prepare poses for the active command mode."""
+        """Move both Franka arms to prepare poses for the command mode."""
         import rospy
 
         prepare_pose = self._normalize_prepare_pose(prepare_pose)
-        arm_targets = {
-            arm: pose[:7]
-            for arm, pose in prepare_pose.items()
-        }
-        gripper_targets = {
-            arm: pose[7]
-            for arm, pose in prepare_pose.items()
-        }
+        arm_targets = {arm: pose[:7] for arm, pose in prepare_pose.items()}
+        gripper_targets = {arm: pose[7] for arm, pose in prepare_pose.items()}
 
         self.clear_observation_queues()
         try:
@@ -420,9 +412,8 @@ class FrankaDualOperator(BaseOperator):
     def open_grippers(self, wait=False):
         """Open both grippers to the configured width."""
         del wait
-        self._send_gripper_pair(
-            self.gripper_open_width,
-            self.gripper_open_width)
+        self._send_gripper_pair(self.gripper_open_width,
+                                self.gripper_open_width)
 
     def _build_joint_state(self, qpos):
         """Build a JointState command from the first seven joint values."""

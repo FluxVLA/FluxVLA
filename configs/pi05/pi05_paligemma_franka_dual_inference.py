@@ -67,9 +67,11 @@ inference = dict(
         cartesian_cmd_right_topic=(
             '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
         joint_cmd_left_topic=(
-            '/left_arm/ruckig_joint_impedance_controller/target_joint_state'),  # noqa: E501
+            '/left_arm/ruckig_joint_impedance_controller/target_joint_state'
+        ),  # noqa: E501
         joint_cmd_right_topic=(
-            '/right_arm/ruckig_joint_impedance_controller/target_joint_state'),  # noqa: E501
+            '/right_arm/ruckig_joint_impedance_controller/target_joint_state'
+        ),  # noqa: E501
         gripper_left_topic='/left_arm/franka_gripper/move/goal',
         gripper_right_topic='/right_arm/franka_gripper/move/goal',
     ))
