@@ -103,7 +103,16 @@ Unlike SARM, ARM does **not** need `meta/episodes` subtask list columns. Any pip
 
 ### Example dataset layout
 
-The starter config defaults to `./datasets/SARM_manual_test_10Episodes_lerobotv2.1` for smoke testing. That dataset may not include `progress`; use a dataset that does, for example an end-to-end progress-labeled LeRobot export:
+The starter config defaults to `./datasets/ARM_manual_test_10Episodes_lerobotv3.0`, a 10-episode LeRobot v3.x dataset with per-frame `progress` labels. Download it under `./datasets` with:
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset \
+  --include "ARM_manual_test_10Episodes_lerobotv3.0/*" --local-dir ./datasets
+```
+
+Published reference dataset: [`limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0`](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0).
+
+To train on your own data, override both dataset roots:
 
 ```bash
 # Override both train and inference dataset roots
@@ -357,7 +366,8 @@ Episode length stats are **not** required for RA-BC.
 
 **Policy training config:**
 
-On the inner `ParquetDataset`:
+See `tools/arm_awbc/README.md` for the full RA-BC / AW-BC tool guide. To wire
+RA-BC into your policy config, on the inner `ParquetDataset`:
 
 1. set `expose_index=True` so each sample carries the global frame index
 2. insert `AttachRABCWeight` **before** `ProcessParquetInputs`
@@ -633,6 +643,7 @@ pointing at `${POLICY_DATA}`.
 | Progress reconstruction   | `tools/arm_awbc/progress_reconstruction.py`                 |
 | RA-BC / AW-BC weighters   | `fluxvla/weighters/` (`ArmRABCWeighter`, `ArmAWBCWeighter`) |
 | RA-BC attach transform    | `fluxvla/transforms/attach_rabc_weight.py`                  |
+| RA/AW-BC tool guide        | `tools/arm_awbc/README.md`                                  |
 
 ## ARM vs SARM at a Glance
 
