@@ -27,10 +27,10 @@ _image_size = 224
 
 _action_norm_mask = [True, True, True, True, True, True, False]
 _libero_data_roots = [
-    './datasets/libero_10_lerobotv2.1',
-    './datasets/libero_goal_lerobotv2.1',
-    './datasets/libero_spatial_lerobotv2.1',
-    './datasets/libero_object_lerobotv2.1',
+    './datasets/libero_10_no_noops_lerobotv2.1',
+    './datasets/libero_goal_no_noops_lerobotv2.1',
+    './datasets/libero_spatial_no_noops_lerobotv2.1',
+    './datasets/libero_object_no_noops_lerobotv2.1',
 ]
 
 # The official release evaluates these suites independently. FluxVLA's eval
@@ -69,7 +69,8 @@ model = dict(
         trainable=True,
         frozen_submodules=['text_encoder', 'vae'],
         split_future_frames=True,
-        fixed_seed=42,
+        num_frames_out=5,
+        fixed_seed=None,
         num_inference_steps=1,
         conditional_frame_timestep=0.0001,
         future_loss_type='flow_matching',
@@ -193,7 +194,11 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_steps=80000,
-    learning_rate=1e-4,
+    learning_rate=3e-5,
+    paramwise_learning_rate={
+        'vlm_backbone.transformer': 1e-5,
+        'vla_head': 1e-4,
+    },
     weight_decay=1e-8,
     max_grad_norm=1.0,
     save_iter_interval=40000,
@@ -291,6 +296,7 @@ eval = dict(
         norm_type='min_max',
         action_dim=_ori_action_dim,
         action_norm_mask=_action_norm_mask,
+        clip_normalized_action=True,
         normalize_gripper_action=True,
         invert_gripper_action=True,
     ),

@@ -126,7 +126,8 @@ class DenormalizeLiberoAction:
                  denorm_action: bool = True,
                  normalize_gripper_action: bool = True,
                  invert_gripper_action: bool = True,
-                 action_norm_mask: List[bool] = None):
+                 action_norm_mask: List[bool] = None,
+                 clip_normalized_action: bool = False):
         if isinstance(norm_stats, str):
             with open(norm_stats, 'r', encoding='utf-8') as f:
                 self.norm_stats = json.load(f)
@@ -139,6 +140,7 @@ class DenormalizeLiberoAction:
         self.normalize_gripper_action = normalize_gripper_action
         self.invert_gripper_action = invert_gripper_action
         self.action_norm_mask = action_norm_mask
+        self.clip_normalized_action = bool(clip_normalized_action)
 
     def __call__(self, data: Dict) -> Dict:
         """Denormalize the data using the provided statistics.
@@ -180,6 +182,8 @@ class DenormalizeLiberoAction:
         assert 'std' in stats and stats['std'] is not None
         if self.action_dim is not None:
             normalized_action = normalized_action[..., :self.action_dim]
+        if self.clip_normalized_action:
+            normalized_action = np.clip(normalized_action, -1.0, 1.0)
 
         if 'mask' in stats:
             mask = np.array(stats['mask'])
@@ -197,6 +201,8 @@ class DenormalizeLiberoAction:
         assert 'q99' in stats and stats['q99'] is not None
         if self.action_dim is not None:
             normalized_action = normalized_action[..., :self.action_dim]
+        if self.clip_normalized_action:
+            normalized_action = np.clip(normalized_action, -1.0, 1.0)
         if self.action_norm_mask is not None:
             mask = np.array(self.action_norm_mask)
         else:
@@ -217,6 +223,8 @@ class DenormalizeLiberoAction:
         assert 'max' in stats and stats['max'] is not None
         if self.action_dim is not None:
             normalized_action = normalized_action[..., :self.action_dim]
+        if self.clip_normalized_action:
+            normalized_action = np.clip(normalized_action, -1.0, 1.0)
         if self.action_norm_mask is not None:
             mask = np.array(self.action_norm_mask)
         else:

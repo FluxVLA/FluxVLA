@@ -70,6 +70,8 @@ class Cosmos25Backbone(nn.Module):
         split_future_frames: If ``images`` contains a temporal dimension,
             use frame 0 as conditioning and the remaining frames only to infer
             the training output horizon.
+        num_frames_out: Optional default output video length. DiT4DiT uses the
+            training video length even for single-frame eval inputs.
         fixed_seed: Optional deterministic noise seed for latent extraction.
         fsdp_min_num_params: Auto-wrap large non-block Cosmos modules above
             this parameter count when building an FSDP policy.
@@ -87,6 +89,7 @@ class Cosmos25Backbone(nn.Module):
         trainable: bool = False,
         frozen_submodules: Optional[Sequence[str]] = None,
         split_future_frames: bool = True,
+        num_frames_out: Optional[int] = None,
         fixed_seed: Optional[int] = 42,
         num_inference_steps: int = 1,
         conditional_frame_timestep: float = 0.001,
@@ -118,6 +121,8 @@ class Cosmos25Backbone(nn.Module):
         self.trainable = bool(trainable)
         self.frozen_submodules = tuple(frozen_submodules or ())
         self.split_future_frames = bool(split_future_frames)
+        self.num_frames_out = (
+            int(num_frames_out) if num_frames_out is not None else None)
         self.fixed_seed = fixed_seed
         self.num_inference_steps = int(num_inference_steps)
         self.conditional_frame_timestep = float(conditional_frame_timestep)
@@ -621,6 +626,8 @@ class Cosmos25Backbone(nn.Module):
         video_bcthw: torch.Tensor,
         num_frames_out: int,
         dtype: torch.dtype,
+        generator: Optional[Union[torch.Generator,
+                                  Sequence[torch.Generator]]] = None,
     ) -> torch.Tensor:
         vae_dtype = getattr(self.vae, 'dtype', self.dtype)
         video = video_bcthw.to(device=self.device, dtype=vae_dtype)
@@ -632,12 +639,22 @@ class Cosmos25Backbone(nn.Module):
                                   video.shape[3], video.shape[4])
             video = torch.cat([video, pad], dim=2)
 
-        encoded = self.vae.encode(video)
-        if hasattr(encoded, 'latent_dist'):
-            latents = encoded.latent_dist.sample()
-        else:
-            latents = encoded
-        return latents.to(dtype=dtype)
+        samples = []
+        is_generator_list = isinstance(generator, (list, tuple))
+        for idx, sample in enumerate(video):
+            encoded = self.vae.encode(sample.unsqueeze(0))
+            if hasattr(encoded, 'latent_dist'):
+                sample_generator = generator[idx] if is_generator_list else \
+                    generator
+                try:
+                    latent = encoded.latent_dist.sample(
+                        generator=sample_generator)
+                except TypeError:
+                    latent = encoded.latent_dist.sample()
+            else:
+                latent = encoded
+            samples.append(latent)
+        return torch.cat(samples, dim=0).to(dtype=dtype)
 
     def _latent_mean_std(
         self,
@@ -687,6 +704,8 @@ class Cosmos25Backbone(nn.Module):
         num_frames_out: int,
         dtype: torch.dtype,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        from diffusers.utils.torch_utils import randn_tensor
+
         if self.latents_mean is None or self.latents_std is None:
             raise ValueError(
                 'Cosmos VAE must expose `latents_mean` and `latents_std`.')
@@ -703,13 +722,23 @@ class Cosmos25Backbone(nn.Module):
         if self.fixed_seed is not None:
             generator = torch.Generator(device=self.device)
             generator.manual_seed(int(self.fixed_seed))
-        latents = torch.randn(
-            shape, generator=generator, device=self.device, dtype=dtype)
 
         cond_latents = self._encode_condition_latents(video_bcthw,
-                                                      num_frames_out, dtype)
+                                                      num_frames_out, dtype,
+                                                      generator)
         mean, std = self._latent_mean_std(cond_latents)
         cond_latents = (cond_latents - mean) / std
+
+        if generator is not None:
+            latents = randn_tensor(
+                (1, latent_channels, t_lat, h_lat, w_lat),
+                generator=generator,
+                device=self.device,
+                dtype=dtype,
+            ).repeat(b, 1, 1, 1, 1)
+        else:
+            latents = randn_tensor(
+                shape, generator=None, device=self.device, dtype=dtype)
 
         if cond_latents.shape != latents.shape:
             adjusted = latents.new_zeros(shape)
@@ -928,6 +957,8 @@ class Cosmos25Backbone(nn.Module):
         transformer_dtype = getattr(self.transformer, 'dtype', self.dtype)
         prompt_embeds = self._get_prompt_embeds(
             prompt_list, device=self.device, dtype=transformer_dtype)
+        if num_frames_out is None:
+            num_frames_out = self.num_frames_out
         num_frames_out = self._infer_num_frames_out(condition_video,
                                                     future_videos,
                                                     num_frames_out)
