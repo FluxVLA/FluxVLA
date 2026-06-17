@@ -32,10 +32,10 @@ SARM's stage-based equivalent see [`docs/sarm.md`](../../docs/sarm.md).
 
 ARM reweighting always involves **two** datasets, which may be different:
 
-| Role                         | Needs a `progress` column? | Used for                                         |
-| ---------------------------- | -------------------------- | ------------------------------------------------ |
-| **ARM training dataset**     | yes (GT per-frame labels)  | training the reward model only                   |
-| **Policy / DAgger dataset**  | no                         | the BC dataset you actually train the policy on  |
+| Role                        | Needs a `progress` column? | Used for                                        |
+| --------------------------- | -------------------------- | ----------------------------------------------- |
+| **ARM training dataset**    | yes (GT per-frame labels)  | training the reward model only                  |
+| **Policy / DAgger dataset** | no                         | the BC dataset you actually train the policy on |
 
 The policy dataset is typically a DAgger rollout collection that only recorded
 observations and actions. ARM fills in the missing `progress` for it by
@@ -210,22 +210,22 @@ way.
 
 ## RA-BC vs AW-BC
 
-|                               | RA-BC                   | AW-BC                                                  |
-| ----------------------------- | ----------------------- | ------------------------------------------------------ |
-| **Per-sample weight**         | `rabc_weight(delta)`    | `rabc_weight(delta) × (episode_length / mean_length)`  |
-| **Progress parquet**          | required                | required (same file)                                   |
-| **Episode-length stats**      | not required            | derived online from the progress parquet               |
-| **Registry type**             | `ArmRABCWeighter`       | `ArmAWBCWeighter`                                       |
-| **Best for**                  | uniform episode lengths | heterogeneous DAgger rollouts                          |
+|                          | RA-BC                   | AW-BC                                                 |
+| ------------------------ | ----------------------- | ----------------------------------------------------- |
+| **Per-sample weight**    | `rabc_weight(delta)`    | `rabc_weight(delta) × (episode_length / mean_length)` |
+| **Progress parquet**     | required                | required (same file)                                  |
+| **Episode-length stats** | not required            | derived online from the progress parquet              |
+| **Registry type**        | `ArmRABCWeighter`       | `ArmAWBCWeighter`                                     |
+| **Best for**             | uniform episode lengths | heterogeneous DAgger rollouts                         |
 
 `rabc_weight(delta)` (where `delta = progress[t + chunk_size] - progress[t]`):
 
-| Condition                        | Weight                                                       |
+| Condition                        | Weight                                                      |
 | -------------------------------- | ----------------------------------------------------------- |
-| `delta > kappa` (default `0.01`) | `1.0` — clear progress gain                                  |
+| `delta > kappa` (default `0.01`) | `1.0` — clear progress gain                                 |
 | `0 <= delta <= kappa`            | soft weight (linear interpolation over dataset delta stats) |
 | `delta < 0`                      | `0.0` — progress regresses, skip sample                     |
-| invalid / missing progress       | `fallback_weight` (default `1.0`)                            |
+| invalid / missing progress       | `fallback_weight` (default `1.0`)                           |
 
 Set `chunk_size` to the policy action horizon (for example `50` for SmolVLA /
 PI0.5). In the example config the weight is attached per sample by
@@ -238,14 +238,14 @@ a whole batch to sum to the batch size for callers that score batches directly.)
 
 `tools.arm_awbc` re-exports everything needed to script the pipeline:
 
-| Symbol                          | Source                                                                   | Purpose                                                          |
-| ------------------------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `run_strided_episode_inference` | `progress_reconstruction.py`                                             | strided per-episode ARM inference (both heads)                  |
-| `build_cumulative_progress`     | `progress_reconstruction.py`                                             | dense `[0, 1]` progress from keyframe records                   |
-| `extract_last_interval_delta`   | `progress_reconstruction.py`                                             | last interval label in a causal window                          |
-| `ArmRABCWeighter`               | [`fluxvla/weighters/arm_rabc.py`](../../fluxvla/weighters/arm_rabc.py)   | RA-BC per-sample / per-batch weights                            |
-| `ArmAWBCWeighter`               | [`fluxvla/weighters/arm_rabc.py`](../../fluxvla/weighters/arm_rabc.py)   | AW-BC weights (RA-BC + duration scaling)                        |
-| `resolve_arm_progress_path`     | `fluxvla/weighters/utils.py`                                             | resolve an `arm_progress.parquet` path                          |
+| Symbol                          | Source                                                                 | Purpose                                        |
+| ------------------------------- | ---------------------------------------------------------------------- | ---------------------------------------------- |
+| `run_strided_episode_inference` | `progress_reconstruction.py`                                           | strided per-episode ARM inference (both heads) |
+| `build_cumulative_progress`     | `progress_reconstruction.py`                                           | dense `[0, 1]` progress from keyframe records  |
+| `extract_last_interval_delta`   | `progress_reconstruction.py`                                           | last interval label in a causal window         |
+| `ArmRABCWeighter`               | [`fluxvla/weighters/arm_rabc.py`](../../fluxvla/weighters/arm_rabc.py) | RA-BC per-sample / per-batch weights           |
+| `ArmAWBCWeighter`               | [`fluxvla/weighters/arm_rabc.py`](../../fluxvla/weighters/arm_rabc.py) | AW-BC weights (RA-BC + duration scaling)       |
+| `resolve_arm_progress_path`     | `fluxvla/weighters/utils.py`                                           | resolve an `arm_progress.parquet` path         |
 
 `ArmRABCWeights` / `ArmAWBCWeights` are deprecated aliases of the weighter
 classes, kept for backward-compatible imports. The transform that attaches the
@@ -254,9 +254,9 @@ weight to each sample is
 
 ## Origin
 
-| Local file                     | Description                                                            |
-| ------------------------------ | --------------------------------------------------------------------- |
-| `progress_reconstruction.py`   | FluxVLA-native; shared by visualization and parquet export.           |
-| `__init__.py`                  | Re-exports the reconstruction helpers and `fluxvla.weighters` ARM API. |
+| Local file                   | Description                                                            |
+| ---------------------------- | ---------------------------------------------------------------------- |
+| `progress_reconstruction.py` | FluxVLA-native; shared by visualization and parquet export.            |
+| `__init__.py`                | Re-exports the reconstruction helpers and `fluxvla.weighters` ARM API. |
 
 All files retain their Apache 2.0 Limx Dynamics headers.

@@ -643,7 +643,7 @@ pointing at `${POLICY_DATA}`.
 | Progress reconstruction   | `tools/arm_awbc/progress_reconstruction.py`                 |
 | RA-BC / AW-BC weighters   | `fluxvla/weighters/` (`ArmRABCWeighter`, `ArmAWBCWeighter`) |
 | RA-BC attach transform    | `fluxvla/transforms/attach_rabc_weight.py`                  |
-| RA/AW-BC tool guide        | `tools/arm_awbc/README.md`                                  |
+| RA/AW-BC tool guide       | `tools/arm_awbc/README.md`                                  |
 
 ## ARM vs SARM at a Glance
 
