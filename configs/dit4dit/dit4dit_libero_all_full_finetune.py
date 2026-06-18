@@ -27,10 +27,10 @@ _image_size = 224
 
 _action_norm_mask = [True, True, True, True, True, True, False]
 _libero_data_roots = [
-    './datasets/libero_10_no_noops_lerobotv2.1',
-    './datasets/libero_goal_no_noops_lerobotv2.1',
-    './datasets/libero_spatial_no_noops_lerobotv2.1',
-    './datasets/libero_object_no_noops_lerobotv2.1',
+    './datasets/libero_10_lerobotv2.1',
+    './datasets/libero_goal_lerobotv2.1',
+    './datasets/libero_spatial_lerobotv2.1',
+    './datasets/libero_object_lerobotv2.1',
 ]
 
 # The official release evaluates these suites independently. FluxVLA's eval
