@@ -98,6 +98,9 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                 '/right_arm/ruckig_joint_impedance_controller/target_joint_state',  # noqa: E501
                 'gripper_left_topic': '/left_arm/franka_gripper/move/goal',
                 'gripper_right_topic': '/right_arm/franka_gripper/move/goal',
+                # Set gripper_control_mode='grasp' to binarize the gripper and
+                # only act on open/close transitions via the franka_gripper
+                # grasp/move actions; default 'move' streams continuous width.
             }
 
         # Initialize Franka-specific task descriptions.

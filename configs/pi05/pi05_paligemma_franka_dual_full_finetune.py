@@ -298,4 +298,4 @@ inference = dict(
         ),  # noqa: E501
         gripper_left_topic='/left_arm/franka_gripper/move/goal',
         gripper_right_topic='/right_arm/franka_gripper/move/goal',
-    ))
+        gripper_control_mode='grasp'))

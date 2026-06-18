@@ -275,4 +275,7 @@ inference = dict(
         cartesian_cmd_topic=(
             '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
         gripper_left_topic='/left_arm/franka_gripper/move/goal',
+        # Optional: gripper_control_mode='grasp' binarizes the gripper and only
+        # acts on open/close transitions via the franka_gripper grasp/move
+        # actions; default 'move' streams continuous width every step.
     ))

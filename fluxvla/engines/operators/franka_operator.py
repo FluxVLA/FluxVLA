@@ -58,6 +58,53 @@ GRIPPER_SPEED = 1.0
 GRIPPER_MAX_WIDTH = 0.08
 GRIPPER_OPEN_WIDTH = 0.08
 
+# Binary ("grasp") gripper control mode tunables. These are intentionally
+# module-level constants rather than __init__ args to keep the operator
+# signature minimal; the only knob exposed to config is gripper_control_mode.
+# Closing always grasps with max force / max speed.
+GRIPPER_BINARY_THRESHOLD = 0.06  # width below this => intent to close
+GRASP_WIDTH = 0.0  # fixed target width for a grasp (close) transition
+GRASP_EPSILON_INNER = 0.08  # GraspGoal.epsilon.inner
+GRASP_EPSILON_OUTER = 0.08  # GraspGoal.epsilon.outer
+GRASP_FORCE = 70.0  # Franka Hand max continuous grasping force (N)
+GRIPPER_ACTION_WAIT = 2.0  # seconds to wait for the action servers
+
+
+def gripper_action_namespace(move_goal_topic):
+    """Derive the franka_gripper action namespace from a move goal topic.
+
+    '/left_arm/franka_gripper/move/goal' -> '/left_arm/franka_gripper', so the
+    grasp/move action servers are addressed as '<ns>/grasp' and '<ns>/move'.
+    """
+    namespace = move_goal_topic
+    for suffix in ('/goal', '/move'):
+        if namespace.endswith(suffix):
+            namespace = namespace[:-len(suffix)]
+    return namespace
+
+
+def build_grasp_goal():
+    """Build a fixed-width franka_gripper GraspGoal (close) at max force."""
+    from franka_gripper.msg import GraspGoal
+
+    goal = GraspGoal()
+    goal.width = GRASP_WIDTH
+    goal.epsilon.inner = GRASP_EPSILON_INNER
+    goal.epsilon.outer = GRASP_EPSILON_OUTER
+    goal.speed = GRIPPER_SPEED
+    goal.force = GRASP_FORCE
+    return goal
+
+
+def build_move_goal(width):
+    """Build a franka_gripper MoveGoal (open) at the given width."""
+    from franka_gripper.msg import MoveGoal
+
+    goal = MoveGoal()
+    goal.width = float(width)
+    goal.speed = GRIPPER_SPEED
+    return goal
+
 
 @OPERATORS.register_module()
 class FrankaOperator(BaseOperator):
@@ -83,6 +130,7 @@ class FrankaOperator(BaseOperator):
                              '/target_joint_state'),
             joint_names=None,
             gripper_left_topic='/left_arm/franka_gripper/move/goal',
+            gripper_control_mode='move',
             **unused_kwargs):
         """Configure single-arm ROS topics, sync settings, and controllers.
 
@@ -107,6 +155,10 @@ class FrankaOperator(BaseOperator):
             joint_cmd_topic (str): Joint command topic.
             joint_names (list[str], optional): Seven Franka joint names.
             gripper_left_topic (str): Left gripper move goal topic.
+            gripper_control_mode (str): Gripper interface, either 'move'
+                (default; publish continuous width to the move goal topic every
+                step) or 'grasp' (binarize width and only act on open/close
+                transitions, using the franka_gripper grasp/move actions).
             **unused_kwargs: Extra config keys accepted for compatibility.
         """
         self.img_left_topic = img_left_topic
@@ -137,6 +189,10 @@ class FrankaOperator(BaseOperator):
         self.joint_cmd_topic = joint_cmd_topic
         self.joint_names = joint_names or DEFAULT_JOINT_NAMES
         self.gripper_goal_left_topic = gripper_left_topic
+        if gripper_control_mode not in {'move', 'grasp'}:
+            raise ValueError(f'Unsupported Franka gripper_control_mode: '
+                             f'{gripper_control_mode}')
+        self.gripper_control_mode = gripper_control_mode
         self.gripper_speed = GRIPPER_SPEED
         self.gripper_max_width = GRIPPER_MAX_WIDTH
         self.gripper_open_width = GRIPPER_OPEN_WIDTH
@@ -144,6 +200,10 @@ class FrankaOperator(BaseOperator):
         self.joint_pub = None
         self.gripper_pub = None
         self.MoveActionGoal = None
+        # Binary-mode action clients and remembered open/close state.
+        self.grasp_client = None
+        self.move_action_client = None
+        self._gripper_binary_state = None
 
         depth_topics = [img_left_depth_topic, img_front_depth_topic]
         if self.use_depth_image and not all(depth_topics):
@@ -238,6 +298,39 @@ class FrankaOperator(BaseOperator):
             self.joint_cmd_topic, JointState, queue_size=10)
         self.gripper_pub = rospy.Publisher(
             self.gripper_goal_left_topic, MoveActionGoal, queue_size=1)
+        if self.gripper_control_mode == 'grasp':
+            self._setup_gripper_action_clients()
+
+    def _setup_gripper_action_clients(self):
+        """Connect grasp/move action clients for binary gripper control.
+
+        The action namespace is derived from the configured move goal topic
+        ('/.../franka_gripper/move/goal' -> '/.../franka_gripper'); a missing
+        server is logged and left as None so sending falls back to the move
+        publisher instead of raising.
+        """
+        import actionlib
+        import rospy
+        from franka_gripper.msg import GraspAction, MoveAction
+
+        namespace = gripper_action_namespace(self.gripper_goal_left_topic)
+        grasp_client = actionlib.SimpleActionClient(f'{namespace}/grasp',
+                                                    GraspAction)
+        move_client = actionlib.SimpleActionClient(f'{namespace}/move',
+                                                   MoveAction)
+        timeout = rospy.Duration(GRIPPER_ACTION_WAIT)
+        if grasp_client.wait_for_server(timeout):
+            self.grasp_client = grasp_client
+        else:
+            rospy.logwarn(
+                'Gripper grasp action server %s/grasp unavailable; '
+                'falling back to move publisher', namespace)
+        if move_client.wait_for_server(timeout):
+            self.move_action_client = move_client
+        else:
+            rospy.logwarn(
+                'Gripper move action server %s/move unavailable; '
+                'falling back to move publisher', namespace)
 
     def send_joints(self, arm_targets):
         """Publish a left-arm joint target."""
@@ -322,6 +415,9 @@ class FrankaOperator(BaseOperator):
     def open_gripper(self, wait=False):
         """Open the left gripper to the configured width."""
         del wait
+        # Force the next binary command to be sent even if we believe the
+        # gripper is already open, so resets always issue an open.
+        self._gripper_binary_state = None
         self._send_gripper_command(self.gripper_open_width)
 
     def open_grippers(self, wait=False):
@@ -364,6 +460,10 @@ class FrankaOperator(BaseOperator):
 
     def _send_gripper_command(self, gripper_width):
         """Publish a gripper move command if the gripper publisher exists."""
+        if self.gripper_control_mode == 'grasp':
+            self._send_gripper_binary(gripper_width)
+            return
+
         if self.gripper_pub is None:
             return
 
@@ -391,3 +491,61 @@ class FrankaOperator(BaseOperator):
         msg.goal.width = target_width
         msg.goal.speed = max(self.gripper_speed, 0.0)
         return msg
+
+    def _send_gripper_binary(self, gripper_width):
+        """Send a grasp/open only when the binary gripper state changes.
+
+        Continuous widths are thresholded into close/open. A grasp (close)
+        sends the franka_gripper grasp action at a fixed width with max force;
+        an open sends the move action to the open width. Commands are skipped
+        while the state is unchanged, so the slow blocking actions fire only on
+        transitions.
+        """
+        should_close = float(gripper_width) < GRIPPER_BINARY_THRESHOLD
+        if self._gripper_binary_state == should_close:
+            return
+        if should_close:
+            sent = self._send_grasp(self.grasp_client)
+        else:
+            sent = self._send_open(self.move_action_client,
+                                   self.gripper_open_width)
+        if sent:
+            self._gripper_binary_state = should_close
+
+    def _send_grasp(self, grasp_client):
+        """Send a blocking grasp goal; fall back to the move publisher."""
+        if grasp_client is None:
+            self._fallback_move_publish(GRASP_WIDTH)
+            return True
+        try:
+            grasp_client.send_goal(build_grasp_goal())
+            grasp_client.wait_for_result()
+            return True
+        except Exception as exc:
+            import rospy
+            rospy.logwarn('Failed to send gripper grasp goal: %s', exc)
+            return False
+
+    def _send_open(self, move_client, open_width):
+        """Send a blocking move-open goal; fall back to the move publisher."""
+        if move_client is None:
+            self._fallback_move_publish(open_width)
+            return True
+        try:
+            move_client.send_goal(build_move_goal(open_width))
+            move_client.wait_for_result()
+            return True
+        except Exception as exc:
+            import rospy
+            rospy.logwarn('Failed to send gripper open goal: %s', exc)
+            return False
+
+    def _fallback_move_publish(self, width):
+        """Publish a move goal when an action server is unavailable."""
+        if self.gripper_pub is None:
+            return
+        try:
+            self.gripper_pub.publish(self._build_gripper_goal(width))
+        except Exception as exc:
+            import rospy
+            rospy.logwarn('Failed to send gripper command: %s', exc)

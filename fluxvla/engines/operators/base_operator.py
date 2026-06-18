@@ -67,7 +67,8 @@ class BaseOperator:
     def build_observation_specs(self):
         """Return topic specs to synchronize.
 
-        Each spec needs a name, topic, and msg_type. A dict is preferred:
+        Each spec should contain name, topic, and msg_type.
+        A dict is preferred:
         {'name': 'img_front', 'topic': '/camera/...', 'msg_type': Image}
         """
         raise NotImplementedError
@@ -305,5 +306,5 @@ class BaseOperator:
     def send_gripper(self, gripper_targets, wait=False):
         raise NotImplementedError
 
-    def gohome(self, prepare_pose):
+    def gohome(self):
         raise NotImplementedError
