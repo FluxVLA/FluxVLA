@@ -307,6 +307,8 @@ class SARMDataset(ParquetDatasetV3):
 
         for transform in self.transforms:
             output = transform(output)
+        # Stats are only needed by NormalizeStatesAndActions.
+        output.pop('stats', None)
         return output
 
     def _get_state_statistics(self, dataset_idx: int,
