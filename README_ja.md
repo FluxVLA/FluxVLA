@@ -783,7 +783,7 @@ pip install numpy==1.26.4
 
 ## 🙏 引用・謝辞
 
-FluxVLA を研究やプロジェクトで利用した場合は、以下の形式で引用してください：
+FluxVLA を研究やプロジェクトで利用した場合は、以下の文献を引用してください：
 
 ```bibtex
 @software{FluxVLA2026,
@@ -795,6 +795,15 @@ FluxVLA を研究やプロジェクトで利用した場合は、以下の形式
   doi     = {10.5281/zenodo.20049506},
   url     = {https://github.com/FluxVLA/FluxVLA},
   license = {Apache-2.0},
+}
+
+@InProceedings{Mao_2026_CVPR,
+    author    = {Mao, Yiming and Yu, Zixi and Mao, Weixin and Li, Yinhao and Hu, Qirui and Lan, Zihan and Zhu, Minzhao and Chen, Hua},
+    title     = {ARM: Advantage Reward Modeling for Long-Horizon Manipulation},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
+    month     = {June},
+    year      = {2026},
+    pages     = {4468-4477}
 }
 ```
 

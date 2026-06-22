@@ -819,7 +819,7 @@ If you encounter any issues while using this repository, feel free to contact us
 
 ## 🙏 Citation & Acknowledgements
 
-If you use FluxVLA in your research or projects, please cite it as:
+If you use FluxVLA in your research or projects, please cite the relevant works as:
 
 ```bibtex
 @software{FluxVLA2026,
@@ -831,6 +831,15 @@ If you use FluxVLA in your research or projects, please cite it as:
   doi     = {10.5281/zenodo.20049506},
   url     = {https://github.com/FluxVLA/FluxVLA},
   license = {Apache-2.0},
+}
+
+@InProceedings{Mao_2026_CVPR,
+    author    = {Mao, Yiming and Yu, Zixi and Mao, Weixin and Li, Yinhao and Hu, Qirui and Lan, Zihan and Zhu, Minzhao and Chen, Hua},
+    title     = {ARM: Advantage Reward Modeling for Long-Horizon Manipulation},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
+    month     = {June},
+    year      = {2026},
+    pages     = {4468-4477}
 }
 ```
 

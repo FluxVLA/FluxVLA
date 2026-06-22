@@ -783,7 +783,7 @@ pip install numpy==1.26.4
 
 ## 🙏 引用与致谢
 
-如果你在学术研究或工程项目中使用了 FluxVLA，欢迎引用我们：
+如果你在学术研究或工程项目中使用了 FluxVLA，欢迎引用以下工作：
 
 ```bibtex
 @software{FluxVLA2026,
@@ -795,6 +795,15 @@ pip install numpy==1.26.4
   doi     = {10.5281/zenodo.20049506},
   url     = {https://github.com/FluxVLA/FluxVLA},
   license = {Apache-2.0},
+}
+
+@InProceedings{Mao_2026_CVPR,
+    author    = {Mao, Yiming and Yu, Zixi and Mao, Weixin and Li, Yinhao and Hu, Qirui and Lan, Zihan and Zhu, Minzhao and Chen, Hua},
+    title     = {ARM: Advantage Reward Modeling for Long-Horizon Manipulation},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
+    month     = {June},
+    year      = {2026},
+    pages     = {4468-4477}
 }
 ```
 
