@@ -55,6 +55,8 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 📢 最新动态
 
+**\[2026/06/22\]** 🔥 现已提供 Oli 人形机器人全身（移动操作）真机推理的最简路径（operator + runner + 示例配置）。详见 [docs/oli_whole_body.md](docs/oli_whole_body.md)。
+
 **\[2026/06/17\]** 🔥 现已支持 ARM 奖励建模与 RA-BC/AW-BC 重加权。配置与使用方法见 [docs/arm.md](docs/arm.md)。
 
 **\[2026/06/10\]** 🔥 现已支持基于 GR00T 的 RoboCasa GR1 仿真任务。
@@ -568,6 +570,7 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 - 支持基于 ZMQ 通信框架的远程推理设施，利用 server/client 架构将模型推理负载装卸到服务器端，适用于算力受限的边缘设备部署。详见 [远程推理服务](docs/remote_inference_serving.md)。
 - 支持 [RTC (Real-Time Chunking)](docs/rtc.md)，提升跨 chunk 轨迹连续性。
 - 支持 GR00T 与 PI0.5 推理加速；详见 [Inference Acceleration](docs/inference_acceleration.md)，包含 Triton 融合核、CUDA Graph 捕获与 CUDA 自定义算子。
+- 提供 Oli 人形机器人全身（移动操作）真机推理的最简路径（rospy 传感输入 + WebSocket 控制输出；base/手部指令为机器人 SDK 接入点）。详见 [docs/oli_whole_body.md](docs/oli_whole_body.md)。
 
 </details>
 

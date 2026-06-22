@@ -55,6 +55,8 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## 📢 Latest News
 
+**\[2026/06/22\]** 🔥 A minimal Oli humanoid whole-body (loco-manipulation) real-robot inference path (operator + runner + example config) is now available. See [docs/oli_whole_body.md](docs/oli_whole_body.md).
+
 **\[2026/06/17\]** 🔥 ARM reward modeling with RA-BC/AW-BC reweighting is now supported. See [docs/arm.md](docs/arm.md) for setup and usage.
 
 **\[2026/06/10\]** 🔥 RoboCasa GR1 simulation tasks with GR00T are now supported.
@@ -604,6 +606,7 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 - Supports remote inference infrastructure with ZMQ-based server/client architecture, enabling GPU-offloaded inference for resource-constrained edge devices. See [Remote Inference Serving](docs/remote_inference_serving.md).
 - Supports [RTC (Real-Time Chunking)](docs/rtc.md) to improve cross-chunk trajectory continuity.
 - Supports accelerated inference for GR00T and PI0.5; see [Inference Acceleration](docs/inference_acceleration.md), including Triton fused kernels, CUDA Graph capture, and CUDA custom operators.
+- Provides a minimal Oli humanoid whole-body (loco-manipulation) real-robot inference path (rospy sensor input + WebSocket control; base/hand commands are robot-SDK integration points). See [docs/oli_whole_body.md](docs/oli_whole_body.md).
 
 </details>
 
