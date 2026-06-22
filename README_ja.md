@@ -79,7 +79,13 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 ## 🛠️ インストール
 
-推奨の一括インストールスクリプト：
+以下のいずれかのインストール方法を選択してください：
+
+- **推奨：一括インストールスクリプト**：通常の学習、シミュレーション評価、実機推論環境に使用します。
+- **既存の FluxVLA 環境を更新する**：以前の FluxVLA をインストール済みで、変更された package だけ更新したい場合に使用します。
+- **最初から手動でインストールする**：各 package のインストール手順を自分で制御したい場合のみ使用します。
+
+### 推奨：一括インストールスクリプト
 
 ```bash
 conda create -n fluxvla python=3.10 -y
@@ -87,11 +93,31 @@ conda activate fluxvla
 
 # いずれかを選択: sim-only, real-only, full
 bash scripts/install_env.sh sim-only
-bash scripts/install_env.sh real-only
-bash scripts/install_env.sh full
+# bash scripts/install_env.sh real-only
+# bash scripts/install_env.sh full
 ```
 
-`sim-only` はシミュレーション / LIBERO / RoboCasa 関連依存関係に加えて、固定バージョンの RoboCasa source checkout を `./src` にインストールします。`real-only` は実機とリモート推論の依存関係を、`full` は両方をインストールします。RoboCasa checkout が不要な場合は `--skip-robocasa` を使ってください。スクリプトは CUDA PyTorch profile を自動選択し、まず現在の CUDA toolkit / `nvcc` version を優先します。CUDA >= 12.8 では `cu128`、それ以外では `cu124` を選択します。toolkit が見つからない場合は driver-reported CUDA、最後に GPU generation を fallback として使います。`--profile cu128` または `--profile cu124` で明示指定できます。PyTorch のインストール後、実際の Python tag、PyTorch バージョン、CUDA major version、C++ ABI、CPU architecture から FlashAttention wheel を自動選択します。対応する prebuilt wheel がない場合は `FLASH_ATTN_WHEEL_URL` を明示するか、`--skip-flash-attn` を使ってください。
+<details>
+<summary><b>インストーラで問題が出る場合：mode と CUDA profile を確認する</b></summary>
+
+`sim-only` はシミュレーション / LIBERO / RoboCasa 関連依存関係に加えて、固定バージョンの RoboCasa source checkout を `./src` にインストールします。`real-only` は実機とリモート推論の依存関係を、`full` は両方をインストールします。RoboCasa checkout が不要な場合は `--skip-robocasa` を使ってください。
+
+スクリプトは CUDA PyTorch profile を自動選択し、まず現在の CUDA toolkit / `nvcc` version を優先します。CUDA >= 12.8 では `cu128`、それ以外では `cu124` を選択します。toolkit が見つからない場合は driver-reported CUDA、最後に GPU generation を fallback として使います。`--profile cu128` または `--profile cu124` で明示指定できます。
+
+PyTorch のインストール後、実際の Python tag、PyTorch バージョン、CUDA major version、C++ ABI、CPU architecture から FlashAttention wheel を自動選択します。対応する prebuilt wheel がない場合は `FLASH_ATTN_WHEEL_URL` を明示するか、`--skip-flash-attn` を使ってください。
+
+`av` は conda の依存解決が遅くなるのを避けるため、デフォルトではまず pip wheel からインストールされます。wheel がない場合は conda にフォールバックします。conda-forge 版が必要な場合は `FLUXVLA_AV_INSTALLER=conda` を指定してください。
+
+実機 runner にはシステム側の ROS も必要です。ROS Noetic の環境では、推論を起動する前に ROS を source してください：
+
+```bash
+source /opt/ros/noetic/setup.bash
+```
+
+</details>
+
+<details>
+<summary><b>インストーラで問題が出る場合：キャッシュ済みまたは mirror 上の FlashAttention wheel を使う</b></summary>
 
 FlashAttention wheel は大きいため、ネットワークが遅い環境では GitHub release のダウンロードが初回インストール時間の大部分を占めることがあります。繰り返しインストールする場合は、正確に一致する wheel ファイルを `./wheelhouse/`、`./wheels/`、または `~/.cache/fluxvla/wheels/` に置いてください。インストーラはネットワークへアクセスする前にそれを使用します。ローカルファイルや内部 mirror を明示することもできます：
 
@@ -103,11 +129,10 @@ FLASH_ATTN_WHEEL_BASE_URLS="https://your-mirror.example.com/fluxvla/wheels" \
 bash scripts/install_env.sh sim-only --profile cu128
 ```
 
-実機 runner にはシステム側の ROS も必要です。ROS Noetic の環境では、推論を起動する前に ROS を source してください：
+</details>
 
-```bash
-source /opt/ros/noetic/setup.bash
-```
+<details>
+<summary><b>インストーラで問題が出る場合：pip mirror と timeout を指定する</b></summary>
 
 インストーラは既存の pip 設定を優先します。その index に package がない場合、または pip index が設定されていない場合は、PyPI と複数の一般的な mirror を probe し、このマシンでの応答速度順に再試行します。ネットワークが遅い、または不安定な場合は候補 mirror と timeout を明示できます：
 
@@ -119,36 +144,40 @@ GH_PROXY=https://ghfast.top \
 bash scripts/install_env.sh full
 ```
 
-`av` は conda の依存解決が遅くなるのを避けるため、デフォルトではまず pip wheel からインストールされます。wheel がない場合は conda にフォールバックします。conda-forge 版が必要な場合は `FLUXVLA_AV_INSTALLER=conda` を指定してください。
+</details>
 
-> **既存インストール向けの注意**
->
-> FluxVLA(v0.1.0) をすでに clone / install している場合、conda 環境を作り直す必要はありません。最新コードを pull し、現在の simulation / model stack で実際に変わった package だけ更新してください：
->
-> ```bash
-> git pull
-> python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
-> python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
-> python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
-> python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
-> python -m pip install --no-build-isolation -e .
-> python -c "import transformers; print(transformers.__version__)"
-> ```
->
-> RoboCasa GR00T support は引き続き optional です。現在のインストーラは `sim-only` と `full` で `./src` 配下の Isaac-GR00T と RoboCasa GR1 local checkout を自動管理します。RoboCasa configs を使わない場合は `--skip-robocasa` を指定してください。
->
-> これらのコマンドは PyTorch や FlashAttention を再インストールしません。既存の `flash-attn==2.5.5` は、現在の PyTorch/CUDA build に対してまだ import できる場合のみ使い続けてください：
->
-> ```bash
-> python - <<'PY'
-> import torch, flash_attn
-> from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
-> print("torch", torch.__version__, "cuda", torch.version.cuda)
-> print("flash-attn", flash_attn.__version__)
-> PY
-> ```
->
-> 現在のインストーラや以下の手順で PyTorch を更新する場合は、対応する FlashAttention wheel も再インストールしてください。現在のインストーラはデフォルトで `flash-attn==2.8.3.post1` を使います。
+### 既存の FluxVLA 環境を更新する
+
+FluxVLA(v0.1.0) をすでに clone / install している場合、conda 環境を作り直す必要はありません。最新コードを pull し、現在の simulation / model stack で実際に変わった package だけ更新してください：
+
+```bash
+git pull
+python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
+python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
+python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+python -m pip install --no-build-isolation -e .
+python -c "import transformers; print(transformers.__version__)"
+```
+
+RoboCasa GR00T support は引き続き optional です。現在のインストーラは `sim-only` と `full` で `./src` 配下の Isaac-GR00T と RoboCasa GR1 local checkout を自動管理します。RoboCasa configs を使わない場合は `--skip-robocasa` を指定してください。
+
+これらのコマンドは PyTorch や FlashAttention を再インストールしません。既存の `flash-attn==2.5.5` は、現在の PyTorch/CUDA build に対してまだ import できる場合のみ使い続けてください：
+
+```bash
+python - <<'PY'
+import torch, flash_attn
+from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("flash-attn", flash_attn.__version__)
+PY
+```
+
+現在のインストーラや以下の手順で PyTorch を更新する場合は、対応する FlashAttention wheel も再インストールしてください。現在のインストーラはデフォルトで `flash-attn==2.8.3.post1` を使います。
+
+### 最初から手動でインストールする
+
+`scripts/install_env.sh` を使わない場合のみ手動インストールを選択してください。先に PyTorch、次に FlashAttention、最後に FluxVLA の残りの依存関係をインストールします。
 
 <details>
 <summary><b>1. conda 環境を作成する</b></summary>
@@ -224,7 +253,7 @@ pip install --no-build-isolation -e .
 </details>
 
 <details>
-<summary><b>RoboCasa GR00T サポート（任意）</b></summary>
+<summary><b>任意：RoboCasa GR00T source checkout</b></summary>
 
 RoboCasa GR00T 設定（例：`configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`）には、固定バージョンの Isaac-GR00T と RoboCasa GR1 task checkout が必要です。one-click installer は `sim-only` と `full` でこれらをデフォルトでインストールし、`./src` 配下に配置します：
 
@@ -255,7 +284,7 @@ editable インストールでは `--no-deps` を推奨します。RoboCasa 関�
 </details>
 
 <details>
-<summary><b>オンライン評価環境（LIBERO / EGL）</b></summary>
+<summary><b>任意：LIBERO / MuJoCo EGL オンライン評価設定</b></summary>
 
 レイトレーシング非対応のデバイス（例：A100）で LIBERO を評価したい場合は、[EGL Device GPU Rendering Configuration](https://github.com/google-deepmind/mujoco/issues/572#issuecomment-2419965230) を参照してください。
 

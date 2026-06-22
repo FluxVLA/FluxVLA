@@ -79,7 +79,13 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 🛠️ 安装
 
-推荐使用一键安装脚本：
+请选择下面一种安装路径：
+
+- **推荐：一键安装脚本**：适用于常规训练、仿真评测和真机推理环境。
+- **更新已有 FluxVLA 环境**：适用于已经安装过早期 FluxVLA，只需要刷新变化依赖的环境。
+- **从头手动安装**：仅在你需要完全控制每一步 package 安装时使用。
+
+### 推荐：一键安装脚本
 
 ```bash
 conda create -n fluxvla python=3.10 -y
@@ -87,11 +93,31 @@ conda activate fluxvla
 
 # 三选一：sim-only、real-only、full
 bash scripts/install_env.sh sim-only
-bash scripts/install_env.sh real-only
-bash scripts/install_env.sh full
+# bash scripts/install_env.sh real-only
+# bash scripts/install_env.sh full
 ```
 
-`sim-only` 安装仿真 / LIBERO / RoboCasa 相关依赖，并默认把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 安装真机和远程推理依赖，`full` 两者都安装。如果不需要 RoboCasa checkout，可以加 `--skip-robocasa`。脚本会自动选择 CUDA PyTorch profile，并优先读取当前 CUDA toolkit / `nvcc` 版本：CUDA >= 12.8 选 `cu128`，否则选 `cu124`；没有 toolkit 时再 fallback 到 driver CUDA，最后才用 GPU 代际兜底。也可以用 `--profile cu128` 或 `--profile cu124` 手动指定。PyTorch 安装完成后，脚本会根据实际 Python tag、PyTorch 版本、CUDA 主版本、C++ ABI 和 CPU 架构自动选择 FlashAttention wheel。如果平台没有匹配的预编译 wheel，可以显式设置 `FLASH_ATTN_WHEEL_URL`，或使用 `--skip-flash-attn` 跳过。
+<details>
+<summary><b>如果安装脚本出问题：检查安装模式和 CUDA profile</b></summary>
+
+`sim-only` 安装仿真 / LIBERO / RoboCasa 相关依赖，并默认把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 安装真机和远程推理依赖，`full` 两者都安装。如果不需要 RoboCasa checkout，可以加 `--skip-robocasa`。
+
+脚本会自动选择 CUDA PyTorch profile，并优先读取当前 CUDA toolkit / `nvcc` 版本：CUDA >= 12.8 选 `cu128`，否则选 `cu124`；没有 toolkit 时再 fallback 到 driver CUDA，最后才用 GPU 代际兜底。也可以用 `--profile cu128` 或 `--profile cu124` 手动指定。
+
+PyTorch 安装完成后，脚本会根据实际 Python tag、PyTorch 版本、CUDA 主版本、C++ ABI 和 CPU 架构自动选择 FlashAttention wheel。如果平台没有匹配的预编译 wheel，可以显式设置 `FLASH_ATTN_WHEEL_URL`，或使用 `--skip-flash-attn` 跳过。
+
+`av` 默认会先通过 pip wheel 安装，避免 conda 依赖解析过慢；如果没有可用 wheel，安装脚本再回退到 conda。如果你明确需要 conda-forge 版本，可以设置 `FLUXVLA_AV_INSTALLER=conda`。
+
+真机 runner 仍然依赖系统 ROS 本身。ROS Noetic 机器上，启动推理前需要先 source ROS：
+
+```bash
+source /opt/ros/noetic/setup.bash
+```
+
+</details>
+
+<details>
+<summary><b>如果安装脚本出问题：使用缓存或镜像里的 FlashAttention wheel</b></summary>
 
 FlashAttention wheel 很大，慢网环境下 GitHub release 下载会占用大部分首次安装时间。重复安装时，可以把匹配的 wheel 文件提前放到 `./wheelhouse/`、`./wheels/` 或 `~/.cache/fluxvla/wheels/`，安装脚本会先用本地文件，不再访问网络。也可以显式指定本地文件或内部镜像：
 
@@ -103,11 +129,10 @@ FLASH_ATTN_WHEEL_BASE_URLS="https://your-mirror.example.com/fluxvla/wheels" \
 bash scripts/install_env.sh sim-only --profile cu128
 ```
 
-真机 runner 仍然依赖系统 ROS 本身。ROS Noetic 机器上，启动推理前需要先 source ROS：
+</details>
 
-```bash
-source /opt/ros/noetic/setup.bash
-```
+<details>
+<summary><b>如果安装脚本出问题：自定义 pip 镜像和超时</b></summary>
 
 安装脚本会优先尊重你已有的 pip 配置。如果该源缺包，或者没有配置 pip 源，它会探测 PyPI 和多个常见镜像，并按当前机器的响应速度排序重试，而不是全局固定某一个镜像。网络较慢或不稳定时，可以自定义候选源和超时：
 
@@ -119,36 +144,40 @@ GH_PROXY=https://ghfast.top \
 bash scripts/install_env.sh full
 ```
 
-`av` 默认会先通过 pip wheel 安装，避免 conda 依赖解析过慢；如果没有可用 wheel，安装脚本再回退到 conda。如果你明确需要 conda-forge 版本，可以设置 `FLUXVLA_AV_INSTALLER=conda`。
+</details>
 
-> **已有安装环境说明**
->
-> 如果你已经按 FluxVLA(v0.1.0) 安装过，不需要重建 conda 环境。拉取最新代码后，只更新当前仿真 / 模型栈实际变化的包即可：
->
-> ```bash
-> git pull
-> python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
-> python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
-> python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
-> python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
-> python -m pip install --no-build-isolation -e .
-> python -c "import transformers; print(transformers.__version__)"
-> ```
->
-> RoboCasa GR00T 支持仍然是可选项。当前安装脚本会在 `sim-only` 和 `full` 中自动管理 `./src` 下的 Isaac-GR00T 与 RoboCasa GR1 本地 checkout；如果不使用 RoboCasa 配置，可以加 `--skip-robocasa`。
->
-> 这些命令不会重装 PyTorch 或 FlashAttention。已有 `flash-attn==2.5.5` 的环境只有在它仍能和当前 PyTorch/CUDA 正常 import 时才建议继续保留：
->
-> ```bash
-> python - <<'PY'
-> import torch, flash_attn
-> from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
-> print("torch", torch.__version__, "cuda", torch.version.cuda)
-> print("flash-attn", flash_attn.__version__)
-> PY
-> ```
->
-> 如果你用当前安装脚本或下面的命令升级了 PyTorch，也需要重新安装匹配的 FlashAttention wheel。当前安装脚本默认使用 `flash-attn==2.8.3.post1`。
+### 更新已有 FluxVLA 环境
+
+如果你已经按 FluxVLA(v0.1.0) 安装过，不需要重建 conda 环境。拉取最新代码后，只更新当前仿真 / 模型栈实际变化的包即可：
+
+```bash
+git pull
+python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
+python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
+python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+python -m pip install --no-build-isolation -e .
+python -c "import transformers; print(transformers.__version__)"
+```
+
+RoboCasa GR00T 支持仍然是可选项。当前安装脚本会在 `sim-only` 和 `full` 中自动管理 `./src` 下的 Isaac-GR00T 与 RoboCasa GR1 本地 checkout；如果不使用 RoboCasa 配置，可以加 `--skip-robocasa`。
+
+这些命令不会重装 PyTorch 或 FlashAttention。已有 `flash-attn==2.5.5` 的环境只有在它仍能和当前 PyTorch/CUDA 正常 import 时才建议继续保留：
+
+```bash
+python - <<'PY'
+import torch, flash_attn
+from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("flash-attn", flash_attn.__version__)
+PY
+```
+
+如果你用当前安装脚本或下面的命令升级了 PyTorch，也需要重新安装匹配的 FlashAttention wheel。当前安装脚本默认使用 `flash-attn==2.8.3.post1`。
+
+### 从头手动安装
+
+仅在不使用 `scripts/install_env.sh` 时采用手动路径。请先安装 PyTorch，再安装 FlashAttention，最后安装 FluxVLA 其余依赖。
 
 <details>
 <summary><b>1. 创建 conda 环境</b></summary>
@@ -223,7 +252,7 @@ pip install --no-build-isolation -e .
 </details>
 
 <details>
-<summary><b>RoboCasa GR00T 支持（可选）</b></summary>
+<summary><b>可选：RoboCasa GR00T 源码 checkout</b></summary>
 
 RoboCasa GR00T 配置（如 `configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`）需要固定版本的 Isaac-GR00T 与 RoboCasa GR1 任务 checkout。一键安装脚本会在 `sim-only` 和 `full` 中默认安装，并放到 `./src` 下：
 
@@ -254,7 +283,7 @@ pip install --no-deps -e ./src/robocasa-gr1-tabletop-tasks
 </details>
 
 <details>
-<summary><b>在线评估环境（LIBERO / EGL）</b></summary>
+<summary><b>可选：LIBERO / MuJoCo EGL 在线评估配置</b></summary>
 
 如果你要在不支持光线追踪的设备（如 A100）上评估 LIBERO，请参考 [EGL Device GPU Rendering Configuration](https://github.com/google-deepmind/mujoco/issues/572#issuecomment-2419965230)。
 
