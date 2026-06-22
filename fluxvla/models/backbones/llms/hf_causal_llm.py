@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from functools import partial
 from typing import Callable, Dict, List, Optional
 
@@ -26,6 +27,23 @@ from fluxvla.engines.utils.overwatch import initialize_overwatch
 from .configs import LLM_BACKBONE_CONFIGS
 
 overwatch = initialize_overwatch(__name__)
+
+
+def _apply_attn_implementation_from_env(config) -> None:
+    attn_impl = os.environ.get('FLUXVLA_ATTN_IMPLEMENTATION')
+    if not attn_impl:
+        return
+    valid = {'eager', 'sdpa', 'flash_attention_2'}
+    if attn_impl not in valid:
+        raise ValueError('FLUXVLA_ATTN_IMPLEMENTATION must be one of '
+                         f'{sorted(valid)}, got {attn_impl!r}.')
+    if hasattr(config, '_attn_implementation'):
+        config._attn_implementation = attn_impl
+    if hasattr(config, 'attn_implementation'):
+        config.attn_implementation = attn_impl
+    overwatch.info(
+        f'Using attention implementation from FLUXVLA_ATTN_IMPLEMENTATION={attn_impl}',  # noqa: E501
+        ctx_level=1)
 
 
 @LLM_BACKBONES.register_module()
@@ -55,7 +73,8 @@ class HFCausalLLMBackbone(nn.Module):
                  llm_config: Dict = None,
                  llm_max_length: int = 2048,
                  hf_token: Optional[str] = None,
-                 inference_mode: bool = False) -> None:
+                 inference_mode: bool = False,
+                 trust_remote_code: bool = True) -> None:
         super().__init__()
         self.llm_family = llm_family
         self.llm_max_length = llm_max_length
@@ -70,19 +89,28 @@ class HFCausalLLMBackbone(nn.Module):
         # more explicit about LLM-specific details
         if not self.inference_mode:
             overwatch.info(
-                f'Loading [bold]{llm_family}[/] LLM from [underline]`{llm_path}`[/]',  # noqa: E501
+                f'Loading [bold]{llm_family}[/] LLM from [underline]{llm_path}[/]',  # noqa: E501
                 ctx_level=1)
             if llm_config is None:
-                llm_config = llm_cfg.from_pretrained(llm_path, token=hf_token)
+                llm_config = llm_cfg.from_pretrained(
+                    llm_path,
+                    token=hf_token,
+                    trust_remote_code=trust_remote_code)
+                _apply_attn_implementation_from_env(llm_config)
                 assert llm_path is not None, \
                     'If not in inference mode, `llm_path` must be provided!'
                 self.llm = model_cls.from_pretrained(
-                    llm_path, config=llm_config, trust_remote_code=True)
+                    llm_path,
+                    config=llm_config,
+                    trust_remote_code=trust_remote_code)
             else:
                 llm_config = llm_cfg(**llm_config)
+                _apply_attn_implementation_from_env(llm_config)
                 if llm_path is not None:
                     self.llm = model_cls.from_pretrained(
-                        llm_path, config=llm_config)
+                        llm_path,
+                        config=llm_config,
+                        trust_remote_code=trust_remote_code)
                 else:
                     self.llm = model_cls(llm_config)
 
@@ -90,9 +118,11 @@ class HFCausalLLMBackbone(nn.Module):
         # no need to load base weights!
         else:
             overwatch.info(
-                f'Building empty [bold]{llm_family}[/] LLM from [underline]`{llm_path}`[/]',  # noqa: E501
+                f'Building empty [bold]{llm_family}[/] LLM from [underline]{llm_path}[/]',  # noqa: E501
                 ctx_level=1)
-            llm_config = AutoConfig.from_pretrained(llm_path, token=hf_token)
+            llm_config = AutoConfig.from_pretrained(
+                llm_path, token=hf_token, trust_remote_code=trust_remote_code)
+            _apply_attn_implementation_from_env(llm_config)
             self.llm = model_cls._from_config(llm_config)
 
         self.llm.config.use_cache = False if not self.inference_mode else True

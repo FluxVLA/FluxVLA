@@ -43,6 +43,10 @@ def main():
     from mmengine import Config
 
     from fluxvla.engines import build_vla_from_cfg
+    from fluxvla.engines.utils.torch_utils import \
+        configure_inference_attention_defaults
+
+    configure_inference_attention_defaults()
 
     cfg = Config.fromfile(args.config)
 

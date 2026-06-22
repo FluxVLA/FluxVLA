@@ -79,6 +79,77 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 🛠️ 安装
 
+推荐使用一键安装脚本：
+
+```bash
+conda create -n fluxvla python=3.10 -y
+conda activate fluxvla
+
+# 三选一：sim-only、real-only、full
+bash scripts/install_env.sh sim-only
+bash scripts/install_env.sh real-only
+bash scripts/install_env.sh full
+```
+
+`sim-only` 安装仿真 / LIBERO / RoboCasa 相关依赖，并默认把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 安装真机和远程推理依赖，`full` 两者都安装。如果不需要 RoboCasa checkout，可以加 `--skip-robocasa`。脚本会自动选择 CUDA PyTorch profile，并优先读取当前 CUDA toolkit / `nvcc` 版本：CUDA >= 12.8 选 `cu128`，否则选 `cu124`；没有 toolkit 时再 fallback 到 driver CUDA，最后才用 GPU 代际兜底。也可以用 `--profile cu128` 或 `--profile cu124` 手动指定。PyTorch 安装完成后，脚本会根据实际 Python tag、PyTorch 版本、CUDA 主版本、C++ ABI 和 CPU 架构自动选择 FlashAttention wheel。如果平台没有匹配的预编译 wheel，可以显式设置 `FLASH_ATTN_WHEEL_URL`，或使用 `--skip-flash-attn` 跳过。
+
+FlashAttention wheel 很大，慢网环境下 GitHub release 下载会占用大部分首次安装时间。重复安装时，可以把匹配的 wheel 文件提前放到 `./wheelhouse/`、`./wheels/` 或 `~/.cache/fluxvla/wheels/`，安装脚本会先用本地文件，不再访问网络。也可以显式指定本地文件或内部镜像：
+
+```bash
+FLASH_ATTN_WHEEL_FILE=/path/to/flash_attn-2.8.3.post1+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl \
+bash scripts/install_env.sh sim-only --profile cu128
+
+FLASH_ATTN_WHEEL_BASE_URLS="https://your-mirror.example.com/fluxvla/wheels" \
+bash scripts/install_env.sh sim-only --profile cu128
+```
+
+真机 runner 仍然依赖系统 ROS 本身。ROS Noetic 机器上，启动推理前需要先 source ROS：
+
+```bash
+source /opt/ros/noetic/setup.bash
+```
+
+安装脚本会优先尊重你已有的 pip 配置。如果该源缺包，或者没有配置 pip 源，它会探测 PyPI 和多个常见镜像，并按当前机器的响应速度排序重试，而不是全局固定某一个镜像。网络较慢或不稳定时，可以自定义候选源和超时：
+
+```bash
+PIP_INDEX_CANDIDATES="https://mirrors.aliyun.com/pypi/simple https://mirrors.cloud.tencent.com/pypi/simple https://pypi.tuna.tsinghua.edu.cn/simple https://pypi.org/simple" \
+PIP_INSTALL_TIMEOUT=7200 \
+PIP_NETWORK_TIMEOUT=900 \
+GH_PROXY=https://ghfast.top \
+bash scripts/install_env.sh full
+```
+
+`av` 默认会先通过 pip wheel 安装，避免 conda 依赖解析过慢；如果没有可用 wheel，安装脚本再回退到 conda。如果你明确需要 conda-forge 版本，可以设置 `FLUXVLA_AV_INSTALLER=conda`。
+
+> **已有安装环境说明**
+>
+> 如果你已经按 FluxVLA(v0.1.0) 安装过，不需要重建 conda 环境。拉取最新代码后，只更新当前仿真 / 模型栈实际变化的包即可：
+>
+> ```bash
+> git pull
+> python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
+> python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+> python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
+> python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+> python -m pip install --no-build-isolation -e .
+> python -c "import transformers; print(transformers.__version__)"
+> ```
+>
+> RoboCasa GR00T 支持仍然是可选项。当前安装脚本会在 `sim-only` 和 `full` 中自动管理 `./src` 下的 Isaac-GR00T 与 RoboCasa GR1 本地 checkout；如果不使用 RoboCasa 配置，可以加 `--skip-robocasa`。
+>
+> 这些命令不会重装 PyTorch 或 FlashAttention。已有 `flash-attn==2.5.5` 的环境只有在它仍能和当前 PyTorch/CUDA 正常 import 时才建议继续保留：
+>
+> ```bash
+> python - <<'PY'
+> import torch, flash_attn
+> from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
+> print("torch", torch.__version__, "cuda", torch.version.cuda)
+> print("flash-attn", flash_attn.__version__)
+> PY
+> ```
+>
+> 如果你用当前安装脚本或下面的命令升级了 PyTorch，也需要重新安装匹配的 FlashAttention wheel。当前安装脚本默认使用 `flash-attn==2.8.3.post1`。
+
 <details>
 <summary><b>1. 创建 conda 环境</b></summary>
 
@@ -106,23 +177,27 @@ pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https
 <details>
 <summary><b>3. 安装 flash-attention</b></summary>
 
-方式 1：通过 pip 直接安装：
+一键安装脚本会从官方 release assets 下载预编译 FlashAttention wheel。手动安装时，也建议安装匹配 Python、PyTorch 和 C++ ABI 的 wheel，不要走源码编译：
 
 ```bash
-pip install psutil ninja packaging
-# MAX_JOBS 控制并行编译线程数，请根据机器资源调整
-MAX_JOBS=8 pip install flash-attn==2.5.5 --no-build-isolation --find-links https://github.com/Dao-AILab/flash-attention/releases
+PYTAG=$(python - <<'PY'
+import sys
+print(f"cp{sys.version_info.major}{sys.version_info.minor}")
+PY
+)
+ABI=$(python - <<'PY'
+import torch
+print(str(torch._C._GLIBCXX_USE_CXX11_ABI).upper())
+PY
+)
+
+pip install --no-deps \
+  "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/flash_attn-2.8.3.post1+cu12torch2.8cxx11abi${ABI}-${PYTAG}-${PYTAG}-linux_x86_64.whl"
 ```
 
-方式 2：源码编译安装（若方式 1 失败，推荐使用）：
+如果安装的是 PyTorch 2.6，把 URL 里的 `torch2.8` 改成 `torch2.6`。
 
-```bash
-git clone https://github.com/Dao-AILab/flash-attention.git
-cd flash-attention
-git checkout v2.5.5
-# MAX_JOBS 控制并行编译线程数，请根据机器资源调整
-MAX_JOBS=8 python setup.py install
-```
+FlashAttention wheel 和 Python、PyTorch、CUDA、C++ ABI 强绑定。`flash-attn==2.5.5` 不是绝对不能用，但只有在它就是为当前 PyTorch/CUDA 组合构建、并且上面的 import 检查通过时才建议保留。只要升级了 PyTorch，就应重新安装匹配的 FlashAttention wheel。
 
 </details>
 
@@ -143,34 +218,35 @@ pip install -r requirements.txt
 pip install --no-build-isolation -e .
 ```
 
-> **说明**：`requirements.txt` 固定了 `torch==2.8.0`，以避免 pip 意外替换掉第 2 步安装的 CUDA 版 PyTorch。若需使用其他 torch 版本，请同时更新第 2 步命令与 `requirements.txt` 中的版本。
+> **说明**：`requirements.txt` 现在组合了 `requirements-base.txt`、`requirements-sim.txt` 和 `requirements-real.txt`，不再安装 PyTorch。请先安装 CUDA 版 PyTorch，或直接使用 `scripts/install_env.sh`。
 
 </details>
 
 <details>
 <summary><b>RoboCasa GR00T 支持（可选）</b></summary>
 
-仅当你需要训练或评估 RoboCasa GR00T 配置（如 `configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`）时，才需要安装这些额外依赖。
-
-首先安装打过补丁的 robosuite：
+RoboCasa GR00T 配置（如 `configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`）需要固定版本的 Isaac-GR00T 与 RoboCasa GR1 任务 checkout。一键安装脚本会在 `sim-only` 和 `full` 中默认安装，并放到 `./src` 下：
 
 ```bash
-pip install git+https://github.com/yinchimaoliang/robosuite.git@7264a82
+bash scripts/install_env.sh sim-only
 ```
 
-然后从本地 checkout 安装 Isaac-GR00T 与 RoboCasa GR1 任务包：
+使用 `FLUXVLA_ROBOCASA_SRC_ROOT=/path/to/src` 可以改 checkout 根目录；使用 `--skip-robocasa` 可以跳过源码安装；使用 `--with-robocasa` 可以在 `real-only` 模式里强制安装。运行时依赖和打过补丁的 robosuite 由 `requirements-sim.txt` 安装。
+
+如果不使用安装脚本，等价的手动命令是：
 
 ```bash
-git clone https://github.com/NVIDIA/Isaac-GR00T.git /path/to/Isaac-GR00T
-cd /path/to/Isaac-GR00T
-git checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
-pip install --no-deps -e /path/to/Isaac-GR00T
+pip install "mujoco==3.2.6" gymnasium lxml
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+
+git clone https://github.com/NVIDIA/Isaac-GR00T.git ./src/Isaac-GR00T
+git -C ./src/Isaac-GR00T checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
+pip install --no-deps -e ./src/Isaac-GR00T
 
 git clone https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git \
-  /path/to/robocasa-gr1-tabletop-tasks
-cd /path/to/robocasa-gr1-tabletop-tasks
-git checkout 4840e671596f93ca03651524b9f72ffb1aadfeff
-pip install --no-deps -e /path/to/robocasa-gr1-tabletop-tasks
+  ./src/robocasa-gr1-tabletop-tasks
+git -C ./src/robocasa-gr1-tabletop-tasks checkout 4840e671596f93ca03651524b9f72ffb1aadfeff
+pip install --no-deps -e ./src/robocasa-gr1-tabletop-tasks
 ```
 
 可编辑安装建议加 `--no-deps`，避免 RoboCasa 相关包替换掉 FluxVLA 模型栈已固定的依赖。RoboCasa 的资产与数据集准备见[数据与资产准备](#数据与资产准备)。
@@ -182,11 +258,15 @@ pip install --no-deps -e /path/to/robocasa-gr1-tabletop-tasks
 
 如果你要在不支持光线追踪的设备（如 A100）上评估 LIBERO，请参考 [EGL Device GPU Rendering Configuration](https://github.com/google-deepmind/mujoco/issues/572#issuecomment-2419965230)。
 
+`scripts/install_env.sh sim-only` 和 `scripts/install_env.sh full` 现在会自动探测 MuJoCo EGL。如果 EGL 设备不可见，安装脚本会尝试安装下面的系统包、创建 NVIDIA GLVND vendor 文件，并写入 `MUJOCO_GL=egl` 的 conda activation hook。需要严格失败时用 `FLUXVLA_EGL_SETUP=always`，需要跳过时用 `--skip-egl-setup`。
+
 **安装系统依赖**
 
 ```bash
 export MUJOCO_GL=egl
-sudo apt install libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-dev
+export PYOPENGL_PLATFORM=egl
+sudo apt-get update
+sudo apt-get install -y libegl1 libglvnd0 libopengl0 libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-dev
 ```
 
 **环境检查**
@@ -210,6 +290,8 @@ sudo apt install libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-de
     }
 }
 ```
+
+之后启动 eval 时需要带上 `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json`，除非你的环境已经设置了它。
 
 </details>
 
@@ -357,18 +439,18 @@ ARM 训练会直接读取该数据集中的 `progress` 列。若需要在没有 
 
 下载所需资产，并放到配置或仿真器期望的本地目录下。
 
-| 资产                  | 下载链接                                                                                                         | 本地目录                                                      |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| RoboCasa 桌面仿真资产 | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| 资产                  | 下载链接                                                                                                         | 本地目录                                                   |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| RoboCasa 桌面仿真资产 | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
 
 推荐方式：在 RoboCasa GR1 任务 checkout 中运行上游资产下载脚本：
 
 ```bash
-cd /path/to/robocasa-gr1-tabletop-tasks
+cd ./src/robocasa-gr1-tabletop-tasks
 python robocasa/scripts/download_tabletop_assets.py -y
 ```
 
-备选方式：从 Hugging Face 下载镜像资产，直接放到 `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets`。无需软链接；仅当资产已存放在其他本地磁盘或共享存储时，软链接才作为一种便利手段。
+备选方式：从 Hugging Face 下载镜像资产，直接放到 `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets`。无需软链接；仅当资产已存放在其他本地磁盘或共享存储时，软链接才作为一种便利手段。
 
 </details>
 

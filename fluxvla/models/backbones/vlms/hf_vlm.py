@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 from abc import abstractmethod
 from typing import Callable, Dict, List, Optional, Sequence, Type
 
@@ -22,25 +23,57 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from .configs import VLM_BACKBONE_CONFIGS
 
 
+def get_attn_implementation_from_env(default: Optional[str] = None):
+    attn_impl = os.environ.get('FLUXVLA_ATTN_IMPLEMENTATION', default)
+    if not attn_impl:
+        return default
+    valid = {'eager', 'sdpa', 'flash_attention_2'}
+    if attn_impl not in valid:
+        raise ValueError('FLUXVLA_ATTN_IMPLEMENTATION must be one of '
+                         f'{sorted(valid)}, got {attn_impl!r}.')
+    return attn_impl
+
+
+def apply_attn_implementation_to_config(config, attn_impl: Optional[str]):
+    if not attn_impl or config is None:
+        return
+
+    for attr in ('_attn_implementation', 'attn_implementation'):
+        setattr(config, attr, attn_impl)
+    for child_name in ('vision_config', 'text_config', 'language_config'):
+        child_config = getattr(config, child_name, None)
+        if child_config is not None:
+            apply_attn_implementation_to_config(child_config, attn_impl)
+
+
 class VLMBackbone(nn.Module):
 
     def __init__(self,
                  vlm_backbone_id: str,
                  vlm_config: Dict,
                  vlm_path: Optional[str] = None,
+                 trust_remote_code: bool = True,
                  **kwargs):
         super().__init__()
         self.vlm_backbone_id = vlm_backbone_id
         self.vlm_path = vlm_path
+        kwargs.setdefault('trust_remote_code', trust_remote_code)
+        attn_impl = get_attn_implementation_from_env(
+            kwargs.get('attn_implementation'))
+        if attn_impl:
+            kwargs['attn_implementation'] = attn_impl
         vlm_cls = VLM_BACKBONE_CONFIGS[vlm_backbone_id]['model_cls']
         vlm_cfg = VLM_BACKBONE_CONFIGS[vlm_backbone_id]['config']
         if vlm_config is None:
             assert vlm_path is not None, 'vlm_config must be provided if vlm_pretrained_config is specified'  # noqa: E501
-            vlm_config = vlm_cfg.from_pretrained(vlm_path)
+            vlm_config = vlm_cfg.from_pretrained(
+                vlm_path, trust_remote_code=trust_remote_code)
+            apply_attn_implementation_to_config(vlm_config, attn_impl)
             self.vlm = vlm_cls.from_pretrained(
                 vlm_path, config=vlm_config, **kwargs)
         else:
             vlm_config = vlm_cfg(**vlm_config)
+            apply_attn_implementation_to_config(vlm_config, attn_impl)
             if vlm_path is not None:
                 self.vlm = vlm_cls.from_pretrained(
                     vlm_path, config=vlm_config, **kwargs)

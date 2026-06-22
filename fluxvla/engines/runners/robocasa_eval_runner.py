@@ -311,19 +311,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
     def run(self):
         """Run the RoboCasa evaluation loop."""
         import gymnasium as gym
-        # Fail early with a clear message when the wrong robosuite version is
-        # imported. RoboCasa GR1 tabletop needs robosuite 1.5.x, while the
-        # package installed for LIBERO may still be robosuite 1.4.1.
-        import robosuite as _robosuite_check
-        if _robosuite_check.__version__ not in ('1.5.0', '1.5.1'):
-            raise RuntimeError(
-                f'[RobocasaEvalRunner] incompatible robosuite version: '
-                f'got {_robosuite_check.__version__} from '
-                f'{_robosuite_check.__file__}. robocasa requires 1.5.x.\n'
-                f'Please start with: '
-                f'prepend /root/projects/robosuite to PYTHONPATH\n'
-                f'See docs/robocasa_docs_yiming/integration_logs/'
-                f'01_env_dependency.md for details.')
+
+        from fluxvla.engines.utils.eval_utils import check_robosuite_runtime
+
+        check_robosuite_runtime('RoboCasa simulation evaluation')
 
         # Trigger RoboCasa Gymnasium environment registration.
         import robocasa  # noqa: F401

@@ -19,7 +19,6 @@ from typing import Dict, List
 
 import av
 import numpy as np
-import tensorflow as tf
 import torch
 import torchvision
 from PIL import Image
@@ -28,7 +27,8 @@ from fluxvla.datasets.utils.video_decode import (
     build_lerobot_video_path, decode_video_frames_torchvision)
 from fluxvla.engines import TRANSFORMS
 from fluxvla.engines.utils.eval_utils import crop_and_resize
-from .transform_images import _resize_hwc_lanczos3_numpy
+from .transform_images import (_resize_hwc_lanczos3_numpy,
+                               _resize_hwc_lanczos3_tensorflow)
 from .utils import pad_to_dim, parse_image
 
 
@@ -344,8 +344,8 @@ class ProcessLiberoEvalInputs:
     """ Process Libero eval inputs.
     This transform loads LIBERO observation images, rotates them, converts
     them to PIL images, and leaves model-specific resizing to later image
-    transforms. If enabled, center crop is applied with the same TensorFlow
-    crop-and-resize path used by the original OpenVLA evaluation.
+    transforms. If enabled, center crop is applied with the OpenVLA-compatible
+    crop-and-resize path.
 
     Args:
         img_keys (List[str]): Image keys to fetch from inputs.
@@ -354,12 +354,13 @@ class ProcessLiberoEvalInputs:
             to 224x224 before later model-specific processing.
         use_pil (bool): If True, use PIL to load the images.
             Default to True.
-        resize_size (int | None): If set, lanczos-resize the rotated raw image
-            to ``(resize_size, resize_size)`` before center crop, using the
-            same numpy lanczos policy as the training-time
-            ``ResizeImagesLanczos``. This keeps eval image resampling aligned
-            with training (and the official OpenVLA pipeline). Default None
-            keeps the legacy behavior (crop directly from the raw frame).
+        resize_size (int | tuple | None): If set, lanczos-resize the rotated
+            raw image before center crop.
+        resize_backend (str): Resize implementation, either ``numpy`` or
+            ``tensorflow``.
+        jpeg_roundtrip (bool): If True, encode/decode JPEG before resizing.
+            This is opt-in because the default eval path for existing
+            checkpoints was trained and validated without JPEG round-trip.
     """
 
     def __init__(self,
@@ -367,11 +368,21 @@ class ProcessLiberoEvalInputs:
                  center_crop: bool = False,
                  use_pil: bool = True,
                  resize_size: int = None,
+                 resize_backend: str = 'numpy',
+                 jpeg_roundtrip: bool = False,
                  embodiment_id: int = None) -> None:
         self.img_keys = img_keys
         self.center_crop = center_crop
         self.use_pil = use_pil
         self.resize_size = resize_size
+        if resize_backend not in {'numpy', 'tensorflow'}:
+            raise ValueError(
+                "resize_backend must be either 'numpy' or 'tensorflow'")
+        if jpeg_roundtrip and resize_backend != 'tensorflow':
+            raise ValueError(
+                "jpeg_roundtrip=True requires resize_backend='tensorflow'")
+        self.resize_backend = resize_backend
+        self.jpeg_roundtrip = jpeg_roundtrip
         self.embodiment_id = embodiment_id
 
     def __call__(self, inputs: Dict) -> Dict:
@@ -380,12 +391,19 @@ class ProcessLiberoEvalInputs:
         replay_img = None
         for img_key in self.img_keys:
             if img_key not in inputs:
-                raise KeyError(f'Image key {img_key!r} missing from inputs!')
+                raise KeyError(f'Missing image key: {img_key!r}')
             img = np.asarray(inputs[img_key])
             img = img[::-1, ::-1].copy()
             if self.resize_size is not None:
-                img = _resize_hwc_lanczos3_numpy(img, self.resize_size,
-                                                 self.resize_size)
+                if isinstance(self.resize_size, int):
+                    height, width = self.resize_size, self.resize_size
+                else:
+                    height, width = self.resize_size
+                if self.resize_backend == 'tensorflow':
+                    img = _resize_hwc_lanczos3_tensorflow(
+                        img, height, width, jpeg_roundtrip=self.jpeg_roundtrip)
+                else:
+                    img = _resize_hwc_lanczos3_numpy(img, height, width)
             if replay_img is None:
                 replay_img = img.copy()
             imgs.append(img)
@@ -397,16 +415,8 @@ class ProcessLiberoEvalInputs:
                 image = image.convert('RGB')
 
                 if self.center_crop:
-                    batch_size = 1
-                    crop_scale = 0.9
-                    image = tf.convert_to_tensor(np.array(image))
-                    orig_dtype = image.dtype
-                    image = tf.image.convert_image_dtype(image, tf.float32)
-                    image = crop_and_resize(image, crop_scale, batch_size)
-                    image = tf.clip_by_value(image, 0, 1)
-                    image = tf.image.convert_image_dtype(
-                        image, orig_dtype, saturate=True)
-                    image = Image.fromarray(image.numpy())
+                    image = Image.fromarray(
+                        crop_and_resize(np.array(image), 0.9, 1))
                     image = image.convert('RGB')
 
                 images.append(image)
