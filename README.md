@@ -107,6 +107,11 @@ bash scripts/install_env.sh sim-only
 the pinned RoboCasa source checkouts under `./src`, `real-only` installs
 real-robot and remote-inference dependencies, and `full` installs both. Pass
 `--skip-robocasa` if you do not need the RoboCasa checkouts.
+RoboCasa simulator assets are downloaded by default whenever the installer
+installs the RoboCasa source checkouts (`sim-only`, `full`, or `real-only --with-robocasa`). The installer calls `scripts/download_robocasa_assets.py`
+and uses `FLUXVLA_ROBOCASA_ASSET_ENDPOINT` (default: `HF_ENDPOINT`, then
+`https://hf-mirror.com`). Use `--skip-robocasa-assets` to skip only the assets,
+or `--skip-robocasa` to skip both the source checkouts and the assets.
 
 The installer selects a CUDA PyTorch profile automatically from the current
 CUDA toolkit / `nvcc` version first: CUDA >= 12.8 selects `cu128`, otherwise it
@@ -182,7 +187,7 @@ git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
-python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -309,7 +314,7 @@ If you are not using the installer, the equivalent manual commands are:
 
 ```bash
 pip install "mujoco==3.2.6" gymnasium lxml
-pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 
 git clone https://github.com/NVIDIA/Isaac-GR00T.git ./src/Isaac-GR00T
 git -C ./src/Isaac-GR00T checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
@@ -512,25 +517,39 @@ ARM training reads the `progress` column directly from this dataset. For RA-BC /
 <details>
 <summary><b>Prepare assets</b></summary>
 
-Download the required assets and place them under the local directories expected by your configuration or simulator.
+Use the FluxVLA asset downloader below as the supported path for RoboCasa GR1
+tabletop tasks. The table lists the upstream archives used by the script;
+manually downloading and extracting those archives is not sufficient for this
+stack because the script also fixes the directory layout and normalizes
+Objaverse XML metadata for the pinned RoboCasa GR1 checkout.
 
-| Asset                              | Download link                                                                                                    | Local directory                                            |
-| ---------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| RoboCasa tabletop simulator assets | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| Asset archives                                             | Download link                                                                                                    | Local directory                                            |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `objaverse.zip`, `textures.zip`, `generative_textures.zip` | [robocasa/robocasa-assets](https://huggingface.co/datasets/robocasa/robocasa-assets)                             | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `fixtures.zip`                                             | [jianzhang96/robocasa-assets](https://huggingface.co/datasets/jianzhang96/robocasa-assets)                       | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `sketchfab.zip`, `lightwheel.zip`                          | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
 
-Recommended option: run the upstream asset downloader from the RoboCasa GR1
-task checkout:
+When using `scripts/install_env.sh`, this downloader runs by default together
+with the RoboCasa source checkouts unless `--skip-robocasa` or
+`--skip-robocasa-assets` is passed. For manual installation or refreshing the
+assets, run this command from the FluxVLA repository root. It downloads the
+required archives through the selected Hugging Face endpoint, extracts them
+into the RoboCasa asset directory, and normalizes the Objaverse XML metadata:
 
 ```bash
-cd ./src/robocasa-gr1-tabletop-tasks
-python robocasa/scripts/download_tabletop_assets.py -y
+python scripts/download_robocasa_assets.py --endpoint https://hf-mirror.com
 ```
 
-Alternative option: download the mirrored assets from Hugging Face and place
-them directly under
-`./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets`.
-Symlinks are not required; they are only a convenience when the assets already
-live on another local disk or shared storage.
+If the archives or extracted assets already exist locally, still run this
+script so the XML compatibility step is applied. For assets that have already
+been extracted into `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets`,
+you can run only the validation and XML normalization step:
+
+```bash
+python scripts/download_robocasa_assets.py --normalize-only
+```
+
+Symlinks are not required; they are only a convenience when the assets already live on another local disk or shared storage.
 
 </details>
 

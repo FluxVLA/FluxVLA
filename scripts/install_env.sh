@@ -71,7 +71,9 @@ FLUXVLA_GROOT_DIR="${FLUXVLA_GROOT_DIR:-${FLUXVLA_ROBOCASA_SRC_ROOT}/Isaac-GR00T
 FLUXVLA_ROBOCASA_GR1_REPO="${FLUXVLA_ROBOCASA_GR1_REPO:-https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git}"
 FLUXVLA_ROBOCASA_GR1_REF="${FLUXVLA_ROBOCASA_GR1_REF:-4840e671596f93ca03651524b9f72ffb1aadfeff}"
 FLUXVLA_ROBOCASA_GR1_DIR="${FLUXVLA_ROBOCASA_GR1_DIR:-${FLUXVLA_ROBOCASA_SRC_ROOT}/robocasa-gr1-tabletop-tasks}"
-FLUXVLA_ROBOCASA_ASSETS="${FLUXVLA_ROBOCASA_ASSETS:-never}"
+FLUXVLA_ROBOCASA_ASSETS="${FLUXVLA_ROBOCASA_ASSETS:-always}"
+FLUXVLA_ROBOCASA_ASSET_ENDPOINT="${FLUXVLA_ROBOCASA_ASSET_ENDPOINT:-${HF_ENDPOINT:-https://hf-mirror.com}}"
+FLUXVLA_ROBOCASA_ASSET_CACHE="${FLUXVLA_ROBOCASA_ASSET_CACHE:-/tmp/robocasa-assets}"
 
 usage() {
   cat <<'EOF'
@@ -102,9 +104,10 @@ Options:
                               real-only mode.
   --skip-robocasa             Skip Isaac-GR00T / RoboCasa GR1 source checkout
                               installation.
-  --with-robocasa-assets      Also download RoboCasa tabletop simulator assets.
-  --skip-robocasa-assets      Skip RoboCasa asset download even if enabled by
-                              FLUXVLA_ROBOCASA_ASSETS.
+  --with-robocasa-assets      Force RoboCasa tabletop simulator asset download
+                              when RoboCasa source checkouts are installed.
+  --skip-robocasa-assets      Skip RoboCasa asset download. --skip-robocasa
+                              also skips asset download.
   -h, --help                  Show this help.
 
 Environment variables:
@@ -203,7 +206,15 @@ Environment variables:
                       path.
   FLUXVLA_ROBOCASA_ASSETS
                       RoboCasa asset download mode: always or never. Default:
-                      never.
+                      always. Assets are downloaded only when RoboCasa source
+                      checkouts are installed.
+  FLUXVLA_ROBOCASA_ASSET_ENDPOINT
+                      Hugging Face endpoint for RoboCasa asset downloads.
+                      Default: HF_ENDPOINT if set, otherwise
+                      https://hf-mirror.com.
+  FLUXVLA_ROBOCASA_ASSET_CACHE
+                      Local archive cache for RoboCasa asset downloads.
+                      Default: /tmp/robocasa-assets.
 
 Examples:
   conda activate fluxvla
@@ -385,6 +396,10 @@ case "${FLUXVLA_ROBOCASA_ASSETS}" in
     exit 1
     ;;
 esac
+
+if [[ "${FLUXVLA_ROBOCASA_INSTALL}" == "never" ]]; then
+  FLUXVLA_ROBOCASA_ASSETS="never"
+fi
 
 detect_gpu_names() {
   if command -v nvidia-smi >/dev/null 2>&1; then
@@ -1559,22 +1574,30 @@ download_robocasa_assets() {
     return
   fi
 
-  local asset_script="${FLUXVLA_ROBOCASA_GR1_DIR}/robocasa/scripts/download_tabletop_assets.py"
+  local asset_downloader="${PROJECT_ROOT}/scripts/download_robocasa_assets.py"
+  local asset_dir="${FLUXVLA_ROBOCASA_GR1_DIR}/robocasa/models/assets"
   if [[ "${DRY_RUN}" == "1" ]]; then
-    echo "+ cd ${FLUXVLA_ROBOCASA_GR1_DIR} && ${PYTHON_BIN} robocasa/scripts/download_tabletop_assets.py -y"
+    echo "+ ${PYTHON_BIN} ${asset_downloader} --assets-dir ${asset_dir} --cache-dir ${FLUXVLA_ROBOCASA_ASSET_CACHE} --endpoint ${FLUXVLA_ROBOCASA_ASSET_ENDPOINT}"
     return
   fi
 
-  if [[ ! -f "${asset_script}" ]]; then
-    echo "Error: RoboCasa asset downloader not found: ${asset_script}" >&2
+  if [[ ! -f "${asset_downloader}" ]]; then
+    echo "Error: FluxVLA RoboCasa asset downloader not found: ${asset_downloader}" >&2
     exit 1
   fi
 
-  echo "Downloading RoboCasa tabletop simulator assets."
-  (
-    cd "${FLUXVLA_ROBOCASA_GR1_DIR}"
-    "${PYTHON_BIN}" robocasa/scripts/download_tabletop_assets.py -y
-  )
+  if ! "${PYTHON_BIN}" - <<'PY' >/dev/null 2>&1
+import huggingface_hub
+PY
+  then
+    pip_install_with_mirrors "huggingface_hub>=0.23"
+  fi
+
+  echo "Downloading and normalizing RoboCasa tabletop simulator assets."
+  "${PYTHON_BIN}" "${asset_downloader}" \
+    --assets-dir "${asset_dir}" \
+    --cache-dir "${FLUXVLA_ROBOCASA_ASSET_CACHE}" \
+    --endpoint "${FLUXVLA_ROBOCASA_ASSET_ENDPOINT}"
 }
 
 install_robocasa_sources() {
@@ -2011,6 +2034,11 @@ main() {
   echo "conda command timeout: ${CONDA_INSTALL_TIMEOUT}s"
   echo "av installer: ${FLUXVLA_AV_INSTALLER}"
   echo "RoboCasa source install: ${FLUXVLA_ROBOCASA_INSTALL}"
+  if needs_robocasa_sources; then
+    echo "RoboCasa asset download: ${FLUXVLA_ROBOCASA_ASSETS}"
+  else
+    echo "RoboCasa asset download: never (RoboCasa source checkout skipped)"
+  fi
   echo "RoboCasa source root: ${FLUXVLA_ROBOCASA_SRC_ROOT}"
 
   ensure_build_tools

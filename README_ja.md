@@ -101,6 +101,14 @@ bash scripts/install_env.sh sim-only
 <summary><b>インストーラで問題が出る場合：mode と CUDA profile を確認する</b></summary>
 
 `sim-only` はシミュレーション / LIBERO / RoboCasa 関連依存関係に加えて、固定バージョンの RoboCasa source checkout を `./src` にインストールします。`real-only` は実機とリモート推論の依存関係を、`full` は両方をインストールします。RoboCasa checkout が不要な場合は `--skip-robocasa` を使ってください。
+インストーラが RoboCasa source checkout をインストールする場合
+（`sim-only`、`full`、または `real-only --with-robocasa`）、RoboCasa
+simulator assets もデフォルトでダウンロードします。インストーラは
+`scripts/download_robocasa_assets.py` を呼び出し、
+`FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（デフォルトは `HF_ENDPOINT`、次に
+`https://hf-mirror.com`）を使用します。asset だけをスキップするには
+`--skip-robocasa-assets`、source checkout と asset の両方をスキップするには
+`--skip-robocasa` を使ってください。
 
 スクリプトは CUDA PyTorch profile を自動選択し、まず現在の CUDA toolkit / `nvcc` version を優先します。CUDA >= 12.8 では `cu128`、それ以外では `cu124` を選択します。toolkit が見つからない場合は driver-reported CUDA、最後に GPU generation を fallback として使います。`--profile cu128` または `--profile cu124` で明示指定できます。
 
@@ -155,7 +163,7 @@ git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
-python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -267,7 +275,7 @@ checkout root を変更するには `FLUXVLA_ROBOCASA_SRC_ROOT=/path/to/src` を
 
 ```bash
 pip install "mujoco==3.2.6" gymnasium lxml
-pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 
 git clone https://github.com/NVIDIA/Isaac-GR00T.git ./src/Isaac-GR00T
 git -C ./src/Isaac-GR00T checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
@@ -467,20 +475,40 @@ ARM の学習は、このデータセットの `progress` 列を直接読み取�
 <details>
 <summary><b>アセットの準備</b></summary>
 
-必要なアセットをダウンロードし、設定やシミュレータが期待するローカルディレクトリに配置してください。
+RoboCasa GR1 tabletop タスクでは、以下の FluxVLA asset downloader を
+サポートされる手順として使用してください。表はスクリプトが使用する
+upstream archive の一覧です。これらの archive を手動でダウンロードして
+展開するだけでは不十分です。このスクリプトは directory layout の修正と、
+固定された RoboCasa GR1 checkout 向けの Objaverse XML metadata の正規化も
+行います。
 
-| アセット                                    | ダウンロードリンク                                                                                               | ローカルディレクトリ                                       |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| RoboCasa テーブルトップシミュレータアセット | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| アセット archive                                           | ダウンロードリンク                                                                                               | ローカルディレクトリ                                       |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `objaverse.zip`, `textures.zip`, `generative_textures.zip` | [robocasa/robocasa-assets](https://huggingface.co/datasets/robocasa/robocasa-assets)                             | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `fixtures.zip`                                             | [jianzhang96/robocasa-assets](https://huggingface.co/datasets/jianzhang96/robocasa-assets)                       | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `sketchfab.zip`, `lightwheel.zip`                          | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
 
-推奨方法：RoboCasa GR1 タスクの checkout からアップストリームのアセットダウンローダーを実行します：
+`scripts/install_env.sh` を使う場合、この downloader は RoboCasa source
+checkout と一緒にデフォルトで実行されます。ただし `--skip-robocasa` または
+`--skip-robocasa-assets` を指定した場合は実行されません。手動インストールや
+asset の再取得では、FluxVLA repository root から以下を実行してください。
+指定した Hugging Face endpoint 経由で必要な archive をダウンロードし、
+RoboCasa の asset directory に展開し、Objaverse XML metadata を正規化します:
 
 ```bash
-cd ./src/robocasa-gr1-tabletop-tasks
-python robocasa/scripts/download_tabletop_assets.py -y
+python scripts/download_robocasa_assets.py --endpoint https://hf-mirror.com
 ```
 
-代替方法：Hugging Face からミラーされたアセットをダウンロードし、`./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` に直接配置します。シンボリックリンクは必須ではなく、アセットが別のローカルディスクや共有ストレージに既に存在する場合の利便性のための手段にすぎません。
+archive または展開済み asset がすでにローカルにある場合でも、XML 互換処理
+を適用するため、このスクリプトは実行してください。asset がすでに
+`./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` に展開済みの場合は、
+validation と XML 正規化だけを実行できます:
+
+```bash
+python scripts/download_robocasa_assets.py --normalize-only
+```
+
+シンボリックリンクは必須ではなく、アセットが別のローカルディスクや共有ストレージに既に存在する場合の利便性のための手段にすぎません。
 
 </details>
 

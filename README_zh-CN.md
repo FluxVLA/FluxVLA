@@ -101,6 +101,12 @@ bash scripts/install_env.sh sim-only
 <summary><b>如果安装脚本出问题：检查安装模式和 CUDA profile</b></summary>
 
 `sim-only` 安装仿真 / LIBERO / RoboCasa 相关依赖，并默认把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 安装真机和远程推理依赖，`full` 两者都安装。如果不需要 RoboCasa checkout，可以加 `--skip-robocasa`。
+安装脚本在安装 RoboCasa source checkout 时会默认下载 RoboCasa 仿真资产
+（`sim-only`、`full`，或 `real-only --with-robocasa`）。脚本会调用
+`scripts/download_robocasa_assets.py`，并使用
+`FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（默认先取 `HF_ENDPOINT`，再回退到
+`https://hf-mirror.com`）。只想跳过资产下载时用 `--skip-robocasa-assets`；
+如果传了 `--skip-robocasa`，source checkout 和资产都会跳过。
 
 脚本会自动选择 CUDA PyTorch profile，并优先读取当前 CUDA toolkit / `nvcc` 版本：CUDA >= 12.8 选 `cu128`，否则选 `cu124`；没有 toolkit 时再 fallback 到 driver CUDA，最后才用 GPU 代际兜底。也可以用 `--profile cu128` 或 `--profile cu124` 手动指定。
 
@@ -155,7 +161,7 @@ git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git"
-python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -266,7 +272,7 @@ bash scripts/install_env.sh sim-only
 
 ```bash
 pip install "mujoco==3.2.6" gymnasium lxml
-pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@4099c09"
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 
 git clone https://github.com/NVIDIA/Isaac-GR00T.git ./src/Isaac-GR00T
 git -C ./src/Isaac-GR00T checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
@@ -466,20 +472,37 @@ ARM 训练会直接读取该数据集中的 `progress` 列。若需要在没有 
 <details>
 <summary><b>准备资产</b></summary>
 
-下载所需资产，并放到配置或仿真器期望的本地目录下。
+RoboCasa GR1 桌面任务请使用下面的 FluxVLA 资产下载脚本作为标准路径。
+下表只是脚本会使用的上游压缩包来源；即使你已经从 Hugging Face mirror
+下载了这些压缩包，也不要只手动解压到目录里，因为脚本还会修正目录结构，
+并为当前固定的 RoboCasa GR1 checkout 规范化 Objaverse XML 元数据。
 
-| 资产                  | 下载链接                                                                                                         | 本地目录                                                   |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
-| RoboCasa 桌面仿真资产 | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| 资产压缩包                                                 | 下载链接                                                                                                         | 本地目录                                                   |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `objaverse.zip`、`textures.zip`、`generative_textures.zip` | [robocasa/robocasa-assets](https://huggingface.co/datasets/robocasa/robocasa-assets)                             | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `fixtures.zip`                                             | [jianzhang96/robocasa-assets](https://huggingface.co/datasets/jianzhang96/robocasa-assets)                       | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `sketchfab.zip`、`lightwheel.zip`                          | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
 
-推荐方式：在 RoboCasa GR1 任务 checkout 中运行上游资产下载脚本：
+使用 `scripts/install_env.sh` 时，默认会随 RoboCasa source checkout 一起运行
+这个下载脚本，除非传了 `--skip-robocasa` 或 `--skip-robocasa-assets`。手动安装
+或需要刷新资产时，在 FluxVLA 仓库根目录运行下面的命令。它会通过指定的
+Hugging Face endpoint 下载所需压缩包，解压到 RoboCasa 资产目录，并规范化
+Objaverse XML 元数据：
 
 ```bash
-cd ./src/robocasa-gr1-tabletop-tasks
-python robocasa/scripts/download_tabletop_assets.py -y
+python scripts/download_robocasa_assets.py --endpoint https://hf-mirror.com
 ```
 
-备选方式：从 Hugging Face 下载镜像资产，直接放到 `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets`。无需软链接；仅当资产已存放在其他本地磁盘或共享存储时，软链接才作为一种便利手段。
+如果压缩包或解压后的资产已经在本地，也仍然需要跑这个脚本，以确保 XML
+兼容处理已经执行。若资产已经完整解压到
+`./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets`，可以只运行校验和
+XML 规范化步骤：
+
+```bash
+python scripts/download_robocasa_assets.py --normalize-only
+```
+
+无需软链接；仅当资产已存放在其他本地磁盘或共享存储时，软链接才作为一种便利手段。
 
 </details>
 
