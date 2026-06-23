@@ -455,6 +455,16 @@ class BaseTrainRunner(ABC):
             return math.ceil(dataset_len / self.global_batch_size)
 
     @staticmethod
+    def _build_dataloader_generator() -> Optional[torch.Generator]:
+        seed = os.environ.get('EXPERIMENT_GLOBAL_SEED')
+        if seed is None:
+            return None
+
+        generator = torch.Generator()
+        generator.manual_seed(int(seed) + overwatch.rank())
+        return generator
+
+    @staticmethod
     def _tensor_for_safetensors(tensor):
         """Return a contiguous tensor for safetensors export."""
         if isinstance(tensor, torch.Tensor) and not tensor.is_contiguous():
@@ -673,6 +683,7 @@ class BaseTrainRunner(ABC):
             collate_fn=self.collator,
             num_workers=self.per_device_num_workers,
             worker_init_fn=worker_init_function,
+            generator=self._build_dataloader_generator(),
             pin_memory=True,
             prefetch_factor=2 if use_workers else None,
             persistent_workers=use_workers)

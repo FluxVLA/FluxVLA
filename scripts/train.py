@@ -29,6 +29,7 @@ from fluxvla.datasets.utils import (save_dataset_statistics,
                                     save_grouped_dataset_statistics)
 from fluxvla.engines import (build_dataset_from_cfg, build_runner_from_cfg,
                              initialize_overwatch)
+from fluxvla.engines.utils.torch_utils import set_global_seed
 
 overwatch = initialize_overwatch(__name__)
 
@@ -294,12 +295,43 @@ def _resolve_eval_ckpt_path(ckpt_path):
     return ckpt_path
 
 
+def _get_nested_value(obj, path):
+    for key in path:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            obj = obj.get(key)
+        else:
+            obj = getattr(obj, key, None)
+    return obj
+
+
+def _resolve_train_seed(cfg):
+    """Resolve the training seed from existing config fields."""
+    for path in (
+        ('runner', 'seed'),
+        ('train_dataloader', 'seed'),
+        ('train_dataloader', 'dataset', 'seed'),
+        ('seed', ),
+    ):
+        seed = _get_nested_value(cfg, path)
+        if seed is not None:
+            return int(seed)
+    return None
+
+
 def train(args, cfg):
     """Train the model with the given configuration.
 
     Args:
         cfg (Config): The configuration object containing training settings.
     """
+    seed = _resolve_train_seed(cfg)
+    if seed is not None:
+        set_global_seed(seed)
+        if overwatch.is_rank_zero():
+            overwatch.info(f'Training seed set to {seed}.')
+
     os.makedirs(args.work_dir, exist_ok=True)
     dataset = build_dataset_from_cfg(cfg.train_dataloader.dataset)
     if overwatch.is_rank_zero() and hasattr(dataset, 'dataset_statistics'):
