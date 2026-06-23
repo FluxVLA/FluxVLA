@@ -307,11 +307,12 @@ def _get_nested_value(obj, path):
 
 
 def _resolve_train_seed(cfg):
-    """Resolve the training seed from existing config fields."""
+    """Resolve an explicit training seed from existing config fields."""
+    # Dataset-level seeds control dataset sampling order and may already exist
+    # in older configs; do not promote them to global training seeds.
     for path in (
         ('runner', 'seed'),
         ('train_dataloader', 'seed'),
-        ('train_dataloader', 'dataset', 'seed'),
         ('seed', ),
     ):
         seed = _get_nested_value(cfg, path)
