@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 from abc import abstractmethod
 from typing import Callable, Dict, List, Optional, Sequence, Type
 
@@ -23,13 +22,12 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from .configs import VLM_BACKBONE_CONFIGS
 
 
-def get_attn_implementation_from_env(default: Optional[str] = None):
-    attn_impl = os.environ.get('FLUXVLA_ATTN_IMPLEMENTATION', default)
+def validate_attn_implementation(attn_impl: Optional[str]):
     if not attn_impl:
-        return default
+        return attn_impl
     valid = {'eager', 'sdpa', 'flash_attention_2'}
     if attn_impl not in valid:
-        raise ValueError('FLUXVLA_ATTN_IMPLEMENTATION must be one of '
+        raise ValueError('attn_implementation must be one of '
                          f'{sorted(valid)}, got {attn_impl!r}.')
     return attn_impl
 
@@ -58,10 +56,8 @@ class VLMBackbone(nn.Module):
         self.vlm_backbone_id = vlm_backbone_id
         self.vlm_path = vlm_path
         kwargs.setdefault('trust_remote_code', trust_remote_code)
-        attn_impl = get_attn_implementation_from_env(
+        attn_impl = validate_attn_implementation(
             kwargs.get('attn_implementation'))
-        if attn_impl:
-            kwargs['attn_implementation'] = attn_impl
         vlm_cls = VLM_BACKBONE_CONFIGS[vlm_backbone_id]['model_cls']
         vlm_cfg = VLM_BACKBONE_CONFIGS[vlm_backbone_id]['config']
         if vlm_config is None:

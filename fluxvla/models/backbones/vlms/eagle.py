@@ -29,8 +29,7 @@ from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl impo
     Eagle2_5_VLForConditionalGeneration  # noqa: E501
 from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl_inference import \
     Eagle2_5_VLInferenceForConditionalGeneration  # noqa: E501
-from .hf_vlm import (apply_attn_implementation_to_config,
-                     get_attn_implementation_from_env)
+from .hf_vlm import apply_attn_implementation_to_config
 
 
 @VLM_BACKBONES.register_module()
@@ -72,8 +71,7 @@ class EagleBackbone(nn.Module):
 
         # Ensure the attention implementation is set before model creation.
         # This must be done BEFORE model creation
-        attn_impl = get_attn_implementation_from_env('flash_attention_2')
-        apply_attn_implementation_to_config(config, attn_impl)
+        apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
         # dtype This avoids the expensive .to() conversion after initialization
@@ -281,8 +279,7 @@ class EagleInferenceBackbone(nn.Module):
 
         # Ensure the attention implementation is set before model creation.
         # This must be done BEFORE model creation
-        attn_impl = get_attn_implementation_from_env('flash_attention_2')
-        apply_attn_implementation_to_config(config, attn_impl)
+        apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
         # dtype This avoids the expensive .to() conversion after initialization

@@ -23,7 +23,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import \
     Qwen2_5_VLDecoderLayer
 
 from fluxvla.engines import VLM_BACKBONES
-from .hf_vlm import VLMBackbone, get_attn_implementation_from_env
+from .hf_vlm import VLMBackbone
 
 
 @VLM_BACKBONES.register_module()
@@ -47,7 +47,7 @@ class QWen2_5VL(VLMBackbone):
                  vlm_backbone_id: str,
                  vlm_config: Dict = None,
                  vlm_path: Optional[str] = None) -> None:
-        attn_impl = get_attn_implementation_from_env('flash_attention_2')
+        attn_impl = 'flash_attention_2'
         super().__init__(
             vlm_backbone_id,
             vlm_config,

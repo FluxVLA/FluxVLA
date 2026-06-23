@@ -22,7 +22,6 @@ import torch
 # === Randomness ===
 
 DEFAULT_INFERENCE_SDPA_BACKENDS = None
-DEFAULT_INFERENCE_ATTN_IMPLEMENTATION = None
 
 
 def configure_sdpa_backends_from_env(default: str = None) -> None:
@@ -59,20 +58,15 @@ def configure_sdpa_backends_from_env(default: str = None) -> None:
 
 def configure_inference_attention_defaults(
     default_sdpa_backends: Optional[str] = DEFAULT_INFERENCE_SDPA_BACKENDS,
-    default_attn_implementation: Optional[
-        str] = DEFAULT_INFERENCE_ATTN_IMPLEMENTATION
 ) -> None:
     """Apply explicit attention backend overrides for inference entrypoints.
 
     By default this keeps the model / PyTorch attention implementation
-    unchanged. Set ``FLUXVLA_SDPA_BACKENDS`` or
-    ``FLUXVLA_ATTN_IMPLEMENTATION`` to override a run explicitly.
+    unchanged. Set ``FLUXVLA_SDPA_BACKENDS`` to override SDPA backends for a
+    run explicitly.
     """
     if default_sdpa_backends is not None:
         os.environ.setdefault('FLUXVLA_SDPA_BACKENDS', default_sdpa_backends)
-    if default_attn_implementation is not None:
-        os.environ.setdefault('FLUXVLA_ATTN_IMPLEMENTATION',
-                              default_attn_implementation)
     configure_sdpa_backends_from_env(default_sdpa_backends)
 
 
