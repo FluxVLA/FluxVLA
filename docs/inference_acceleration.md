@@ -142,15 +142,82 @@ inference_model = dict(
 
 PI0.5 uses a unified inference model class `PI05FlowMatchingInference` that replaces the entire pipeline with Triton-fused operations and a single CUDA Graph. The inference model is automatically selected during evaluation.
 
-### GR00T-RTC Example
+### PI0.5-RTC Example
 
-GR00T-RTC uses the existing GR00T acceleration path (`EagleInferenceBackbone` + `FlowMatchingInferenceHead`) and adds RTC at the runner/head boundary. The RTC runner resamples the remaining part of the previously predicted action chunk, passes it as `prev_actions` with `prefix_len`, and the accelerated head fills CUDA Graph prefix buffers before replay. No PI0.5 unified-graph implementation is required.
+PI0.5-RTC extends the accelerated pipeline with real-time control (RTC) support via `PI05FlowMatchingRTCInference`. It reuses the same whole-fused-kernel CUDA Graph backend while adding action-chunk prefix conditioning, allowing the model to refine predictions based on previously executed actions.
 
-See `configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py` and
-`configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`:
+See `configs/pi05/pi05_paligemma_aloha_rtc_kernel_inference.py`:
 
 ```python
-_base_ = './gr00t_eagle_3b_aloha_full_finetune.py'
+inference_model = dict(
+    type='PI05FlowMatchingRTCInference',
+    pretrained_name_or_path=  # noqa: E251
+    './checkpoints/pi05_base/model.safetensors',  # noqa: E501
+    num_views=2,
+    llm_backbone=dict(
+        type='ConditionGemmaInferenceModel',
+            ...
+    ),
+   vision_backbone=dict(
+        type='SigLIPViTBackboneInference',
+            ...
+    ),
+    projector=dict(
+        type='LinearProjectorInference',
+        in_dim=1152,
+        out_dim=2048,
+    ),
+    action_in_proj=dict(
+        type='LinearProjectorInference', in_dim=32, out_dim=1024),
+    action_out_proj=dict(
+        type='LinearProjectorInference', in_dim=1024, out_dim=32),
+    time_mlp_in=dict(
+        type='LinearProjectorInference', in_dim=1024, out_dim=1024),
+    time_mlp_out=dict(
+        type='LinearProjectorInference', in_dim=1024, out_dim=1024),
+    llm_expert=dict(
+        type='ConditionGemmaInferenceModel',
+            ...
+    ),
+    name_mapping={
+        'llm_backbone': 'paligemma_with_expert.paligemma.model.language_model',
+        'vision_backbone.vision':
+        'paligemma_with_expert.paligemma.model.vision_tower',
+        'projector.projector':
+        'paligemma_with_expert.paligemma.model.multi_modal_projector.linear',
+        'llm_expert': 'paligemma_with_expert.gemma_expert.model',
+        'time_mlp_in.projector': 'time_mlp_in',
+        'time_mlp_out.projector': 'time_mlp_out',
+        'action_in_proj.projector': 'action_in_proj',
+        'action_out_proj.projector': 'action_out_proj',
+        'llm_backbone.embed_tokens': 'paligemma_with_expert.paligemma.lm_head'
+    },
+    params_to_change_dtype=[
+        'llm_expert.llm.model.layers',
+        'vlm_backbone.vlm.model.language_model.layers',
+        'vlm_backbone.vlm.model.vision_tower',
+        'vlm_backbone.vlm.model.multi_modal_projector',
+    ])
+
+inference = dict(
+    type='AlohaRTCInferenceRunner',
+    async_execution=True,
+    execute_horizon=0,
+    rtc_config=dict(
+        enabled=True,
+        method='prefix',
+        prefix_len=5,  # based on deployment inference frequency
+    ),
+    ...)
+```
+
+### GR00T-RTC Example
+
+GR00T-RTC uses the existing GR00T acceleration path (`EagleInferenceBackbone` + `FlowMatchingInferenceHead`) and adds RTC at the runner/head boundary. The RTC runner resamples the remaining part of the previously predicted action chunk, passes it as `prev_actions` with `prefix_len`, and the accelerated head fills CUDA Graph prefix buffers before replay.
+
+See `configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`:
+
+```python
 
 inference_model = dict(
     type='LlavaVLA',
@@ -158,7 +225,7 @@ inference_model = dict(
     vla_head=dict(type='FlowMatchingInferenceHead', ...))
 
 inference = dict(
-    type='AlohaRTCInferenceRunner',
+    type='URRTCInferenceRunner',
     async_execution=True,
     execute_horizon=10,
     rtc_config=dict(
@@ -169,42 +236,18 @@ inference = dict(
     ...)
 ```
 
-For Tron2 deployment, use `configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference.py`; it overrides the original Tron2 inference model to the same GR00T accelerated backbone/head and switches the runner to `Tron2RTCInferenceRunner`.
-
-For UR3 deployment, use
-`configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`. It inherits the
-UR3 RTC config, keeps the accelerated GR00T model path
-(`EagleInferenceBackbone` + `FlowMatchingInferenceHead`), and switches the
-runner to `URRTCInferenceRunner`.
-
 #### What changed for GR00T-RTC acceleration
 
-| Area                | Change                                                                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| Accelerated model   | Use the existing GR00T inference model path: `EagleInferenceBackbone` + `FlowMatchingInferenceHead`.                      |
-| RTC runner          | Use `AlohaRTCInferenceRunner` or `Tron2RTCInferenceRunner` so previous action chunks are passed back as RTC prefixes.     |
-| RTC method          | Use `rtc_config.method='prefix'`; this is the supported RTC method in the accelerated GR00T head.                         |
+| Area                | Change                                                                                                                                                                                 |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Accelerated model   | Use the existing GR00T inference model path: `EagleInferenceBackbone` + `FlowMatchingInferenceHead`.                                                                                   |
+| RTC runner          | Use `AlohaRTCInferenceRunner` or `Tron2RTCInferenceRunner` so previous action chunks are passed back as RTC prefixes.                                                                  |
+| RTC method          | Use `rtc_config.method='prefix'`; this is the supported RTC method in the accelerated GR00T head.                                                                                      |
 | Config entry points | Add `configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py`, `configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference.py`, and `configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`. |
 
 #### Usage
 
-ALOHA:
-
-```bash
-python scripts/inference.py \
-    --config configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py \
-    --ckpt_path /path/to/checkpoint.pt
-```
-
-Tron2:
-
-```bash
-python scripts/inference.py \
-    --config configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference.py \
-    --ckpt_path /path/to/checkpoint.pt
-```
-
-UR3 real robot:
+The RTC prefix method is robot-agnostic and can be applied to all supported robot embodiments. UR3:
 
 ```bash
 python scripts/inference_real_robot.py \
@@ -214,12 +257,12 @@ python scripts/inference_real_robot.py \
 
 Key inference parameters:
 
-| Parameter                    | Purpose                                                                                                                 |
-| ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Parameter                    | Purpose                                                                                                                                 |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | `async_execution=True`       | Enables overlapping execution and inference for ALOHA/Tron2, allowing the next prediction to condition on the remaining previous chunk. |
-| `execute_horizon=10`         | Executes only the first 10 actions from each chunk; tune this to match deployment latency and control frequency.        |
-| `rtc_config.prefix_len=5`    | Locks the first 5 denoising steps to the resampled previous action prefix.                                              |
-| `rtc_config.method='prefix'` | Selects prefix inpainting RTC, which is CUDA Graph compatible in `FlowMatchingInferenceHead`.                           |
+| `execute_horizon=10`         | Executes only the first 10 actions from each chunk; tune this to match deployment latency and control frequency.                        |
+| `rtc_config.prefix_len=5`    | Locks the first 5 denoising steps to the resampled previous action prefix.                                                              |
+| `rtc_config.method='prefix'` | Selects prefix inpainting RTC, which is CUDA Graph compatible in `FlowMatchingInferenceHead`.                                           |
 
 UR3 uses synchronous `servoj` / gripper command publication, so the
 `URRTCInferenceRunner` records when the current horizon starts executing and
@@ -267,3 +310,9 @@ Notes:
 | Model     | Baseline (Hz) | Accelerated (Hz) | Speedup |
 | --------- | ------------- | ---------------- | ------- |
 | PI0.5-rtc | 3.4           | 19.6             | 6.66x   |
+
+### On AGX Orin 64GB Device (Inference Frequency)
+
+| Model | Baseline (Hz) | Accelerated (Hz) | Speedup |
+| ----- | ------------- | ---------------- | ------- |
+| GR00T | 3.2           | 5.26             | 1.63x   |
