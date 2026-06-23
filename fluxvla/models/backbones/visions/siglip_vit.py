@@ -47,6 +47,8 @@ class SigLIPViTBackbone(VisionBackbone):
             vision_config = vision_cfg(**vision_config)
             self.vision = vision_cls(vision_config)
         else:
+            pretrained_cfg = dict(pretrained_cfg)
+            pretrained_cfg.setdefault('trust_remote_code', True)
             self.vision = vision_cls.from_pretrained(**pretrained_cfg)
 
     def get_fsdp_wrapping_policy(self) -> Callable:

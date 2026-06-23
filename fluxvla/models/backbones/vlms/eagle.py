@@ -29,6 +29,7 @@ from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl impo
     Eagle2_5_VLForConditionalGeneration  # noqa: E501
 from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl_inference import \
     Eagle2_5_VLInferenceForConditionalGeneration  # noqa: E501
+from .hf_vlm import apply_attn_implementation_to_config
 
 
 @VLM_BACKBONES.register_module()
@@ -54,7 +55,9 @@ class EagleBackbone(nn.Module):
                  vlm_config: Dict = None,
                  project_to_dim: Optional[int] = None,
                  select_layer: int = 12,
-                 dtype='float32'):
+                 dtype='float32',
+                 tune_llm: Optional[bool] = None,
+                 tune_visual: Optional[bool] = None):
         super().__init__()
 
         config = AutoConfig.from_pretrained(vlm_path, trust_remote_code=True)
@@ -66,13 +69,9 @@ class EagleBackbone(nn.Module):
         elif hasattr(config, 'num_hidden_layers'):
             config.num_hidden_layers = select_layer
 
-        # Ensure flash_attention_2 is set for both vision and text configs
+        # Ensure the attention implementation is set before model creation.
         # This must be done BEFORE model creation
-        config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'vision_config'):
-            config.vision_config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'text_config'):
-            config.text_config._attn_implementation = 'flash_attention_2'
+        apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
         # dtype This avoids the expensive .to() conversion after initialization
@@ -95,6 +94,65 @@ class EagleBackbone(nn.Module):
 
         self.select_layer = select_layer
         self.config = config
+        # None keeps legacy FluxVLA behavior. Explicit True/False enables
+        # GR00T N1.5-style partial VLM tuning from the config.
+        self.tune_llm = tune_llm
+        self.tune_visual = tune_visual
+
+    def apply_trainable_policy(self) -> None:
+        """Apply official GR00T N1.5-style VLM tuning if configured."""
+        if self.tune_llm is None and self.tune_visual is None:
+            return
+
+        for p in self.parameters():
+            p.requires_grad = True
+
+        # Official RoboCasa --tune-visual keeps the Eagle LLM frozen while
+        # allowing the vision tower to adapt to the RoboCasa visual domain.
+        if self.tune_llm is False and hasattr(self.vlm, 'language_model'):
+            self.vlm.language_model.requires_grad_(False)
+        if self.tune_visual is False:
+            if hasattr(self.vlm, 'vision_model'):
+                self.vlm.vision_model.requires_grad_(False)
+            if hasattr(self.vlm, 'mlp1'):
+                self.vlm.mlp1.requires_grad_(False)
+        print(f'Tune backbone llm: {self.tune_llm}')
+        print(f'Tune backbone visual: {self.tune_visual}')
+        self._print_trainable_policy_summary()
+        if not any(p.requires_grad for p in self.parameters()):
+            print('Warning: No backbone trainable parameters found.')
+
+    @staticmethod
+    def _count_trainable_params(module: nn.Module) -> tuple[int, int]:
+        total = sum(p.numel() for p in module.parameters())
+        trainable = sum(p.numel() for p in module.parameters()
+                        if p.requires_grad)
+        return trainable, total
+
+    def _print_trainable_policy_summary(self) -> None:
+        # These prints are intentionally explicit so DLC logs can verify
+        # whether official-style LLM freezing really took effect.
+        if hasattr(self.vlm, 'language_model'):
+            trainable, total = self._count_trainable_params(
+                self.vlm.language_model)
+            print('Eagle language_model trainable params: '
+                  f'{trainable}/{total}')
+        if hasattr(self.vlm, 'vision_model'):
+            trainable, total = self._count_trainable_params(
+                self.vlm.vision_model)
+            print(f'Eagle vision_model trainable params: {trainable}/{total}')
+        if hasattr(self.vlm, 'mlp1'):
+            trainable, total = self._count_trainable_params(self.vlm.mlp1)
+            print(f'Eagle mlp1 trainable params: {trainable}/{total}')
+
+    def set_frozen_modules_to_eval_mode(self) -> None:
+        # Match official GR00T behavior: frozen submodules stay in eval mode
+        # even when the outer model is switched back to train() each step.
+        if self.training:
+            if self.tune_llm is False and hasattr(self.vlm, 'language_model'):
+                self.vlm.language_model.eval()
+            if self.tune_visual is False and hasattr(self.vlm, 'vision_model'):
+                self.vlm.vision_model.eval()
 
     def prepare_input(self, batch: dict) -> BatchFeature:
         return BatchFeature(data=batch)
@@ -129,6 +187,7 @@ class EagleBackbone(nn.Module):
                 lang_masks: Optional[torch.Tensor] = None,
                 *args,
                 **kwargs) -> BatchFeature:
+        self.set_frozen_modules_to_eval_mode()
 
         vlm_output = self.vlm(
             input_ids=lang_tokens,
@@ -218,13 +277,9 @@ class EagleInferenceBackbone(nn.Module):
         elif hasattr(config, 'num_hidden_layers'):
             config.num_hidden_layers = select_layer
 
-        # Ensure flash_attention_2 is set for both vision and text configs
+        # Ensure the attention implementation is set before model creation.
         # This must be done BEFORE model creation
-        config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'vision_config'):
-            config.vision_config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'text_config'):
-            config.text_config._attn_implementation = 'flash_attention_2'
+        apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
         # dtype This avoids the expensive .to() conversion after initialization

@@ -6,20 +6,20 @@ from .condition_gemma import ConditionGemmaModel
 
 @LLM_BACKBONES.register_module()
 class ConditionGemmaInferenceModel(ConditionGemmaModel):
-    """Inference variant of ConditionGemma with Triton weight prep.
+    """Inference variant of ConditionGemma with weight materialization.
 
-    Extends :class:`ConditionGemmaModel` with :meth:`prepare_triton`,
+    Extends :class:`ConditionGemmaModel` with :meth:`materialize_weights`,
     which extracts, fuses and reformats model weights for the
-    Triton-based CUDA-graph inference pipeline
+    kernel-based CUDA-graph inference pipeline
     (:class:`PI05FlowMatchingInference`).
 
-    Weight pre-processing performed by :meth:`prepare_triton`:
+    Weight pre-processing performed by :meth:`materialize_weights`:
 
     * **Encoder (role='llm')**: Fuses RMSNorm scale ``(1 + w)``
       into QKV / gate / up projections so that normalization and
       linear projection become a single matmul.  Converts Q/K
       weight layout from ``[heads, head_dim, in]`` to the
-      interleaved format required by Triton fused-RoPE kernels.
+      interleaved format required by fused-RoPE kernels.
     * **Decoder (role='expert')**: Collects AdaRMS modulation
       weights (``input_layernorm.dense``,
       ``post_attention_layernorm.dense``) and final-norm
@@ -28,8 +28,9 @@ class ConditionGemmaInferenceModel(ConditionGemmaModel):
       uses adaptive (input-dependent) normalization.
 
     All returned tensors are bf16, column-major (transposed),
-    contiguous, and on CUDA — ready to be consumed by
-    :meth:`PI05FlowMatchingInference.prepare_triton_inference`.
+    contiguous, and kept on CPU until the VLA inference wrapper moves
+    final weights to CUDA — ready to be consumed by
+    :meth:`PI05FlowMatchingInference.materialize_inference_weights`.
 
     Args:
         Inherits all arguments from :class:`ConditionGemmaModel`.
@@ -39,8 +40,8 @@ class ConditionGemmaInferenceModel(ConditionGemmaModel):
         encoder = ConditionGemmaInferenceModel(**cfg_enc)
         decoder = ConditionGemmaInferenceModel(**cfg_dec)
         weights = {}
-        weights.update(encoder.prepare_triton(role='llm'))
-        weights.update(decoder.prepare_triton(role='expert'))
+        weights.update(encoder.materialize_weights(role='llm'))
+        weights.update(decoder.materialize_weights(role='expert'))
     """
 
     def _apply_rope_format_conversion(self,
@@ -49,7 +50,7 @@ class ConditionGemmaInferenceModel(ConditionGemmaModel):
                                       head_dim=256,
                                       num_heads_q=8,
                                       num_heads_k=1):
-        """Convert Q/K weights from training format to Triton RoPE format."""
+        """Convert Q/K weights from training format to fused-RoPE format."""
         in_dim = w_q.shape[1]
         out_dim_q = num_heads_q * head_dim
 
@@ -62,14 +63,17 @@ class ConditionGemmaInferenceModel(ConditionGemmaModel):
 
         return w_q, w_k
 
-    def prepare_triton(self, role='llm') -> dict:
+    def materialize_weights(self, role='llm') -> dict:
         weights = {}
 
         if role == 'llm':
             llm = self.layers
             n = len(self.layers)
-            attn_qkv_w, attn_o_w = [], []
-            ffn_gate_w, ffn_up_w, ffn_down_w = [], [], []
+            encoder_attn_qkv_w = None
+            encoder_attn_o_w = None
+            encoder_ffn_gate_w = None
+            encoder_ffn_up_w = None
+            encoder_ffn_down_w = None
 
             for i in range(n):
                 layer = llm[i]
@@ -80,7 +84,7 @@ class ConditionGemmaInferenceModel(ConditionGemmaModel):
                 q_w = layer.self_attn.q_proj.weight.data.float()
                 k_w = layer.self_attn.k_proj.weight.data.float()
                 v_w = layer.self_attn.v_proj.weight.data.float()
-                o_w = layer.self_attn.o_proj.weight.data.float()
+                o_w = layer.self_attn.o_proj.weight.data
 
                 scale = (1 + pre_attn_norm).unsqueeze(0)
                 q_w = q_w * scale
@@ -88,83 +92,131 @@ class ConditionGemmaInferenceModel(ConditionGemmaModel):
                 v_w = v_w * scale
 
                 q_w, k_w = self._apply_rope_format_conversion(q_w, k_w)
-                qkv_w = torch.cat([q_w.T, k_w.T, v_w.T], dim=1)
-                attn_qkv_w.append(qkv_w.bfloat16().cuda())
-                attn_o_w.append(o_w.T.contiguous().bfloat16().cuda())
+                qkv_w = torch.cat([q_w.T, k_w.T, v_w.T], dim=1).bfloat16()
+                o_w = o_w.T.contiguous().bfloat16()
 
                 gate_w = layer.mlp.gate_proj.weight.data.float()
                 up_w = layer.mlp.up_proj.weight.data.float()
-                down_w = layer.mlp.down_proj.weight.data.float()
+                down_w = layer.mlp.down_proj.weight.data
 
                 ffn_scale = (1 + pre_ffn_norm).unsqueeze(0)
-                gate_w = gate_w * ffn_scale
-                up_w = up_w * ffn_scale
+                gate_w = (gate_w * ffn_scale).T.contiguous().bfloat16()
+                up_w = (up_w * ffn_scale).T.contiguous().bfloat16()
+                down_w = down_w.T.contiguous().bfloat16()
 
-                ffn_gate_w.append(gate_w.T.contiguous().bfloat16().cuda())
-                ffn_up_w.append(up_w.T.contiguous().bfloat16().cuda())
-                ffn_down_w.append(down_w.T.contiguous().bfloat16().cuda())
+                if encoder_attn_qkv_w is None:
+                    encoder_attn_qkv_w = torch.empty((n, *qkv_w.shape),
+                                                     dtype=torch.bfloat16)
+                    encoder_attn_o_w = torch.empty((n, *o_w.shape),
+                                                   dtype=torch.bfloat16)
+                    encoder_ffn_gate_w = torch.empty((n, *gate_w.shape),
+                                                     dtype=torch.bfloat16)
+                    encoder_ffn_up_w = torch.empty((n, *up_w.shape),
+                                                   dtype=torch.bfloat16)
+                    encoder_ffn_down_w = torch.empty((n, *down_w.shape),
+                                                     dtype=torch.bfloat16)
 
-            weights['encoder_attn_qkv_w'] = torch.stack(attn_qkv_w)
-            weights['encoder_attn_o_w'] = torch.stack(attn_o_w)
-            weights['encoder_ffn_gate_w'] = torch.stack(ffn_gate_w)
-            weights['encoder_ffn_up_w'] = torch.stack(ffn_up_w)
-            weights['encoder_ffn_down_w'] = torch.stack(ffn_down_w)
+                encoder_attn_qkv_w[i].copy_(qkv_w)
+                encoder_attn_o_w[i].copy_(o_w)
+                encoder_ffn_gate_w[i].copy_(gate_w)
+                encoder_ffn_up_w[i].copy_(up_w)
+                encoder_ffn_down_w[i].copy_(down_w)
+
+                del (pre_attn_norm, pre_ffn_norm, q_w, k_w, v_w, o_w, scale,
+                     qkv_w, gate_w, up_w, down_w, ffn_scale)
+
+            weights['encoder_attn_qkv_w'] = encoder_attn_qkv_w
+            weights['encoder_attn_o_w'] = encoder_attn_o_w
+            weights['encoder_ffn_gate_w'] = encoder_ffn_gate_w
+            weights['encoder_ffn_up_w'] = encoder_ffn_up_w
+            weights['encoder_ffn_down_w'] = encoder_ffn_down_w
 
         else:  # expert
             expert = self.layers
             n = len(self.layers)
-
-            attn_qkv_w, attn_o_w = [], []
-            ffn_gate_w, ffn_up_w, ffn_down_w = [], [], []
-            pre_attn_mod_w, pre_attn_mod_b = [], []
-            pre_ffn_mod_w, pre_ffn_mod_b = [], []
+            decoder_attn_qkv_w = None
+            decoder_attn_o_w = None
+            decoder_ffn_gate_w = None
+            decoder_ffn_up_w = None
+            decoder_ffn_down_w = None
+            decoder_pre_attn_norm_mod_w = None
+            decoder_pre_attn_norm_mod_b = None
+            decoder_pre_ffn_norm_mod_w = None
+            decoder_pre_ffn_norm_mod_b = None
 
             for i in range(n):
                 layer = expert[i]
 
-                pre_attn_mod_w.append(layer.input_layernorm.dense.weight.data.
-                                      T.contiguous().bfloat16().cuda())
-                pre_attn_mod_b.append(
-                    layer.input_layernorm.dense.bias.data.bfloat16().cuda())
-                pre_ffn_mod_w.append(
-                    layer.post_attention_layernorm.dense.weight.data.T.
-                    contiguous().bfloat16().cuda())
-                pre_ffn_mod_b.append(layer.post_attention_layernorm.dense.bias.
-                                     data.bfloat16().cuda())
+                attn_ln = layer.input_layernorm.dense
+                pre_attn_mod_w = (
+                    attn_ln.weight.data.T.contiguous().bfloat16())
+                pre_attn_mod_b = (attn_ln.bias.data.bfloat16())
+                ffn_ln = layer.post_attention_layernorm.dense
+                pre_ffn_mod_w = (ffn_ln.weight.data.T.contiguous().bfloat16())
+                pre_ffn_mod_b = (ffn_ln.bias.data.bfloat16())
 
                 q_w = layer.self_attn.q_proj.weight.data.float()
                 k_w = layer.self_attn.k_proj.weight.data.float()
                 v_w = layer.self_attn.v_proj.weight.data.float()
-                o_w = layer.self_attn.o_proj.weight.data.float()
+                o_w = layer.self_attn.o_proj.weight.data
 
                 q_w, k_w = self._apply_rope_format_conversion(q_w, k_w)
-                qkv_w = torch.cat([q_w.T, k_w.T, v_w.T], dim=1)
-                attn_qkv_w.append(qkv_w.bfloat16().cuda())
-                attn_o_w.append(o_w.T.contiguous().bfloat16().cuda())
+                qkv_w = torch.cat([q_w.T, k_w.T, v_w.T], dim=1).bfloat16()
+                o_w = o_w.T.contiguous().bfloat16()
 
-                ffn_gate_w.append(layer.mlp.gate_proj.weight.data.T.contiguous(
-                ).bfloat16().cuda())
-                ffn_up_w.append(layer.mlp.up_proj.weight.data.T.contiguous().
-                                bfloat16().cuda())
-                ffn_down_w.append(layer.mlp.down_proj.weight.data.T.contiguous(
-                ).bfloat16().cuda())
+                mlp = layer.mlp
+                gate_w = (mlp.gate_proj.weight.data.T.contiguous().bfloat16())
+                up_w = (mlp.up_proj.weight.data.T.contiguous().bfloat16())
+                down_w = (mlp.down_proj.weight.data.T.contiguous().bfloat16())
 
-            weights['decoder_attn_qkv_w'] = torch.stack(attn_qkv_w)
-            weights['decoder_attn_o_w'] = torch.stack(attn_o_w)
-            weights['decoder_ffn_gate_w'] = torch.stack(ffn_gate_w)
-            weights['decoder_ffn_up_w'] = torch.stack(ffn_up_w)
-            weights['decoder_ffn_down_w'] = torch.stack(ffn_down_w)
+                if decoder_attn_qkv_w is None:
+                    decoder_attn_qkv_w = torch.empty((n, *qkv_w.shape),
+                                                     dtype=torch.bfloat16)
+                    decoder_attn_o_w = torch.empty((n, *o_w.shape),
+                                                   dtype=torch.bfloat16)
+                    decoder_ffn_gate_w = torch.empty((n, *gate_w.shape),
+                                                     dtype=torch.bfloat16)
+                    decoder_ffn_up_w = torch.empty((n, *up_w.shape),
+                                                   dtype=torch.bfloat16)
+                    decoder_ffn_down_w = torch.empty((n, *down_w.shape),
+                                                     dtype=torch.bfloat16)
+                    decoder_pre_attn_norm_mod_w = torch.empty(
+                        (n, *pre_attn_mod_w.shape), dtype=torch.bfloat16)
+                    decoder_pre_attn_norm_mod_b = torch.empty(
+                        (n, *pre_attn_mod_b.shape), dtype=torch.bfloat16)
+                    decoder_pre_ffn_norm_mod_w = torch.empty(
+                        (n, *pre_ffn_mod_w.shape), dtype=torch.bfloat16)
+                    decoder_pre_ffn_norm_mod_b = torch.empty(
+                        (n, *pre_ffn_mod_b.shape), dtype=torch.bfloat16)
+
+                decoder_attn_qkv_w[i].copy_(qkv_w)
+                decoder_attn_o_w[i].copy_(o_w)
+                decoder_ffn_gate_w[i].copy_(gate_w)
+                decoder_ffn_up_w[i].copy_(up_w)
+                decoder_ffn_down_w[i].copy_(down_w)
+                decoder_pre_attn_norm_mod_w[i].copy_(pre_attn_mod_w)
+                decoder_pre_attn_norm_mod_b[i].copy_(pre_attn_mod_b)
+                decoder_pre_ffn_norm_mod_w[i].copy_(pre_ffn_mod_w)
+                decoder_pre_ffn_norm_mod_b[i].copy_(pre_ffn_mod_b)
+
+                del (pre_attn_mod_w, pre_attn_mod_b, pre_ffn_mod_w,
+                     pre_ffn_mod_b, q_w, k_w, v_w, o_w, qkv_w, gate_w, up_w,
+                     down_w)
+
+            weights['decoder_attn_qkv_w'] = decoder_attn_qkv_w
+            weights['decoder_attn_o_w'] = decoder_attn_o_w
+            weights['decoder_ffn_gate_w'] = decoder_ffn_gate_w
+            weights['decoder_ffn_up_w'] = decoder_ffn_up_w
+            weights['decoder_ffn_down_w'] = decoder_ffn_down_w
             weights['decoder_pre_attn_norm_mod_w'] = (
-                torch.stack(pre_attn_mod_w))
+                decoder_pre_attn_norm_mod_w)
             weights['decoder_pre_attn_norm_mod_b'] = (
-                torch.stack(pre_attn_mod_b))
-            weights['decoder_pre_ffn_norm_mod_w'] = (
-                torch.stack(pre_ffn_mod_w))
-            weights['decoder_pre_ffn_norm_mod_b'] = (
-                torch.stack(pre_ffn_mod_b))
+                decoder_pre_attn_norm_mod_b)
+            weights['decoder_pre_ffn_norm_mod_w'] = decoder_pre_ffn_norm_mod_w
+            weights['decoder_pre_ffn_norm_mod_b'] = decoder_pre_ffn_norm_mod_b
 
             weights['decoder_final_norm_mod_w'] = (
-                self.norm.dense.weight.data.T.contiguous().bfloat16().cuda())
+                self.norm.dense.weight.data.T.contiguous().bfloat16())
             weights['decoder_final_norm_mod_b'] = (
-                self.norm.dense.bias.data.bfloat16().cuda())
+                self.norm.dense.bias.data.bfloat16())
         return weights

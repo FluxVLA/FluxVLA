@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import json
 from collections import defaultdict
 from typing import Dict, List, Optional, Union
 
@@ -55,6 +56,8 @@ class DistributedRepeatingDataset(IterableDataset):
         dim (int, optional): Target dimension for padding/copying data.
             If provided, data will be padded/copied to be an integer
             multiple of this dimension. Defaults to None.
+        statistics_overrides (dict, optional): Nested statistic values to
+            override after collecting dataset statistics.
     """
 
     def __init__(self,
@@ -66,7 +69,17 @@ class DistributedRepeatingDataset(IterableDataset):
                  seed: int = 42,
                  statistic_name: str = 'private',
                  dim: Optional[int] = None,
-                 dataset_statistics: Optional[Dict] = None) -> None:
+                 dataset_statistics: Optional[Dict] = None,
+                 statistics_overrides: Optional[Dict] = None,
+                 dataset_statistics_path: Optional[str] = None) -> None:
+        if (dataset_statistics is not None
+                and dataset_statistics_path is not None):
+            raise ValueError(
+                'dataset_statistics and dataset_statistics_path are mutually '
+                'exclusive')
+        if dataset_statistics_path is not None:
+            with open(dataset_statistics_path, 'r', encoding='utf-8') as f:
+                dataset_statistics = json.load(f)
         self.shuffle = shuffle
         self.reshuffle_each_epoch = reshuffle_each_epoch
         self.seed = seed
@@ -125,10 +138,18 @@ class DistributedRepeatingDataset(IterableDataset):
             self.is_grouped = False
             self.is_list = True
 
-            self.dataset_statistics = self.get_dataset_statistics(
-                stats, statistic_keys, name_mappings)
+            if dataset_statistics is None:
+                self.dataset_statistics = self.get_dataset_statistics(
+                    stats, statistic_keys, name_mappings)
+            else:
+                self.dataset_statistics = dataset_statistics
 
         else:
+            if dataset_statistics is not None:
+                raise ValueError(
+                    'dataset_statistics_path is only supported for '
+                    'single/list dataset configs; grouped datasets should use '
+                    'grouped stats.')
             # Case 3: Grouped datasets (dict of list of dict)
             self.grouped_datasets = {}
             self.grouped_dataset_lens = {}
@@ -179,10 +200,28 @@ class DistributedRepeatingDataset(IterableDataset):
             self.is_grouped = True
             self.is_list = False
 
+        if statistics_overrides is not None:
+            if self.is_grouped:
+                for stats in self.grouped_dataset_statistics.values():
+                    self._apply_statistics_overrides(stats,
+                                                     statistics_overrides)
+            else:
+                self._apply_statistics_overrides(self.dataset_statistics,
+                                                 statistics_overrides)
+
         # Get the rank and world size from the overwatch
         self.rank = overwatch.rank()
         self.world_size = overwatch.world_size()
         self._epoch = 0
+
+    def _apply_statistics_overrides(self, statistics: Dict,
+                                    overrides: Dict) -> None:
+        for key, value in overrides.items():
+            if (isinstance(value, dict) and key in statistics
+                    and isinstance(statistics[key], dict)):
+                self._apply_statistics_overrides(statistics[key], value)
+            else:
+                statistics[key] = value
 
     def _get_item_from_global_idx(self, global_idx):
         """Get item from global index, handling single, list,
@@ -256,7 +295,7 @@ class DistributedRepeatingDataset(IterableDataset):
         for stat in stats:
             for key in static_keys:
                 if key not in stat['stats']:
-                    raise KeyError(f"Key '{key}' not found in dataset.")
+                    raise KeyError(f"Missing dataset statistic key: '{key}'.")
 
                 stat_data = stat['stats'][key]
 
@@ -463,8 +502,8 @@ class DistributedRepeatingDataset(IterableDataset):
         pass
 
     def __iter__(self):
-        # Incorporate DataLoader worker info so that data is split
-        # across both distributed processes AND per-process workers.
+        # Incorporate DataLoader worker info so data is split across both
+        # distributed processes and per-process DataLoader workers.
         worker_info = torch.utils.data.get_worker_info()
         if worker_info is not None:
             worker_id = worker_info.id
@@ -473,24 +512,26 @@ class DistributedRepeatingDataset(IterableDataset):
             worker_id = 0
             num_workers = 1
 
-        # Effective world: distributed processes × per-process workers
         total_world = self.world_size * num_workers
         total_rank = self.rank * num_workers + worker_id
 
         while True:
+            epoch = self._epoch
+            if self.reshuffle_each_epoch:
+                self._epoch += 1
+
+            # Create indices for the entire virtual concatenated dataset
             indices = np.arange(self.total_len)
             if self.shuffle:
-                epoch_offset = self._epoch if self.reshuffle_each_epoch else 0
+                epoch_offset = epoch if self.reshuffle_each_epoch else 0
                 rng = np.random.default_rng(self.seed + epoch_offset)
                 rng.shuffle(indices)
 
+            # Distribute indices across distributed ranks and workers.
             shard = indices[total_rank::total_world].tolist()
 
             for idx in shard:
                 yield self._get_item_from_global_idx(idx)
-
-            if self.reshuffle_each_epoch:
-                self._epoch += 1
 
     def __len__(self):
         """Return the total length of all datasets."""

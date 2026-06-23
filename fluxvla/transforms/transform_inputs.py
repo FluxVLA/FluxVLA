@@ -12,7 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import copy
 import logging
 import os
 from pathlib import Path
@@ -20,13 +19,16 @@ from typing import Dict, List
 
 import av
 import numpy as np
-import tensorflow as tf
 import torch
 import torchvision
 from PIL import Image
 
+from fluxvla.datasets.utils.video_decode import (
+    build_lerobot_video_path, decode_video_frames_torchvision)
 from fluxvla.engines import TRANSFORMS
-from fluxvla.engines.utils.eval_utils import crop_and_resize, get_libero_image
+from fluxvla.engines.utils.eval_utils import crop_and_resize
+from .transform_images import (_resize_hwc_lanczos3_numpy,
+                               _resize_hwc_lanczos3_tensorflow)
 from .utils import pad_to_dim, parse_image
 
 
@@ -113,13 +115,15 @@ class ProcessParquetInputs():
                  name_mappings: Dict = None,
                  embodiment_id: int = None,
                  embodiment_dim: int = None,
-                 num_padding_imgs: int = 0):
+                 num_padding_imgs: int = 0,
+                 dataset_name: str = None):
         self.parquet_keys = parquet_keys
         self.video_keys = video_keys
         self.name_mappings = name_mappings
         self.embodiment_id = embodiment_id
         self.embodiment_dim = embodiment_dim
         self.num_padding_imgs = num_padding_imgs
+        self.dataset_name = dataset_name
 
     def decode_video_frames_torchvision(
         self,
@@ -174,7 +178,7 @@ class ProcessParquetInputs():
         for frame in reader:
             current_ts = frame['pts']
             if log_loaded_timestamps:
-                logging.info(f'frame loaded at timestamp={current_ts:.4f}')
+                logging.info('frame loaded at timestamp=%.4f', current_ts)
             loaded_frames.append(frame['data'])
             loaded_ts.append(current_ts)
             if current_ts >= last_ts:
@@ -226,26 +230,30 @@ class ProcessParquetInputs():
         assert 'video_path' in info, "Input data must contain 'video_path' key"
         video_root_path = info['video_path']
         for key in self.parquet_keys:
-            assert key in data, f'Key {key} not found in input data'
-            if self.name_mappings is not None and key in self.name_mappings:
-                if isinstance(self.name_mappings[key], str):
-                    if isinstance(data[key], list) or isinstance(
-                            data[key], float):
-                        inputs[self.name_mappings[key]] = np.array(data[key])
+            try:
+                value = data[key]
+            except KeyError as exc:
+                raise KeyError(f'Missing input data key: {key}') from exc
+            mapped_names = None
+            if self.name_mappings is not None:
+                mapped_names = self.name_mappings.get(key)
+            if mapped_names is not None:
+                if isinstance(mapped_names, str):
+                    if isinstance(value, list) or isinstance(value, float):
+                        inputs[mapped_names] = np.array(value)
                     else:
-                        inputs[self.name_mappings[key]] = data[key]
+                        inputs[mapped_names] = value
                 else:
-                    for mapped_key in self.name_mappings[key]:
-                        if isinstance(data[key], list) or isinstance(
-                                data[key], float):
-                            inputs[mapped_key] = np.array(data[key])
+                    for mapped_key in mapped_names:
+                        if isinstance(value, list) or isinstance(value, float):
+                            inputs[mapped_key] = np.array(value)
                         else:
-                            inputs[mapped_key] = data[key]
+                            inputs[mapped_key] = value
             else:
-                if isinstance(data[key], list) or isinstance(data[key], float):
-                    inputs[key] = np.array(data[key])
+                if isinstance(value, list) or isinstance(value, float):
+                    inputs[key] = np.array(value)
                 else:
-                    inputs[key] = data[key]
+                    inputs[key] = value
         images = list()
         img_masks = list()
         timestamps = data.get('frame_timestamps', [data['timestamp']])
@@ -282,10 +290,15 @@ class ProcessParquetInputs():
         inputs['images'] = images
         inputs['img_masks'] = np.array(img_masks)
         inputs['task_description'] = data.get('task_description', '')
+        if self.dataset_name is not None:
+            inputs['dataset_name'] = self.dataset_name
         if self.embodiment_id is not None:
             inputs['embodiment_ids'] = np.array(self.embodiment_id)
         if 'frame_masks' in data:
             inputs['frame_masks'] = data['frame_masks']
+        if 'sample_weight' in data:
+            inputs['sample_weight'] = np.asarray(
+                data['sample_weight'], dtype=np.float32)
 
         return inputs
 
@@ -329,38 +342,71 @@ class ProcessOBSInputs():
 @TRANSFORMS.register_module()
 class ProcessLiberoEvalInputs:
     """ Process Libero eval inputs.
-    This class processes the Libero eval inputs by loading the images,
-    applying the center crop, and returning the processed inputs.
+    This transform loads LIBERO observation images, rotates them, converts
+    them to PIL images, and leaves model-specific resizing to later image
+    transforms. If enabled, center crop is applied with the OpenVLA-compatible
+    crop-and-resize path.
 
     Args:
         img_keys (List[str]): Image keys to fetch from inputs.
             Default to ['agentview_image'].
-        center_crop (bool): If True, center crop at 0.9 area before resize.
-            Default to False.
+        center_crop (bool): If True, center crop to 0.9 area and resize back
+            to 224x224 before later model-specific processing.
         use_pil (bool): If True, use PIL to load the images.
             Default to True.
+        resize_size (int | tuple | None): If set, lanczos-resize the rotated
+            raw image before center crop.
+        resize_backend (str): Resize implementation, either ``numpy`` or
+            ``tensorflow``.
+        jpeg_roundtrip (bool): If True, encode/decode JPEG before resizing.
+            This is opt-in because the default eval path for existing
+            checkpoints was trained and validated without JPEG round-trip.
     """
 
     def __init__(self,
                  img_keys: List[str] = ['agentview_image'],
-                 resize_size: int = 224,
                  center_crop: bool = False,
                  use_pil: bool = True,
+                 resize_size: int = None,
+                 resize_backend: str = 'numpy',
+                 jpeg_roundtrip: bool = False,
                  embodiment_id: int = None) -> None:
         self.img_keys = img_keys
-        self.resize_size = resize_size
         self.center_crop = center_crop
         self.use_pil = use_pil
+        self.resize_size = resize_size
+        if resize_backend not in {'numpy', 'tensorflow'}:
+            raise ValueError(
+                "resize_backend must be either 'numpy' or 'tensorflow'")
+        if jpeg_roundtrip and resize_backend != 'tensorflow':
+            raise ValueError(
+                "jpeg_roundtrip=True requires resize_backend='tensorflow'")
+        self.resize_backend = resize_backend
+        self.jpeg_roundtrip = jpeg_roundtrip
         self.embodiment_id = embodiment_id
 
     def __call__(self, inputs: Dict) -> Dict:
         # Load raw images
         imgs = list()
+        replay_img = None
         for img_key in self.img_keys:
             if img_key not in inputs:
-                raise KeyError(f'Image key `{img_key}` not found in inputs!')
-            imgs.append(get_libero_image(inputs, self.resize_size, img_key))
-        replay_img = copy.deepcopy(imgs[0])
+                raise KeyError(f'Missing image key: {img_key!r}')
+            img = np.asarray(inputs[img_key])
+            img = img[::-1, ::-1].copy()
+            if self.resize_size is not None:
+                if isinstance(self.resize_size, int):
+                    height, width = self.resize_size, self.resize_size
+                else:
+                    height, width = self.resize_size
+                if self.resize_backend == 'tensorflow':
+                    img = _resize_hwc_lanczos3_tensorflow(
+                        img, height, width, jpeg_roundtrip=self.jpeg_roundtrip)
+                else:
+                    img = _resize_hwc_lanczos3_numpy(img, height, width)
+            if replay_img is None:
+                replay_img = img.copy()
+            imgs.append(img)
         images = list()
         img_masks = list()
         if self.use_pil:
@@ -368,35 +414,11 @@ class ProcessLiberoEvalInputs:
                 image = Image.fromarray(img)
                 image = image.convert('RGB')
 
-                # (If trained with image augmentations)
-                # Center crop image and then
-                # resize back up to original size.
-                # IMPORTANT: Let's say crop scale == 0.9. To get the new height
-                # and width (post-crop), multiply
-                # the original height and width by sqrt(0.9) -- not 0.9!
                 if self.center_crop:
-                    batch_size = 1
-                    crop_scale = 0.9
-
-                    # Convert to TF Tensor and record original data type
-                    # (should be tf.uint8)
-                    image = tf.convert_to_tensor(np.array(image))
-                    orig_dtype = image.dtype
-
-                    # Convert to data type tf.float32 and values between [0,1]
-                    image = tf.image.convert_image_dtype(image, tf.float32)
-
-                    # Crop and then resize back to original size
-                    image = crop_and_resize(image, crop_scale, batch_size)
-
-                    # Convert back to original data type
-                    image = tf.clip_by_value(image, 0, 1)
-                    image = tf.image.convert_image_dtype(
-                        image, orig_dtype, saturate=True)
-
-                    # Convert back to PIL Image
-                    image = Image.fromarray(image.numpy())
+                    image = Image.fromarray(
+                        crop_and_resize(np.array(image), 0.9, 1))
                     image = image.convert('RGB')
+
                 images.append(image)
                 img_masks.append(True)
         else:
@@ -446,4 +468,48 @@ class PadKeyToDim():
                 repeat_target[-1] = repeat_times
                 tensor_padded = np.tile(tensor, repeat_target)
                 inputs[key] = tensor_padded
+        return inputs
+
+
+@TRANSFORMS.register_module()
+class DecodeLeRobotVideoSequence():
+    """Decode multi-frame LeRobot episode videos into ``images``.
+
+    Expects ``lerobot_video`` metadata emitted by :class:`SARMDataset` /
+    :class:`ARMDataset` and writes ``images`` as ``[T, N, C, H, W]`` numpy.
+    """
+
+    def __init__(self,
+                 video_keys: List[str],
+                 tolerance_s: float = 0.1,
+                 backend: str = 'pyav') -> None:
+        self.video_keys = video_keys
+        self.tolerance_s = tolerance_s
+        self.backend = backend
+
+    def __call__(self, inputs: Dict) -> Dict:
+        ctx = inputs.pop('lerobot_video')
+        data_root_path = ctx['data_root_path']
+        info = ctx['info']
+        episode_meta = ctx['episode_meta']
+        episode_index = int(ctx['episode_index'])
+        timestamps = ctx['timestamps']
+
+        images_per_camera = []
+        for video_key in self.video_keys:
+            video_path = build_lerobot_video_path(
+                data_root_path,
+                info,
+                episode_meta,
+                episode_index,
+                video_key,
+            )
+            frames = decode_video_frames_torchvision(
+                video_path,
+                timestamps,
+                tolerance_s=self.tolerance_s,
+                backend=self.backend,
+            )
+            images_per_camera.append(frames.numpy())
+        inputs['images'] = np.stack(images_per_camera, axis=1)
         return inputs

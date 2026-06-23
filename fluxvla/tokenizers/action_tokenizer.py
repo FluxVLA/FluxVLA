@@ -33,7 +33,8 @@ class ActionTokenizer:
                  model_path: str,
                  bins: int = 256,
                  min_action: int = -1,
-                 max_action: int = 1) -> None:
+                 max_action: int = 1,
+                 trust_remote_code: bool = True) -> None:
         """Discretizes continuous robot actions into N bins
         per dimension and maps to the least used tokens.
 
@@ -49,7 +50,8 @@ class ActionTokenizer:
             max_action (int, optional): Maximum number of actions.
                 Defaults to 1.
         """
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path)
+        self.tokenizer = AutoTokenizer.from_pretrained(
+            model_path, trust_remote_code=trust_remote_code)
         self.n_bins, self.min_action, self.max_action = bins, \
             min_action, max_action
 

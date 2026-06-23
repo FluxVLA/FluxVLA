@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .arm import ARMBackbone  # noqa: F401, F403
 from .condition_gemma import ConditionGemmaModel  # noqa: F401, F403
 from .condition_gemma_inference import \
     ConditionGemmaInferenceModel  # noqa: F401, F403
@@ -19,4 +20,5 @@ from .gemma import GemmaLLMBackbone  # noqa: F401, F403
 from .hf_causal_llm import HFCausalLLMBackbone  # noqa: F401, F403
 from .llama2 import LLaMa2LLMBackbone  # noqa: F401, F403
 from .qwen2 import Qwen2LLMBackbone  # noqa: F401, F403
+from .sarm import SARMBackbone  # noqa: F401, F403
 from .smolvlm_expert import SmolVLMExpert  # noqa: F401, F403

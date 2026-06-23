@@ -23,7 +23,6 @@ from typing import Dict
 import torch
 import torch.distributed as dist
 import tqdm
-from libero.libero import benchmark
 from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
@@ -33,12 +32,24 @@ from fluxvla.engines.utils.eval_utils import (get_libero_dummy_action,
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils.root import RUNNERS
+from .base_eval_runner import BaseEvalRunner
 
 overwatch = initialize_overwatch(__name__)
 
 
+def _get_libero_benchmark():
+    try:
+        from libero.libero import benchmark
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            'LIBERO is required for simulation evaluation. Install it with '
+            '`bash scripts/install_env.sh sim-only` or '
+            '`bash scripts/install_env.sh full`.') from exc
+    return benchmark
+
+
 @RUNNERS.register_module()
-class LiberoEvalRunner:
+class LiberoEvalRunner(BaseEvalRunner):
     """Runner for evaluating models using Hugging Face Transformers.
     This class sets up the evaluation environment, loads the model,
     and runs the evaluation process.
@@ -67,6 +78,18 @@ class LiberoEvalRunner:
             Default is True.
     """
 
+    @staticmethod
+    def _inject_checkpoint_tokenizer(dataset: Dict, ckpt_path: str) -> None:
+        model_path = Path(ckpt_path).resolve().parent.parent
+        tokenizer_path = model_path / 'tokenizer'
+        if not tokenizer_path.is_dir():
+            return
+
+        for transform in dataset.get('transforms', []):
+            tokenizer = transform.get('tokenizer')
+            if isinstance(tokenizer, dict):
+                tokenizer['model_path'] = tokenizer_path.as_posix()
+
     def __init__(self,
                  cfg: Dict,
                  seed: int,
@@ -83,13 +106,9 @@ class LiberoEvalRunner:
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
         from fluxvla.engines import (build_dataset_from_cfg,
-                                     build_transform_from_cfg,
-                                     build_vla_from_cfg)
+                                     build_transform_from_cfg)
         self.device_id = overwatch.local_rank()
-        if hasattr(cfg, 'inference_model'):
-            self.vla = build_vla_from_cfg(cfg.inference_model).eval()
-        else:
-            self.vla = build_vla_from_cfg(cfg.model).eval()
+        self.vla = self.build_eval_vla(cfg)
         # Load checkpoint weights if ckpt_path is provided
         if ckpt_path is not None:
             assert Path.exists(Path(ckpt_path)), \
@@ -142,6 +161,7 @@ class LiberoEvalRunner:
         dataset['task_suite_name'] = task_suite_name
         dataset['norm_stats_key'] = self.norm_stats_key
         dataset['norm_stats'] = data_stat_path
+        self._inject_checkpoint_tokenizer(dataset, ckpt_path)
         self.dataset = build_dataset_from_cfg(dataset)
         self.denormalize_action = build_transform_from_cfg(denormalize_action)
         self.eval_chunk_size = eval_chunk_size
@@ -182,6 +202,7 @@ class LiberoEvalRunner:
 
     def run(self):
         """Run the evaluation process."""
+        benchmark = _get_libero_benchmark()
         benchmark_dict = benchmark.get_benchmark_dict()
         task_suite = benchmark_dict[self.task_suite_name]()
         num_tasks_in_suite = task_suite.n_tasks
@@ -201,8 +222,10 @@ class LiberoEvalRunner:
         num_local_episodes = math.ceil(len(global_episodes) / world_size)
         data_time = time.strftime('%Y_%m_%d-%H_%M_%S')
         run_id = f'EVAL-{self.task_suite_name}-{self.model_family}-{data_time}'  # noqa: E501
+        rank_suffix = str(rank).zfill(2)
         local_log_filepath = os.path.join(
-            Path(self.ckpt_path).resolve().parent.parent, run_id + '.txt')
+            Path(self.ckpt_path).resolve().parent.parent,
+            f'{run_id}-rank{rank_suffix}.txt')
         log_file = open(local_log_filepath, 'w')
         total_episodes, total_successes = torch.zeros(
             1, device=torch.cuda.current_device()), torch.zeros(

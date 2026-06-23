@@ -35,6 +35,7 @@ class PretrainedTokenizer:
         model_path: str,
         model_max_length: int = 2048,
         padding_side: str = 'right',
+        trust_remote_code: bool = True,
     ) -> None:
         """Load tokenizer from a path or repo id and record the original argument."""  # noqa: E501
         # Avoid top-level import to reduce environment constraints
@@ -44,6 +45,7 @@ class PretrainedTokenizer:
             model_path,
             model_max_length=model_max_length,
             padding_side=padding_side,
+            trust_remote_code=trust_remote_code,
         )
         self.model_path = model_path  # Keep original argument for source resolution  # noqa: E501
         self.copy_attrs_from_obj()

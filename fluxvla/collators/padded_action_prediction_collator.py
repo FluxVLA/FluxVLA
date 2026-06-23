@@ -89,7 +89,7 @@ class PaddedCollatorForActionPrediction:
         # `padding_side = "right"` during training
         #   => Handle padding via RNN Utils => `pad_sequence`
         assert self.padding_side == 'right', \
-            f'Invalid Tokenizer `{self.padding_side = }`'
+            f'Invalid Tokenizer padding_side={self.padding_side!r}'
         input_ids = pad_sequence(
             input_ids, batch_first=True, padding_value=self.pad_token_id)
         labels = pad_sequence(
@@ -121,12 +121,12 @@ class PaddedCollatorForActionPrediction:
                 for k in images[0]
             }
         else:
-            raise ValueError(
-                f'Unsupported `pixel_values` type = {type(images)}')
+            raise ValueError(f'Unsupported pixel_values type = {type(images)}')
 
         output = dict(
             images=images,
             lang_tokens=input_ids,
+            lang_masks=attention_mask,
             attention_mask=attention_mask,
             labels=labels,
         )

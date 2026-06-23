@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import gc
+import inspect
 import math
 import os
 from abc import ABC, abstractmethod
@@ -100,8 +101,8 @@ class BaseTrainRunner(ABC):
 
         metric['hparams'] = cfg
         timestamp = datetime.now().strftime('%Y_%m_%d_%H_%M_%S')
-        metric[
-            'run_id'] = f"{os.path.basename(cfg.filename).replace('.py', '')}_{timestamp}"  # noqa: E501
+        metric['run_id'] = (
+            f"{os.path.basename(cfg.filename).replace('.py', '')}_{timestamp}")
         self.metric = build_metric_from_cfg(metric)
 
         # Ensure only one training mode is set
@@ -179,46 +180,58 @@ class BaseTrainRunner(ABC):
             assert check_bloat16_supported(), \
                 'BFloat16 is not supported on this hardware; unset `mixed_precision`'  # noqa: E501
 
-    def _convert_batch_to_dtype(self, batch: Dict, dtype: torch.dtype) -> Dict:
-        """Convert floating point tensors in batch to specified dtype.
+    def _prepare_batch(self,
+                       batch: Dict,
+                       device: torch.device | int,
+                       dtype: Optional[torch.dtype] = None) -> Dict:
+        """Move tensor batch values to device and optionally cast floats.
 
-        This method automatically converts all floating point tensors in
-        the batch to the target dtype (e.g., bfloat16), while preserving
-        integer tensors and other data types.
+        Floating point tensors are cast to ``dtype`` when provided. Integer
+        and bool tensors keep their dtype.
 
         Args:
             batch (Dict): Input batch dictionary.
-            dtype (torch.dtype): Target dtype (e.g., torch.bfloat16).
+            device: Target device.
+            dtype (torch.dtype): Optional floating point target dtype.
 
         Returns:
-            Dict: Batch with converted dtypes.
+            Dict: Batch with tensors on the target device.
         """
         converted_batch = {}
+        target_device = (
+            torch.device('cuda', device)
+            if isinstance(device, int) else device)
 
         for key, value in batch.items():
             if isinstance(value, torch.Tensor):
-                # Convert floating point tensors to target dtype
-                # Keep integer tensors (int, long, bool) as is
-                if value.dtype.is_floating_point:
-                    converted_batch[key] = value.to(dtype=dtype)
+                if dtype is not None and value.dtype.is_floating_point:
+                    converted_batch[key] = value.to(
+                        device=target_device, dtype=dtype, non_blocking=True)
                 else:
-                    # Keep integer tensors unchanged
-                    converted_batch[key] = value
+                    converted_batch[key] = value.to(
+                        device=target_device, non_blocking=True)
             elif isinstance(value, dict):
                 # Recursively handle nested dictionaries
-                converted_batch[key] = self._convert_batch_to_dtype(
-                    value, dtype)
+                converted_batch[key] = self._prepare_batch(
+                    value, device, dtype)
             elif isinstance(value, (list, tuple)):
                 # Handle lists/tuples that may contain tensors
                 converted_list = []
                 for item in value:
-                    if isinstance(
-                            item,
-                            torch.Tensor) and item.dtype.is_floating_point:
-                        converted_list.append(item.to(dtype=dtype))
+                    if isinstance(item, torch.Tensor):
+                        if dtype is not None and item.dtype.is_floating_point:
+                            converted_list.append(
+                                item.to(
+                                    device=target_device,
+                                    dtype=dtype,
+                                    non_blocking=True))
+                        else:
+                            converted_list.append(
+                                item.to(
+                                    device=target_device, non_blocking=True))
                     elif isinstance(item, dict):
                         converted_list.append(
-                            self._convert_batch_to_dtype(item, dtype))
+                            self._prepare_batch(item, device, dtype))
                     else:
                         converted_list.append(item)
                 converted_batch[key] = (
@@ -229,6 +242,10 @@ class BaseTrainRunner(ABC):
                 converted_batch[key] = value
 
         return converted_batch
+
+    def _convert_batch_to_dtype(self, batch: Dict, dtype: torch.dtype) -> Dict:
+        """Convert floating point tensors in batch to specified dtype."""
+        return self._prepare_batch(batch, self.device_id, dtype)
 
     @staticmethod
     def _shutdown_dataloader(dataloader: Optional[DataLoader]) -> None:
@@ -410,7 +427,7 @@ class BaseTrainRunner(ABC):
         return (self.current_epoch % self.save_epoch_interval) == 0
 
     def _get_effective_dataset_size(self, dataset, sampler):
-        """Get effective dataset size, handling RLDS datasets
+        """Get effective dataset size for finite and sampler-backed datasets.
 
         Args:
             dataset: The dataset object.
@@ -428,7 +445,7 @@ class BaseTrainRunner(ABC):
                 return None
 
     def _estimate_steps_per_epoch(self, dataset, sampler):
-        """Estimate steps per epoch, handling RLDS datasets"""
+        """Estimate steps per epoch for finite and sampler-backed datasets."""
         if sampler is not None:
             # Effective size after DistributedSampler processing
             return len(sampler)
@@ -436,6 +453,23 @@ class BaseTrainRunner(ABC):
             dataset_len = len(dataset)
             # If dataset has a finite length, use it
             return math.ceil(dataset_len / self.global_batch_size)
+
+    @staticmethod
+    def _build_dataloader_generator() -> Optional[torch.Generator]:
+        seed = os.environ.get('EXPERIMENT_GLOBAL_SEED')
+        if seed is None:
+            return None
+
+        generator = torch.Generator()
+        generator.manual_seed(int(seed) + overwatch.rank())
+        return generator
+
+    @staticmethod
+    def _tensor_for_safetensors(tensor):
+        """Return a contiguous tensor for safetensors export."""
+        if isinstance(tensor, torch.Tensor) and not tensor.is_contiguous():
+            return tensor.contiguous()
+        return tensor
 
     @staticmethod
     def _save_model_safetensors(model_state_dicts, safetensors_path):
@@ -448,9 +482,10 @@ class BaseTrainRunner(ABC):
         for key, value in model_state_dicts.items():
             if isinstance(value, dict):
                 for sub_key, tensor in value.items():
-                    flat_dict[f'{key}.{sub_key}'] = tensor
+                    flat_dict[f'{key}.{sub_key}'] = (
+                        BaseTrainRunner._tensor_for_safetensors(tensor))
             elif isinstance(value, torch.Tensor):
-                flat_dict[key] = value
+                flat_dict[key] = BaseTrainRunner._tensor_for_safetensors(value)
         if flat_dict:
             save_file(flat_dict, safetensors_path)
 
@@ -648,6 +683,7 @@ class BaseTrainRunner(ABC):
             collate_fn=self.collator,
             num_workers=self.per_device_num_workers,
             worker_init_fn=worker_init_function,
+            generator=self._build_dataloader_generator(),
             pin_memory=True,
             prefetch_factor=2 if use_workers else None,
             persistent_workers=use_workers)
@@ -694,6 +730,7 @@ class BaseTrainRunner(ABC):
 
                 # Get next batch
                 try:
+
                     batch = next(dataloader_iter)
                 except StopIteration:
                     # Finite dataloader exhausted, start new epoch
@@ -815,11 +852,30 @@ class BaseTrainRunner(ABC):
             f'batch={self.global_batch_size} '
             f'({self.per_device_batch_size}x{overwatch.world_size()})')
 
+    def _vla_accepts_kwarg(self, key: str) -> bool:
+        """Return whether the wrapped VLA forward accepts ``key``."""
+        cache = getattr(self, '_vla_accepts_kwarg_cache', {})
+        if key in cache:
+            return cache[key]
+
+        module = self.vla.module if hasattr(self.vla, 'module') else self.vla
+        signature = inspect.signature(module.forward)
+        accepts = key in signature.parameters or any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values())
+        cache[key] = accepts
+        self._vla_accepts_kwarg_cache = cache
+        return accepts
+
     def _training_step(self, batch) -> torch.Tensor:
         """Execute single training step: forward, backward, optimize."""
-        if self.enable_mixed_precision_training:
-            batch = self._convert_batch_to_dtype(batch,
-                                                 self.mixed_precision_dtype)
+        batch = self._prepare_batch(
+            batch, self.device_id, self.mixed_precision_dtype
+            if self.enable_mixed_precision_training else None)
+        if ('sample_weight' in batch
+                and not self._vla_accepts_kwarg('sample_weight')):
+            batch = dict(batch)
+            batch.pop('sample_weight')
         with torch.autocast(
                 'cuda',
                 dtype=self.mixed_precision_dtype,
