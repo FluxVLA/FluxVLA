@@ -16,10 +16,12 @@ import argparse
 import gc
 import json
 import os
+import random
 import socket
 import sys
 
 import draccus
+import numpy as np
 import torch
 import torch.distributed as dist
 import yaml
@@ -321,6 +323,16 @@ def _resolve_train_seed(cfg):
     return None
 
 
+def _set_rank_training_seed(seed):
+    rank_seed = int(seed) + overwatch.rank()
+    random.seed(rank_seed)
+    np.random.seed(rank_seed)
+    torch.manual_seed(rank_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(rank_seed)
+    return rank_seed
+
+
 def train(args, cfg):
     """Train the model with the given configuration.
 
@@ -358,6 +370,11 @@ def train(args, cfg):
         cfg.runner.resume_from = args.resume_from
     runner = build_runner_from_cfg(cfg.runner)  # noqa: F841
     runner.run_setup(n_train_examples=len(dataset))
+    if seed is not None:
+        rank_seed = _set_rank_training_seed(seed)
+        if overwatch.is_rank_zero():
+            overwatch.info('Training RNG reset after model setup; '
+                           f'rank-local base seed is {rank_seed}.')
     ckpt_path = runner.run(dataset)
     if args.eval_after_train:
         if not hasattr(cfg, 'eval'):
