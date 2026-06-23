@@ -341,7 +341,6 @@ class BaseInferenceRunner:
 
         t = 0
         rate = rospy.Rate(self.publish_rate)
-        import time 
 
         while t < self.max_publish_step and not rospy.is_shutdown():
             instructions = self._get_user_task_instruction(default_instruction)
@@ -351,8 +350,6 @@ class BaseInferenceRunner:
                 self._action_ctx.instruction = instruction
                 inputs = self._preprocess(instruction)
 
-                torch.cuda.synchronize()
-                predict_start = time.perf_counter()
                 with torch.autocast(
                         'cuda',
                         dtype=self.mixed_precision_dtype,
@@ -360,15 +357,7 @@ class BaseInferenceRunner:
                                  and not self._use_remote)):
                     
                     raw_action = self._predict_action(inputs)
-                    
-                torch.cuda.synchronize()
-                # overwatch.info(
-                # f'[*] [Timing] predict_action: '
-                # f'{time.perf_counter() - predict_start:.3f}s')
-                print(f"time cost : {time.perf_counter() - predict_start}")
-
                 actions = self._postprocess_actions(raw_action)
-                print("actions :", actions)
                 self._execute_actions(actions, rate)
 
                 self._prev_ctx = self._action_ctx
