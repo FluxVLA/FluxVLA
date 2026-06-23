@@ -183,6 +183,16 @@ recreate the conda environment. Pull the latest code and update only the
 packages whose versions changed for the current simulation / model stack:
 
 ```bash
+bash scripts/update_env.sh
+```
+
+Use `--skip-pull` if you already updated the checkout yourself, and
+`--skip-project` if you do not want to reinstall FluxVLA in editable mode.
+
+<details>
+<summary><b>Equivalent manual commands</b></summary>
+
+```bash
 git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
@@ -192,11 +202,13 @@ python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
 
+</details>
+
 RoboCasa GR00T support is still optional. The installer manages the Isaac-GR00T
 and RoboCasa GR1 local checkouts under `./src` for `sim-only` and `full`; use
 `--skip-robocasa` if you do not use RoboCasa configs.
 
-These commands do not reinstall PyTorch or FlashAttention. Existing
+The update helper does not reinstall PyTorch or FlashAttention. Existing
 `flash-attn==2.5.5` environments can keep using it only if it still imports
 against the installed PyTorch/CUDA build:
 

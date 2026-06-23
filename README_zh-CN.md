@@ -157,6 +157,15 @@ bash scripts/install_env.sh full
 如果你已经按 FluxVLA(v0.1.0) 安装过，不需要重建 conda 环境。拉取最新代码后，只更新当前仿真 / 模型栈实际变化的包即可：
 
 ```bash
+bash scripts/update_env.sh
+```
+
+如果你已经自己更新了代码，可以加 `--skip-pull`；如果不想重新以 editable mode 安装 FluxVLA，可以加 `--skip-project`。
+
+<details>
+<summary><b>等价的手动命令</b></summary>
+
+```bash
 git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
@@ -166,9 +175,11 @@ python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
 
+</details>
+
 RoboCasa GR00T 支持仍然是可选项。当前安装脚本会在 `sim-only` 和 `full` 中自动管理 `./src` 下的 Isaac-GR00T 与 RoboCasa GR1 本地 checkout；如果不使用 RoboCasa 配置，可以加 `--skip-robocasa`。
 
-这些命令不会重装 PyTorch 或 FlashAttention。已有 `flash-attn==2.5.5` 的环境只有在它仍能和当前 PyTorch/CUDA 正常 import 时才建议继续保留：
+更新脚本不会重装 PyTorch 或 FlashAttention。已有 `flash-attn==2.5.5` 的环境只有在它仍能和当前 PyTorch/CUDA 正常 import 时才建议继续保留：
 
 ```bash
 python - <<'PY'
