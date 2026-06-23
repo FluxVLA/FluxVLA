@@ -214,7 +214,6 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    seed=42,
     max_epochs=18,
     learning_rate=1.5e-5,
     weight_decay=0.0,
