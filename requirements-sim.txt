@@ -2,7 +2,7 @@ bddl==1.0.1
 gym==0.25.2
 gymnasium
 hydra-core==1.2.0
--e git+https://github.com/yinchimaoliang/LIBERO.git#egg=libero
+-e git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0#egg=libero
 lxml
 mujoco==3.2.6
 robomimic==0.2.0
