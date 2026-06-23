@@ -28,6 +28,7 @@ from .tron2_inference_runner import Tron2InferenceRunner  # noqa: F401, F403
 from .tron2_rtc_inference_runner import \
     Tron2RTCInferenceRunner  # noqa: F401, F403
 from .ur_inference_runner import URInferenceRunner  # noqa: F401, F403
+from .ur_rtc_inference_runner import URRTCInferenceRunner  # noqa: F401, F403
 
 try:
     from .libero_eval_runner import LiberoEvalRunner  # noqa: F401, F403

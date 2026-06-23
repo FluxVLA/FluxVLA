@@ -146,7 +146,8 @@ PI0.5 uses a unified inference model class `PI05FlowMatchingInference` that repl
 
 GR00T-RTC uses the existing GR00T acceleration path (`EagleInferenceBackbone` + `FlowMatchingInferenceHead`) and adds RTC at the runner/head boundary. The RTC runner resamples the remaining part of the previously predicted action chunk, passes it as `prev_actions` with `prefix_len`, and the accelerated head fills CUDA Graph prefix buffers before replay. No PI0.5 unified-graph implementation is required.
 
-See `configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py`:
+See `configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py` and
+`configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`:
 
 ```python
 _base_ = './gr00t_eagle_3b_aloha_full_finetune.py'
@@ -170,6 +171,12 @@ inference = dict(
 
 For Tron2 deployment, use `configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference.py`; it overrides the original Tron2 inference model to the same GR00T accelerated backbone/head and switches the runner to `Tron2RTCInferenceRunner`.
 
+For UR3 deployment, use
+`configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`. It inherits the
+UR3 RTC config, keeps the accelerated GR00T model path
+(`EagleInferenceBackbone` + `FlowMatchingInferenceHead`), and switches the
+runner to `URRTCInferenceRunner`.
+
 #### What changed for GR00T-RTC acceleration
 
 | Area                | Change                                                                                                                    |
@@ -177,7 +184,7 @@ For Tron2 deployment, use `configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference
 | Accelerated model   | Use the existing GR00T inference model path: `EagleInferenceBackbone` + `FlowMatchingInferenceHead`.                      |
 | RTC runner          | Use `AlohaRTCInferenceRunner` or `Tron2RTCInferenceRunner` so previous action chunks are passed back as RTC prefixes.     |
 | RTC method          | Use `rtc_config.method='prefix'`; this is the supported RTC method in the accelerated GR00T head.                         |
-| Config entry points | Add `configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py` and `configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference.py`. |
+| Config entry points | Add `configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py`, `configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference.py`, and `configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`. |
 
 #### Usage
 
@@ -197,14 +204,28 @@ python scripts/inference.py \
     --ckpt_path /path/to/checkpoint.pt
 ```
 
+UR3 real robot:
+
+```bash
+python scripts/inference_real_robot.py \
+    --config configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py \
+    --ckpt-path /path/to/checkpoint.safetensors
+```
+
 Key inference parameters:
 
 | Parameter                    | Purpose                                                                                                                 |
 | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
-| `async_execution=True`       | Enables overlapping execution and inference, allowing the next prediction to condition on the remaining previous chunk. |
+| `async_execution=True`       | Enables overlapping execution and inference for ALOHA/Tron2, allowing the next prediction to condition on the remaining previous chunk. |
 | `execute_horizon=10`         | Executes only the first 10 actions from each chunk; tune this to match deployment latency and control frequency.        |
 | `rtc_config.prefix_len=5`    | Locks the first 5 denoising steps to the resampled previous action prefix.                                              |
 | `rtc_config.method='prefix'` | Selects prefix inpainting RTC, which is CUDA Graph compatible in `FlowMatchingInferenceHead`.                           |
+
+UR3 uses synchronous `servoj` / gripper command publication, so the
+`URRTCInferenceRunner` records when the current horizon starts executing and
+uses `execute_horizon` to request the next chunk before consuming the full
+32-step prediction. This keeps the same RTC prefix contract as ALOHA/Tron2
+while preserving the existing UR ROS command topics.
 
 #### Random-weight parity check
 

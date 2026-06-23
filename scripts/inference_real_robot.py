@@ -47,7 +47,8 @@ if __name__ == '__main__':
     configure_inference_attention_defaults()
     args = parse_args()
     cfg = Config.fromfile(args.config)
-    cfg.inference.ckpt_path = args.ckpt_path
+    if args.ckpt_path is not None:
+        cfg.inference.ckpt_path = args.ckpt_path
     cfg.inference.cfg = cfg
     inference_runner = build_runner_from_cfg(cfg.inference)
     inference_runner.run_setup()
