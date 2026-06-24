@@ -16,6 +16,7 @@
 # DiT4DiT/model/framework/DiT4DiT.py
 
 from __future__ import annotations
+from contextlib import nullcontext
 from functools import partial
 from typing import Callable, Dict, List, Optional, Sequence, Union
 
@@ -236,6 +237,11 @@ class DiT4DiTVLA(BaseVLA):
                 'Cosmos backbone did not return `hidden_states`.')
         return hidden_states[-1], backbone_outputs
 
+    def _action_head_autocast(self, reference: torch.Tensor):
+        if torch.is_tensor(reference) and reference.device.type == 'cuda':
+            return torch.autocast('cuda', dtype=torch.float32)
+        return nullcontext()
+
     def forward(
         self,
         images: Optional[torch.Tensor] = None,
@@ -284,12 +290,13 @@ class DiT4DiTVLA(BaseVLA):
             if states is not None:
                 states = states.repeat(repeat, 1, 1)
 
-        action_loss = self.vla_head(
-            last_hidden,
-            actions=actions,
-            action_mask=action_masks,
-            state=states,
-        )
+        with self._action_head_autocast(last_hidden):
+            action_loss = self.vla_head(
+                last_hidden,
+                actions=actions,
+                action_mask=action_masks,
+                state=states,
+            )
         loss = action_loss
         output = dict(loss=loss, action_loss=action_loss)
         future_video_loss = getattr(backbone_outputs, 'future_video_loss',
@@ -327,7 +334,8 @@ class DiT4DiTVLA(BaseVLA):
             device=last_hidden.device,
             dtype=last_hidden.dtype,
         )
-        return self.vla_head.predict_action(last_hidden, state=states)
+        with self._action_head_autocast(last_hidden):
+            return self.vla_head.predict_action(last_hidden, state=states)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         wrapping_policies = []
