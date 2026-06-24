@@ -282,15 +282,21 @@ class PreparePromptWithState():
     Args:
         max_state_dim (int): The maximum dimension of the state.
         task_key (str): The key of the task description in the input data.
+        lowercase_task_description (bool): Whether to lowercase task text.
+        add_action_prefix (bool): Whether to append ``Action:`` to the prompt.
     """
 
     def __init__(self,
                  max_state_dim: int = 32,
                  task_key: str = 'task_description',
+                 lowercase_task_description: bool = False,
+                 add_action_prefix: bool = True,
                  *args,
                  **kwargs):
         self.max_state_dim = max_state_dim
         self.task_key = task_key
+        self.lowercase_task_description = lowercase_task_description
+        self.add_action_prefix = add_action_prefix
 
     def __call__(self, inputs: Dict) -> Dict:
         state = inputs['states']
@@ -313,10 +319,11 @@ class PreparePromptWithState():
 
         cleaned_text = task_description.strip().replace('_', ' ').replace(
             '\n', ' ')
+        if self.lowercase_task_description:
+            cleaned_text = cleaned_text.lower()
         state_str = ' '.join(map(str, discretized_states))
-        action_prefix = ';\nAction: '
-        full_prompt = (
-            f'Task: {cleaned_text}, State: {state_str}{action_prefix}')
+        suffix = ';\nAction: ' if self.add_action_prefix else ';\n'
+        full_prompt = f'Task: {cleaned_text}, State: {state_str}{suffix}'
 
         inputs['prompt'] = full_prompt
         # Normalize state to [-1, 1] range if needed

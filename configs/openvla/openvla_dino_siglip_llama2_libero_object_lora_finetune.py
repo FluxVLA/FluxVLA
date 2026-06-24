@@ -102,6 +102,7 @@ train_dataloader = dict(
                         0.0867857113480568,
                         1.0,
                     ],
+                    mask=[True, True, True, True, True, True, False],
                 ), ), ),
         datasets=dict(
             type='ParquetDataset',
@@ -172,6 +173,7 @@ train_dataloader = dict(
                     type='ResizeImagesLanczos',
                     height=224,
                     width=224,
+                    backend='tensorflow',
                 ),
                 dict(
                     type='AugImage',
@@ -184,6 +186,7 @@ train_dataloader = dict(
                     saturation_range=(0.8, 1.2),
                     hue_delta=0.05,
                     share_across_dinosiglip=True,
+                    backend='tensorflow',
                 ),
                 dict(
                     type='NormalizeImages',
@@ -206,8 +209,8 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,
-    max_steps=80000,
     optimizer=dict(lr=5e-4, type='AdamW', weight_decay=None),
+    max_steps=50000,
     max_grad_norm=None,
     save_iter_interval=5000,
     max_keep_ckpts=1,
@@ -242,7 +245,9 @@ eval = dict(
                 type='ProcessLiberoEvalInputs',
                 img_keys=['agentview_image', 'agentview_image'],
                 center_crop=True,
-                resize_size=224),
+                resize_size=224,
+                resize_backend='tensorflow',
+                jpeg_roundtrip=True),
             dict(
                 type='TransformImage',
                 image_resize_strategy='resize-naive',

@@ -49,6 +49,8 @@ class ActionTokenizer:
                 Defaults to -1.
             max_action (int, optional): Maximum number of actions.
                 Defaults to 1.
+            trust_remote_code (bool, optional): Whether to trust custom
+                tokenizer code in the checkpoint directory. Defaults to True.
         """
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path, trust_remote_code=trust_remote_code)

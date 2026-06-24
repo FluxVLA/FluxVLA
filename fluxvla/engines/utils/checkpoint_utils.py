@@ -37,6 +37,7 @@ def handle_shared_tensors(state_dict: Dict[str, torch.Tensor],
     shared_pairs = [
         ('vlm_backbone.vlm.language_model.model.embed_tokens.weight',
          'vlm_backbone.vlm.language_model.lm_head.weight'),
+        ('llm_expert.embed_tokens.weight', 'llm_expert.lm_head.weight'),
     ]
 
     for key1, key2 in shared_pairs:

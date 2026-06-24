@@ -484,6 +484,8 @@ class AugImage:
             hue jitter.
         share_across_dinosiglip (bool): Share one sampled augmentation between
             paired DINO/SigLIP image batches.
+        backend (str): Augmentation implementation. ``tensorflow`` matches
+            the official OpenVLA/dlimp image augmentation order and ops.
     """
 
     def __init__(self,
@@ -497,6 +499,7 @@ class AugImage:
                  saturation_range: Optional[Tuple[float, float]] = None,
                  hue_delta: Optional[float] = None,
                  share_across_dinosiglip: bool = False,
+                 backend: str = 'numpy',
                  *args,
                  **kwargs):
         self.rotation_range = rotation_range
@@ -509,6 +512,12 @@ class AugImage:
         self.saturation_range = saturation_range
         self.hue_delta = hue_delta
         self.share_across_dinosiglip = share_across_dinosiglip
+        if backend not in {'numpy', 'tensorflow'}:
+            raise ValueError("backend must be either 'numpy' or 'tensorflow'")
+        if backend == 'tensorflow' and rotation_range != 0:
+            raise ValueError(
+                "backend='tensorflow' does not support rotation_range != 0")
+        self.backend = backend
 
     def _random_rotate(self, image: np.ndarray) -> np.ndarray:
         """Apply random rotation to the image."""
@@ -631,6 +640,120 @@ class AugImage:
         img = tf.image.convert_image_dtype(img, orig_dtype, saturate=True)
         return img.numpy().transpose(2, 0, 1)
 
+    def _tf_uniform(self, shape, seed, minval, maxval, dtype=None):
+        import tensorflow as tf
+
+        if minval == maxval:
+            dtype = dtype or tf.float32
+            return tf.fill(shape, tf.cast(minval, dtype))
+        if dtype is None:
+            return tf.random.stateless_uniform(
+                shape, seed, minval=minval, maxval=maxval)
+        return tf.random.stateless_uniform(
+            shape, seed, minval=minval, maxval=maxval, dtype=dtype)
+
+    def _tf_random_resized_crop(self, image, seed):
+        import tensorflow as tf
+
+        if image.shape.ndims == 3:
+            image = tf.expand_dims(image, axis=0)
+        batch_size = tf.shape(image)[0]
+        log_ratio = (float(np.log(self.crop_ratio[0])),
+                     float(np.log(self.crop_ratio[1])))
+        height = tf.shape(image)[1]
+        width = tf.shape(image)[2]
+
+        random_scales = self._tf_uniform(
+            (batch_size, ), seed, self.crop_scale[0], self.crop_scale[1])
+        random_ratios = tf.exp(
+            self._tf_uniform((batch_size, ), seed, log_ratio[0], log_ratio[1]))
+
+        new_heights = tf.clip_by_value(
+            tf.sqrt(random_scales / random_ratios), 0, 1)
+        new_widths = tf.clip_by_value(
+            tf.sqrt(random_scales * random_ratios), 0, 1)
+        height_offsets = tf.random.stateless_uniform((batch_size, ), seed, 0,
+                                                     1 - new_heights)
+        width_offsets = tf.random.stateless_uniform((batch_size, ), seed, 0,
+                                                    1 - new_widths)
+
+        boxes = tf.stack([
+            height_offsets,
+            width_offsets,
+            height_offsets + new_heights,
+            width_offsets + new_widths,
+        ],
+                         axis=1)
+        image = tf.image.crop_and_resize(image, boxes, tf.range(batch_size),
+                                         (height, width))
+        return image[0] if image.shape[0] == 1 else image
+
+    def _tf_augment_one(self, image: np.ndarray,
+                        seed: np.ndarray) -> np.ndarray:
+        import tensorflow as tf
+
+        try:
+            tf.config.set_visible_devices([], 'GPU')
+        except RuntimeError:
+            pass
+
+        if np.random.random() > self.prob:
+            return image
+
+        img = tf.convert_to_tensor(image.transpose(1, 2, 0))
+        orig_dtype = img.dtype
+        img = tf.image.convert_image_dtype(img, tf.float32)
+        seed = tf.convert_to_tensor(seed, dtype=tf.int32)
+
+        int_max = tf.dtypes.int32.max
+
+        seed = tf.random.stateless_uniform([2],
+                                           seed,
+                                           maxval=int_max,
+                                           dtype=tf.int32)
+        img = self._tf_random_resized_crop(img, seed)
+        img = tf.clip_by_value(img, 0, 1)
+
+        if self.brightness_delta is not None:
+            seed = tf.random.stateless_uniform([2],
+                                               seed,
+                                               maxval=int_max,
+                                               dtype=tf.int32)
+            img = tf.image.stateless_random_brightness(
+                img, self.brightness_delta, seed=seed)
+            img = tf.clip_by_value(img, 0, 1)
+
+        seed = tf.random.stateless_uniform([2],
+                                           seed,
+                                           maxval=int_max,
+                                           dtype=tf.int32)
+        img = tf.image.stateless_random_contrast(
+            img, self.contrast_range[0], self.contrast_range[1], seed=seed)
+        img = tf.clip_by_value(img, 0, 1)
+
+        if self.saturation_range is not None:
+            seed = tf.random.stateless_uniform([2],
+                                               seed,
+                                               maxval=int_max,
+                                               dtype=tf.int32)
+            img = tf.image.stateless_random_saturation(
+                img,
+                self.saturation_range[0],
+                self.saturation_range[1],
+                seed=seed)
+            img = tf.clip_by_value(img, 0, 1)
+
+        if self.hue_delta is not None:
+            seed = tf.random.stateless_uniform([2],
+                                               seed,
+                                               maxval=int_max,
+                                               dtype=tf.int32)
+            img = tf.image.stateless_random_hue(img, self.hue_delta, seed=seed)
+            img = tf.clip_by_value(img, 0, 1)
+
+        img = tf.image.convert_image_dtype(img, orig_dtype, saturate=True)
+        return img.numpy().transpose(2, 0, 1)
+
     def _augment_one(self,
                      image: np.ndarray,
                      params: Optional[Dict] = None) -> np.ndarray:
@@ -659,6 +782,33 @@ class AugImage:
         else:
             original_shape = None
             images = data['images']
+
+        if self.backend == 'tensorflow':
+            augmented_images = [None] * len(images)
+            seed_max = np.iinfo(np.int32).max
+            if self.share_across_dinosiglip and len(images) % 2 == 0:
+                half = len(images) // 2
+                for idx in range(half):
+                    seed = np.random.randint(
+                        0, seed_max, size=(2, ), dtype=np.int32)
+                    augmented_images[idx] = self._tf_augment_one(
+                        images[idx], seed)
+                    augmented_images[idx + half] = self._tf_augment_one(
+                        images[idx + half], seed)
+            else:
+                for idx, image in enumerate(images):
+                    seed = np.random.randint(
+                        0, seed_max, size=(2, ), dtype=np.int32)
+                    augmented_images[idx] = self._tf_augment_one(image, seed)
+            augmented_images = np.stack(augmented_images, axis=0)
+            if isinstance(data['images'],
+                          np.ndarray) and data['images'].ndim == 3:
+                augmented_images = augmented_images.reshape(
+                    data['images'].shape)
+            elif original_shape is not None:
+                augmented_images = augmented_images.reshape(original_shape)
+            data['images'] = augmented_images
+            return data
 
         use_shared_params = (
             self.share_across_dinosiglip or self._use_tf_color_jitter())
