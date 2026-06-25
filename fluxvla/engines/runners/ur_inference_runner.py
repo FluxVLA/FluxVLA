@@ -34,8 +34,12 @@ class URInferenceRunner(BaseInferenceRunner):
     robot actuation.
     """
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, action_mode: str = 'joint', *args, **kwargs):
         """Initialize the Universal Robot inference runner."""
+        if action_mode not in {'joint', 'cartesian'}:
+            raise ValueError(f'Unsupported UR action_mode: {action_mode}')
+        self.action_mode = action_mode
+
         # Set UR-specific defaults
         if 'camera_names' not in kwargs or kwargs['camera_names'] is None:
             kwargs['camera_names'] = [
@@ -44,14 +48,20 @@ class URInferenceRunner(BaseInferenceRunner):
 
         if 'operator' not in kwargs or kwargs['operator'] is None:
             kwargs['operator'] = {
-                'type': 'UROperator',
+                'type': 'NewUROperator',
                 'img_left_topic': '/wrist_camera/color/image_raw',
                 'img_front_topic': '/front_camera/color/image_raw',
-                'puppet_arm_left_topic': '/joint_states',
-                'puppet_gripper_left_topic': '/gripper/position',
-                'puppet_ee_pose_left_topic': '/arm/tcp_pose',
+                'joint_state_topic': '/joint_states',
+                'cartesian_pose_topic': '/arm/tcp_pose',
+                'gripper_state_topic': '/gripper/position',
+                'joint_cmd_topic': '/cmd/servoj',
+                'cartesian_cmd_topic': '/cmd/servol',
+                'gripper_cmd_topic': '/cmd/gripper',
                 'use_depth_image': False,
+                'command_mode': self.action_mode,
             }
+        elif kwargs['operator'].get('type') == 'NewUROperator':
+            kwargs['operator'].setdefault('command_mode', self.action_mode)
 
         # Initialize UR-specific task descriptions
         if 'task_descriptions' not in kwargs or kwargs[
@@ -213,10 +223,11 @@ class URInferenceRunner(BaseInferenceRunner):
             rate: ROS rate limiter for action timing
         """
         for action in actions:
-            # Send joint commands (first 6 dimensions)
-            self.ros_operator.servoj(action[:6])
+            if self.action_mode == 'cartesian':
+                self.ros_operator.servol(action[:7])
+            else:
+                self.ros_operator.servoj(action[:6])
 
-            # Send gripper command (last dimension)
-            self.ros_operator.movegrip(action[6])
+            self.ros_operator.movegrip(action[-1])
 
             rate.sleep()
