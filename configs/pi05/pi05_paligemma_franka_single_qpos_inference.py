@@ -11,6 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Self-contained reference config for normal single-arm Franka inference.
+
+Use this with checkpoints trained from single-arm joint-state data, where the
+model action contract is one 8D block:
+
+    [joint1..joint7, gripper_width]
+
+Usage:
+    python scripts/inference.py \
+        --config configs/pi05/pi05_paligemma_franka_single_inference.py \
+        --ckpt-path /path/to/single_arm_checkpoint/model.safetensors
+"""
 
 model = dict(
     type='PI05FlowMatching',
@@ -120,25 +132,7 @@ model = dict(
         'vlm_backbone.vlm.model.vision_tower',
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
-    ori_action_dim=16,
-    action_loss_weights=[
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-        1,
-    ],
+    ori_action_dim=8,
 )
 
 inference_model = model.copy()
@@ -154,9 +148,7 @@ train_dataloader = dict(
             dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
-                [
-                    './datasets/RealRobot_franka_dual_lerobotv2.1/20260519_dual_franka_teleop'  # noqa: E501
-                ],
+                ['./datasets/RealRobot_franka_single_lerobotv2.1'],
                 action_key='observation.state',
                 transforms=[
                     dict(
@@ -167,8 +159,7 @@ train_dataloader = dict(
                         ],
                         video_keys=[
                             'observation.images.cam_front',
-                            'observation.images.cam_wrist_left',
-                            'observation.images.cam_wrist_right'
+                            'observation.images.cam_wrist_left'
                         ],
                         name_mappings={
                             'observation.state': ['states'],
@@ -187,9 +178,7 @@ train_dataloader = dict(
                         max_len=200,
                         tokenizer=dict(
                             type='PretrainedTokenizer',
-                            model_path=  # noqa: E251
-                            'checkpoints/pi05_base',  # noqa: E501
-                            # special_tokens={'pad_token': '<PAD>'}
+                            model_path='checkpoints/pi05_base',
                         )),
                     dict(type='ResizeImages', height=224, width=224),
                     dict(type='SimpleNormalizeImages'),
@@ -215,9 +204,7 @@ runner = dict(
     warmup_ratio=0.03,
     tokenizer=dict(
         type='PretrainedTokenizer',
-        model_path=  # noqa: E251
-        'checkpoints/pi05_base',  # noqa: E501
-        # special_tokens={'pad_token': '<PAD>'}
+        model_path='checkpoints/pi05_base',
     ),
     metric=dict(
         type='VLAMetric',
@@ -234,20 +221,21 @@ runner = dict(
 inference = dict(
     type='FrankaInferenceRunner',
     task_descriptions={
-        '1':
-        'The right arm picks up the shuttlecock bucket, hands it to the left arm, and places it on the plate.'  # noqa: E501
+        '1': 'Use the left Franka arm to complete the requested task.'
     },
     seed=7,
+    # Must match the single-arm training target. Use 'cartesian' only for an
+    # eepose-trained single-arm checkpoint.
     action_mode='joint',
-    active_arms=('left', 'right'),
+    active_arms=('left', ),
     async_execution=False,
     execute_horizon=50,
-    # Prepare joints: [left_arm_joints, right_arm_joints]
-    # Each arm: [joint1..joint7, gripper_width]
-    prepare_pose=None,  # None uses operator default prepare joints
+    # Single-arm prepare pose: [joint1..joint7, gripper_width].
+    prepare_pose=None,  # None uses FrankaOperator default prepare joints
+    camera_names=['cam_front', 'cam_wrist_left'],
     dataset=dict(
         type='PrivateInferenceDataset',
-        img_keys=['cam_front', 'cam_wrist_left', 'cam_wrist_right'],
+        img_keys=['cam_front', 'cam_wrist_left'],
         transforms=[
             dict(
                 type='NormalizeStatesAndActions',
@@ -260,9 +248,7 @@ inference = dict(
                 type='ProcessPrompts',
                 tokenizer=dict(
                     type='PretrainedTokenizer',
-                    model_path=  # noqa: E251
-                    'checkpoints/pi05_base',
-                    # special_tokens={'pad_token': '<PAD>'}
+                    model_path='checkpoints/pi05_base',
                 )),
             dict(type='ResizeImages', height=224, width=224),
             dict(type='SimpleNormalizeImages'),
@@ -270,32 +256,25 @@ inference = dict(
     denormalize_action=dict(
         type='DenormalizePrivateAction',
         norm_type='min_max',
-        action_dim=16,
+        # Single-arm checkpoints should denormalize one 8D action block.
+        action_dim=8,
     ),
     action_chunk=50,
     operator=dict(
-        type='FrankaDualOperator',
+        type='FrankaOperator',
         command_mode='joint',
         img_left_topic='/camera_left_wrist/color/image_raw',
-        img_right_topic='/camera_right_wrist/color/image_raw',
         img_front_topic='/camera_front/color/image_raw',
         puppet_arm_left_topic='/left_arm/joint_states',
-        puppet_arm_right_topic='/right_arm/joint_states',
         puppet_franka_state_left_topic=(
             '/left_arm/franka_state_controller/franka_states'),
-        puppet_franka_state_right_topic=(
-            '/right_arm/franka_state_controller/franka_states'),
         sync_warning_enabled=True,
-        cartesian_cmd_left_topic=(
+        joint_cmd_topic=(
+            '/left_arm/ruckig_joint_impedance_controller/target_joint_state'),
+        cartesian_cmd_topic=(
             '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
-        cartesian_cmd_right_topic=(
-            '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
-        joint_cmd_left_topic=(
-            '/left_arm/ruckig_joint_impedance_controller/target_joint_state'
-        ),  # noqa: E501
-        joint_cmd_right_topic=(
-            '/right_arm/ruckig_joint_impedance_controller/target_joint_state'
-        ),  # noqa: E501
         gripper_left_topic='/left_arm/franka_gripper/move/goal',
-        gripper_right_topic='/right_arm/franka_gripper/move/goal',
-        gripper_control_mode='grasp'))
+        # Optional: gripper_control_mode='grasp' binarizes the gripper and only
+        # acts on open/close transitions via the franka_gripper grasp/move
+        # actions; default 'move' streams continuous width every step.
+    ))

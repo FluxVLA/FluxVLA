@@ -106,7 +106,6 @@ class PI0FlowMatching(BaseVLA):
                  params_to_change_dtype: Optional[List[str]] = [],
                  max_action_dim: int = 7,
                  ori_action_dim: int = None,
-                 action_loss_weights: Optional[List[float]] = None,
                  num_steps: int = 10,
                  rtc_training_config: Optional[Dict] = None,
                  **kwargs):
@@ -167,14 +166,6 @@ class PI0FlowMatching(BaseVLA):
         self.strict_mapping = strict_mapping
         self.max_action_dim = max_action_dim
         self.ori_action_dim = ori_action_dim
-        if action_loss_weights is not None:
-            self.register_buffer(
-                'action_loss_weights',
-                torch.tensor(action_loss_weights, dtype=torch.float32),
-                persistent=False,
-            )
-        else:
-            self.action_loss_weights = None
         self.num_steps = num_steps
         self.rtc_training_config = rtc_training_config
 
