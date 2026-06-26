@@ -311,7 +311,6 @@ runner = dict(
         ],
         meta_keys=['task_description', 'prompt', 'info', 'stats']),
     sampler=None,
-    warmup_ratio=0.03,
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path=  # noqa: E251
@@ -324,7 +323,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler_type='linear-warmup+cosine-decay',
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.03,
+    ),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',

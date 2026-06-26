@@ -1,0 +1,10 @@
+bddl==1.0.1
+gym==0.25.2
+gymnasium
+hydra-core==1.2.0
+-e git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0#egg=libero
+lxml
+mujoco==3.2.6
+robomimic==0.2.0
+-e git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049#egg=robosuite
+tensorflow==2.15.0

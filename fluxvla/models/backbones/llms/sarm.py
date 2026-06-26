@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional, cast
+from typing import cast
 
 import torch
 import torch.nn as nn
@@ -20,6 +20,7 @@ from transformers import CLIPModel
 
 from fluxvla.engines import LLM_BACKBONES
 from fluxvla.engines.utils.hf_hub import resolve_hf_local_path
+from fluxvla.models.backbones.llms.clip_utils import clip_feature_tensor
 
 
 class StageTransformer(nn.Module):
@@ -299,8 +300,7 @@ class SARMBackbone(nn.Module):
     transformer_layer_cls = nn.TransformerEncoderLayer
 
     def __init__(self,
-                 pretrained_name_or_path: Optional[str] = None,
-                 clip_model_name_or_path: Optional[str] = None,
+                 pretrained_name_or_path: str,
                  hidden_dim: int = 768,
                  max_state_dim: int = 32,
                  num_layers: int = 8,
@@ -313,10 +313,7 @@ class SARMBackbone(nn.Module):
         """Initialize the SARM backbone.
 
         Args:
-            pretrained_name_or_path (Optional[str]): CLIP model path or repo
-                id.
-            clip_model_name_or_path (Optional[str]): Backward-compatible CLIP
-                model path or repo id.
+            pretrained_name_or_path (str): CLIP model path or repo id.
             hidden_dim (int): Hidden dimension for SARM transformer heads.
             max_state_dim (int): Padded robot state feature dimension.
             num_layers (int): Number of transformer encoder layers.
@@ -328,17 +325,10 @@ class SARMBackbone(nn.Module):
             freeze_clip_backbone (bool): Whether CLIP parameters are frozen.
         """
         super().__init__()
-        clip_model_name_or_path = (
-            pretrained_name_or_path or clip_model_name_or_path)
-        if clip_model_name_or_path is None:
-            raise ValueError('`pretrained_name_or_path` or '
-                             '`clip_model_name_or_path` must be provided '
-                             'for SARMBackbone.')
-        clip_model_name_or_path = resolve_hf_local_path(
-            clip_model_name_or_path)
-        self.pretrained_name_or_path = clip_model_name_or_path
-        self.clip_model_name_or_path = clip_model_name_or_path
-        self.clip_model = CLIPModel.from_pretrained(clip_model_name_or_path)
+        pretrained_name_or_path = resolve_hf_local_path(
+            pretrained_name_or_path)
+        self.pretrained_name_or_path = pretrained_name_or_path
+        self.clip_model = CLIPModel.from_pretrained(pretrained_name_or_path)
         projection_dim = self.clip_model.config.projection_dim
         self.stage_model = StageTransformer(
             d_model=hidden_dim,
@@ -382,8 +372,8 @@ class SARMBackbone(nn.Module):
             images.reshape(batch_size * seq_len * num_cameras, channels,
                            height, width).float(),
         )
-        image_features = self.clip_model.get_image_features(
-            pixel_values=flat_images)
+        image_features = clip_feature_tensor(
+            self.clip_model.get_image_features(pixel_values=flat_images))
         image_features = image_features.reshape(batch_size, seq_len,
                                                 num_cameras, -1)
         return image_features.permute(0, 2, 1, 3).contiguous()
@@ -401,7 +391,8 @@ class SARMBackbone(nn.Module):
         Returns:
             torch.Tensor: Text features with shape ``[B, D]``.
         """
-        return self.clip_model.get_text_features(
-            input_ids=text_input_ids,
-            attention_mask=text_attention_mask,
-        )
+        return clip_feature_tensor(
+            self.clip_model.get_text_features(
+                input_ids=text_input_ids,
+                attention_mask=text_attention_mask,
+            ))

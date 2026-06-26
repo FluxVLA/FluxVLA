@@ -31,7 +31,21 @@ try:
 except ImportError:
     pass
 from .franka_inference_runner import FrankaInferenceRunner  # noqa: F401, F403
+from .oli_inference_runner import OliInferenceRunner  # noqa: F401, F403
 from .tron2_inference_runner import Tron2InferenceRunner  # noqa: F401, F403
 from .tron2_rtc_inference_runner import \
     Tron2RTCInferenceRunner  # noqa: F401, F403
 from .ur_inference_runner import URInferenceRunner  # noqa: F401, F403
+from .ur_rtc_inference_runner import URRTCInferenceRunner  # noqa: F401, F403
+
+try:
+    from .libero_eval_runner import LiberoEvalRunner  # noqa: F401, F403
+except ModuleNotFoundError as exc:
+    if exc.name not in {'libero', 'robosuite', 'bddl'}:
+        raise
+
+try:
+    from .robocasa_eval_runner import RobocasaEvalRunner  # noqa: F401, F403
+except ModuleNotFoundError as exc:
+    if exc.name not in {'gymnasium', 'mujoco', 'robocasa', 'robosuite'}:
+        raise

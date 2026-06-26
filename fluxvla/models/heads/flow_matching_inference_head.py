@@ -61,9 +61,16 @@ def _cat_mlp(x, W1, b1, W2, b2, cat_ids):
 
 def _action_encode(actions, timesteps, W1_W, W1_b, W2_W, W2_b, W3_W, W3_b,
                    cat_ids, hidden_size):
-    """Functional MultiEmbodimentActionEncoder."""
+    """Functional MultiEmbodimentActionEncoder.
+
+    ``timesteps`` may be either a per-sample tensor of shape ``(B,)``
+    (broadcast to every action step) or a per-step tensor of shape ``(B, T)``.
+    The latter is used by RTC prefix conditioning, where prefix steps are
+    marked as ``num_timestep_buckets`` (i.e. fully denoised / clean).
+    """
     B, T, _ = actions.shape
-    timesteps = timesteps.unsqueeze(1).expand(-1, T)
+    if timesteps.dim() == 1:
+        timesteps = timesteps.unsqueeze(1).expand(-1, T)
     a_emb = _cat_linear(actions, W1_W, W1_b, cat_ids)
     tau_emb = _sinusoidal_pos_encoding(timesteps,
                                        hidden_size).to(dtype=a_emb.dtype)
@@ -522,6 +529,25 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                 device='cuda'),
             'embodiment_ids':
             torch.zeros(1, dtype=torch.long, device='cuda'),
+            # RTC prefix-conditioning buffers. They are captured by the CUDA
+            # graph but default to zeros, which makes them no-ops for the
+            # regular (non-RTC) inference path:
+            #   actions = actions * (1 - prefill_mask) + prefill_actions * mask
+            #   ts_act  = t * (1 - prefix_ts_mask) + buckets * prefix_ts_mask
+            # ``_prepare_prefill`` fills them in-place before each replay when
+            # RTC is active, so changing ``prefix_len`` never re-captures.
+            'prefill_actions':
+            torch.zeros(
+                1,
+                self.num_steps,
+                self.action_dim,
+                dtype=torch.bfloat16,
+                device='cuda'),
+            'prefill_mask':
+            torch.zeros(
+                1, self.num_steps, 1, dtype=torch.bfloat16, device='cuda'),
+            'prefix_ts_mask':
+            torch.zeros(1, self.num_steps, dtype=torch.float32, device='cuda'),
         }
 
         self.graph = torch.cuda.CUDAGraph()
@@ -582,6 +608,13 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
         actions = self.buffers['actions']
         device = actions.device
 
+        # RTC prefix-conditioning masks (all-zero -> no-op for inference).
+        prefill_actions = self.buffers['prefill_actions']
+        prefill_mask = self.buffers['prefill_mask']
+        prefill_inv_mask = 1 - prefill_mask
+        prefix_ts_mask = self.buffers['prefix_ts_mask']
+        prefix_ts_inv_mask = 1 - prefix_ts_mask
+
         for t in range(self.num_inference_timesteps):
             t_cont = t / float(self.num_inference_timesteps)
             t_discretized = int(t_cont * self.num_timestep_buckets)
@@ -589,9 +622,23 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
             timesteps_tensor = torch.full(
                 size=(1, ), fill_value=t_discretized, device=device)
 
+            # RTC: pin the prefix steps to the previously executed actions
+            # before encoding (inpainting). No-op when prefill_mask is zero.
+            actions = (
+                actions * prefill_inv_mask + prefill_actions * prefill_mask)
+
+            # RTC: per-step encoder timestep. Prefix steps are treated as
+            # fully denoised (``num_timestep_buckets``) so the action encoder
+            # conditions on clean prefix actions; other steps use the current
+            # diffusion timestep. Reduces to a constant ``t_discretized`` for
+            # every step when prefix_ts_mask is zero.
+            ts_action = (
+                t_discretized * prefix_ts_inv_mask +
+                self.num_timestep_buckets * prefix_ts_mask)
+
             # Action encoder
             action_features = _action_encode(
-                actions, timesteps_tensor, self.weights['action_encoder_W1_W'],
+                actions, ts_action, self.weights['action_encoder_W1_W'],
                 self.weights['action_encoder_W1_b'],
                 self.weights['action_encoder_W2_W'],
                 self.weights['action_encoder_W2_b'],
@@ -690,11 +737,72 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
             pred_velocity = pred[:, -self.num_steps:]
             actions = actions + dt * pred_velocity
 
+        # RTC: re-pin the prefix one last time so the returned chunk exactly
+        # matches the previously executed actions. No-op for plain inference.
+        actions = (actions * prefill_inv_mask + prefill_actions * prefill_mask)
         self.buffers['actions'].copy_(actions)
 
-    def predict_action(self, input_features: torch.Tensor,
-                       states: torch.Tensor, attention_mask: torch.Tensor,
-                       embodiment_ids: torch.Tensor, *args, **kwargs):
+    def _prepare_prefill(self, prev_actions, prefix_len, rtc_config):
+        """Fill the RTC prefix buffers in-place before a graph replay.
+
+        Implements the same prefix (inpainting) RTC scheme as the eager
+        ``FlowMatchingHead._predict_action_prefix_rtc``: the first
+        ``prefix_len`` steps of the action chunk are pinned to the previously
+        executed actions and treated as fully denoised by the action encoder.
+
+        Returns the effective (clamped) prefix length, ``0`` when RTC is off.
+        """
+        self.buffers['prefill_actions'].zero_()
+        self.buffers['prefill_mask'].zero_()
+        self.buffers['prefix_ts_mask'].zero_()
+
+        if prev_actions is None or not prefix_len or int(prefix_len) <= 0:
+            return 0
+
+        if rtc_config is not None:
+            method = rtc_config.get('method', 'prefix')
+            if method != 'prefix':
+                raise NotImplementedError(
+                    'Accelerated GR00T RTC only supports the "prefix" method, '
+                    f'got "{method}".')
+
+        prev = torch.as_tensor(
+            prev_actions, dtype=torch.bfloat16, device='cuda')
+        if prev.dim() == 2:
+            prev = prev.unsqueeze(0)
+
+        # Align the action dimension to the (padded) model action_dim.
+        cur_dim = prev.shape[-1]
+        if cur_dim < self.action_dim:
+            pad = torch.zeros(
+                prev.shape[0],
+                prev.shape[1],
+                self.action_dim - cur_dim,
+                dtype=prev.dtype,
+                device=prev.device)
+            prev = torch.cat([prev, pad], dim=-1)
+        elif cur_dim > self.action_dim:
+            prev = prev[..., :self.action_dim]
+
+        n = min(int(prefix_len), self.num_steps, prev.shape[1])
+        if n <= 0:
+            return 0
+
+        self.buffers['prefill_actions'][:, :n].copy_(prev[:, :n])
+        self.buffers['prefill_mask'][:, :n].fill_(1)
+        self.buffers['prefix_ts_mask'][:, :n].fill_(1)
+        return n
+
+    def predict_action(self,
+                       input_features: torch.Tensor,
+                       states: torch.Tensor,
+                       attention_mask: torch.Tensor,
+                       embodiment_ids: torch.Tensor,
+                       prev_actions: torch.Tensor = None,
+                       prefix_len: int = 0,
+                       rtc_config: dict = None,
+                       *args,
+                       **kwargs):
         if not self.loaded_weights:
             self._load_weights_and_buffer()
             self.loaded_weights = True
@@ -702,11 +810,19 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
         self.buffers['input_features'].copy_(input_features)
         self.buffers['states'].copy_(states)
         self.buffers['embodiment_ids'].copy_(embodiment_ids)
-        self.buffers['actions'].copy_(
-            torch.randn(
-                size=(1, self.num_steps, self.action_dim),
-                dtype=input_features.dtype,
-                device=input_features.device))
+
+        n_prefix = self._prepare_prefill(prev_actions, prefix_len, rtc_config)
+
+        init_actions = torch.randn(
+            size=(1, self.num_steps, self.action_dim),
+            dtype=input_features.dtype,
+            device=input_features.device)
+        if n_prefix > 0:
+            # Seed the prefix with the previous actions so the very first
+            # encoder step already sees clean prefix values.
+            init_actions[:, :n_prefix] = self.buffers[
+                'prefill_actions'][:, :n_prefix].to(init_actions.dtype)
+        self.buffers['actions'].copy_(init_actions)
 
         self.graph.replay()
 

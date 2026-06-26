@@ -196,6 +196,9 @@ class ParquetDatasetV3(ParquetDataset):
             datasets.append(hf_dataset)
         self.dataset_cumulative_sizes = np.cumsum([0] + dataset_sizes)
         self.dataset = concatenate_datasets(datasets)
+        self.full_length = len(self.dataset)
+        self.sample_indices = np.arange(self.full_length, dtype=np.int64)
+        self.effective_length = self.full_length
         self.transforms = list()
         self.action_key = action_key
         self.use_delta = use_delta

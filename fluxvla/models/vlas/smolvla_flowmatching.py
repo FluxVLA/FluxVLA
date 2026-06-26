@@ -166,7 +166,7 @@ class SmolVLAFlowMatching(BaseVLA):
         if self.add_image_special_tokens:
             from transformers import AutoProcessor
             processor = AutoProcessor.from_pretrained(
-                vlm_backbone.get('model_id', ''))
+                vlm_backbone.get('model_id', ''), trust_remote_code=True)
             tokenizer = processor.tokenizer
             self.fake_image_token = tokenizer.fake_image_token_id
             self.global_image_token = tokenizer.global_image_token_id

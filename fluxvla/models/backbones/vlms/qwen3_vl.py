@@ -23,7 +23,7 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import \
 
 from fluxvla.engines import VLM_BACKBONES
 from fluxvla.engines.utils.name_map import str_to_dtype
-from .hf_vlm import VLMBackbone
+from .hf_vlm import VLMBackbone, validate_attn_implementation
 
 
 @VLM_BACKBONES.register_module()
@@ -63,6 +63,7 @@ class Qwen3VL(VLMBackbone):
                  projection_mlp_hidden_dim: Optional[int] = None,
                  attn_implementation: str = 'flash_attention_2',
                  torch_dtype: Union[torch.dtype, str] = 'bf16') -> None:
+        attn_implementation = validate_attn_implementation(attn_implementation)
         self._attn_implementation = attn_implementation
         assert torch_dtype is not None, 'torch_dtype must be specified'
         if isinstance(torch_dtype, str):

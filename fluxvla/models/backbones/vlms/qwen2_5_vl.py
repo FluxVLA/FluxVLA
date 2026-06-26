@@ -47,10 +47,15 @@ class QWen2_5VL(VLMBackbone):
                  vlm_backbone_id: str,
                  vlm_config: Dict = None,
                  vlm_path: Optional[str] = None) -> None:
-        super().__init__(vlm_backbone_id, vlm_config, vlm_path=vlm_path)
+        attn_impl = 'flash_attention_2'
+        super().__init__(
+            vlm_backbone_id,
+            vlm_config,
+            vlm_path=vlm_path,
+            attn_implementation=attn_impl)
 
         if hasattr(self.vlm.config, 'attn_implementation'):
-            self.vlm.config.attn_implementation = 'flash_attention_2'
+            self.vlm.config.attn_implementation = attn_impl
 
         if hasattr(self.vlm.config, 'use_memory_efficient_attention'):
             self.vlm.config.use_memory_efficient_attention = True

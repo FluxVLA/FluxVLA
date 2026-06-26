@@ -16,10 +16,12 @@ import argparse
 import gc
 import json
 import os
+import random
 import socket
 import sys
 
 import draccus
+import numpy as np
 import torch
 import torch.distributed as dist
 import yaml
@@ -29,6 +31,7 @@ from fluxvla.datasets.utils import (save_dataset_statistics,
                                     save_grouped_dataset_statistics)
 from fluxvla.engines import (build_dataset_from_cfg, build_runner_from_cfg,
                              initialize_overwatch)
+from fluxvla.engines.utils.torch_utils import set_global_seed
 
 overwatch = initialize_overwatch(__name__)
 
@@ -294,12 +297,54 @@ def _resolve_eval_ckpt_path(ckpt_path):
     return ckpt_path
 
 
+def _get_nested_value(obj, path):
+    for key in path:
+        if obj is None:
+            return None
+        if isinstance(obj, dict):
+            obj = obj.get(key)
+        else:
+            obj = getattr(obj, key, None)
+    return obj
+
+
+def _resolve_train_seed(cfg):
+    """Resolve an explicit training seed from existing config fields."""
+    # Dataset-level seeds control dataset sampling order and may already exist
+    # in older configs; do not promote them to global training seeds.
+    for path in (
+        ('runner', 'seed'),
+        ('train_dataloader', 'seed'),
+        ('seed', ),
+    ):
+        seed = _get_nested_value(cfg, path)
+        if seed is not None:
+            return int(seed)
+    return None
+
+
+def _set_rank_training_seed(seed):
+    rank_seed = int(seed) + overwatch.rank()
+    random.seed(rank_seed)
+    np.random.seed(rank_seed)
+    torch.manual_seed(rank_seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(rank_seed)
+    return rank_seed
+
+
 def train(args, cfg):
     """Train the model with the given configuration.
 
     Args:
         cfg (Config): The configuration object containing training settings.
     """
+    seed = _resolve_train_seed(cfg)
+    if seed is not None:
+        set_global_seed(seed)
+        if overwatch.is_rank_zero():
+            overwatch.info(f'Training seed set to {seed}.')
+
     os.makedirs(args.work_dir, exist_ok=True)
     dataset = build_dataset_from_cfg(cfg.train_dataloader.dataset)
     if overwatch.is_rank_zero() and hasattr(dataset, 'dataset_statistics'):
@@ -325,6 +370,11 @@ def train(args, cfg):
         cfg.runner.resume_from = args.resume_from
     runner = build_runner_from_cfg(cfg.runner)  # noqa: F841
     runner.run_setup(n_train_examples=len(dataset))
+    if seed is not None:
+        rank_seed = _set_rank_training_seed(seed)
+        if overwatch.is_rank_zero():
+            overwatch.info('Training RNG reset after model setup; '
+                           f'rank-local base seed is {rank_seed}.')
     ckpt_path = runner.run(dataset)
     if args.eval_after_train:
         if not hasattr(cfg, 'eval'):

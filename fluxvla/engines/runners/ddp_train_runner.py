@@ -110,9 +110,8 @@ class DDPTrainRunner(BaseTrainRunner):
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
-                 lr_scheduler_type: str = 'constant',
-                 lr_schedule: Optional[Dict[float, float]] = None,
-                 warmup_ratio: int = 0,
+                 lr_scheduler: Optional[Dict] = None,
+                 betas: tuple = (0.9, 0.999),
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
                  reduce_in_full_precision: bool = True,
@@ -135,9 +134,8 @@ class DDPTrainRunner(BaseTrainRunner):
             save_epoch_interval=save_epoch_interval,
             save_iter_interval=save_iter_interval,
             max_keep_ckpts=max_keep_ckpts,
-            lr_scheduler_type=lr_scheduler_type,
-            lr_schedule=lr_schedule,
-            warmup_ratio=warmup_ratio,
+            lr_scheduler=lr_scheduler,
+            betas=betas,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
             enable_mixed_precision_training=enable_mixed_precision_training,
             reduce_in_full_precision=reduce_in_full_precision,
@@ -203,9 +201,7 @@ class DDPTrainRunner(BaseTrainRunner):
         # Setup optimizer and scheduler using base class method
         # Support optional weight_decay parameter grouping (if provided)
         self._setup_optimizer_and_scheduler(
-            n_train_examples,
-            weight_decay=self.weight_decay,
-            lr_schedule=self.lr_schedule)
+            n_train_examples, weight_decay=self.weight_decay)
 
         # Move model to device and wrap with DDP
         torch.cuda.empty_cache()

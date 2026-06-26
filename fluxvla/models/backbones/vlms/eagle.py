@@ -29,6 +29,7 @@ from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl impo
     Eagle2_5_VLForConditionalGeneration  # noqa: E501
 from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl_inference import \
     Eagle2_5_VLInferenceForConditionalGeneration  # noqa: E501
+from .hf_vlm import apply_attn_implementation_to_config
 
 
 @VLM_BACKBONES.register_module()
@@ -68,13 +69,9 @@ class EagleBackbone(nn.Module):
         elif hasattr(config, 'num_hidden_layers'):
             config.num_hidden_layers = select_layer
 
-        # Ensure flash_attention_2 is set for both vision and text configs
+        # Ensure the attention implementation is set before model creation.
         # This must be done BEFORE model creation
-        config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'vision_config'):
-            config.vision_config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'text_config'):
-            config.text_config._attn_implementation = 'flash_attention_2'
+        apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
         # dtype This avoids the expensive .to() conversion after initialization
@@ -280,13 +277,9 @@ class EagleInferenceBackbone(nn.Module):
         elif hasattr(config, 'num_hidden_layers'):
             config.num_hidden_layers = select_layer
 
-        # Ensure flash_attention_2 is set for both vision and text configs
+        # Ensure the attention implementation is set before model creation.
         # This must be done BEFORE model creation
-        config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'vision_config'):
-            config.vision_config._attn_implementation = 'flash_attention_2'
-        if hasattr(config, 'text_config'):
-            config.text_config._attn_implementation = 'flash_attention_2'
+        apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
         # dtype This avoids the expensive .to() conversion after initialization

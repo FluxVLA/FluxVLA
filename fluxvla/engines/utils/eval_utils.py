@@ -14,27 +14,42 @@
 
 import math
 import os
+import sys
 import time
+from ctypes.util import find_library
+from importlib import import_module
+from pathlib import Path
 
 import imageio
 import numpy as np
-import tensorflow as tf
 import torch
-from libero.libero import get_libero_path
-from libero.libero.envs import OffScreenRenderEnv
+from mmengine.utils import digit_version
 from PIL import Image
+
+from .image_ops import (crop_and_resize_numpy, jpeg_roundtrip_numpy,
+                        resize_hwc_lanczos3_numpy)
 
 OPENVLA_V01_SYSTEM_PROMPT = (
     'A chat between a curious user and an artificial intelligence assistant. '
     "The assistant gives helpful, detailed, and polite answers to the user's questions."  # noqa: E501
 )
 
+ROBOSUITE_MINIMUM_VERSION = '1.5.0'
+ROBOSUITE_MAXIMUM_VERSION = '1.5.2'
+NVIDIA_EGL_VENDOR_JSON = """{
+  "file_format_version": "1.0.0",
+  "ICD": {
+    "library_path": "libEGL_nvidia.so.0"
+  }
+}
+"""
+
 # TODO: Change to data pipeline.
 
 
 def resize_image(img, resize_size):
     """
-    Resizes an image to the specified size using TensorFlow.
+    Resizes an image to the specified size using NumPy/OpenCV Lanczos3.
 
     Args:
         img (np.ndarray): The input image to resize, expected
@@ -49,16 +64,119 @@ def resize_image(img, resize_size):
             and converted to uint8.
     """
     assert isinstance(resize_size, tuple)
-    # Resize to image size expected by model
-    img = tf.image.encode_jpeg(
-        img)  # Encode as JPEG, as done in RLDS dataset builder
-    img = tf.io.decode_image(
-        img, expand_animations=False,
-        dtype=tf.uint8)  # Immediately decode back
-    img = tf.image.resize(img, resize_size, method='lanczos3', antialias=True)
-    img = tf.cast(tf.clip_by_value(tf.round(img), 0, 255), tf.uint8)
-    img = img.numpy()
-    return img
+    img = jpeg_roundtrip_numpy(img)
+    return resize_hwc_lanczos3_numpy(img, resize_size[0], resize_size[1])
+
+
+def _has_nvidia_egl_library() -> bool:
+    if find_library('EGL_nvidia'):
+        return True
+
+    common_paths = (
+        '/usr/lib/x86_64-linux-gnu/libEGL_nvidia.so.0',
+        '/usr/lib64/libEGL_nvidia.so.0',
+        '/usr/lib/aarch64-linux-gnu/libEGL_nvidia.so.0',
+    )
+    return any(os.path.exists(path) for path in common_paths)
+
+
+def _nvidia_egl_vendor_file_candidates() -> tuple[Path, ...]:
+    env_path = os.environ.get('FLUXVLA_EGL_VENDOR_FILE')
+    candidates = []
+    if env_path:
+        candidates.append(Path(env_path).expanduser())
+    candidates.extend([
+        Path('/usr/share/glvnd/egl_vendor.d/10_nvidia.json'),
+        Path(sys.prefix) / 'etc' / 'fluxvla' / 'egl_vendor.d' /
+        '10_nvidia.json',
+    ])
+    return tuple(candidates)
+
+
+def _nvidia_egl_vendor_file_write_candidates() -> tuple[Path, ...]:
+    env_path = os.environ.get('FLUXVLA_EGL_VENDOR_FILE')
+    if env_path:
+        return (Path(env_path).expanduser(), )
+    return (Path(sys.prefix) / 'etc' / 'fluxvla' / 'egl_vendor.d' /
+            '10_nvidia.json', )
+
+
+def _is_nvidia_egl_vendor_file(path: Path) -> bool:
+    try:
+        return path.is_file() and 'libEGL_nvidia.so.0' in path.read_text()
+    except OSError:
+        return False
+
+
+def _ensure_nvidia_egl_vendor_file() -> str | None:
+    for path in _nvidia_egl_vendor_file_candidates():
+        if _is_nvidia_egl_vendor_file(path):
+            return path.as_posix()
+
+    for path in _nvidia_egl_vendor_file_write_candidates():
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(NVIDIA_EGL_VENDOR_JSON)
+            return path.as_posix()
+        except OSError:
+            continue
+
+    return None
+
+
+def configure_mujoco_egl_defaults() -> None:
+    """Default MuJoCo offscreen rendering to NVIDIA EGL when available.
+
+    A system with only Mesa's GLVND vendor JSON can still create an EGL
+    context, but LIBERO rendered pixels differ from the NVIDIA EGL path used by
+    the reference evaluation machines. Configure this before importing
+    robosuite / MuJoCo so simulation observations stay in-distribution.
+    """
+    mujoco_gl = os.environ.get('MUJOCO_GL')
+    if mujoco_gl in {'osmesa', 'glfw', 'glx'}:
+        return
+
+    os.environ.setdefault('MUJOCO_GL', 'egl')
+    os.environ.setdefault('PYOPENGL_PLATFORM', 'egl')
+
+    if os.environ.get('MUJOCO_GL') != 'egl':
+        return
+    if os.environ.get('__EGL_VENDOR_LIBRARY_FILENAMES'):
+        return
+    if not _has_nvidia_egl_library():
+        return
+
+    vendor_file = _ensure_nvidia_egl_vendor_file()
+    if vendor_file is not None:
+        os.environ['__EGL_VENDOR_LIBRARY_FILENAMES'] = vendor_file
+
+
+def check_robosuite_runtime(context='simulation'):
+    """Validate robosuite only on code paths that actually need simulation."""
+    configure_mujoco_egl_defaults()
+    try:
+        robosuite = import_module('robosuite')
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            f'robosuite is required for {context}. Install it with '
+            '`bash scripts/install_env.sh sim-only` or '
+            '`bash scripts/install_env.sh full`.') from exc
+
+    robosuite_version = digit_version(robosuite.__version__)
+    if not (robosuite_version >= digit_version(ROBOSUITE_MINIMUM_VERSION)
+            and robosuite_version < digit_version(ROBOSUITE_MAXIMUM_VERSION)):
+        raise RuntimeError(
+            f'Robosuite=={robosuite.__version__} is used but incompatible '
+            f'for {context}. Please install robosuite>='
+            f'{ROBOSUITE_MINIMUM_VERSION}, <{ROBOSUITE_MAXIMUM_VERSION}.')
+
+    if not hasattr(robosuite, 'load_controller_config'):
+        raise RuntimeError(
+            'The installed robosuite is missing load_controller_config. '
+            'Please install the patched robosuite from '
+            'git+https://github.com/yinchimaoliang/robosuite.git@4099c09.')
+
+    return robosuite
 
 
 def get_libero_env(task, resolution=256, controller='OSC_POSE'):
@@ -72,16 +190,27 @@ def get_libero_env(task, resolution=256, controller='OSC_POSE'):
         env: The initialized Libero environment.
         task_description (str): The language description of the task.
     """
+    check_robosuite_runtime('LIBERO simulation evaluation')
+    try:
+        libero_module = import_module('libero.libero')
+        libero_envs = import_module('libero.libero.envs')
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            'LIBERO is required for simulation evaluation. Install it with '
+            '`bash scripts/install_env.sh sim-only` or '
+            '`bash scripts/install_env.sh full`.') from exc
+
     task_description = task.language
     task_bddl_file = os.path.join(
-        get_libero_path('bddl_files'), task.problem_folder, task.bddl_file)
+        libero_module.get_libero_path('bddl_files'), task.problem_folder,
+        task.bddl_file)
     env_args = {
         'bddl_file_name': task_bddl_file,
         'camera_heights': resolution,
         'camera_widths': resolution,
         'controller': controller,
     }
-    env = OffScreenRenderEnv(**env_args)
+    env = libero_envs.OffScreenRenderEnv(**env_args)
     env.seed(
         0
     )  # IMPORTANT: seed seems to affect object positions even when using fixed initial state  # noqa: E501
@@ -90,12 +219,15 @@ def get_libero_env(task, resolution=256, controller='OSC_POSE'):
 
 def get_libero_image(obs, resize_size, img_key='agentview_image'):
     """Extracts image from observations and preprocesses it."""
-    assert isinstance(resize_size, int) or isinstance(resize_size, tuple)
+    assert (resize_size is None or isinstance(resize_size, int)
+            or isinstance(resize_size, tuple))
     if isinstance(resize_size, int):
         resize_size = (resize_size, resize_size)
     img = obs[img_key]
     img = img[::-1, ::
               -1]  # IMPORTANT: rotate 180 degrees to match train preprocessing
+    if resize_size is None:
+        return img.copy()
     img = resize_image(img, resize_size)
     return img
 
@@ -138,57 +270,63 @@ def quat2axisangle(quat):
 
 
 def crop_and_resize(image, crop_scale, batch_size):
-    """Center-crops an image to have area `crop_scale` *
-    (original image area), and then resizes back to original size.
-    This matches the training-time center-crop augmentation used by legacy
-    image pipelines, avoiding distribution shift at test time.
+    """Center-crop with TensorFlow semantics used by the LIBERO checkpoints."""
+    try:
+        import tensorflow as tf
 
-    Args:
-        image: TF Tensor of shape (batch_size, H, W, C) or (H, W, C) and
-            datatype tf.float32 with values between [0,1].
-        crop_scale: The area of the center crop with respect to the
-            original image.
-        batch_size: Batch size.
+        try:
+            tf.config.set_visible_devices([], 'GPU')
+        except RuntimeError:
+            pass
 
-    Returns:
-        image: TF Tensor of shape (batch_size, 224, 224, C) or (224, 224, C)
-            and datatype tf.float32 with values between [0,1].
-    """
-    # Convert from 3D Tensor (H, W, C) to 4D Tensor (batch_size, H, W, C)
-    assert image.shape.ndims == 3 or image.shape.ndims == 4
-    expanded_dims = False
-    if image.shape.ndims == 3:
-        image = tf.expand_dims(image, axis=0)
-        expanded_dims = True
+        image = tf.convert_to_tensor(np.asarray(image))
+        if image.shape.ndims not in (3, 4):
+            raise ValueError(
+                f'Expected HWC or NHWC image, got shape {image.shape}')
+        expanded_dims = False
+        if image.shape.ndims == 3:
+            image = tf.expand_dims(image, axis=0)
+            expanded_dims = True
+        if int(image.shape[0]) != batch_size:
+            raise ValueError(
+                f'Expected batch size {batch_size}, got {int(image.shape[0])}')
 
-    # Get height and width of crop
-    new_heights = tf.reshape(
-        tf.clip_by_value(tf.sqrt(crop_scale), 0, 1), shape=(batch_size, ))
-    new_widths = tf.reshape(
-        tf.clip_by_value(tf.sqrt(crop_scale), 0, 1), shape=(batch_size, ))
+        orig_dtype = image.dtype
+        image = tf.image.convert_image_dtype(image, tf.float32)
 
-    # Get bounding box representing crop
-    height_offsets = (1 - new_heights) / 2
-    width_offsets = (1 - new_widths) / 2
-    bounding_boxes = tf.stack(
-        [
-            height_offsets,
-            width_offsets,
-            height_offsets + new_heights,
-            width_offsets + new_widths,
-        ],
-        axis=1,
-    )
+        new_heights = tf.reshape(
+            tf.clip_by_value(tf.sqrt(crop_scale), 0, 1), shape=(batch_size, ))
+        new_widths = tf.reshape(
+            tf.clip_by_value(tf.sqrt(crop_scale), 0, 1), shape=(batch_size, ))
+        height_offsets = (1 - new_heights) / 2
+        width_offsets = (1 - new_widths) / 2
+        bounding_boxes = tf.stack(
+            [
+                height_offsets,
+                width_offsets,
+                height_offsets + new_heights,
+                width_offsets + new_widths,
+            ],
+            axis=1,
+        )
 
-    # Crop and then resize back up
-    image = tf.image.crop_and_resize(image, bounding_boxes,
-                                     tf.range(batch_size), (224, 224))
-
-    # Convert back to 3D Tensor (H, W, C)
-    if expanded_dims:
-        image = image[0]
-
-    return image
+        image = tf.image.crop_and_resize(image, bounding_boxes,
+                                         tf.range(batch_size), (224, 224))
+        if expanded_dims:
+            image = image[0]
+        image = tf.clip_by_value(image, 0, 1)
+        image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
+        return image.numpy()
+    except ModuleNotFoundError:
+        image = np.asarray(image)
+        if image.ndim == 4:
+            assert image.shape[0] == batch_size
+        elif image.ndim == 3:
+            assert batch_size == 1
+        else:
+            raise ValueError(
+                f'Expected HWC or NHWC image, got shape {image.shape}')
+        return crop_and_resize_numpy(image, crop_scale, output_size=(224, 224))
 
 
 def get_vla_action(vla,
@@ -227,26 +365,7 @@ def get_vla_action(vla,
     # and width (post-crop), multiply
     # the original height and width by sqrt(0.9) -- not 0.9!
     if center_crop:
-        batch_size = 1
-        crop_scale = 0.9
-
-        # Convert to TF Tensor and record original data type
-        # (should be tf.uint8)
-        image = tf.convert_to_tensor(np.array(image))
-        orig_dtype = image.dtype
-
-        # Convert to data type tf.float32 and values between [0,1]
-        image = tf.image.convert_image_dtype(image, tf.float32)
-
-        # Crop and then resize back to original size
-        image = crop_and_resize(image, crop_scale, batch_size)
-
-        # Convert back to original data type
-        image = tf.clip_by_value(image, 0, 1)
-        image = tf.image.convert_image_dtype(image, orig_dtype, saturate=True)
-
-        # Convert back to PIL Image
-        image = Image.fromarray(image.numpy())
+        image = Image.fromarray(crop_and_resize(np.array(image), 0.9, 1))
         image = image.convert('RGB')
 
     # Build VLA prompt

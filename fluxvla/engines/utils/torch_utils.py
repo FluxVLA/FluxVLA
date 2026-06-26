@@ -21,6 +21,54 @@ import torch
 
 # === Randomness ===
 
+DEFAULT_INFERENCE_SDPA_BACKENDS = None
+
+
+def configure_sdpa_backends_from_env(default: str = None) -> None:
+    """Apply PyTorch SDPA backend selection from env or an optional default."""
+    backend_spec = os.environ.get('FLUXVLA_SDPA_BACKENDS', default)
+    if not backend_spec:
+        return
+
+    requested = {
+        item.strip().lower().replace('-', '_')
+        for item in backend_spec.replace(',', ' ').split() if item.strip()
+    }
+    aliases = {
+        'flash_attention': 'flash',
+        'flash_attention_2': 'flash',
+        'mem_efficient': 'mem_efficient',
+        'memory_efficient': 'mem_efficient',
+        'efficient': 'mem_efficient',
+    }
+    requested = {aliases.get(item, item) for item in requested}
+    valid = {'flash', 'mem_efficient', 'math', 'cudnn'}
+    invalid = requested - valid
+    if invalid:
+        raise ValueError('Invalid FLUXVLA_SDPA_BACKENDS value(s): '
+                         f'{sorted(invalid)}. Valid values: {sorted(valid)}')
+
+    cuda_backends = torch.backends.cuda
+    cuda_backends.enable_flash_sdp('flash' in requested)
+    cuda_backends.enable_mem_efficient_sdp('mem_efficient' in requested)
+    cuda_backends.enable_math_sdp('math' in requested)
+    if hasattr(cuda_backends, 'enable_cudnn_sdp'):
+        cuda_backends.enable_cudnn_sdp('cudnn' in requested)
+
+
+def configure_inference_attention_defaults(
+    default_sdpa_backends: Optional[str] = DEFAULT_INFERENCE_SDPA_BACKENDS,
+) -> None:
+    """Apply explicit attention backend overrides for inference entrypoints.
+
+    By default this keeps the model / PyTorch attention implementation
+    unchanged. Set ``FLUXVLA_SDPA_BACKENDS`` to override SDPA backends for a
+    run explicitly.
+    """
+    if default_sdpa_backends is not None:
+        os.environ.setdefault('FLUXVLA_SDPA_BACKENDS', default_sdpa_backends)
+    configure_sdpa_backends_from_env(default_sdpa_backends)
+
 
 def set_global_seed(
         seed: int,

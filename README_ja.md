@@ -28,14 +28,14 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 ## パフォーマンス
 
-| Codebase                    |                                                     Libero-Spatial                                                      |                                                     Libero-Object                                                      |                                                     Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
-| --------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :--------------------------------------------------------------------------------------------------------------------: | :------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :------------: |
-| FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)      |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)      |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
-| FluxVLA(GR00T)              |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |  [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |  [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
-| FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64) | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64) | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
-| FluxVLA(Qwen3VL 0.6B+GR00T) |                                                          98.6                                                           |                                                          99.6                                                          |                                                         95.6                                                         |                                                      92.2±1.8                                                       |     96.50      |
-| FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)   |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)   |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
-| FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |  [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |  [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
+| Codebase                    |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
+| --------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :------------: |
+| FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
+| FluxVLA(GR00T)              |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |   [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |   [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
+| FluxVLA(Qwen3VL 0.6B+GR00T) | [96.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_object_full_finetune_bs64) | [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_object_full_finetune_bs64) | [95.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_goal_full_finetune_bs64) | [94.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_10_full_finetune_bs64) |     96.20      |
+| FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
+| FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
+| FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
 
 *リンク付きのスコアから対応するチェックポイントにアクセスできます。*
 
@@ -54,6 +54,10 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 - すべての成功率は episode 単位の micro-average です。
 
 ## 📢 最新情報
+
+**\[2026/06/22\]** 🔥 Oli ヒューマノイドの全身（移動操作）実機推論の最小パス（operator + runner + サンプル設定）が利用可能になりました。詳細は [docs/oli_whole_body.md](docs/oli_whole_body.md) を参照してください。
+
+**\[2026/06/17\]** 🔥 ARM 報酬モデリングと RA-BC/AW-BC 再重み付けをサポートしました。セットアップと使い方は [docs/arm.md](docs/arm.md) を参照してください。
 
 **\[2026/06/10\]** 🔥 GR00T による RoboCasa GR1 シミュレーションタスクに対応しました。
 
@@ -74,6 +78,125 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 **\[2026/04/08\]** 🔥 FluxVLA をオープンソース化しました。
 
 ## 🛠️ インストール
+
+以下のいずれかのインストール方法を選択してください：
+
+- **推奨：一括インストールスクリプト**：通常の学習、シミュレーション評価、実機推論環境に使用します。
+- **既存の FluxVLA 環境を更新する**：以前の FluxVLA をインストール済みで、変更された package だけ更新したい場合に使用します。
+- **最初から手動でインストールする**：各 package のインストール手順を自分で制御したい場合のみ使用します。
+
+### 推奨：一括インストールスクリプト
+
+```bash
+conda create -n fluxvla python=3.10 -y
+conda activate fluxvla
+
+# いずれかを選択: sim-only, real-only, full
+bash scripts/install_env.sh sim-only
+# bash scripts/install_env.sh real-only
+# bash scripts/install_env.sh full
+```
+
+<details>
+<summary><b>インストーラで問題が出る場合：mode と CUDA profile を確認する</b></summary>
+
+`sim-only` はシミュレーション / LIBERO / RoboCasa 関連依存関係に加えて、固定バージョンの RoboCasa source checkout を `./src` にインストールします。`real-only` は実機とリモート推論の依存関係を、`full` は両方をインストールします。RoboCasa checkout が不要な場合は `--skip-robocasa` を使ってください。
+インストーラが RoboCasa source checkout をインストールする場合
+（`sim-only`、`full`、または `real-only --with-robocasa`）、RoboCasa
+simulator assets もデフォルトでダウンロードします。インストーラは
+`scripts/download_robocasa_assets.py` を呼び出し、
+`FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（デフォルトは `HF_ENDPOINT`、次に
+`https://hf-mirror.com`）を使用します。asset だけをスキップするには
+`--skip-robocasa-assets`、source checkout と asset の両方をスキップするには
+`--skip-robocasa` を使ってください。
+
+スクリプトは CUDA PyTorch profile を自動選択し、まず現在の CUDA toolkit / `nvcc` version を優先します。CUDA >= 12.8 では `cu128`、それ以外では `cu124` を選択します。toolkit が見つからない場合は driver-reported CUDA、最後に GPU generation を fallback として使います。`--profile cu128` または `--profile cu124` で明示指定できます。
+
+PyTorch のインストール後、実際の Python tag、PyTorch バージョン、CUDA major version、C++ ABI、CPU architecture から FlashAttention wheel を自動選択します。対応する prebuilt wheel がない場合は `FLASH_ATTN_WHEEL_URL` を明示するか、`--skip-flash-attn` を使ってください。
+
+`av` は conda の依存解決が遅くなるのを避けるため、デフォルトではまず pip wheel からインストールされます。wheel がない場合は conda にフォールバックします。conda-forge 版が必要な場合は `FLUXVLA_AV_INSTALLER=conda` を指定してください。
+
+実機 runner にはシステム側の ROS も必要です。ROS Noetic の環境では、推論を起動する前に ROS を source してください：
+
+```bash
+source /opt/ros/noetic/setup.bash
+```
+
+</details>
+
+<details>
+<summary><b>インストーラで問題が出る場合：キャッシュ済みまたは mirror 上の FlashAttention wheel を使う</b></summary>
+
+FlashAttention wheel は大きいため、ネットワークが遅い環境では GitHub release のダウンロードが初回インストール時間の大部分を占めることがあります。繰り返しインストールする場合は、正確に一致する wheel ファイルを `./wheelhouse/`、`./wheels/`、または `~/.cache/fluxvla/wheels/` に置いてください。インストーラはネットワークへアクセスする前にそれを使用します。ローカルファイルや内部 mirror を明示することもできます：
+
+```bash
+FLASH_ATTN_WHEEL_FILE=/path/to/flash_attn-2.8.3.post1+cu12torch2.8cxx11abiTRUE-cp310-cp310-linux_x86_64.whl \
+bash scripts/install_env.sh sim-only --profile cu128
+
+FLASH_ATTN_WHEEL_BASE_URLS="https://your-mirror.example.com/fluxvla/wheels" \
+bash scripts/install_env.sh sim-only --profile cu128
+```
+
+</details>
+
+<details>
+<summary><b>インストーラで問題が出る場合：pip mirror と timeout を指定する</b></summary>
+
+インストーラは既存の pip 設定を優先します。その index に package がない場合、または pip index が設定されていない場合は、PyPI と複数の一般的な mirror を probe し、このマシンでの応答速度順に再試行します。ネットワークが遅い、または不安定な場合は候補 mirror と timeout を明示できます：
+
+```bash
+PIP_INDEX_CANDIDATES="https://mirrors.aliyun.com/pypi/simple https://mirrors.cloud.tencent.com/pypi/simple https://pypi.tuna.tsinghua.edu.cn/simple https://pypi.org/simple" \
+PIP_INSTALL_TIMEOUT=7200 \
+PIP_NETWORK_TIMEOUT=900 \
+GH_PROXY=https://ghfast.top \
+bash scripts/install_env.sh full
+```
+
+</details>
+
+### 既存の FluxVLA 環境を更新する
+
+FluxVLA(v0.1.0) をすでに clone / install している場合、conda 環境を作り直す必要はありません。最新コードを pull し、現在の simulation / model stack で実際に変わった package だけ更新してください：
+
+```bash
+bash scripts/update_env.sh
+```
+
+すでに checkout を更新済みの場合は `--skip-pull`、FluxVLA を editable mode で再インストールしない場合は `--skip-project` を指定してください。
+
+<details>
+<summary><b>等価な手動コマンド</b></summary>
+
+```bash
+git pull
+python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
+python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
+python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
+python -m pip install --no-build-isolation -e .
+python -c "import transformers; print(transformers.__version__)"
+```
+
+</details>
+
+RoboCasa GR00T support は引き続き optional です。現在のインストーラは `sim-only` と `full` で `./src` 配下の Isaac-GR00T と RoboCasa GR1 local checkout を自動管理します。RoboCasa configs を使わない場合は `--skip-robocasa` を指定してください。
+
+更新スクリプトは PyTorch や FlashAttention を再インストールしません。既存の `flash-attn==2.5.5` は、現在の PyTorch/CUDA build に対してまだ import できる場合のみ使い続けてください：
+
+```bash
+python - <<'PY'
+import torch, flash_attn
+from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
+print("torch", torch.__version__, "cuda", torch.version.cuda)
+print("flash-attn", flash_attn.__version__)
+PY
+```
+
+現在のインストーラや以下の手順で PyTorch を更新する場合は、対応する FlashAttention wheel も再インストールしてください。現在のインストーラはデフォルトで `flash-attn==2.8.3.post1` を使います。
+
+### 最初から手動でインストールする
+
+`scripts/install_env.sh` を使わない場合のみ手動インストールを選択してください。先に PyTorch、次に FlashAttention、最後に FluxVLA の残りの依存関係をインストールします。
 
 <details>
 <summary><b>1. conda 環境を作成する</b></summary>
@@ -102,23 +225,28 @@ pip install torch==2.8.0 torchvision==0.23.0 torchaudio==2.8.0 --index-url https
 <details>
 <summary><b>3. flash-attention をインストールする</b></summary>
 
-方式 1：pip で直接インストール：
+一括インストールスクリプトは公式 release assets から prebuilt
+FlashAttention wheel をダウンロードします。手動で入れる場合も、ソースビルドではなく Python、PyTorch、C++ ABI に合う wheel を指定してください：
 
 ```bash
-pip install psutil ninja packaging
-# MAX_JOBS は並列ビルドのスレッド数を制御します。マシンのリソースに応じて調整してください
-MAX_JOBS=8 pip install flash-attn==2.5.5 --no-build-isolation --find-links https://github.com/Dao-AILab/flash-attention/releases
+PYTAG=$(python - <<'PY'
+import sys
+print(f"cp{sys.version_info.major}{sys.version_info.minor}")
+PY
+)
+ABI=$(python - <<'PY'
+import torch
+print(str(torch._C._GLIBCXX_USE_CXX11_ABI).upper())
+PY
+)
+
+pip install --no-deps \
+  "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3.post1/flash_attn-2.8.3.post1+cu12torch2.8cxx11abi${ABI}-${PYTAG}-${PYTAG}-linux_x86_64.whl"
 ```
 
-方式 2：ソースからビルドしてインストール（方式 1 が失敗する場合に推奨）：
+PyTorch 2.6 を使う場合は、URL 内の `torch2.8` を `torch2.6` に置き換えてください。
 
-```bash
-git clone https://github.com/Dao-AILab/flash-attention.git
-cd flash-attention
-git checkout v2.5.5
-# MAX_JOBS は並列ビルドのスレッド数を制御します。マシンのリソースに応じて調整してください
-MAX_JOBS=8 python setup.py install
-```
+FlashAttention wheel は Python、PyTorch、CUDA、C++ ABI に強く依存します。`flash-attn==2.5.5` 自体は禁止ではありませんが、現在使っている PyTorch/CUDA stack 向けに build されていて、上の import check が通る場合のみ保持してください。PyTorch を更新した後は、対応する FlashAttention wheel を再インストールしてください。
 
 </details>
 
@@ -139,34 +267,35 @@ pip install -r requirements.txt
 pip install --no-build-isolation -e .
 ```
 
-> **補足**：`requirements.txt` では `torch==2.8.0` を固定しています。これにより、2 番目の手順でインストールした CUDA 対応 PyTorch を pip が意図せず置き換えるのを防ぎます。別の torch バージョンを使う必要がある場合は、2 番目のコマンドと `requirements.txt` 内のバージョンの両方を更新してください。
+> **補足**：`requirements.txt` は `requirements-base.txt`、`requirements-sim.txt`、`requirements-real.txt` をまとめるファイルになりました。PyTorch はインストールしないため、先に CUDA 版 PyTorch を入れるか、`scripts/install_env.sh` を使用してください。
 
 </details>
 
 <details>
-<summary><b>RoboCasa GR00T サポート（任意）</b></summary>
+<summary><b>任意：RoboCasa GR00T source checkout</b></summary>
 
-RoboCasa GR00T 設定（例：`configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`）の学習や評価を行う場合のみ、これらの追加依存をインストールしてください。
-
-まず、パッチ適用済みの robosuite をインストールします：
+RoboCasa GR00T 設定（例：`configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py`）には、固定バージョンの Isaac-GR00T と RoboCasa GR1 task checkout が必要です。one-click installer は `sim-only` と `full` でこれらをデフォルトでインストールし、`./src` 配下に配置します：
 
 ```bash
-pip install git+https://github.com/yinchimaoliang/robosuite.git@7264a82
+bash scripts/install_env.sh sim-only
 ```
 
-続いて、ローカル checkout から Isaac-GR00T と RoboCasa GR1 タスクパッケージをインストールします：
+checkout root を変更するには `FLUXVLA_ROBOCASA_SRC_ROOT=/path/to/src` を使います。source install をスキップするには `--skip-robocasa`、`real-only` mode でも強制するには `--with-robocasa` を使ってください。runtime dependencies と patch 済み robosuite は `requirements-sim.txt` からインストールされます。
+
+インストーラを使わない場合の同等の手順は次のとおりです：
 
 ```bash
-git clone https://github.com/NVIDIA/Isaac-GR00T.git /path/to/Isaac-GR00T
-cd /path/to/Isaac-GR00T
-git checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
-pip install --no-deps -e /path/to/Isaac-GR00T
+pip install "mujoco==3.2.6" gymnasium lxml
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
+
+git clone https://github.com/NVIDIA/Isaac-GR00T.git ./src/Isaac-GR00T
+git -C ./src/Isaac-GR00T checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
+pip install --no-deps -e ./src/Isaac-GR00T
 
 git clone https://github.com/robocasa/robocasa-gr1-tabletop-tasks.git \
-  /path/to/robocasa-gr1-tabletop-tasks
-cd /path/to/robocasa-gr1-tabletop-tasks
-git checkout 4840e671596f93ca03651524b9f72ffb1aadfeff
-pip install --no-deps -e /path/to/robocasa-gr1-tabletop-tasks
+  ./src/robocasa-gr1-tabletop-tasks
+git -C ./src/robocasa-gr1-tabletop-tasks checkout 4840e671596f93ca03651524b9f72ffb1aadfeff
+pip install --no-deps -e ./src/robocasa-gr1-tabletop-tasks
 ```
 
 editable インストールでは `--no-deps` を推奨します。RoboCasa 関連パッケージが FluxVLA のモデルスタックで固定された依存を置き換えないようにするためです。RoboCasa のアセットとデータセットの準備は[データとアセットの準備](#データとアセットの準備)を参照してください。
@@ -174,15 +303,19 @@ editable インストールでは `--no-deps` を推奨します。RoboCasa 関�
 </details>
 
 <details>
-<summary><b>オンライン評価環境（LIBERO / EGL）</b></summary>
+<summary><b>任意：LIBERO / MuJoCo EGL オンライン評価設定</b></summary>
 
 レイトレーシング非対応のデバイス（例：A100）で LIBERO を評価したい場合は、[EGL Device GPU Rendering Configuration](https://github.com/google-deepmind/mujoco/issues/572#issuecomment-2419965230) を参照してください。
+
+`scripts/install_env.sh sim-only` と `scripts/install_env.sh full` は MuJoCo EGL を自動で確認します。EGL デバイスが見えない場合、インストーラは以下のシステムパッケージのインストール、NVIDIA GLVND vendor ファイルの作成、`MUJOCO_GL=egl` 用の conda activation hook の作成を試みます。厳密に失敗させたい場合は `FLUXVLA_EGL_SETUP=always`、スキップする場合は `--skip-egl-setup` を使ってください。
 
 **システム依存関係のインストール**
 
 ```bash
 export MUJOCO_GL=egl
-sudo apt install libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-dev
+export PYOPENGL_PLATFORM=egl
+sudo apt-get update
+sudo apt-get install -y libegl1 libglvnd0 libopengl0 libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-dev
 ```
 
 **環境チェック**
@@ -206,6 +339,8 @@ sudo apt install libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-de
     }
 }
 ```
+
+その後、環境がすでに設定していない場合は `__EGL_VENDOR_LIBRARY_FILENAMES=/usr/share/glvnd/egl_vendor.d/10_nvidia.json` を付けて eval を起動してください。
 
 </details>
 
@@ -296,17 +431,18 @@ tensorboard --logdir work_dirs/tensorboard
 
 必要なデータセットをダウンロードし、`./datasets` ディレクトリに配置してください。設定に応じて、必要なデータセットだけをダウンロードします。
 
-| データセット            | ダウンロードリンク                                                                                                                                                     |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)   |
-| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1) |
-| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)           |
-| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)       |
-| modified_libero_rlds    | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                           |
-| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)           |
-| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                             |
-| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)     |
-| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)             |
+| データセット            | ダウンロードリンク                                                                                                                                                           |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)         |
+| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1)       |
+| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)                 |
+| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)             |
+| modified_libero_rlds    | [openvla/modified_libero_rlds](https://huggingface.co/datasets/openvla/modified_libero_rlds)                                                                                 |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                 |
+| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                   |
+| ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0) |
+| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)           |
+| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                   |
 
 例えば、`libero-10` データセットをダウンロードする場合：
 
@@ -330,22 +466,60 @@ huggingface-cli download limxdynamics/FluxVLAData \
 </details>
 
 <details>
-<summary><b>アセットの準備</b></summary>
+<summary><b>ARM データセット</b></summary>
 
-必要なアセットをダウンロードし、設定やシミュレータが期待するローカルディレクトリに配置してください。
+組み込みの ARM サンプル設定 `configs/arm/arm_clip_aloha_example.py` は、progress ラベル付きの LeRobot v3.x データセットが `./datasets/ARM_manual_test_10Episodes_lerobotv3.0` にあることを前提にしています。
 
-| アセット                                    | ダウンロードリンク                                                                                               | ローカルディレクトリ                                          |
-| ------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| RoboCasa テーブルトップシミュレータアセット | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
-
-推奨方法：RoboCasa GR1 タスクの checkout からアップストリームのアセットダウンローダーを実行します：
+公開済みのサンプルデータセットは、次のコマンドで期待される場所にダウンロードできます：
 
 ```bash
-cd /path/to/robocasa-gr1-tabletop-tasks
-python robocasa/scripts/download_tabletop_assets.py -y
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "ARM_manual_test_10Episodes_lerobotv3.0/*" \
+  --local-dir ./datasets
 ```
 
-代替方法：Hugging Face からミラーされたアセットをダウンロードし、`/path/to/robocasa-gr1-tabletop-tasks/robocasa/models/assets` に直接配置します。シンボリックリンクは必須ではなく、アセットが別のローカルディスクや共有ストレージに既に存在する場合の利便性のための手段にすぎません。
+ARM の学習は、このデータセットの `progress` 列を直接読み取ります。`progress` を持たない policy / DAgger データセットで RA-BC / AW-BC を使う場合は、まず ARM checkpoint を学習または読み込み、`scripts/compute_arm_awbc_progress.py` で `arm_progress.parquet` を生成してください。詳細は [docs/arm.md](docs/arm.md) と [tools/arm_awbc/README.md](tools/arm_awbc/README.md) を参照してください。
+
+</details>
+
+<details>
+<summary><b>アセットの準備</b></summary>
+
+RoboCasa GR1 tabletop タスクでは、以下の FluxVLA asset downloader を
+サポートされる手順として使用してください。表はスクリプトが使用する
+upstream archive の一覧です。これらの archive を手動でダウンロードして
+展開するだけでは不十分です。このスクリプトは directory layout の修正と、
+固定された RoboCasa GR1 checkout 向けの Objaverse XML metadata の正規化も
+行います。
+
+| アセット archive                                           | ダウンロードリンク                                                                                               | ローカルディレクトリ                                       |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| `objaverse.zip`, `textures.zip`, `generative_textures.zip` | [robocasa/robocasa-assets](https://huggingface.co/datasets/robocasa/robocasa-assets)                             | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `fixtures.zip`                                             | [jianzhang96/robocasa-assets](https://huggingface.co/datasets/jianzhang96/robocasa-assets)                       | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+| `sketchfab.zip`, `lightwheel.zip`                          | [nvidia/PhysicalAI-DigitalCousin-Assets](https://huggingface.co/datasets/nvidia/PhysicalAI-DigitalCousin-Assets) | `./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` |
+
+`scripts/install_env.sh` を使う場合、この downloader は RoboCasa source
+checkout と一緒にデフォルトで実行されます。ただし `--skip-robocasa` または
+`--skip-robocasa-assets` を指定した場合は実行されません。手動インストールや
+asset の再取得では、FluxVLA repository root から以下を実行してください。
+指定した Hugging Face endpoint 経由で必要な archive をダウンロードし、
+RoboCasa の asset directory に展開し、Objaverse XML metadata を正規化します:
+
+```bash
+python scripts/download_robocasa_assets.py --endpoint https://hf-mirror.com
+```
+
+archive または展開済み asset がすでにローカルにある場合でも、XML 互換処理
+を適用するため、このスクリプトは実行してください。asset がすでに
+`./src/robocasa-gr1-tabletop-tasks/robocasa/models/assets` に展開済みの場合は、
+validation と XML 正規化だけを実行できます:
+
+```bash
+python scripts/download_robocasa_assets.py --normalize-only
+```
+
+シンボリックリンクは必須ではなく、アセットが別のローカルディスクや共有ストレージに既に存在する場合の利便性のための手段にすぎません。
 
 </details>
 
@@ -431,7 +605,7 @@ SARM については、必要な SARM アノテーション列が含まれてい
 
 必要な事前学習済みチェックポイントをダウンロードし、`./checkpoints` ディレクトリに配置してください。設定に応じて必要なチェックポイントだけをダウンロードします。
 
-SARM ワークフローでは、通常は学習 / 推論用の CLIP チェックポイントが必要です。VLM ベースの自動アノテーションを使う場合は、公式 SARM で使われている Qwen3-VL チェックポイントも必要です。詳細は [docs/sarm.md](docs/sarm.md) を参照してください。
+ARM と SARM のワークフローでは、通常は学習 / 推論用の CLIP チェックポイントが必要です。SARM の VLM ベース自動アノテーションでは、公式 SARM で使われている Qwen3-VL チェックポイントも必要です。詳細は [docs/arm.md](docs/arm.md) と [docs/sarm.md](docs/sarm.md) を参照してください。
 
 <details>
 <summary><b>VLA モデル</b></summary>
@@ -480,7 +654,13 @@ SARM ワークフローでは、通常は学習 / 推論用の CLIP チェック
 
 > **ヒント**：`huggingface-cli download <model-name> --local-dir ./checkpoints/<model-name>` を使うとダウンロードを高速化できます。
 
-組み込みの SARM 設定では、CLIP ファイルを `./checkpoints/clip-vit-base-patch32` に配置してください。VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM を `./checkpoints/Qwen3-VL-30B-A3B-Instruct` に配置してください。
+組み込みの ARM と SARM 設定では、CLIP ファイルを `./checkpoints/clip-vit-base-patch32` に配置してください：
+
+```bash
+huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/clip-vit-base-patch32
+```
+
+VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM を `./checkpoints/Qwen3-VL-30B-A3B-Instruct` に配置してください。
 
 </details>
 
@@ -510,9 +690,10 @@ SARM ワークフローでは、通常は学習 / 推論用の CLIP チェック
 </details>
 
 <details>
-<summary><b>SARM ワークフローに対応</b></summary>
+<summary><b>報酬モデリングワークフローに対応</b></summary>
 
 - [SARM](https://github.com/xdofai/opensarm) の学習、アノテーション、progress 推論をサポートし、LeRobot v2.1/v3.x データセットに対応しています。詳細は [docs/sarm.md](docs/sarm.md) を参照してください。
+- [ARM](https://arxiv.org/abs/2604.03037) の報酬モデリング、progress 再構成、RA-BC / AW-BC サンプル再重み付けをサポートします。詳細は [docs/arm.md](docs/arm.md) を参照してください。
 
 </details>
 
@@ -540,6 +721,7 @@ SARM ワークフローでは、通常は学習 / 推論用の CLIP チェック
 - ZMQ ベースのリモート推論インフラをサポートします。サーバー/クライアントアーキテクチャにより、モデル推論を GPU サーバーにオフロードし、リソースが限られたエッジデバイスへのデプロイを可能にします。詳細は [リモート推論サービス](docs/remote_inference_serving.md) を参照してください。
 - [RTC（Real-Time Chunking）](docs/rtc.md) をサポートし、チャンク間の軌跡の連続性を向上させます。
 - GR00T と PI0.5 の推論を高速化します。詳細は [Inference Acceleration](docs/inference_acceleration.md) を参照してください。Triton の融合カーネル、CUDA Graph のキャプチャ、CUDA のカスタム演算子が含まれます。
+- Oli ヒューマノイドの全身（移動操作）実機推論の最小パスを提供（rospy センサ入力 + WebSocket 制御出力；base/ハンド指令はロボット SDK の統合ポイント）。詳細は [docs/oli_whole_body.md](docs/oli_whole_body.md) を参照。
 
 </details>
 
@@ -755,7 +937,7 @@ pip install numpy==1.26.4
 
 ## 🙏 引用・謝辞
 
-FluxVLA を研究やプロジェクトで利用した場合は、以下の形式で引用してください：
+FluxVLA を研究やプロジェクトで利用した場合は、以下の文献を引用してください：
 
 ```bibtex
 @software{FluxVLA2026,
@@ -767,6 +949,15 @@ FluxVLA を研究やプロジェクトで利用した場合は、以下の形式
   doi     = {10.5281/zenodo.20049506},
   url     = {https://github.com/FluxVLA/FluxVLA},
   license = {Apache-2.0},
+}
+
+@InProceedings{Mao_2026_CVPR,
+    author    = {Mao, Yiming and Yu, Zixi and Mao, Weixin and Li, Yinhao and Hu, Qirui and Lan, Zihan and Zhu, Minzhao and Chen, Hua},
+    title     = {ARM: Advantage Reward Modeling for Long-Horizon Manipulation},
+    booktitle = {Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR) Workshops},
+    month     = {June},
+    year      = {2026},
+    pages     = {4468-4477}
 }
 ```
 

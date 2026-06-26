@@ -94,7 +94,8 @@ LeRobot v3.x video metadata sanity check:
 
 These configs expect:
 
-- CLIP backbone and tokenizer at `./checkpoints/clip-vit-base-patch32`
+- CLIP at `pretrained_name_or_path` (shared by `model.llm_backbone` and
+  `TokenizeText.tokenizer.model_path`)
 - Dataset metadata under the selected `data_root_path`
 
 Notes:
@@ -112,6 +113,7 @@ Notes:
 - `scripts/infer_sarm_progress.py` expects a FluxVLA training checkpoint file, typically the `latest-checkpoint.pt` file under your chosen `--work-dir/checkpoints/` directory.
 - `scripts/infer_sarm_progress.py` supports `--cfg-options` for dataset overrides and `--max-batches` for quick smoke validation.
 - For LeRobot v2.1/v3.x style datasets, `task` can be stored as a task index. FluxVLA resolves it back to task text at read time from `tasks.jsonl` or `tasks.parquet` without modifying dataset files.
+- Episode videos are decoded by the `DecodeLeRobotVideoSequence` transform (first step in `current_transforms`); keep `video_keys` aligned between the dataset config and that transform.
 - For LeRobot v3.x style datasets, video paths may be described either by `videos/<key>/chunk_index` / `file_index` or equivalent chunk/file columns on episode metadata or parquet rows. FluxVLA accepts those variants without requiring dataset rewrites.
 - If your dataset uses a camera key other than `observation.images.image`, override `train_dataloader.dataset.video_keys` and `inference_dataset.video_keys` with `--cfg-options`.
 
@@ -355,7 +357,7 @@ with the parquet `index` column. Use `--frame-index` only if you intentionally
 need a different frame from the SARM sequence.
 
 For downstream policy code that supports per-sample losses, the reusable
-weight helper is available at `tools.sarm_rabc.SarmRABCWeights`. It expects
+weight helper is available at `fluxvla.weighters.SarmRABCWeighter`. It expects
 batches to contain a global `index` or `current_index` field and computes the
 RA-BC delta weight from `progress[t + chunk_size] - progress[t]`.
 
@@ -374,7 +376,7 @@ rabc = dict(
     enabled=True,
     weight_key='sample_weight',
     weighter=dict(
-        type='SARMProgressWeighter',
+        type='SarmRABCWeighter',
         progress_path='./work_dirs/sarm_dense_only/sarm_progress.parquet',
         chunk_size=50,
         head_mode='dense',

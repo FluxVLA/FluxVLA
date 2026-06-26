@@ -41,6 +41,10 @@ We would like to thank the following contributors for their work on this project
 
 - Real robot-related support
 
+## [@Mizoreww](https://github.com/Mizoreww)
+
+- Support for Oli humanoid whole-body (loco-manipulation) real-robot inference (rospy + WebSocket operator and runner). See [docs/oli_whole_body.md](oli_whole_body.md)
+
 ## Corresponding Author
 
 - Wayne Mao (waynemao@limxdynamics.com)

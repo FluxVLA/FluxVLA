@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from .arm import ARMBackbone  # noqa: F401, F403
 from .condition_gemma import ConditionGemmaModel  # noqa: F401, F403
 from .condition_gemma_inference import \
     ConditionGemmaInferenceModel  # noqa: F401, F403

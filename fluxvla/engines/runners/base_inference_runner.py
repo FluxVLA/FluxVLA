@@ -356,12 +356,13 @@ class BaseInferenceRunner:
                         enabled=(self.enable_mixed_precision
                                  and not self._use_remote)):
                     raw_action = self._predict_action(inputs)
-
                 actions = self._postprocess_actions(raw_action)
                 self._execute_actions(actions, rate)
 
                 self._prev_ctx = self._action_ctx
-                t += self.action_chunk
+                t += (
+                    getattr(self, 'execute_horizon', None)
+                    or self.action_chunk)
                 overwatch.info(f'Published Step {t}')
 
     def _preprocess(self, instruction: str) -> dict:
