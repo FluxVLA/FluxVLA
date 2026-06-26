@@ -42,6 +42,9 @@ class URRTCInferenceRunner(URInferenceRunner):
                  **kwargs):
         self.rtc_config = rtc_config
         self.execute_horizon = execute_horizon
+        if self.rtc_config and self.rtc_config.get('enabled', False):
+            assert self.rtc_config.get('method', 'prefix') != 'guidance', (
+                'Guidance RTC is not supported by URRTCInferenceRunner.')
         super().__init__(*args, **kwargs)
         self.dt = 1.0 / self.publish_rate
 
