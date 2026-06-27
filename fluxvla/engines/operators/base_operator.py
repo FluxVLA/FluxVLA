@@ -56,11 +56,16 @@ class BaseOperator:
         self._frames = deque(maxlen=self.synced_frame_queue_size)
         self._sync_names = []
         self._sync_image_names = set()
+        self._sync_topic_by_name = {}
+        self._sync_input_counts = {}
+        self._sync_last_arrival_at = {}
         self._sync_subscribers = []
         self._sync = None
         self._sync_warning_started_at = time.monotonic()
         self._sync_window_started_at = time.monotonic()
         self._sync_window_count = 0
+        self._last_sync_output_at = None
+        self._last_empty_frame_warning_at = 0.0
         self._traj_thread = None
         self._traj_stop_event = threading.Event()
 
@@ -79,6 +84,15 @@ class BaseOperator:
 
         normalized_specs = [self._normalize_sync_spec(spec) for spec in specs]
         self._sync_names = [spec['name'] for spec in normalized_specs]
+        self._sync_topic_by_name = {
+            spec['name']: spec['topic']
+            for spec in normalized_specs
+        }
+        self._sync_input_counts = {spec['name']: 0 for spec in normalized_specs}
+        self._sync_last_arrival_at = {
+            spec['name']: None
+            for spec in normalized_specs
+        }
         self._sync_image_names = {
             spec['name']
             for spec in normalized_specs
@@ -88,6 +102,8 @@ class BaseOperator:
             message_filters.Subscriber(spec['topic'], spec['msg_type'])
             for spec in normalized_specs
         ]
+        for subscriber, spec in zip(self._sync_subscribers, normalized_specs):
+            subscriber.registerCallback(self._record_sync_input, spec['name'])
         self._sync = message_filters.ApproximateTimeSynchronizer(
             self._sync_subscribers,
             queue_size=self.sync_queue_size,
@@ -117,6 +133,7 @@ class BaseOperator:
         """Return the newest synchronized frame and discard stale frames."""
         with self._lock:
             if not self._frames:
+                self._maybe_log_empty_frame_warning()
                 return False
             frame = self._frames[-1]
             self._frames.clear()
@@ -128,9 +145,22 @@ class BaseOperator:
             self._sync_warning_started_at = time.monotonic()
             self._sync_window_started_at = time.monotonic()
             self._sync_window_count = 0
+            self._last_sync_output_at = None
+            self._last_empty_frame_warning_at = 0.0
 
     def get_queue_status(self):
-        return {'synced_frames': len(self._frames)}
+        return {
+            'synced_frames': len(self._frames),
+            'sync_inputs': dict(self._sync_input_counts),
+            'sync_last_arrival_at': dict(self._sync_last_arrival_at),
+        }
+
+    def _record_sync_input(self, msg, name):
+        del msg
+        with self._lock:
+            if name in self._sync_input_counts:
+                self._sync_input_counts[name] += 1
+                self._sync_last_arrival_at[name] = time.monotonic()
 
     def _sync_callback(self, *msgs):
         raw = dict(zip(self._sync_names, msgs))
@@ -141,6 +171,7 @@ class BaseOperator:
         }
         with self._lock:
             self._frames.append(frame)
+            self._last_sync_output_at = time.monotonic()
             self._record_sync_output()
 
     def _format_frame(self, frame):
@@ -185,6 +216,55 @@ class BaseOperator:
 
         self._sync_window_started_at = now
         self._sync_window_count = 0
+
+    def _maybe_log_empty_frame_warning(self):
+        if (not self.sync_warning_enabled or self.sync_warning_window <= 0.0
+                or not self._sync_names):
+            return
+
+        now = time.monotonic()
+        if now - self._sync_warning_started_at < self.sync_warning_warmup:
+            return
+        if now - self._last_empty_frame_warning_at < self.sync_warning_window:
+            return
+
+        self._last_empty_frame_warning_at = now
+        self._log_empty_frame_warning(now)
+
+    def _log_empty_frame_warning(self, now):
+        import rospy
+
+        if self._last_sync_output_at is None:
+            no_sync_for = now - self._sync_warning_started_at
+        else:
+            no_sync_for = now - self._last_sync_output_at
+
+        missing_names = [
+            name for name, count in self._sync_input_counts.items()
+            if count == 0
+        ]
+        missing_topics = [
+            self._sync_topic_by_name.get(name, name) for name in missing_names
+        ]
+        stale_topics = [
+            self._sync_topic_by_name.get(name, name)
+            for name, last_arrival_at in self._sync_last_arrival_at.items()
+            if (last_arrival_at is not None
+                and now - last_arrival_at > self.sync_warning_window)
+        ]
+
+        rospy.logwarn(
+            '%s has no synchronized frame for %.1fs '
+            '(slop=%.3fs, queue_size=%d). Missing topics: %s. '
+            'Stale topics: %s. If none are missing or stale, check topic '
+            'header timestamps.',
+            self.__class__.__name__,
+            no_sync_for,
+            self.sync_slop,
+            self.sync_queue_size,
+            ', '.join(missing_topics) if missing_topics else 'none',
+            ', '.join(stale_topics) if stale_topics else 'none',
+        )
 
     def _log_sync_rate_warning(self, observed_hz, min_hz, elapsed):
         import rospy
