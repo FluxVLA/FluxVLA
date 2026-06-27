@@ -218,7 +218,7 @@ inference = dict(
         action_dim=7,
     ),
     operator=dict(
-        type='NewUROperator',
+        type='UROperator',
         command_mode='joint',
         img_left_topic='/wrist_camera/color/image_raw',
         img_front_topic='/front_camera/color/image_raw',
