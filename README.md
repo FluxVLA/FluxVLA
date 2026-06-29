@@ -41,9 +41,9 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 #### RoboCasa GR1
 
-| Model          |   Training Data    | Cabinet | Drawer | Microwave | Generalization |                                                       Average                                                        |
-| -------------- | :----------------: | :-----: | :----: | :-------: | :------------: | :------------------------------------------------------------------------------------------------------------------: |
-| FluxVLA(GR00T) | 24 tasks, 30 demos |  27.5%  | 37.5%  |   45.0%   |     50.3%      | [46.9%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+| Model          | Training Data      | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
+| -------------- | ------------------ | ------- | ------ | --------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| FluxVLA(GR00T) | 24 tasks, 30 demos | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### Notes
 
@@ -51,7 +51,7 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 - `Drawer`: `PnPCanToDrawerClose` + `PnPCupToDrawerClose`.
 - `Microwave`: `PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`.
 - `Generalization`: the remaining 18 post-train novel tasks.
-- All rates are micro-averaged over episodes.
+- The RoboCasa GR00T result is evaluated with 50 trials per task.
 
 ## 📢 Latest News
 
@@ -832,14 +832,21 @@ RoboCasa GR00T evaluation example:
 
 ```bash
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+PYTHONHASHSEED=7 \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
   --config configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
   --ckpt-path work_dirs/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64/checkpoints/step-010000.safetensors \
   --cfg-options \
     eval.norm_stats_path=work_dirs/official_groot_gr1_dataset_statistics.json \
     eval.output_dir=work_dirs/gr00t_eagle_3b_robocasa_eval \
-    eval.num_trials_per_task=20
+    eval.num_trials_per_task=50 \
+    eval.seed=7
 ```
+
+`eval.seed` controls the RoboCasa episode seeds and stochastic GR00T action
+sampling seeds during evaluation. `PYTHONHASHSEED` is independent and must be
+set before Python starts; using the same value is recommended when reproducing
+reported RoboCasa results.
 
 </details>
 

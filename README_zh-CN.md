@@ -41,9 +41,9 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 #### RoboCasa GR1
 
-| 模型           |       训练数据       | Cabinet | Drawer | Microwave | Generalization |                                                       Average                                                        |
-| -------------- | :------------------: | :-----: | :----: | :-------: | :------------: | :------------------------------------------------------------------------------------------------------------------: |
-| FluxVLA(GR00T) | 24 个任务，30 条演示 |  27.5%  | 37.5%  |   45.0%   |     50.3%      | [46.9%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+| 模型           | 训练数据             | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
+| -------------- | -------------------- | ------- | ------ | --------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| FluxVLA(GR00T) | 24 个任务，30 条演示 | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### 说明
 
@@ -51,7 +51,7 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 - `Drawer`：`PnPCanToDrawerClose` + `PnPCupToDrawerClose`。
 - `Microwave`：`PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`。
 - `Generalization`：剩余的 18 个后训练新任务。
-- 所有成功率均按 episode 做 micro-average。
+- RoboCasa GR00T 结果使用每个任务 50 次试验评测。
 
 ## 📢 最新动态
 

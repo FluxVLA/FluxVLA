@@ -17,6 +17,7 @@ import copy
 import json
 import math
 import os
+import random
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -83,6 +84,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
         norm_stats_path: Optional explicit dataset statistics path.
         grouped_norm_stats: Whether to load one statistics file per group.
         norm_stats_group_names: Per-task group names for grouped statistics.
+        deterministic_env: Whether to seed RoboCasa env construction/reset.
+        deterministic_action_sampling: Whether to seed stochastic action
+            sampling before every policy call.
     """
 
     def __init__(self,
@@ -105,6 +109,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  action_order: Optional[str] = None,
                  grouped_norm_stats: bool = False,
                  norm_stats_group_names: Optional[List[str]] = None,
+                 deterministic_env: bool = True,
+                 deterministic_action_sampling: bool = True,
                  **kwargs):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg)
@@ -286,6 +292,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.distributed_state = overwatch.distributed_state
 
         self.save_video = save_video
+        self.deterministic_env = deterministic_env
+        self.deterministic_action_sampling = deterministic_action_sampling
 
         # Attach norm_stats to the model for heads that consume them.
         if self.grouped_norm_stats:
@@ -296,6 +304,29 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 self.vla.norm_stats = json.load(f)
 
         self._active_denorm = self.denormalize_action
+
+    @staticmethod
+    def _normalize_seed(seed: int) -> int:
+        return int(seed) % np.iinfo(np.uint32).max
+
+    def _episode_seed(self, local_id: int) -> int:
+        return self._normalize_seed(self.seed + local_id)
+
+    def _action_seed(self, local_id: int, step: int) -> int:
+        return self._normalize_seed(self.seed + 1_000_003 * (local_id + 1) +
+                                    step)
+
+    @staticmethod
+    def _seed_python_numpy_torch(seed: int) -> None:
+        random.seed(seed)
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+
+    @staticmethod
+    def _seed_torch(seed: int) -> None:
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
 
     def run_setup(self):
         """Initialize CUDA placement and model state."""
@@ -327,6 +358,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
                        f'{self.num_trials_per_task} trials each')
         overwatch.info(f'Model family: {self.model_family}, '
                        f'chunk_size: {self.eval_chunk_size}')
+        overwatch.info(f'Deterministic env: {self.deterministic_env}, '
+                       f'deterministic action sampling: '
+                       f'{self.deterministic_action_sampling}, '
+                       f'base seed: {self.seed}')
 
         rank = overwatch.rank()
         world_size = overwatch.world_size()
@@ -341,7 +376,12 @@ class RobocasaEvalRunner(BaseEvalRunner):
             work_dir = Path(self.ckpt_path).resolve().parent.parent
         work_dir.mkdir(parents=True, exist_ok=True)
         log_filepath = os.path.join(work_dir, run_id + '.txt')
-        log_file = open(log_filepath, 'w')
+        log_file = open(log_filepath, 'w', encoding='utf-8', buffering=1)
+        log_file.write(f'Rank {rank}/{world_size}, seed={self.seed}\n')
+        log_file.write(f'PYTHONHASHSEED={os.environ.get("PYTHONHASHSEED")}\n')
+        log_file.write(f'Deterministic env: {self.deterministic_env}, '
+                       f'deterministic action sampling: '
+                       f'{self.deterministic_action_sampling}\n')
 
         total_episodes = torch.zeros(1, device=torch.cuda.current_device())
         total_successes = torch.zeros(1, device=torch.cuda.current_device())
@@ -369,8 +409,15 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     f'Task {task_id} ({env_name}), Trial {trial_id}\n')
 
                 # Create RoboCasa environment.
-                env = gym.make(env_name)
-                obs, info = env.reset(seed=self.seed + local_id)
+                episode_seed = self._episode_seed(local_id)
+                if self.deterministic_env:
+                    self._seed_python_numpy_torch(episode_seed)
+                    env = gym.make(env_name, seed=episode_seed)
+                    obs, info = env.reset(seed=episode_seed)
+                else:
+                    env = gym.make(env_name)
+                    obs, info = env.reset()
+                log_file.write(f'Episode seed: {episode_seed}\n')
 
                 # In grouped mode, switch stats, denormalizer, and
                 # vla.norm_stats per task.
@@ -426,6 +473,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         replay_images.append(replay_img)
 
                     # Model inference.
+                    if self.deterministic_action_sampling:
+                        self._seed_torch(self._action_seed(local_id, t))
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,
