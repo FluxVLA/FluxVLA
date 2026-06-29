@@ -73,7 +73,6 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
-        reshuffle_each_epoch=True,
         name_mappings={'observation.state': ['proprio', 'action']},
         statistic_keys=['observation.state', 'timestamp'],
         datasets=[
