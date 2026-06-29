@@ -177,9 +177,18 @@ class DDPTrainRunner(BaseTrainRunner):
         """Setup DDP-specific model configuration and distributed training."""
         torch.cuda.empty_cache()
         torch.cuda.set_device(device_id := self.device_id)
+        target_device = torch.device('cuda', device_id)
 
         self.vla.freeze_backbones()
         self.vla.from_pretrained()
+
+        # Match the official OpenVLA LoRA setup: load the base model in bf16
+        # first, then let PEFT create trainable adapter weights afterward.
+        torch.cuda.empty_cache()
+        if self.enable_mixed_precision_training and self.mixed_precision_dtype == torch.bfloat16:  # noqa: E501
+            self.vla = self.vla.to(device=target_device, dtype=torch.bfloat16)
+        else:
+            self.vla = self.vla.to(target_device)
 
         # Apply LoRA if specified
         if hasattr(self.cfg.model, 'use_lora') and self.cfg.model.use_lora:
@@ -203,14 +212,6 @@ class DDPTrainRunner(BaseTrainRunner):
 
         # Setup optimizer and scheduler using base class method.
         self._setup_optimizer_and_scheduler(n_train_examples)
-
-        # Move model to device and wrap with DDP
-        torch.cuda.empty_cache()
-        # Move to device and optionally convert to bf16
-        if self.enable_mixed_precision_training and self.mixed_precision_dtype == torch.bfloat16:  # noqa: E501
-            self.vla = self.vla.to(device=device_id, dtype=torch.bfloat16)
-        else:
-            self.vla = self.vla.to(device_id)
 
         # Apply Gradient Checkpointing (after moving to device)
         if self.enable_gradient_checkpointing:
