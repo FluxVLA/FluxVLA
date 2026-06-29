@@ -193,15 +193,20 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_steps=80000,
-    learning_rate=3e-5,
-    paramwise_learning_rate={
-        'vlm_backbone.transformer': 1e-5,
-        'vla_head': 1e-4,
-    },
-    weight_decay=1e-8,
+    max_steps=160000,
+    optimizer=dict(
+        lr=3e-5,
+        type='AdamW',
+        weight_decay=1e-8,
+        eps=1e-8,
+        betas=(0.9, 0.95),
+        paramwise_learning_rate={
+            'vlm_backbone.transformer': 1e-4,
+            'vla_head': 1e-4,
+        },
+    ),
     max_grad_norm=1.0,
-    save_iter_interval=40000,
+    save_iter_interval=80000,
     max_keep_ckpts=2,
     collator=dict(
         type='DictCollator',
@@ -224,8 +229,11 @@ runner = dict(
         grad_accumulation_steps=1,
         window_size=1,
     ),
-    lr_scheduler_type='linear-warmup+cosine-decay',
-    warmup_ratio=0.0625,
+    lr_scheduler=dict(
+        type='cosine_with_min_lr',
+        warmup_steps=10000,
+        min_lr=5e-7,
+    ),
     sharding_strategy='full-shard',
     pre_fsdp_param_dtype='bf16',
     enable_gradient_checkpointing=True,
@@ -253,26 +261,9 @@ eval = dict(
         require_lang_tokens=False,
         transforms=[
             dict(
-                type='ProcessLiberoEvalInputs',
+                type='ProcessDiT4DiTLiberoEvalInputs',
                 img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
-            ),
-            dict(
-                type='TransformImage',
-                image_resize_strategy='resize-naive',
-                input_sizes=[
-                    [3, _image_size, _image_size],
-                    [3, _image_size, _image_size],
-                ],
-                means=[[127.5, 127.5, 127.5], [127.5, 127.5, 127.5]],
-                stds=[[127.5, 127.5, 127.5], [127.5, 127.5, 127.5]],
-            ),
-            dict(
-                type='ConcatImagesHorizontally',
-                key='pixel_values',
-                num_views=2,
-                frame_stride=1,
-                views_first=True,
-                keep_time_dim=True,
+                image_size=_image_size,
             ),
             dict(
                 type='LiberoProprioFromInputs',

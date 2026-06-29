@@ -16,6 +16,7 @@ import os
 from typing import Dict, List
 
 import av
+import cv2
 import numpy as np
 import torch
 from PIL import Image
@@ -334,6 +335,60 @@ class ProcessLiberoEvalInputs:
             img_masks = [True] * len(imgs)
         inputs['pixel_values'] = images
         inputs['img_masks'] = img_masks
+        inputs['replay_img'] = replay_img
+        if self.embodiment_id is not None:
+            inputs['embodiment_ids'] = np.array(
+                self.embodiment_id, dtype=np.int32)
+        return inputs
+
+
+@TRANSFORMS.register_module()
+class ProcessDiT4DiTLiberoEvalInputs:
+    """Source-compatible DiT4DiT preprocessing for LIBERO eval.
+
+    The reference DiT4DiT LIBERO client rotates both camera views, resizes
+    each view with OpenCV INTER_AREA, concatenates primary and wrist views
+    along width, then feeds a single CHW frame in [0, 1].
+    """
+
+    def __init__(self,
+                 img_keys: List[str] = [
+                     'agentview_image', 'robot0_eye_in_hand_image'
+                 ],
+                 image_size: int | List[int] = 224,
+                 embodiment_id: int = None) -> None:
+        if len(img_keys) < 1:
+            raise ValueError('ProcessDiT4DiTLiberoEvalInputs needs images.')
+        self.img_keys = img_keys
+        if isinstance(image_size, int):
+            self.height = image_size
+            self.width = image_size
+        else:
+            if len(image_size) != 2:
+                raise ValueError('image_size must be int or [height, width].')
+            self.height = int(image_size[0])
+            self.width = int(image_size[1])
+        self.embodiment_id = embodiment_id
+
+    def __call__(self, inputs: Dict) -> Dict:
+        resized_views = []
+        replay_img = None
+        for img_key in self.img_keys:
+            if img_key not in inputs:
+                raise KeyError(f'Missing image key: {img_key!r}')
+            img = np.asarray(inputs[img_key])
+            img = np.ascontiguousarray(img[::-1, ::-1])
+            if replay_img is None:
+                replay_img = img.copy()
+            img = cv2.resize(
+                img, (self.width, self.height), interpolation=cv2.INTER_AREA)
+            resized_views.append(img)
+
+        concat_img = np.concatenate(resized_views, axis=1)
+        pixel_values = torch.from_numpy(concat_img).permute(
+            2, 0, 1).contiguous().float()
+        inputs['pixel_values'] = (pixel_values / 255.0).unsqueeze(0)
+        inputs['img_masks'] = [True]
         inputs['replay_img'] = replay_img
         if self.embodiment_id is not None:
             inputs['embodiment_ids'] = np.array(

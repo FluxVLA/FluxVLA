@@ -179,12 +179,15 @@ def check_robosuite_runtime(context='simulation'):
     return robosuite
 
 
-def get_libero_env(task, resolution=256, controller='OSC_POSE'):
+def get_libero_env(task, resolution=256, controller='OSC_POSE', seed=0):
     """Initializes a Libero environment for a given task.
 
     Args:
         task: The task object containing the problem folder and BDDL file.
         resolution (int): The resolution for the camera images.
+        controller (str): The robosuite controller to use.
+        seed (int): Random seed passed into the LIBERO environment. This
+            affects object positions even when fixed initial states are used.
 
     Returns:
         env: The initialized Libero environment.
@@ -212,7 +215,7 @@ def get_libero_env(task, resolution=256, controller='OSC_POSE'):
     }
     env = libero_envs.OffScreenRenderEnv(**env_args)
     env.seed(
-        0
+        seed
     )  # IMPORTANT: seed seems to affect object positions even when using fixed initial state  # noqa: E501
     return env, task_description
 

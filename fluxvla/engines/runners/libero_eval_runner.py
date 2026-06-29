@@ -654,6 +654,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_id = local_id // self.num_trials_per_task
                 # Get trial ID within the task
                 trial_id = local_id % self.num_trials_per_task
+                if self.deterministic_episode_seed:
+                    set_seed_everywhere(self.seed + local_id)
 
                 # Log the current task and trial
                 overwatch.info(f'Evaluating Task {task_id}, Trial {trial_id}')

@@ -24,6 +24,7 @@ from fluxvla.engines.utils.root import LR_SCHEDULERS
 from .schedulers import (get_constant_schedule,
                          get_constant_schedule_with_warmup,
                          get_cosine_schedule_with_warmup,
+                         get_cosine_with_min_lr_schedule_with_warmup,
                          get_linear_schedule_with_warmup,
                          get_step_based_schedule)
 
@@ -143,8 +144,8 @@ class BaseLRSchedulerPolicy:
     def build_scheduler(self, runner, optimizer):
         raise NotImplementedError
 
-    def build(self, runner, weight_decay=None):
-        runner.optimizer = self.build_optimizer(runner, weight_decay)
+    def build(self, runner):
+        runner.optimizer = self.build_optimizer(runner)
         self.optimizer = runner.optimizer
         self.scheduler = self.build_scheduler(runner, runner.optimizer)
         return runner.optimizer, self
@@ -304,6 +305,43 @@ class LinearWarmupLinearDecayLRScheduler(BaseLRSchedulerPolicy):
             optimizer,
             num_warmup_steps=self.warmup_steps,
             num_training_steps=num_training_steps)
+
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = 0.0
+        return scheduler
+
+
+@LR_SCHEDULERS.register_module(name=[
+    'cosine_with_min_lr', 'cosine-with-min-lr', 'CosineWithMinLRScheduler'
+])
+class CosineWithMinLRScheduler(BaseLRSchedulerPolicy):
+
+    def __init__(self,
+                 warmup_ratio: float = None,
+                 warmup_steps: int = None,
+                 min_lr: float = None,
+                 min_lr_rate: float = None,
+                 **kwargs) -> None:
+        super().__init__(**kwargs)
+        if warmup_ratio is not None and warmup_steps is not None:
+            raise ValueError('Use only one of warmup_ratio or warmup_steps.')
+        self.warmup_ratio = warmup_ratio
+        self.warmup_steps = warmup_steps
+        self.min_lr = min_lr
+        self.min_lr_rate = min_lr_rate
+
+    def build_scheduler(self, runner, optimizer):
+        if self.warmup_steps is None:
+            warmup_steps = int(runner.num_training_steps *
+                               float(self.warmup_ratio or 0.0))
+        else:
+            warmup_steps = int(self.warmup_steps)
+        scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+            optimizer,
+            warmup_steps,
+            runner.num_training_steps,
+            min_lr=self.min_lr,
+            min_lr_rate=self.min_lr_rate)
         for param_group in optimizer.param_groups:
             param_group['lr'] = 0.0
         return scheduler
@@ -415,7 +453,7 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
             param_groups = strategy(
                 learning_rate=optimizer_cfg['lr'],
                 lr_coef=self.lr_coef,
-                weight_decay=weight_decay,
+                weight_decay=getattr(runner, 'weight_decay', None),
                 canonicalize_param_name=self._canonicalize_param_name,
             )
             if param_groups is not None:
@@ -433,8 +471,8 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
     def build_scheduler(self, runner, optimizer):
         return None
 
-    def build(self, runner, weight_decay=None):
-        super().build(runner, weight_decay)
+    def build(self, runner):
+        super().build(runner)
         self.prepare_step(runner)
         return runner.optimizer, self
 
