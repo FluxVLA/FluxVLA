@@ -89,7 +89,8 @@ class FSDPTrainRunner(BaseTrainRunner):
                  change_key_name: bool = False,
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None,
-                 *args,
+                 args=None,
+                 *_unused_args,
                  **kwargs) -> None:
         if kwargs:
             fields = ', '.join(sorted(kwargs))
@@ -116,6 +117,8 @@ class FSDPTrainRunner(BaseTrainRunner):
             evaluator=evaluator,
             tokenizer=tokenizer,
             resume_from=resume_from)
+        self.cfg = cfg
+        self.args = args
         self.max_grad_norm = max_grad_norm
         self.sharding_strategy = sharding_strategy
         if self.sharding_strategy == 'shard-grad-op':
