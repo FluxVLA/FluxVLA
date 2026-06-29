@@ -193,8 +193,7 @@ runner = dict(
     type='FSDPTrainRunner',
     max_epochs=24,
     max_steps=None,
-    learning_rate=2e-5,
-    weight_decay=0.0,
+    optimizer=dict(lr=2e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,
     sampler=None,
     collator=dict(

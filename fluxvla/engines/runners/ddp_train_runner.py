@@ -80,7 +80,7 @@ class DDPTrainRunner(BaseTrainRunner):
         cfg (Dict): Configuration dictionary containing
             model, dataset, and training settings.
         args: Command-line arguments for the runner.
-        learning_rate (float): Learning rate for the optimizer.
+        optimizer (Dict): Optimizer configuration.
         collator (Dict): Collator configuration for batching.
         sampler (Dict): Sampler configuration for data loading.
         grad_accumulation_steps (int): Number of steps for gradient
@@ -99,19 +99,17 @@ class DDPTrainRunner(BaseTrainRunner):
     def __init__(self,
                  cfg: Dict,
                  args,
-                 learning_rate: float,
-                 weight_decay: Optional[float] = None,
                  max_grad_norm: float = 1.0,
                  collator: Dict = None,
                  sampler: str = 'distributed',
                  metric: Dict = None,
+                 optimizer: Optional[Dict] = None,
                  max_epochs: int = 10,
                  max_steps: Optional[int] = None,
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
                  lr_scheduler: Optional[Dict] = None,
-                 betas: tuple = (0.9, 0.999),
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
                  reduce_in_full_precision: bool = True,
@@ -123,21 +121,23 @@ class DDPTrainRunner(BaseTrainRunner):
                  static_graph: bool = True,
                  **kwargs) -> None:
 
+        if kwargs:
+            fields = ', '.join(sorted(kwargs))
+            raise TypeError(f'Unexpected runner config field(s): {fields}')
         device_id = overwatch.local_rank()
         super().__init__(
             cfg=cfg,
             device_id=device_id,
-            learning_rate=learning_rate,
             collator=collator,
             sampler=sampler,
             metric=metric,
+            optimizer=optimizer,
             max_epochs=max_epochs,
             max_steps=max_steps,
             save_epoch_interval=save_epoch_interval,
             save_iter_interval=save_iter_interval,
             max_keep_ckpts=max_keep_ckpts,
             lr_scheduler=lr_scheduler,
-            betas=betas,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
             enable_mixed_precision_training=enable_mixed_precision_training,
             reduce_in_full_precision=reduce_in_full_precision,
@@ -149,7 +149,6 @@ class DDPTrainRunner(BaseTrainRunner):
 
         self.cfg = cfg
         self.args = args
-        self.weight_decay = weight_decay
         self.max_grad_norm = max_grad_norm
         self.static_graph = static_graph
         self.distributed_state = overwatch.distributed_state
@@ -202,10 +201,8 @@ class DDPTrainRunner(BaseTrainRunner):
             self.vla = get_peft_model(self.vla, lora_config)
             self.vla.print_trainable_parameters()
 
-        # Setup optimizer and scheduler using base class method
-        # Support optional weight_decay parameter grouping (if provided)
-        self._setup_optimizer_and_scheduler(
-            n_train_examples, weight_decay=self.weight_decay)
+        # Setup optimizer and scheduler using base class method.
+        self._setup_optimizer_and_scheduler(n_train_examples)
 
         # Move model to device and wrap with DDP
         torch.cuda.empty_cache()

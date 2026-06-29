@@ -253,8 +253,7 @@ runner = dict(
     type='FSDPTrainRunner',
     stage='vla-full-train',
     max_epochs=5,
-    learning_rate=2e-5,
-    weight_decay=0.0,
+    optimizer=dict(lr=2e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,
     sharding_strategy='no-shard',
     collator=dict(

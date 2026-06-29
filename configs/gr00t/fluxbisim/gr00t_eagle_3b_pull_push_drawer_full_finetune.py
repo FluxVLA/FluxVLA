@@ -137,8 +137,7 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=10,
-    learning_rate=1e-5,
-    weight_decay=0.001,
+    optimizer=dict(lr=1e-5, type='AdamW', weight_decay=0.001),
     max_grad_norm=0.5,
     sampler=None,
     tokenizer=dict(

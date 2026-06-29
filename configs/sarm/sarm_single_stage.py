@@ -82,8 +82,7 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_steps=5000,
-    learning_rate=5e-5,
-    weight_decay=1e-3,
+    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=1e-3),
     max_grad_norm=1.0,
     collator=current_collator,
     sampler='distributed',

@@ -49,7 +49,6 @@ class BaseTrainRunner(ABC):
         device_id (int): Device ID for training.
         epochs (int): Number of epochs to train.
         max_steps (int): Maximum number of training steps.
-        learning_rate (int): Learning rate for the optimizer.
         collator (Dict): Collator configuration.
         save_iter_interval (int, optional): Interval for saving checkpoints
             based on iterations. Defaults to 10000.
@@ -57,8 +56,8 @@ class BaseTrainRunner(ABC):
             based on epochs. Defaults to 10000.
         max_keep_ckpts (int, optional): Maximum number of checkpoints to keep.
             Defaults to 2.
+        optimizer (Dict): Optimizer configuration.
         lr_scheduler (Dict): Learning rate scheduler policy configuration.
-        betas (tuple, optional): AdamW beta values. Defaults to (0.9, 0.999).
         enable_gradient_checkpointing (bool, optional): Enable gradient
             checkpointing. Defaults to True.
         enable_mixed_precision_training (bool, optional): Enable mixed
@@ -74,17 +73,16 @@ class BaseTrainRunner(ABC):
     def __init__(self,
                  cfg: dict,
                  device_id: int,
-                 learning_rate: int,
                  collator: Dict,
                  sampler: str,
                  metric: Dict,
+                 optimizer: Optional[Dict] = None,
                  max_epochs: int = None,
                  max_steps: Optional[int] = None,
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
                  lr_scheduler: Dict = None,
-                 betas: tuple = (0.9, 0.999),
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
                  reduce_in_full_precision: bool = True,
@@ -127,17 +125,57 @@ class BaseTrainRunner(ABC):
         else:
             self.llm_transformer_layer_cls = None
 
+        if optimizer is None:
+            raise ValueError('runner.optimizer must be provided.')
+        optimizer_cfg = dict(optimizer)
+        optimizer_type = optimizer_cfg.get('type', 'AdamW')
+        if str(optimizer_type).lower() != 'adamw':
+            raise ValueError(f'Unsupported optimizer type: {optimizer_type}. '
+                             'Only AdamW is supported by the current runner.')
+        expected_optimizer_fields = {
+            'betas', 'eps', 'lr', 'paramwise_learning_rate', 'type',
+            'weight_decay'
+        }
+        unexpected_fields = sorted(
+            set(optimizer_cfg) - expected_optimizer_fields)
+        if unexpected_fields:
+            fields = ', '.join(unexpected_fields)
+            raise TypeError(f'Unexpected optimizer config field(s) for AdamW: '
+                            f'{fields}')
+        if 'lr' not in optimizer_cfg:
+            raise ValueError('optimizer.lr must be provided for AdamW.')
+        optimizer_cfg = {
+            'type':
+            'AdamW',
+            'lr':
+            float(optimizer_cfg['lr']),
+            'betas':
+            tuple(
+                float(beta)
+                for beta in optimizer_cfg.get('betas', (0.9, 0.999))),
+            'eps':
+            float(optimizer_cfg.get('eps', 1e-8)),
+            'weight_decay':
+            optimizer_cfg.get('weight_decay'),
+            'paramwise_learning_rate':
+            dict(optimizer_cfg.get('paramwise_learning_rate', {}) or {}),
+        }
+        if optimizer_cfg['weight_decay'] is not None:
+            optimizer_cfg['weight_decay'] = float(
+                optimizer_cfg['weight_decay'])
+        if len(optimizer_cfg['betas']) != 2:
+            raise ValueError('AdamW optimizer betas must contain two values.')
+
         self.device_id = device_id
         self.max_epochs = max_epochs
         self.max_steps = max_steps
-        self.learning_rate = learning_rate
+        self.optimizer_cfg = optimizer_cfg
         self.collator = build_collator_from_cfg(collator)
         self.sampler = sampler
         self.save_iter_interval = save_iter_interval
         self.save_epoch_interval = save_epoch_interval
         self.max_keep_ckpts = max_keep_ckpts
         self.lr_scheduler_cfg = lr_scheduler
-        self.betas = tuple(float(b) for b in betas)
         self.enable_gradient_checkpointing = enable_gradient_checkpointing
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.reduce_in_full_precision = reduce_in_full_precision
@@ -170,7 +208,6 @@ class BaseTrainRunner(ABC):
         self.resume_from = resume_from
         # Track if optimizer state was successfully loaded
         self.optimizer_state_loaded = False
-        self.weight_decay = None
         self.num_training_steps = None
         self._active_dataloader = None
 
@@ -524,10 +561,8 @@ class BaseTrainRunner(ABC):
     def _setup_optimizer_and_scheduler(
         self,
         n_train_examples: int,
-        weight_decay: Optional[float] = None,
     ) -> None:
         """Setup optimizer and learning rate scheduler policy."""
-        self.weight_decay = weight_decay
         n_train_examples = math.ceil(
             n_train_examples / self.global_batch_size) * self.global_batch_size
         if self.max_steps is None:
@@ -539,8 +574,7 @@ class BaseTrainRunner(ABC):
         scheduler_cfg = self._resolve_lr_scheduler_cfg()
         self.lr_scheduler = build_lr_scheduler_from_cfg(scheduler_cfg)
         self.lr_scheduler_policy_type = scheduler_cfg['type']
-        self.optimizer, self.lr_scheduler = self.lr_scheduler.build(
-            self, weight_decay)
+        self.optimizer, self.lr_scheduler = self.lr_scheduler.build(self)
 
     def _get_log_lr(self) -> float:
         if hasattr(self.lr_scheduler, 'get_log_lr'):
@@ -865,8 +899,7 @@ class BaseTrainRunner(ABC):
         if overwatch.is_rank_zero():
             overwatch.warning('Optimizer state mismatch. Reinitializing.')
         last_lrs = self.lr_scheduler.get_last_lr()
-        self.optimizer = self.lr_scheduler.build_optimizer(
-            self, self.weight_decay)
+        self.optimizer = self.lr_scheduler.build_optimizer(self)
         for group, lr in zip(self.optimizer.param_groups, last_lrs):
             group['lr'] = lr
         self.lr_scheduler.bind_optimizer(self.optimizer)

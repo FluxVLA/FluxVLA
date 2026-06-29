@@ -43,8 +43,7 @@ class FSDPTrainRunner(BaseTrainRunner):
         stage (str): Stage of training (e.g., 'vla-train', 'vla-train').
         epochs (int): Number of training epochs.
         max_steps (int): Maximum number of training steps.
-        learning_rate (int): Learning rate for the optimizer.
-        weight_decay (int): Weight decay for the optimizer.
+        optimizer (Dict): Optimizer configuration.
         max_grad_norm (int): Maximum gradient norm for clipping.
         collator (Dict): Collator object for batching data.
         metric (Dict): Metric object for evaluation.
@@ -69,19 +68,17 @@ class FSDPTrainRunner(BaseTrainRunner):
 
     def __init__(self,
                  cfg: dict,
-                 learning_rate: int,
-                 weight_decay: int,
                  max_grad_norm: int,
                  collator: Dict,
                  sampler: str,
                  metric: Dict,
+                 optimizer: Optional[Dict] = None,
                  max_epochs: int = None,
                  max_steps: int = None,
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
                  lr_scheduler: Optional[Dict] = None,
-                 betas: tuple = (0.9, 0.999),
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
                  reduce_in_full_precision: bool = True,
@@ -94,21 +91,23 @@ class FSDPTrainRunner(BaseTrainRunner):
                  resume_from: Optional[str] = None,
                  *args,
                  **kwargs) -> None:
+        if kwargs:
+            fields = ', '.join(sorted(kwargs))
+            raise TypeError(f'Unexpected runner config field(s): {fields}')
         device_id = overwatch.local_rank()
         super().__init__(
             cfg=cfg,
             device_id=device_id,
-            learning_rate=learning_rate,
             collator=collator,
             sampler=sampler,
             metric=metric,
+            optimizer=optimizer,
             max_epochs=max_epochs,
             max_steps=max_steps,
             save_epoch_interval=save_epoch_interval,
             save_iter_interval=save_iter_interval,
             max_keep_ckpts=max_keep_ckpts,
             lr_scheduler=lr_scheduler,
-            betas=betas,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
             enable_mixed_precision_training=enable_mixed_precision_training,
             reduce_in_full_precision=reduce_in_full_precision,
@@ -117,7 +116,6 @@ class FSDPTrainRunner(BaseTrainRunner):
             evaluator=evaluator,
             tokenizer=tokenizer,
             resume_from=resume_from)
-        self.weight_decay = weight_decay
         self.max_grad_norm = max_grad_norm
         self.sharding_strategy = sharding_strategy
         if self.sharding_strategy == 'shard-grad-op':
@@ -396,8 +394,7 @@ class FSDPTrainRunner(BaseTrainRunner):
         dist.barrier()
         # Create Optimizer and LR Scheduler
         # Use base class method to setup optimizer and scheduler
-        self._setup_optimizer_and_scheduler(
-            n_train_examples, weight_decay=self.weight_decay)
+        self._setup_optimizer_and_scheduler(n_train_examples)
 
         # Calculate values for logging
         n_train_examples_rounded = math.ceil(
@@ -428,8 +425,8 @@ class FSDPTrainRunner(BaseTrainRunner):
             f'                 |-> Parameter Precision = {fsdp_precision_policy.param_dtype}\n'  # noqa: E221, E501
             f'                 |-> Reduction Precision = {fsdp_precision_policy.reduce_dtype}\n'  # noqa: E221, E501
             f'                 |-> Buffer Precision = {fsdp_precision_policy.buffer_dtype}\n\n'  # noqa: E221, E501
-            f'         |-> Default AdamW LR = {self.learning_rate}\n'  # noqa: E221, E501
-            f'         |-> AdamW Weight Decay = {self.weight_decay}\n'  # noqa: E221, E501
+            f"         |-> Default AdamW LR = {self.optimizer_cfg['lr']}\n"  # noqa: E221, E501
+            f"         |-> AdamW Weight Decay = {self.optimizer_cfg['weight_decay']}\n"  # noqa: E221, E501
             f'         |-> LR Scheduler Type = {scheduler_type}\n'  # noqa: E221, E501
             f'         |-> LR Scheduler Warm-up = {warmup_info}\n'  # noqa: E221, E501
             f'         |-> Dataset Size = {n_train_examples} Examples\n'  # noqa: E221, E501

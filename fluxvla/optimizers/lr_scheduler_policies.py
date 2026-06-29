@@ -44,32 +44,64 @@ class BaseLRSchedulerPolicy:
                 '_fsdp_wrapped_module.')
         return canonical_name.replace('._fsdp_wrapped_module.', '.')
 
+    def _get_param_lr(self, runner, name: str) -> float:
+        optimizer_cfg = runner.optimizer_cfg
+        paramwise_lr = optimizer_cfg.get('paramwise_learning_rate', {})
+        if not paramwise_lr:
+            return float(optimizer_cfg['lr'])
+
+        canonical_name = self._canonicalize_param_name(name)
+        matched_lr = float(optimizer_cfg['lr'])
+        matched_len = -1
+        for prefix, lr in paramwise_lr.items():
+            if (canonical_name.startswith(prefix)
+                    and len(prefix) > matched_len):
+                matched_lr = float(lr)
+                matched_len = len(prefix)
+        return matched_lr
+
     def build_param_groups(self, runner, weight_decay=None):
+        optimizer_cfg = runner.optimizer_cfg
+        paramwise_lr = optimizer_cfg.get('paramwise_learning_rate', {})
         if weight_decay is None:
+            weight_decay = optimizer_cfg.get('weight_decay')
+        if weight_decay is None and not paramwise_lr:
             return [
                 param for param in runner.vla.parameters()
                 if param.requires_grad
             ]
 
-        decay, no_decay = [], []
+        groups = {}
         for name, param in runner.vla.named_parameters():
             if not param.requires_grad:
                 continue
-            if param.ndim <= 1 or name.endswith('.bias'):
-                no_decay.append(param)
-            else:
-                decay.append(param)
-        return [{
-            'params': decay,
-            'weight_decay': weight_decay
-        }, {
-            'params': no_decay,
-            'weight_decay': 0.0
-        }]
+            lr = self._get_param_lr(runner, name)
+            decay = 0.0
+            if (weight_decay is not None and param.ndim > 1
+                    and not name.endswith('.bias')):
+                decay = float(weight_decay)
+            key = (lr, decay)
+            if key not in groups:
+                group = {'params': [], 'lr': lr}
+                if weight_decay is not None:
+                    group['weight_decay'] = decay
+                groups[key] = group
+            groups[key]['params'].append(param)
+        return list(groups.values())
 
     def build_optimizer(self, runner, weight_decay=None):
+        optimizer_cfg = runner.optimizer_cfg
+        optimizer_type = optimizer_cfg.get('type', 'AdamW')
+        if str(optimizer_type).lower() != 'adamw':
+            raise ValueError(
+                f'Unsupported optimizer type: {optimizer_type}. '
+                'Only AdamW is supported by the current scheduler policy.')
         groups = self.build_param_groups(runner, weight_decay)
-        return AdamW(groups, lr=runner.learning_rate)
+        return AdamW(
+            groups,
+            lr=optimizer_cfg['lr'],
+            betas=optimizer_cfg['betas'],
+            eps=optimizer_cfg['eps'])
 
     def build_scheduler(self, runner, optimizer):
         raise NotImplementedError
@@ -169,10 +201,13 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
         self.min_lr_ratio = min_lr_ratio
 
     def build_param_groups(self, runner, weight_decay=None):
+        optimizer_cfg = runner.optimizer_cfg
+        if weight_decay is None:
+            weight_decay = optimizer_cfg.get('weight_decay')
         strategy = getattr(runner.vla, 'get_lr_param_group_strategy', None)
         if callable(strategy):
             param_groups = strategy(
-                learning_rate=runner.learning_rate,
+                learning_rate=optimizer_cfg['lr'],
                 lr_coef=self.lr_coef,
                 weight_decay=weight_decay,
                 canonicalize_param_name=self._canonicalize_param_name,
@@ -184,8 +219,15 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
             '`get_lr_param_group_strategy(...)`.')
 
     def build_optimizer(self, runner, weight_decay=None):
+        optimizer_cfg = runner.optimizer_cfg
+        optimizer_type = optimizer_cfg.get('type', 'AdamW')
+        if str(optimizer_type).lower() != 'adamw':
+            raise ValueError(
+                f'Unsupported optimizer type: {optimizer_type}. '
+                'Only AdamW is supported by the current scheduler policy.')
         groups = self.build_param_groups(runner, weight_decay)
-        return AdamW(groups, betas=runner.betas)
+        return AdamW(
+            groups, betas=optimizer_cfg['betas'], eps=optimizer_cfg['eps'])
 
     def build_scheduler(self, runner, optimizer):
         return None
@@ -225,7 +267,7 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
         return self.min_lr_ratio + (1.0 - self.min_lr_ratio) * cosine_ratio
 
     def prepare_step(self, runner) -> None:
-        lr = runner.learning_rate
+        lr = runner.optimizer_cfg['lr']
         base = {
             'vlm': lr * self.lr_coef,
             'transformer_core': lr,
