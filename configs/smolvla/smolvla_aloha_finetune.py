@@ -153,10 +153,8 @@ runner = dict(
         lr=1e-4,
         type='AdamW',
         weight_decay=0.01,
-        betas=(0.9, 0.95),
     ),
     max_grad_norm=10.0,
-    min_lr_rate=0.025,
     collator=dict(
         type='DictCollator',
         keys=[
