@@ -88,7 +88,10 @@ class BaseOperator:
             spec['name']: spec['topic']
             for spec in normalized_specs
         }
-        self._sync_input_counts = {spec['name']: 0 for spec in normalized_specs}
+        self._sync_input_counts = {
+            spec['name']: 0
+            for spec in normalized_specs
+        }
         self._sync_last_arrival_at = {
             spec['name']: None
             for spec in normalized_specs
@@ -249,8 +252,8 @@ class BaseOperator:
         stale_topics = [
             self._sync_topic_by_name.get(name, name)
             for name, last_arrival_at in self._sync_last_arrival_at.items()
-            if (last_arrival_at is not None
-                and now - last_arrival_at > self.sync_warning_window)
+            if (last_arrival_at is not None and now -
+                last_arrival_at > self.sync_warning_window)
         ]
 
         rospy.logwarn(

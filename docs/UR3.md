@@ -2,9 +2,10 @@
 
 This document provides a step-by-step setup guide for deploying a **UR3** robot system on **Ubuntu 20.04**, including RealSense cameras, a Robotiq gripper, and FluxVLA real-robot inference.
 
----
+______________________________________________________________________
 
 ## Table of Contents
+
 1. [System Requirements](#1-system-requirements)
 2. [Environment Setup](#2-environment-setup)
    - [2.1 RT Kernel + NVIDIA Driver (Optional)](#21-rt-kernel--nvidia-driver-optional)
@@ -15,7 +16,7 @@ This document provides a step-by-step setup guide for deploying a **UR3** robot 
 3. [Real-Robot Startup Workflow](#3-real-robot-startup-workflow)
 4. [FluxVLA Inference](#4-fluxvla-inference)
 
----
+______________________________________________________________________
 
 ## 1. System Requirements
 
@@ -26,7 +27,7 @@ This document provides a step-by-step setup guide for deploying a **UR3** robot 
   - Intel RealSense depth camera(s)
   - Robotiq gripper
 
----
+______________________________________________________________________
 
 ## 2. Environment Setup
 
@@ -40,10 +41,12 @@ This document provides a step-by-step setup guide for deploying a **UR3** robot 
 For high-frequency tracking and servo control, installing a **PREEMPT_RT** kernel is strongly recommended.
 
 References:
+
 - UR: [Setting up Ubuntu with a PREEMPT_RT kernel](https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/blob/master/ur_robot_driver/doc/real_time.md)
 - Franka: [Realtime kernel setup](https://franka.cn/FCI/installation_linux.html) (for reference)
 
 #### 2.1.1 Install build dependencies
+
 ```bash
 sudo apt update
 sudo apt install build-essential bc ca-certificates gnupg2 libssl-dev wget gawk flex bison libelf-dev
@@ -51,6 +54,7 @@ sudo apt install -y libncurses5-dev liblz4-tool dwarves rsync kmod cpio libudev-
 ```
 
 #### 2.1.2 Download kernel source and RT patch
+
 ```bash
 uname -r
 mkdir -p ${HOME}/rt_kernel_build && cd ${HOME}/rt_kernel_build
@@ -64,6 +68,7 @@ xzcat ../patch-5.15.179-rt84.patch.xz | patch -p1
 ```
 
 #### 2.1.3 Build kernel package
+
 ```bash
 make oldconfig
 # Select: Fully Preemptible Kernel (RT)
@@ -77,12 +82,14 @@ make -j `getconf _NPROCESSORS_ONLN` deb-pkg
 ```
 
 If you encounter `cannot represent change to vmlinux-gdb.py`:
+
 ```bash
 rm vmlinux-gdb.py
 # then re-run make
 ```
 
 #### 2.1.4 Install and configure realtime permissions
+
 ```bash
 cd ~/rt_kernel_build
 sudo dpkg -i *.deb
@@ -91,6 +98,7 @@ sudo usermod -aG realtime $(whoami)
 ```
 
 Append to `/etc/security/limits.conf`:
+
 ```text
 @realtime soft rtprio 99
 @realtime soft priority 99
@@ -101,6 +109,7 @@ Append to `/etc/security/limits.conf`:
 ```
 
 #### 2.1.5 Configure GRUB default kernel
+
 ```bash
 awk -F\' '/menuentry |submenu / {print $1 $2}' /boot/grub/grub.cfg
 sudo vim /etc/default/grub
@@ -110,9 +119,11 @@ sudo update-grub
 ```
 
 After reboot, verify:
+
 ```bash
 uname -v | cut -d" " -f1-4
 ```
+
 You should see `#1 SMP PREEMPT RT`.
 
 #### 2.1.6 NVIDIA driver on RT kernel
@@ -123,11 +134,13 @@ sudo rm -rf /usr/lib/nvidia-* /usr/bin/nvidia-* /etc/modprobe.d/nvidia.conf
 ```
 
 Install `.run` package while bypassing RT check:
+
 ```bash
 sudo IGNORE_PREEMPT_RT_PRESENCE=1 bash <NVIDIA_DRIVER>.run
 ```
 
 **Black-screen recovery (if driver install fails):**
+
 1. Press `Ctrl + Alt + F3` to enter TTY and log in.
 2. Remount root as writable:
    ```bash
@@ -173,6 +186,7 @@ source devel/setup.bash
 ```
 
 > Notes:
+>
 > 1. You must install and run `External Control` URCap on the teach pendant for external PC control.
 > 2. For accurate kinematics, extract and apply robot-specific calibration.
 >    - URCap doc: <https://github.com/UniversalRobots/Universal_Robots_ROS_Driver/blob/master/ur_robot_driver/doc/install_urcap_cb3.md>
@@ -421,17 +435,18 @@ if __name__ == '__main__':
 
 #### RTDE ROS topics overview
 
-| Category | Topic | Message Type | Purpose |
-|---|---|---|---|
-| Control | `/cmd/movej` | `sensor_msgs/JointState` | Joint-space MoveJ (point-to-point) |
-| Control | `/cmd/movel` | `geometry_msgs/Pose` | Cartesian MoveL (linear motion) |
-| Control | `/cmd/servoj` | `sensor_msgs/JointState` | Joint-space ServoJ (high-rate servo) |
-| Control | `/cmd/servol` | `geometry_msgs/Pose` | Cartesian ServoL (high-rate servo) |
-| Control | `/cmd/speedj` | `sensor_msgs/JointState` | Joint speed command entry |
-| State | `/joint_states` | `sensor_msgs/JointState` | Robot joint state feedback |
-| State | `/arm/tcp_pose` | `geometry_msgs/PoseStamped` | TCP pose feedback |
+| Category | Topic           | Message Type                | Purpose                              |
+| -------- | --------------- | --------------------------- | ------------------------------------ |
+| Control  | `/cmd/movej`    | `sensor_msgs/JointState`    | Joint-space MoveJ (point-to-point)   |
+| Control  | `/cmd/movel`    | `geometry_msgs/Pose`        | Cartesian MoveL (linear motion)      |
+| Control  | `/cmd/servoj`   | `sensor_msgs/JointState`    | Joint-space ServoJ (high-rate servo) |
+| Control  | `/cmd/servol`   | `geometry_msgs/Pose`        | Cartesian ServoL (high-rate servo)   |
+| Control  | `/cmd/speedj`   | `sensor_msgs/JointState`    | Joint speed command entry            |
+| State    | `/joint_states` | `sensor_msgs/JointState`    | Robot joint state feedback           |
+| State    | `/arm/tcp_pose` | `geometry_msgs/PoseStamped` | TCP pose feedback                    |
 
 Recommended loop rate:
+
 ```python
 self.rate = rospy.Rate(125)
 ```
@@ -439,20 +454,24 @@ self.rate = rospy.Rate(125)
 ### 2.4 RealSense Camera
 
 1. Install dependencies:
+
 ```bash
 sudo apt update
 sudo apt install -y nlohmann-json3-dev
 ```
 
 2. Install `librealsense` by official guide:
+
 - <https://github.com/IntelRealSense/librealsense/blob/master/doc/installation.md>
 
 3. Validate camera device:
+
 ```bash
 realsense-viewer
 ```
 
 4. Install/start `realsense-ros` (ROS1 branch):
+
 - <https://github.com/IntelRealSense/realsense-ros/tree/ros1-legacy>
 
 ```bash
@@ -469,6 +488,7 @@ const uint16_t RS405_PID = 0x0b5b; // DS5U
 ```
 
 Then rebuild and re-source workspace:
+
 ```bash
 catkin_make
 source devel/setup.bash
@@ -477,11 +497,13 @@ source devel/setup.bash
 ### 2.5 Robotiq Gripper
 
 1. Hardware and URCap:
+
 - Connect RS485-to-USB to the control PC.
 - Install [Robotiq URCap](https://blog.robotiq.com/hubfs/support-files/UCG-1.8.13_20230720.zip) on the teach pendant.
 - Official support: <https://robotiq.com/support>
 
 2. Python socket control code:
+
 - Use `robotiq_gripper.py` for direct socket-based control.
 - A minimal usage example is shown below.
 
@@ -498,7 +520,7 @@ g.disconnect()
 
 > Recommended: validate communication with low speed/force first, then increase parameters gradually.
 
----
+______________________________________________________________________
 
 ## 3. Real-Robot Startup Workflow
 
@@ -546,6 +568,7 @@ Save the following as `ur_control/launch/ur_bringup.launch` (adjust package path
 </details>
 
 Start it:
+
 ```bash
 roslaunch ur_control ur_bringup.launch
 ```
@@ -556,7 +579,7 @@ roslaunch ur_control ur_bringup.launch
 rosrun ur_control rtde_ros.py
 ```
 
----
+______________________________________________________________________
 
 ## 4. FluxVLA Inference
 
