@@ -48,7 +48,7 @@ class URInferenceRunner(BaseInferenceRunner):
 
         if 'operator' not in kwargs or kwargs['operator'] is None:
             kwargs['operator'] = {
-                'type': 'NewUROperator',
+                'type': 'UROperator',
                 'img_left_topic': '/wrist_camera/color/image_raw',
                 'img_front_topic': '/front_camera/color/image_raw',
                 'joint_state_topic': '/joint_states',
@@ -60,7 +60,7 @@ class URInferenceRunner(BaseInferenceRunner):
                 'use_depth_image': False,
                 'command_mode': self.action_mode,
             }
-        elif kwargs['operator'].get('type') == 'NewUROperator':
+        elif kwargs['operator'].get('type') == 'UROperator':
             kwargs['operator'].setdefault('command_mode', self.action_mode)
 
         # Initialize UR-specific task descriptions
