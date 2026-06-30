@@ -15,8 +15,7 @@
 import math
 from typing import Dict, Optional
 
-from torch.optim import AdamW
-
+from fluxvla.engines.utils.builder import build_optimizer_from_cfg
 from fluxvla.engines.utils.root import LR_SCHEDULERS
 from .schedulers import (get_constant_schedule,
                          get_cosine_schedule_with_warmup,
@@ -65,11 +64,27 @@ class BaseLRSchedulerPolicy:
         paramwise_lr = optimizer_cfg.get('paramwise_learning_rate', {})
         if weight_decay is None:
             weight_decay = optimizer_cfg.get('weight_decay')
-        if weight_decay is None and not paramwise_lr:
+        if not paramwise_lr and weight_decay is None:
             return [
                 param for param in runner.vla.parameters()
                 if param.requires_grad
             ]
+        if not paramwise_lr:
+            decay, no_decay = [], []
+            for name, param in runner.vla.named_parameters():
+                if not param.requires_grad:
+                    continue
+                if param.ndim <= 1 or name.endswith('.bias'):
+                    no_decay.append(param)
+                else:
+                    decay.append(param)
+            return [{
+                'params': decay,
+                'weight_decay': weight_decay
+            }, {
+                'params': no_decay,
+                'weight_decay': 0.0
+            }]
 
         groups = {}
         for name, param in runner.vla.named_parameters():
@@ -89,19 +104,18 @@ class BaseLRSchedulerPolicy:
             groups[key]['params'].append(param)
         return list(groups.values())
 
-    def build_optimizer(self, runner, weight_decay=None):
+    @staticmethod
+    def _optimizer_build_cfg(runner) -> Dict:
         optimizer_cfg = runner.optimizer_cfg
-        optimizer_type = optimizer_cfg.get('type', 'AdamW')
-        if str(optimizer_type).lower() != 'adamw':
-            raise ValueError(
-                f'Unsupported optimizer type: {optimizer_type}. '
-                'Only AdamW is supported by the current scheduler policy.')
+        optimizer_kwargs = dict(optimizer_cfg)
+        optimizer_kwargs.pop('paramwise_learning_rate', None)
+        optimizer_kwargs.pop('weight_decay', None)
+        return optimizer_kwargs
+
+    def build_optimizer(self, runner, weight_decay=None):
         groups = self.build_param_groups(runner, weight_decay)
-        return AdamW(
-            groups,
-            lr=optimizer_cfg['lr'],
-            betas=optimizer_cfg['betas'],
-            eps=optimizer_cfg['eps'])
+        return build_optimizer_from_cfg(
+            self._optimizer_build_cfg(runner), default_args={'params': groups})
 
     def build_scheduler(self, runner, optimizer):
         raise NotImplementedError
@@ -218,16 +232,11 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
             'Groupwise LR schedule requires the model to implement '
             '`get_lr_param_group_strategy(...)`.')
 
-    def build_optimizer(self, runner, weight_decay=None):
-        optimizer_cfg = runner.optimizer_cfg
-        optimizer_type = optimizer_cfg.get('type', 'AdamW')
-        if str(optimizer_type).lower() != 'adamw':
-            raise ValueError(
-                f'Unsupported optimizer type: {optimizer_type}. '
-                'Only AdamW is supported by the current scheduler policy.')
-        groups = self.build_param_groups(runner, weight_decay)
-        return AdamW(
-            groups, betas=optimizer_cfg['betas'], eps=optimizer_cfg['eps'])
+    @staticmethod
+    def _optimizer_build_cfg(runner) -> Dict:
+        optimizer_kwargs = BaseLRSchedulerPolicy._optimizer_build_cfg(runner)
+        optimizer_kwargs.pop('lr', None)
+        return optimizer_kwargs
 
     def build_scheduler(self, runner, optimizer):
         return None

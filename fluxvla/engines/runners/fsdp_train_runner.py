@@ -428,8 +428,9 @@ class FSDPTrainRunner(BaseTrainRunner):
             f'                 |-> Parameter Precision = {fsdp_precision_policy.param_dtype}\n'  # noqa: E221, E501
             f'                 |-> Reduction Precision = {fsdp_precision_policy.reduce_dtype}\n'  # noqa: E221, E501
             f'                 |-> Buffer Precision = {fsdp_precision_policy.buffer_dtype}\n\n'  # noqa: E221, E501
-            f"         |-> Default AdamW LR = {self.optimizer_cfg['lr']}\n"  # noqa: E221, E501
-            f"         |-> AdamW Weight Decay = {self.optimizer_cfg['weight_decay']}\n"  # noqa: E221, E501
+            f"         |-> Optimizer = {self.optimizer_cfg['type']}\n"  # noqa: E221, E501
+            f"         |-> Default Optimizer LR = {self.optimizer_cfg['lr']}\n"  # noqa: E221, E501
+            f"         |-> Optimizer Weight Decay = {self.optimizer_cfg.get('weight_decay')}\n"  # noqa: E221, E501
             f'         |-> LR Scheduler Type = {scheduler_type}\n'  # noqa: E221, E501
             f'         |-> LR Scheduler Warm-up = {warmup_info}\n'  # noqa: E221, E501
             f'         |-> Dataset Size = {n_train_examples} Examples\n'  # noqa: E221, E501

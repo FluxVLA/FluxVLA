@@ -133,8 +133,7 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=6,
-    learning_rate=2e-5,
-    weight_decay=0.0,
+    optimizer=dict(lr=2e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,
     sampler=None,
     tokenizer=dict(
@@ -157,8 +156,7 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler_type='constant',
-    warmup_ratio=0.0,
+    lr_scheduler=dict(type='constant'),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',

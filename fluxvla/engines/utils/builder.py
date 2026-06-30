@@ -366,6 +366,16 @@ def build_lr_scheduler_from_cfg(
     return build_from_cfg(cfg, LR_SCHEDULERS, default_args)
 
 
+def build_optimizer_from_cfg(
+    cfg: Union[dict, ConfigDict, Config],
+    default_args: Optional[Union[dict, 'ConfigDict', 'Config']] = None
+) -> 'nn.Module':
+    """Build an optimizer from config."""
+    from fluxvla.optimizers import optimizer  # noqa: F401
+    from .root import OPTIMIZERS
+    return build_from_cfg(cfg, OPTIMIZERS, default_args)
+
+
 def build_collator_from_cfg(
     cfg: Union[dict, ConfigDict, Config],
     default_args: Optional[Union[dict, 'ConfigDict', 'Config']] = None

@@ -189,42 +189,27 @@ class BaseTrainRunner(ABC):
             raise ValueError('runner.optimizer must be provided.')
         optimizer_cfg = dict(optimizer)
         optimizer_type = optimizer_cfg.get('type', 'AdamW')
-        if str(optimizer_type).lower() != 'adamw':
-            raise ValueError(f'Unsupported optimizer type: {optimizer_type}. '
-                             'Only AdamW is supported by the current runner.')
-        expected_optimizer_fields = {
-            'betas', 'eps', 'lr', 'paramwise_learning_rate', 'type',
-            'weight_decay'
-        }
-        unexpected_fields = sorted(
-            set(optimizer_cfg) - expected_optimizer_fields)
-        if unexpected_fields:
-            fields = ', '.join(unexpected_fields)
-            raise TypeError(f'Unexpected optimizer config field(s) for AdamW: '
-                            f'{fields}')
         if 'lr' not in optimizer_cfg:
-            raise ValueError('optimizer.lr must be provided for AdamW.')
-        normalized_cfg = {
-            'type':
-            'AdamW',
-            'lr':
-            float(optimizer_cfg['lr']),
-            'betas':
-            tuple(
-                float(beta)
-                for beta in optimizer_cfg.get('betas', (0.9, 0.999))),
-            'eps':
-            float(optimizer_cfg.get('eps', 1e-8)),
-            'weight_decay':
-            optimizer_cfg.get('weight_decay'),
-            'paramwise_learning_rate':
-            dict(optimizer_cfg.get('paramwise_learning_rate', {}) or {}),
-        }
-        if normalized_cfg['weight_decay'] is not None:
+            raise ValueError('optimizer.lr must be provided.')
+
+        normalized_cfg = dict(optimizer_cfg)
+        normalized_cfg['type'] = optimizer_type
+        normalized_cfg['lr'] = float(normalized_cfg['lr'])
+
+        if 'betas' in normalized_cfg:
+            normalized_cfg['betas'] = tuple(
+                float(beta) for beta in normalized_cfg['betas'])
+            if len(normalized_cfg['betas']) != 2:
+                raise ValueError(
+                    'optimizer.betas must contain two values when provided.')
+        if 'eps' in normalized_cfg:
+            normalized_cfg['eps'] = float(normalized_cfg['eps'])
+        if (normalized_cfg.get('weight_decay') is not None
+                and 'weight_decay' in normalized_cfg):
             normalized_cfg['weight_decay'] = float(
                 normalized_cfg['weight_decay'])
-        if len(normalized_cfg['betas']) != 2:
-            raise ValueError('AdamW optimizer betas must contain two values.')
+        normalized_cfg['paramwise_learning_rate'] = dict(
+            normalized_cfg.get('paramwise_learning_rate', {}) or {})
         return normalized_cfg
 
     def _prepare_batch(self,
