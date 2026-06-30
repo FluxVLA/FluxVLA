@@ -13,8 +13,9 @@
 # limitations under the License.
 import json
 import os
+import shlex
 from collections import deque
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
@@ -26,6 +27,9 @@ from fluxvla.engines import DATASETS, build_transform_from_cfg
 
 @DATASETS.register_module()
 class ParquetDataset(Dataset):
+    VERSION_FILE = 'meta/fluxvla_dataset_version.json'
+    HF_REPO_ID = 'limxdynamics/FluxVLAData'
+    HF_REVISION = 'main'
 
     def __init__(self,
                  data_root_path: Union[str, List[str]],
@@ -39,7 +43,8 @@ class ParquetDataset(Dataset):
                  frame_sample_stride: int = 1,
                  train_episode_fraction: float = 1.0,
                  repeat_to_full_length: bool = False,
-                 expose_index: bool = False) -> None:
+                 expose_index: bool = False,
+                 expected_dataset_version: Optional[str] = None) -> None:
         """Initialize the Parquet dataset.
 
         Args:
@@ -84,6 +89,9 @@ class ParquetDataset(Dataset):
                 to each raw sample before transforms. This is useful for
                 offline sample-weight transforms such as SARM RA-BC.
                 Defaults to False.
+            expected_dataset_version (str, optional): Expected FluxVLA dataset
+                content version. If omitted, no version check is performed so
+                existing local datasets remain usable.
         """
         super().__init__()
         if not 0 < train_episode_fraction <= 1:
@@ -102,12 +110,16 @@ class ParquetDataset(Dataset):
         all_episodes = []
         info_list = []
 
-        for root in meta_root:
+        for dataset_root, root in zip(data_root_path, meta_root):
             info_path = os.path.join(root, 'info.json')
             assert os.path.exists(info_path), \
                 f'Metadata file not found at {info_path}'
             with open(os.path.join(root, 'info.json'), 'rb') as f:
                 info_list.append(json.load(f))
+            if expected_dataset_version is not None:
+                self._verify_dataset_version(
+                    dataset_root=dataset_root,
+                    expected_dataset_version=expected_dataset_version)
 
             stats_path = os.path.join(root, 'episodes_stats.jsonl')
             assert os.path.exists(stats_path), \
@@ -161,6 +173,59 @@ class ParquetDataset(Dataset):
         self.expose_index = expose_index
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
+
+    @staticmethod
+    def _read_dataset_version(path: str) -> Optional[str]:
+        with open(path, 'r', encoding='utf-8') as f:
+            raw_version = f.read().strip()
+        if not raw_version:
+            return None
+
+        try:
+            version_data = json.loads(raw_version)
+        except json.JSONDecodeError:
+            return raw_version
+
+        if isinstance(version_data, dict):
+            version = version_data.get('fluxvla_dataset_version',
+                                       version_data.get('version'))
+            return str(version) if version is not None else None
+        if isinstance(version_data, str):
+            return version_data
+        return str(version_data)
+
+    @classmethod
+    def _dataset_refresh_command(cls, dataset_root: str) -> str:
+        normalized_root = dataset_root.rstrip(os.sep)
+        local_dir = os.path.dirname(normalized_root) or '.'
+        remote_dir = os.path.basename(normalized_root)
+        return (f'rm -rf {shlex.quote(dataset_root)}\n'
+                f'huggingface-cli download {shlex.quote(cls.HF_REPO_ID)} \\\n'
+                '  --repo-type dataset \\\n'
+                f'  --revision {shlex.quote(cls.HF_REVISION)} \\\n'
+                f'  --include {shlex.quote(remote_dir + "/*")} \\\n'
+                f'  --local-dir {shlex.quote(local_dir)}')
+
+    def _verify_dataset_version(self, dataset_root: str,
+                                expected_dataset_version: str) -> None:
+        version_path = os.path.join(dataset_root, self.VERSION_FILE)
+        refresh_command = self._dataset_refresh_command(dataset_root)
+
+        if not os.path.exists(version_path):
+            raise RuntimeError(
+                f'Dataset version file not found at {version_path}. '
+                f'Expected FluxVLA dataset version '
+                f'{expected_dataset_version}.\n\n'
+                f'Please refresh the dataset with:\n\n{refresh_command}')
+
+        dataset_version = self._read_dataset_version(version_path)
+        if dataset_version != expected_dataset_version:
+            raise RuntimeError(
+                f'Dataset version mismatch for {dataset_root}. '
+                f'Expected FluxVLA dataset version '
+                f'{expected_dataset_version}, but found '
+                f'{dataset_version or "missing"} in {version_path}.\n\n'
+                f'Please refresh the dataset with:\n\n{refresh_command}')
 
     def _build_sample_indices(self, episode_fraction: float) -> np.ndarray:
         if episode_fraction == 1.0:
