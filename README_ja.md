@@ -573,30 +573,32 @@ SARM については、必要な SARM アノテーション列が含まれてい
 
 ```
 ├── data
-│   └── chunk000
+│   └── chunk-000
 │   │   └── episode_000000.parquet
 │   │   └── episode_000001.parquet
 │   │   └── ...（さらに多くの parquet ファイル）
 │   │   └── episode_00000N.parquet
-│   └── chunk001
+│   └── chunk-001
 │   └── ...（さらに多くの chunk）
-│   └── chunk00N
+│   └── chunk-00N
 ├── meta
 │   └── episodes.jsonl
 │   └── episodes_stats.jsonl
 │   └── info.json
 │   └── tasks.jsonl
 ├── videos
-│   └── chunk000
+│   └── chunk-000
 │   │   └── camera name 0
 │   │   │   └── episode_000000.mp4
 │   │   │   └── episode_000001.mp4
 │   │   │   └── ...（さらに多くの mp4 ファイル）
 │   │   │   └── episode_00000N.mp4
 │   │   └── camera name 1
-│   └── chunk001
+│   │   └── ...（さらに多くのカメラ）
+│   │   └── camera name N
+│   └── chunk-001
 │   └── ...（さらに多くの chunk）
-│   └── chunk00N
+│   └── chunk-00N
 ```
 
 </details>

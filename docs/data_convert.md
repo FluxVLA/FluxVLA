@@ -9,7 +9,7 @@ Data conversion tool: Convert HDF5 format data collected by the ALOHA dual-arm r
    ```bash
    conda create -y -n lerobot python=3.10
    conda activate lerobot
-   conda install -c conda-forge ffmpeg av
+   conda install -c conda-forge ffmpeg av h5py
    ```
 
 2. Install lerobot
@@ -80,18 +80,32 @@ ______________________________________________________________________
 The converted dataset follows the LeRobot v2.1 format, stored in a HuggingFace Datasets-compatible directory structure:
 
 ```
-<output_dir>/<repo_id>/
-├── data/
-│   ├── train/
-│   │   ├── episode_0.parquet
-│   │   └── ...
-│   └── video/
-│       ├── episode_0/
-│       │   ├── observation.images.head_cam.mp4
-│       │   └── ...
-│       └── ...
-├── info.json
-└── meta.json
+├── data
+│   └── chunk-000
+│   │   └── episode_000000.parquet
+│   │   └── episode_000001.parquet
+│   │   └── ... (more parquet files)
+│   │   └── episode_00000N.parquet
+│   └── chunk-001
+│   └── ... (more chunks)
+│   └── chunk-00N
+├── meta
+│   └── episodes.jsonl
+│   └── episodes_stats.jsonl
+│   └── info.json
+│   └── tasks.jsonl
+├── videos
+│   └── chunk-000
+│   │   └── camera name 0
+│   │   │   └── episode_000000.mp4
+│   │   │   └── episode_000001.mp4
+│   │   │   └── ...(more mp4 files)
+│   │   │   └── episode_00000N.mp4
+│   │   └── camera name 1
+│   │   └── camera name 2
+│   └── chunk-001
+│   └── ... (more chunks)
+│   └── chunk-00N
 ```
 
 #### Data Field Descriptions
