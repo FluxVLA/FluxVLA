@@ -73,8 +73,12 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
-        name_mappings={'observation.state': ['proprio', 'action']},
-        statistic_keys=['observation.state', 'timestamp'],
+        reshuffle_each_epoch=True,
+        name_mappings={
+            'observation.state': ['proprio'],
+            'action': ['action']
+        },
+        statistic_keys=['observation.state', 'timestamp', 'action'],
         datasets=[
             dict(
                 type='ParquetDataset',
@@ -125,7 +129,11 @@ train_dataloader = dict(
                         action_key='action',
                         norm_type='mean_std')
                 ],
-                action_window_size=32)
+                action_window_size=32,
+                action_key='action',
+                use_delta=False,
+                statistic_name='private',
+                window_start_idx=0)
         ]))
 
 runner = dict(
@@ -153,7 +161,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler=dict(type='constant'),
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.05,
+    ),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
