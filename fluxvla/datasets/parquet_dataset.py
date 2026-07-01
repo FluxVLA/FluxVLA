@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
 import torch
+from datasets.features import List as HFList
 from torch.utils.data import Dataset
 
 from datasets import concatenate_datasets, load_dataset
@@ -175,6 +176,7 @@ class ParquetDataset(Dataset):
         dataset_sizes = []  # Record the size of each dataset
         for root in data_root:
             hf_dataset = load_dataset('parquet', data_dir=root, split='train')
+            hf_dataset = self._relax_fixed_length_list_features(hf_dataset)
             dataset_sizes.append(len(hf_dataset))
             datasets.append(hf_dataset)
         hf_dataset = concatenate_datasets(datasets)
@@ -219,6 +221,20 @@ class ParquetDataset(Dataset):
         if isinstance(version_data, str):
             return version_data
         return str(version_data)
+
+    @staticmethod
+    def _relax_fixed_length_list_features(dataset):
+        """Make fixed/variable list schemas concatenate-compatible."""
+        features = dataset.features.copy()
+        changed = False
+        for key, feature in list(features.items()):
+            if (isinstance(feature, HFList)
+                    and getattr(feature, 'length', None) is not None):
+                features[key] = HFList(feature.feature)
+                changed = True
+        if not changed:
+            return dataset
+        return dataset.cast(features)
 
     @classmethod
     def _dataset_refresh_command(cls, dataset_root: str) -> str:

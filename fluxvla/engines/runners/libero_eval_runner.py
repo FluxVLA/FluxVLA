@@ -82,6 +82,9 @@ class LiberoEvalRunner(BaseEvalRunner):
         inference_seed (int): Seed forwarded to ``predict_action`` on every
             prediction (e.g. to match a source eval that re-seeds the action
             noise each call). When ``None`` (default) no seed is forwarded.
+        deterministic_episode_seed (bool): Whether to seed each episode with
+            ``seed + local_id`` before constructing the rollout. Defaults to
+            True for reproducible distributed evaluation.
         allowed_missing_key_prefixes (tuple): Checkpoint keys with these
             prefixes may be missing when loading with ``strict=False``.
             Defaults to empty, which keeps strict missing-key validation.
@@ -389,6 +392,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  num_inference_steps: int = None,
                  max_steps: int = None,
                  inference_seed: int = None,
+                 deterministic_episode_seed: bool = True,
                  allowed_missing_key_prefixes: tuple = (),
                  model_build_device: str = None,
                  model_build_dtype: str = None,
@@ -480,6 +484,7 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.num_inference_steps = num_inference_steps
         self.max_steps = max_steps
         self.inference_seed = inference_seed
+        self.deterministic_episode_seed = deterministic_episode_seed
         self.model_build_device = model_build_device
         self.model_build_dtype = self._resolve_model_build_dtype(
             model_build_dtype)

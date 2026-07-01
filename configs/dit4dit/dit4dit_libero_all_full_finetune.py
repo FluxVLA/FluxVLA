@@ -75,9 +75,9 @@ model = dict(
         conditional_frame_timestep=0.0001,
         future_loss_type='flow_matching',
         detach_hidden_states=True,
-        flow_matching_time_distribution='uniform',
-        flow_matching_high_sigma_ratio=None,
-        flow_matching_high_sigma_min=None,
+        flow_matching_time_distribution='logit_normal',
+        flow_matching_high_sigma_ratio=0.05,
+        flow_matching_high_sigma_min=0.98,
         fsdp_min_num_params=10_000_000,
     ),
     vla_head=dict(
@@ -193,20 +193,20 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_steps=160000,
+    max_steps=100000,
     optimizer=dict(
-        lr=3e-5,
+        lr=1e-5,
         type='AdamW',
         weight_decay=1e-8,
         eps=1e-8,
         betas=(0.9, 0.95),
         paramwise_learning_rate={
-            'vlm_backbone.transformer': 1e-4,
+            'vlm_backbone.transformer': 1e-5,
             'vla_head': 1e-4,
         },
     ),
     max_grad_norm=1.0,
-    save_iter_interval=80000,
+    save_iter_interval=5000,
     max_keep_ckpts=2,
     collator=dict(
         type='DictCollator',
@@ -231,7 +231,7 @@ runner = dict(
     ),
     lr_scheduler=dict(
         type='cosine_with_min_lr',
-        warmup_steps=10000,
+        warmup_steps=5000,
         min_lr=5e-7,
     ),
     sharding_strategy='full-shard',
