@@ -19,7 +19,7 @@ import numpy as np
 import timm
 import torch
 from PIL import Image
-from torchvision.transforms import ColorJitter, Compose, Resize
+from torchvision.transforms import ColorJitter, Compose, RandomCrop, Resize
 from transformers import AutoImageProcessor
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import \
     PILImageResampling
@@ -868,6 +868,132 @@ class AugImage:
 
 
 @TRANSFORMS.register_module()
+class AugVideo:
+    """Apply one sampled crop/color augmentation to a whole video window.
+
+    Inputs may be a list of CHW images, a flattened ``[N*3, H, W]`` array,
+    ``[N, 3, H, W]``, or ``[V, T, 3, H, W]``. The output keeps the same
+    container/shape convention as the input.
+    """
+
+    def __init__(self,
+                 brightness_range: Tuple[float, float] = (0.8, 1.2),
+                 contrast_range: Tuple[float, float] = (0.8, 1.2),
+                 crop_scale: Tuple[float, float] = (0.8, 1.0),
+                 crop_ratio: Tuple[float, float] = (1.0, 1.0),
+                 prob: float = 0.5,
+                 rotation_range: float = 0.0,
+                 brightness_delta: Optional[float] = None,
+                 saturation_range: Optional[Tuple[float, float]] = None,
+                 hue_delta: Optional[float] = None,
+                 *args,
+                 **kwargs):
+        if rotation_range:
+            raise ValueError('AugVideo does not support rotation_range.')
+        if brightness_delta is not None:
+            raise ValueError('AugVideo uses multiplicative brightness_range; '
+                             'brightness_delta is only supported by AugImage.')
+        self.brightness_range = brightness_range
+        self.contrast_range = contrast_range
+        self.crop_scale = crop_scale
+        self.crop_ratio = crop_ratio
+        self.prob = prob
+        self.saturation_range = saturation_range
+        self.hue_delta = hue_delta
+
+    def _flatten_images(self, images):
+        if isinstance(images, list):
+            return [np.asarray(image) for image in images], lambda items: items
+
+        arr = np.asarray(images)
+        original_shape = arr.shape
+        if arr.ndim == 3:
+            if arr.shape[0] % 3 != 0 or arr.shape[-1] == 3:
+                raise ValueError(
+                    f'AugVideo expects flattened CHW images, got {arr.shape}')
+            flat = arr.reshape(-1, 3, arr.shape[-2], arr.shape[-1])
+            return list(flat), lambda items: np.concatenate(items, axis=0)
+
+        if arr.ndim == 4:
+            if arr.shape[1] != 3:
+                raise ValueError(
+                    f'AugVideo expects NCHW images, got {arr.shape}')
+            return list(arr), lambda items: np.stack(items, axis=0)
+
+        if arr.ndim == 5:
+            if arr.shape[2] != 3:
+                raise ValueError(
+                    f'AugVideo expects VTCHW images, got {arr.shape}')
+            flat = arr.reshape(-1, *arr.shape[-3:])
+            return (
+                list(flat),
+                lambda items: np.stack(items, axis=0).reshape(original_shape))
+
+        raise ValueError(f'AugVideo: unsupported image shape {arr.shape}')
+
+    def _validate_images(self, images) -> Tuple[int, int]:
+        if not images:
+            raise ValueError('AugVideo requires at least one image.')
+        height, width = images[0].shape[-2:]
+        for image in images:
+            if image.ndim != 3 or image.shape[0] != 3:
+                raise ValueError(
+                    f'AugVideo expects CHW images, got {image.shape}')
+            if image.shape[-2:] != (height, width):
+                raise ValueError(
+                    'AugVideo expects all images in a window to have the '
+                    f'same size, got {(height, width)} and {image.shape[-2:]}')
+        return height, width
+
+    def _build_transforms(self, height: int, width: int):
+        transforms = []
+        if np.random.random() <= self.prob:
+            crop_h, crop_w = self._sample_crop_size(height, width)
+            transforms.extend([
+                RandomCrop((crop_h, crop_w)),
+                Resize((height, width), antialias=True),
+            ])
+
+        if np.random.random() <= self.prob:
+            transforms.append(
+                ColorJitter(
+                    brightness=self.brightness_range,
+                    contrast=self.contrast_range,
+                    saturation=self.saturation_range or 0.0,
+                    hue=self.hue_delta or 0.0))
+        return transforms
+
+    def _sample_crop_size(self, height: int, width: int) -> Tuple[int, int]:
+        area = float(height * width)
+        crop_area = area * np.random.uniform(*self.crop_scale)
+        aspect_ratio = np.random.uniform(*self.crop_ratio)
+        crop_h = int(round(np.sqrt(crop_area / aspect_ratio)))
+        crop_w = int(round(np.sqrt(crop_area * aspect_ratio)))
+        crop_h = min(max(crop_h, 1), height)
+        crop_w = min(max(crop_w, 1), width)
+        return crop_h, crop_w
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        images, restore = self._flatten_images(data['images'])
+        height, width = self._validate_images(images)
+        original_dtype = images[0].dtype
+        transforms = self._build_transforms(height, width)
+
+        if transforms:
+            tensor = torch.from_numpy(np.ascontiguousarray(np.stack(images)))
+            augmented = Compose(transforms)(tensor).detach().cpu().numpy()
+        else:
+            augmented = np.stack(images, axis=0)
+
+        augmented = [
+            image.astype(original_dtype, copy=False) for image in augmented
+        ]
+        data['images'] = restore(augmented)
+        return data
+
+
+@TRANSFORMS.register_module()
 class NormalizeImages:
     """Normalize images in the dataset using specified
     means and standard deviations. This transform normalizes
@@ -1359,31 +1485,133 @@ class ConvertPILImageToNumpyArray:
 
 
 @TRANSFORMS.register_module()
+class ResizeAndReflectPad:
+    """Aspect-preserving resize + reflection pad to an exact canvas.
+
+    Mirrors the official Cosmos3 ``reflection_pad_to_target``: resize so the
+    spatial dims fit within ``(height, width)`` while preserving the aspect
+    ratio (scale capped at 1.0), then reflection-pad the bottom/right edge to
+    the exact canvas size (edge-pad when the pad exceeds the content dim).
+    Handles ``[C, H, W]`` or ``[C, T, H, W]`` numpy/torch tensors.
+    """
+
+    def __init__(
+            self,
+            height: int,
+            width: int,
+            keys: Tuple[str, ...] = ('images', 'pixel_values'),
+    ) -> None:
+        self.height = int(height)
+        self.width = int(width)
+        self.keys = keys
+
+    def _snap(self, tensor: torch.Tensor) -> torch.Tensor:
+        orig_h, orig_w = tensor.shape[-2:]
+        scale = min(self.width / orig_w, self.height / orig_h, 1.0)
+        new_h = int(scale * orig_h + 0.5)
+        new_w = int(scale * orig_w + 0.5)
+        if (new_h, new_w) != (orig_h, orig_w):
+            tensor = torch.nn.functional.interpolate(
+                tensor,
+                size=(new_h, new_w),
+                mode='bicubic',
+                align_corners=False,
+                antialias=True,
+            )
+        pad_bottom = self.height - new_h
+        pad_right = self.width - new_w
+        if pad_bottom or pad_right:
+            mode = ('reflect'
+                    if min(pad_bottom, pad_right) < min(new_h, new_w) else
+                    'replicate')
+            tensor = torch.nn.functional.pad(
+                tensor, (0, pad_right, 0, pad_bottom), mode=mode)
+        return tensor
+
+    def __call__(self, data: dict) -> dict:
+        for key in self.keys:
+            if key not in data:
+                continue
+            tensor = data[key]
+            was_numpy = isinstance(tensor, np.ndarray)
+            if was_numpy:
+                tensor = torch.from_numpy(np.ascontiguousarray(tensor))
+            snapped = self._snap(tensor)
+            data[key] = snapped.numpy() if was_numpy else snapped
+        return data
+
+
+@TRANSFORMS.register_module()
 class PrepareVideo:
-    """Reshape multi-view / temporal image arrays into the video layout
-    expected by DreamZero: ``[C, T, H_tiled, W]`` (per sample, no batch dim).
-
-    Camera views are tiled *vertically* (view-0 on top, view-1 on bottom).
-
-    This transform should be placed **after** ``SimpleNormalizeImages`` (or any
-    other pixel-level transform) so that the spatial content is final before
-    rearrangement.
+    """Reshape multi-view / temporal image arrays into ``[C, T, H, W]``.
 
     Args:
         num_views (int): Number of camera views. Default: 2.
         frame_window_size (int): Number of temporal frames. Default: 1.
+        tile_direction (str): ``"vertical"``, ``"horizontal"``, or
+            ``"top_bottom_pair"``.
+        top_view (int): Full-size top view for ``"top_bottom_pair"``.
+        bottom_views (Tuple[int, int]): View indexes tiled left-to-right under
+            the top view for ``"top_bottom_pair"``.
     """
 
     def __init__(self,
                  num_views: int = 2,
                  frame_window_size: int = 1,
                  tile_direction: str = 'vertical',
+                 top_view: int = 0,
+                 bottom_views: Tuple[int, int] = (1, 2),
+                 bottom_height_ratio: float = 0.5,
                  *args,
                  **kwargs):
-        assert tile_direction in ('vertical', 'horizontal')
+        assert tile_direction in ('vertical', 'horizontal', 'top_bottom_pair')
+        if not (0 < bottom_height_ratio <= 1):
+            raise ValueError('bottom_height_ratio must be in (0, 1].')
         self.num_views = num_views
         self.frame_window_size = frame_window_size
         self.tile_direction = tile_direction
+        self.top_view = int(top_view)
+        self.bottom_views = tuple(int(view) for view in bottom_views)
+        self.bottom_height_ratio = float(bottom_height_ratio)
+
+    def _tile_top_bottom_pair(self, images, is_tensor: bool):
+        view_indexes = (self.top_view, *self.bottom_views)
+        if min(view_indexes) < 0 or max(view_indexes) >= images.shape[0]:
+            raise ValueError(
+                f'top_bottom_pair view indexes {view_indexes} exceed '
+                f'{images.shape[0]} input views.')
+        if is_tensor:
+            import torch.nn.functional as F
+
+        def resize_chw(image, height, width):
+            if is_tensor:
+                return F.interpolate(
+                    image.unsqueeze(0),
+                    size=(height, width),
+                    mode='bilinear',
+                    align_corners=False).squeeze(0)
+            return cv2.resize(
+                image.transpose(1, 2, 0), (width, height),
+                interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)
+
+        def concat(items, axis):
+            return (torch.cat(items, dim=axis)
+                    if is_tensor else np.concatenate(items, axis=axis))
+
+        _, t, _, h, w = images.shape
+        bottom_h = max(1, int(h * self.bottom_height_ratio))
+        left_w = w // 2
+        right_w = w - left_w
+        frames = []
+        for i in range(t):
+            top = images[self.top_view, i]
+            left = resize_chw(images[self.bottom_views[0], i], bottom_h,
+                              left_w)
+            right = resize_chw(images[self.bottom_views[1], i], bottom_h,
+                               right_w)
+            frames.append(concat([top, concat([left, right], 2)], 1))
+        return (torch.stack(frames, dim=1) if is_tensor else np.stack(
+            frames, axis=1))
 
     def __call__(self, data: dict):
         # Support both 'images' (training) and 'pixel_values' (eval) keys
@@ -1398,7 +1626,6 @@ class PrepareVideo:
         V = self.num_views
         T = self.frame_window_size
 
-        # Handle both numpy arrays and torch tensors
         is_tensor = isinstance(images, torch.Tensor)
 
         if images.ndim == 5:
@@ -1406,21 +1633,22 @@ class PrepareVideo:
             # ``horizontal`` concatenates views along width; ``vertical``
             # concatenates views along height (default).
             v, t, c, h, w = images.shape
+            if self.tile_direction == 'top_bottom_pair':
+                data[img_key] = self._tile_top_bottom_pair(images, is_tensor)
+                return data
             if self.tile_direction == 'horizontal':
                 axes = (2, 1, 3, 0, 4)  # -> [C, T, H, V, W]
                 out_shape = (c, t, h, v * w)
             else:
                 axes = (2, 1, 0, 3, 4)  # -> [C, T, V, H, W]
                 out_shape = (c, t, v * h, w)
-            if is_tensor:
-                images = images.permute(*axes).reshape(*out_shape)
-            else:
-                images = np.transpose(images, axes).reshape(*out_shape)
-            data[img_key] = images
+            data[img_key] = (
+                images.permute(*axes).reshape(*out_shape) if is_tensor else
+                np.transpose(images, axes).reshape(*out_shape))
             return data
 
         if images.ndim == 3:
-            # [V*T*C, H, W] or [C, H, W]
+            # [V*T*C, H, W] or [C, H, W].
             channels, h, w = images.shape
             if channels > 3 and channels % 3 == 0:
                 n_items = channels // 3
@@ -1429,23 +1657,28 @@ class PrepareVideo:
                     # tiles views along height -> [3, T, V*H, W];
                     # ``horizontal`` tiles along width -> [3, T, H, V*W].
                     images = images.reshape(V, T, 3, h, w)
+                    if self.tile_direction == 'top_bottom_pair':
+                        data[img_key] = self._tile_top_bottom_pair(
+                            images, is_tensor)
+                        return data
                     if self.tile_direction == 'horizontal':
                         axes = (2, 1, 3, 0, 4)  # -> [3, T, H, V, W]
                         out_shape = (3, T, h, V * w)
                     else:
                         axes = (2, 1, 0, 3, 4)  # -> [3, T, V, H, W]
                         out_shape = (3, T, V * h, w)
-                    if is_tensor:
-                        images = images.permute(*axes)
-                    else:
-                        images = images.transpose(*axes)
-                    images = images.reshape(*out_shape)
-                    data[img_key] = images
+                    images = (
+                        images.permute(
+                            *axes) if is_tensor else images.transpose(*axes))
+                    data[img_key] = images.reshape(*out_shape)
                     return data
-                # [V*C, H, W] single timestep multi-view. ``horizontal``
-                # concatenates views along width -> [3, 1, H, V*W];
-                # ``vertical`` along height -> [3, 1, V*H, W].
+
                 images = images.reshape(n_items, 3, h, w)
+                if self.tile_direction == 'top_bottom_pair':
+                    images = images.reshape(V, 1, 3, h, w)
+                    data[img_key] = self._tile_top_bottom_pair(
+                        images, is_tensor)
+                    return data
                 cat_dim = 2 if self.tile_direction == 'horizontal' else 1
                 if is_tensor:
                     tiled = torch.cat([images[i] for i in range(n_items)],
@@ -1456,11 +1689,10 @@ class PrepareVideo:
                                            axis=cat_dim)
                     data[img_key] = tiled[:, np.newaxis, :, :]
                 return data
-            # [C, H, W] single view, single timestep -> [C, 1, H, W]
-            if is_tensor:
-                data[img_key] = images.unsqueeze(1)
-            else:
-                data[img_key] = images[:, np.newaxis, :, :]
+
+            data[img_key] = (
+                images.unsqueeze(1) if is_tensor else images[:,
+                                                             np.newaxis, :, :])
             return data
 
         raise ValueError(f'Unsupported image shape: {images.shape}')

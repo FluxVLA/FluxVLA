@@ -1,0 +1,81 @@
+Cosmos3 third-party subset
+===========================
+
+Upstream project: NVIDIA Cosmos Framework
+Source: https://github.com/nvidia/cosmos-framework
+License: OpenMDW-1.1
+Copyright: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
+All rights reserved.
+
+License notices
+---------------
+
+Every copied or adapted Cosmos Framework source file retains its original
+SPDX copyright and OpenMDW-1.1 license identifier. The UniPC scheduler also
+retains its upstream Hugging Face and Alibaba Wan copyright notices.
+
+Scope and audit
+---------------
+
+This directory is an import-audited subset, not a copy of the upstream
+repository. As of 2026-08-19 it contains ten runtime modules and five empty
+package markers. Each runtime module is imported by a FluxVLA training or
+inference path:
+
+- `data/vfm/sequence_packing.py`: sequence plans and MoT packing, used by
+  `Cosmos3FlowMatching`, Cosmos3 transforms, and the native attention layer.
+- `data/vfm/utils.py`: image/video resolution lookup tables used by
+  `scripts/cosmos3_fluxvla_infer.py`.
+- `model/vfm/utils/data_and_condition.py`: `GenerationDataClean`, used by
+  sequence packing and `Cosmos3SequenceMixin`.
+- `model/vfm/mot/unified_3dmrope_utils.py`: unified 3D mRoPE IDs used by
+  sequence packing.
+- `model/vfm/mot/modeling_utils.py`: `TimestepEmbedder`, used by
+  `Cosmos3FlowMatching`.
+- `model/vfm/diffusion/rectified_flow.py` and
+  `model/vfm/algorithm/loss/time_weight.py`: rectified-flow training-time
+  sampling used by `Cosmos3ScheduleMixin`.
+- `model/vfm/diffusion/samplers/fm_solvers_unipc.py`: UniPC inference
+  scheduler used by `Cosmos3InferenceMixin`.
+- `model/vfm/tokenizers/wan2pt2_vae_4x16x16.py`: Wan2.2 VAE architecture
+  used by `Cosmos3Wan22VAE`.
+- `nemotron_3_dense_vl.py`: Nemotron-3 text components used by the Edge
+  backbone.
+
+The five `__init__.py` files provide package glue; four are empty and the
+root marker registers the `_c3` compatibility alias. They contain no model
+execution logic. Unused helper functions and the upstream sequence-packing
+demonstration have been removed from the retained modules.
+
+Related adapted files
+---------------------
+
+`fluxvla/models/backbones/vlms/cosmos3/cosmos3_attention.py` and
+`cosmos3_mot_layer.py` are FluxVLA integration layers derived from the
+upstream MoT implementation. They remain outside this vendor directory so
+the native backbone can own its interface, but retain NVIDIA's OpenMDW-1.1
+SPDX notices. `cosmos3_backbone.py` is FluxVLA-native orchestration code and
+uses the repository Apache-2.0 header.
+
+Excluded upstream content
+-------------------------
+
+FluxVLA does not vendor the upstream Cosmos3 training or inference stack:
+
+- upstream `configs/`, `inference/`, checkpoint/download/distributed helpers,
+  and lazy configuration utilities;
+- `OmniMoTModel`, `Cosmos3VFMNetwork`, parallelization helpers, memory/KV
+  cache utilities, and the old action normalization/spec utilities;
+- non-UniPC samplers, EDM and Runge--Kutta helpers, and unused loss helpers;
+- upstream attention backend probes and environment filters; FluxVLA owns the
+  compact FlashAttention/SDPA frontend;
+- the Hugging Face `transformers_cosmos3` shim, dense Qwen3-VL model copies,
+  and the diffusers Wan VAE adapter.
+
+FluxVLA changes
+---------------
+
+Intentional deviations in the retained files are marked inline as
+`FluxVLA vendor patch` or `FluxVLA vendor note`. They are limited to local
+logging/import shims, single-process loading, configurable UniPC Karras
+parameters, and the timestep-embedding dtype fix required for bf16 execution.

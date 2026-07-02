@@ -13,7 +13,13 @@
 # limitations under the License.
 
 from .action_tokenizer import ActionTokenizer
+from .cosmos3_wan22_vae import Cosmos3Wan22VAE
 from .paligemma_tokenizer import PaligemmaTokenizer
 from .pretrained_tokenizer import PretrainedTokenizer
 
-__all__ = ['ActionTokenizer', 'PretrainedTokenizer', 'PaligemmaTokenizer']
+__all__ = [
+    'ActionTokenizer',
+    'Cosmos3Wan22VAE',
+    'PretrainedTokenizer',
+    'PaligemmaTokenizer',
+]

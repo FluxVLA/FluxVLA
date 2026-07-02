@@ -28,6 +28,7 @@ import_heterogeneous_runtime_symbols(
         'wan_backbone': ['WanBaseBackbone'],
         'wan21_backbone': ['Wan21Backbone'],
         'wan22_backbone': ['Wan22Backbone'],
+        'cosmos3': ['Cosmos3MoTBackbone'],
     },
     runtime_missing_names=['transformers.models.qwen3_vl'],
 )

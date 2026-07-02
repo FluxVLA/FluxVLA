@@ -23,6 +23,7 @@ from fluxvla.engines.utils.root import LR_SCHEDULERS
 from .schedulers import (get_constant_schedule,
                          get_constant_schedule_with_warmup,
                          get_cosine_schedule_with_warmup,
+                         get_linear_schedule_with_warmup,
                          get_step_based_schedule)
 
 
@@ -66,6 +67,7 @@ class BaseLRSchedulerPolicy:
     def build_param_groups(self, runner, weight_decay=None):
         optimizer_cfg = runner.optimizer_cfg
         paramwise_lr = optimizer_cfg.get('paramwise_learning_rate', {})
+        exclude_1d = optimizer_cfg.get('exclude_1d_from_weight_decay', True)
         if weight_decay is None:
             weight_decay = optimizer_cfg.get('weight_decay')
         if not paramwise_lr and weight_decay is None:
@@ -74,6 +76,15 @@ class BaseLRSchedulerPolicy:
                 if param.requires_grad
             ]
         if not paramwise_lr:
+            if not exclude_1d:
+                return [{
+                    'params': [
+                        param for param in runner.vla.parameters()
+                        if param.requires_grad
+                    ],
+                    'weight_decay':
+                    weight_decay,
+                }]
             decay, no_decay = [], []
             for name, param in runner.vla.named_parameters():
                 if not param.requires_grad:
@@ -96,8 +107,9 @@ class BaseLRSchedulerPolicy:
                 continue
             lr = self._get_param_lr(runner, name)
             decay = 0.0
-            if (weight_decay is not None and param.ndim > 1
-                    and not name.endswith('.bias')):
+            if weight_decay is not None and (not exclude_1d or
+                                             (param.ndim > 1
+                                              and not name.endswith('.bias'))):
                 decay = float(weight_decay)
             key = (lr, decay)
             if key not in groups:
@@ -114,6 +126,7 @@ class BaseLRSchedulerPolicy:
         optimizer_kwargs = dict(optimizer_cfg)
         optimizer_kwargs.pop('paramwise_learning_rate', None)
         optimizer_kwargs.pop('weight_decay', None)
+        optimizer_kwargs.pop('exclude_1d_from_weight_decay', None)
         return optimizer_kwargs
 
     def build_optimizer(self, runner, weight_decay=None):
@@ -265,6 +278,29 @@ class LinearWarmupCosineDecayMinLRScheduler(BaseLRSchedulerPolicy):
             optimizer,
             schedulers=[warmup_scheduler, main_scheduler],
             milestones=[num_warmup_steps])
+
+
+@LR_SCHEDULERS.register_module(
+    name=['linear-warmup+linear-decay', 'LinearWarmupLinearDecayLRScheduler'])
+class LinearWarmupLinearDecayLRScheduler(BaseLRSchedulerPolicy):
+
+    def __init__(self,
+                 warmup_steps: int = 0,
+                 cycle_length: Optional[int] = None,
+                 **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.warmup_steps = int(warmup_steps)
+        self.cycle_length = None if cycle_length is None else int(cycle_length)
+
+    def build_scheduler(self, runner, optimizer):
+        num_training_steps = self.cycle_length or runner.num_training_steps
+        scheduler = get_linear_schedule_with_warmup(
+            optimizer,
+            num_warmup_steps=self.warmup_steps,
+            num_training_steps=num_training_steps)
+        for param_group in optimizer.param_groups:
+            param_group['lr'] = 0.0
+        return scheduler
 
 
 @LR_SCHEDULERS.register_module(name=['step-based', 'StepBasedLRScheduler'])

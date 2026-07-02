@@ -25,6 +25,21 @@ from datasets import concatenate_datasets, load_dataset
 from fluxvla.engines import DATASETS, build_transform_from_cfg
 
 
+def _batched_cuda_tensor(value: Any) -> torch.Tensor:
+    tensor = torch.as_tensor(value).cuda()
+    if tensor.dim() == 0:
+        return tensor.view(1)
+    return tensor.unsqueeze(0)
+
+
+def _add_tensor_fields(batch: Dict[str, Any], data: Dict[str, Any],
+                       keys: List[str]) -> None:
+    for key in keys:
+        if key in batch or key not in data or data[key] is None:
+            continue
+        batch[key] = _batched_cuda_tensor(data[key])
+
+
 @DATASETS.register_module()
 class ParquetDataset(Dataset):
     VERSION_FILE = 'meta/fluxvla_dataset_version.json'
@@ -41,6 +56,7 @@ class ParquetDataset(Dataset):
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
                  frame_sample_stride: int = 1,
+                 require_full_window: bool = False,
                  train_episode_fraction: float = 1.0,
                  repeat_to_full_length: bool = False,
                  expose_index: bool = False,
@@ -81,6 +97,9 @@ class ParquetDataset(Dataset):
             train_episode_fraction (float): Fraction of episodes to sample
                 from each data root, preserving original episode order.
                 Defaults to 1.0.
+            require_full_window (bool): If True, reject starts whose action or
+                video window would cross an episode/dataset boundary. This
+                avoids padded tail windows.
             repeat_to_full_length (bool): If True, repeat the selected
                 episode subset so `__len__` remains the full dataset length.
                 This keeps epoch length based on full statistics while
@@ -170,6 +189,7 @@ class ParquetDataset(Dataset):
         self.window_start_idx = window_start_idx
         self.frame_window_size = frame_window_size
         self.frame_sample_stride = frame_sample_stride
+        self.require_full_window = require_full_window
         self.expose_index = expose_index
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
@@ -285,6 +305,13 @@ class ParquetDataset(Dataset):
                              data: Dict[str, Any]) -> bool:
         if self._get_task_name(dataset_idx, index) in ('empty', 'static'):
             return True
+
+        if self.require_full_window:
+            window_size = max(self.frame_window_size,
+                              self.window_start_idx + self.action_window_size)
+            if not self._same_episode_and_dataset(index + window_size - 1,
+                                                  dataset_idx, data):
+                return True
 
         first_action_index = index + self.window_start_idx
         if first_action_index == index:
@@ -405,7 +432,8 @@ class LiberoParquetEvalDataset:
                  transforms: List[Dict],
                  norm_stats_key: str,
                  num_padding_imgs: int = 0,
-                 img_buffer_len: int = 1) -> None:
+                 img_buffer_len: int = 1,
+                 extra_tensor_keys: Optional[List[str]] = None) -> None:
 
         # Build image/token transforms (parquet-style sequential list)
         self.transforms = [build_transform_from_cfg(t) for t in transforms]
@@ -414,6 +442,7 @@ class LiberoParquetEvalDataset:
         self.num_padding_imgs = num_padding_imgs
         assert img_buffer_len >= 1, 'img_buffer_len must be >= 1'
         self.img_buffer_len = img_buffer_len
+        self.extra_tensor_keys = extra_tensor_keys or []
         self.img_buffer = None
         self.img_mask_buffer = None
         self.img_buffer_updates = 0
@@ -527,6 +556,7 @@ class LiberoParquetEvalDataset:
         if 'embodiment_ids' in data:
             batch['embodiment_ids'] = torch.from_numpy(
                 data['embodiment_ids']).int().cuda().unsqueeze(0)
+        _add_tensor_fields(batch, data, self.extra_tensor_keys)
 
         if data.get('image_grid_thw', None) is not None:
             batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
@@ -572,11 +602,13 @@ class PrivateInferenceDataset:
                  resize_size: int = 224,
                  max_len: int = 180,
                  use_quantiles=True,
-                 embodiment_id: int = None) -> None:
+                 embodiment_id: int = None,
+                 extra_tensor_keys: Optional[List[str]] = None) -> None:
         from fluxvla.engines import build_transform_from_cfg
         self.transforms = list()
         for transform in transforms:
-            transform['model_path'] = model_path
+            transform = dict(transform)
+            transform.setdefault('model_path', model_path)
             self.transforms.append(build_transform_from_cfg(transform))
         if isinstance(norm_stats, str):
             with open(norm_stats, 'r', encoding='utf-8') as f:
@@ -589,6 +621,7 @@ class PrivateInferenceDataset:
         self.max_len = max_len
         self.use_quantiles = use_quantiles
         self.embodiment_id = embodiment_id
+        self.extra_tensor_keys = extra_tensor_keys or []
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Process the observation for evaluation."""
@@ -604,6 +637,9 @@ class PrivateInferenceDataset:
                                       'No task description provided'),
             stats=self.norm_stats['private'],
             states=data['qpos'])
+        if self.embodiment_id is not None:
+            inputs['embodiment_ids'] = np.array(
+                self.embodiment_id, dtype=np.int32)
         for transform in self.transforms:
             inputs = transform(inputs)
 
@@ -618,9 +654,10 @@ class PrivateInferenceDataset:
                 inputs['lang_masks']).unsqueeze(0).cuda(),
             states=torch.from_numpy(
                 inputs['states']).float().cuda().unsqueeze(0))
-        if self.embodiment_id is not None:
+        if 'embodiment_ids' in inputs:
             batch['embodiment_ids'] = torch.from_numpy(
-                np.array(self.embodiment_id)).int().cuda().unsqueeze(0)
+                np.asarray(inputs['embodiment_ids'])).int().cuda().unsqueeze(0)
+        _add_tensor_fields(batch, inputs, self.extra_tensor_keys)
         return batch
 
     def _normalize(self, normalized_states: np.ndarray, stats: Dict):

@@ -111,6 +111,7 @@ class PretrainedTokenizer:
             # Download only tokenizer-related artifacts to minimize size
             allow_patterns = [
                 'tokenizer.*',
+                'chat_template.*',
                 'special_tokens_map.json',
                 'tokenizer_config.json',
                 'added_tokens.json',
@@ -154,6 +155,8 @@ class PretrainedTokenizer:
         expected |= {
             'tokenizer.json',
             'tokenizer_config.json',
+            'chat_template.jinja',
+            'chat_template.json',
             'special_tokens_map.json',
             'added_tokens.json',
             'merges.txt',
@@ -165,8 +168,8 @@ class PretrainedTokenizer:
         }
 
         # Generic keyword-based inclusion
-        include_keywords = ('tokenizer', 'vocab', 'merge', 'merges', 'spiece',
-                            'sentencepiece', '.bpe')
+        include_keywords = ('tokenizer', 'chat_template', 'vocab', 'merge',
+                            'merges', 'spiece', 'sentencepiece', '.bpe')
 
         # Explicit exclusion (weights and training/runtime artifacts)
         exclude_regex = re.compile(
