@@ -163,7 +163,7 @@ model = dict(
 )
 
 _ROBOCASA_STATISTIC_NAME = ('robocasa_gr1_24tasks_v21_n15_sincos_h16')
-_ROBOCASA_DATA_ROOT = './datasets/robocasa_fluxvla'
+_ROBOCASA_DATA_ROOT = './datasets/robocasa_lerobot_V2.1'
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
 
@@ -338,8 +338,7 @@ runner = dict(
     max_epochs=12,
     # PI0.5 RoboCasa 需要 full-finetune 语言主干来学习离散 state prompt；
     # 使用和现有 PI0.5 full-finetune 配置一致的 warmup+cosine recipe。
-    learning_rate=5e-5,
-    weight_decay=0.0,
+    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,  # 梯度裁剪
     # --- checkpoint 保存策略 ---
     # 之前未设置, 走默认 max_keep_ckpts=2, 导致早期表现更好的 ckpt 被删除,
@@ -347,7 +346,6 @@ runner = dict(
     save_epoch_interval=1,
     save_iter_interval=5000,
     max_keep_ckpts=8,
-    save_full_model=True,
     # --- 加速路径（对齐 mentor 149ad50 commit） ---
     # no-shard: DDP-风格的参数放置，每卡持有整份权重，关闭 500+ 子模块 FSDP wrap，
     #           配合 bf16 master weights, 达到 LeRobot-level 吞吐。
@@ -368,7 +366,6 @@ runner = dict(
         ],
         meta_keys=['task_description', 'prompt', 'info', 'stats']),
     sampler=None,
-    warmup_ratio=0.03,
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path='checkpoints/pi05_base',
@@ -379,7 +376,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler_type='linear-warmup+cosine-decay',
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.03,
+    ),
     enable_gradient_checkpointing=True,  # 省显存 (2×A800 开)
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
