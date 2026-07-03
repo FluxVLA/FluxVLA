@@ -219,7 +219,6 @@ eval = dict(
     ],
     eval_chunk_size=16,
     max_episode_steps=720,
-    num_trials_per_task=20,
     seed=7,
     unnorm_key=_STAT,
     dataset=dict(
