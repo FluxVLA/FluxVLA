@@ -608,6 +608,7 @@ class BaseTrainRunner(ABC):
 
         try:
             if self.training_mode == 'step_based':
+                self._sync_step_based_epoch_with_global_step()
                 return self._run_step_based(dataloader, sampler,
                                             training_eval_dataset)
             else:
@@ -705,9 +706,35 @@ class BaseTrainRunner(ABC):
                 if (self.steps_per_epoch
                         and epoch_step_count >= self.steps_per_epoch):
                     self.current_epoch += 1
+                    epoch_step_count = 0
                     dataloader_iter = None
 
         return self._get_checkpoint_path()
+
+    def _sync_step_based_epoch_with_global_step(self) -> None:
+        """Keep step-based epoch display derived from the global step.
+
+        Step-based training does not persist dataloader iterator position, so
+        after resume the least surprising epoch value is the completed number
+        of full dataset passes implied by ``global_step``.
+        """
+        if (self.training_mode != 'step_based' or not self.steps_per_epoch
+                or self.metric.global_step == 0):
+            return
+
+        expected_epoch = self.metric.global_step // self.steps_per_epoch
+        if self.current_epoch == expected_epoch:
+            return
+
+        if overwatch.is_rank_zero():
+            overwatch.warning(
+                'Correcting step-based epoch from '
+                f'{self.current_epoch} to {expected_epoch} based on '
+                f'global_step={self.metric.global_step} and '
+                f'steps_per_epoch={self.steps_per_epoch}.')
+        self.current_epoch = expected_epoch
+        if hasattr(self.metric, 'epoch'):
+            self.metric.epoch = expected_epoch
 
     def _run_epoch_based(self, dataloader, sampler,
                          training_eval_dataset) -> str:
