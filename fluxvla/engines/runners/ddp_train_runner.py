@@ -320,6 +320,10 @@ class DDPTrainRunner(BaseTrainRunner):
                 self.vla.module.vlm_backbone.config.to_json_file(
                     os.path.join(save_dir, 'vlm_backbone_config.json'))
 
+            if self.tokenizer is not None:
+                self.tokenizer.save_pretrained(
+                    os.path.join(save_dir, 'tokenizer'))
+
             # Handle LoRA merging and checkpoint creation
             if hasattr(self.cfg.model, 'use_lora') and self.cfg.model.use_lora:
                 # First, save the current LoRA adapter to save_dir
@@ -719,6 +723,9 @@ class DDPTrainRunner(BaseTrainRunner):
             overwatch.info(
                 f'Resuming training from checkpoint: {self.resume_from}')
         checkpoint_info = torch.load(self.resume_from)
+
+        if 'model' in checkpoint_info:
+            self._load_model_state(checkpoint_info['model'])
 
         # Restore training state (reuse base class logic)
         if 'global_step' in checkpoint_info:
