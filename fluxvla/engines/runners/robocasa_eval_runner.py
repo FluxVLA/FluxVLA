@@ -16,7 +16,6 @@
 import copy
 import csv
 import json
-import math
 import os
 import random
 import time
@@ -77,6 +76,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
         eval_chunk_size: Number of predicted actions executed per step.
         max_episode_steps: Maximum number of environment steps per episode.
         num_trials_per_task: Number of trials for each task.
+        task_ids: Optional task id filter. Used by manager workers to run
+            one or a few RoboCasa tasks.
+        eval_shard_strategy: Episode assignment strategy. ``task`` keeps all
+            trials for a task on the same rank; ``episode`` preserves the old
+            round-robin episode sharding.
         mixed_precision_dtype: Mixed precision dtype name.
         enable_mixed_precision_training: Whether autocast is enabled.
         unnorm_key: Top-level key in the dataset statistics.
@@ -90,10 +94,17 @@ class RobocasaEvalRunner(BaseEvalRunner):
         deterministic_env: Whether to seed RoboCasa env construction/reset.
         deterministic_action_sampling: Whether to seed stochastic action
             sampling before every policy call.
+        run_id_suffix: Optional suffix appended to the eval run id.
+        result_output_dir: Optional manager output root. When set, per-task
+            result files are mirrored to
+            ``<result_output_dir>/robocasa/gpu{gpu_id}_task{task_id}_results.json``.
+        result_gpu_id: GPU id written to mirrored result filenames.
         feishu_sheet_url: Optional Feishu Sheets link for uploading results.
         feishu_app_id: Optional Feishu custom app App ID.
         feishu_app_secret: Optional Feishu custom app App Secret.
         feishu_timeout: Feishu API timeout in seconds.
+        feishu_report_from_runner: Whether standalone runner writes Feishu
+            directly. Manager workers never write Feishu directly.
     """
 
     def __init__(self,
@@ -107,6 +118,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  eval_chunk_size: int = 10,
                  max_episode_steps: int = 720,
                  num_trials_per_task: int = 50,
+                 task_ids=None,
+                 eval_shard_strategy: str = 'episode',
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True,
                  unnorm_key: str = 'robocasa_gr1_test',
@@ -118,10 +131,14 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  norm_stats_group_names: Optional[List[str]] = None,
                  deterministic_env: bool = True,
                  deterministic_action_sampling: bool = True,
+                 run_id_suffix: Optional[str] = None,
+                 result_output_dir: Optional[str] = None,
+                 result_gpu_id: Optional[int] = None,
                  feishu_sheet_url: Optional[str] = None,
                  feishu_app_id: Optional[str] = None,
                  feishu_app_secret: Optional[str] = None,
                  feishu_timeout: float = 10.0,
+                 feishu_report_from_runner: bool = True,
                  **kwargs):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg)
@@ -297,18 +314,27 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.task_list = task_list
         self.max_episode_steps = max_episode_steps
         self.num_trials_per_task = num_trials_per_task
+        self.task_ids = task_ids
+        self.eval_shard_strategy = eval_shard_strategy
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.unnorm_key = unnorm_key
         self.distributed_state = overwatch.distributed_state
 
+        if 'save_rollout_videos' in kwargs:
+            save_video = self._coerce_bool(kwargs['save_rollout_videos'])
         self.save_video = save_video
         self.deterministic_env = deterministic_env
         self.deterministic_action_sampling = deterministic_action_sampling
+        self.run_id_suffix = run_id_suffix
+        self.result_output_dir = result_output_dir
+        self.result_gpu_id = (
+            self.device_id if result_gpu_id is None else int(result_gpu_id))
         self.feishu_sheet_url = feishu_sheet_url
         self.feishu_app_id = feishu_app_id
         self.feishu_app_secret = feishu_app_secret
         self.feishu_timeout = feishu_timeout
+        self.feishu_report_from_runner = feishu_report_from_runner
 
         # Attach norm_stats to the model for heads that consume them.
         if self.grouped_norm_stats:
@@ -323,6 +349,12 @@ class RobocasaEvalRunner(BaseEvalRunner):
     @staticmethod
     def _normalize_seed(seed: int) -> int:
         return int(seed) % np.iinfo(np.uint32).max
+
+    @staticmethod
+    def _coerce_bool(value) -> bool:
+        if isinstance(value, str):
+            return value.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
+        return bool(value)
 
     def _episode_seed(self, local_id: int) -> int:
         return self._normalize_seed(self.seed + local_id)
@@ -375,12 +407,112 @@ class RobocasaEvalRunner(BaseEvalRunner):
             return 'Microwave'
         return 'Generalization'
 
+    @staticmethod
+    def _build_global_episodes(num_tasks: int,
+                               num_trials_per_task: int,
+                               task_ids=None) -> list:
+        """Flat list of global episode indices in task-major order."""
+        if task_ids is None:
+            task_ids = range(num_tasks)
+        return [
+            task_id * num_trials_per_task + trial_id for task_id in task_ids
+            for trial_id in range(num_trials_per_task)
+        ]
+
+    @staticmethod
+    def _get_local_episodes(global_episodes: list, rank: int,
+                            world_size: int) -> list:
+        """Episodes handled by ``rank`` under round-robin sharding."""
+        return global_episodes[rank::world_size]
+
+    @staticmethod
+    def _get_local_task_ids(task_ids: list, rank: int,
+                            world_size: int) -> list:
+        """Task ids handled by ``rank`` under task-level sharding."""
+        return list(task_ids)[rank::world_size]
+
+    @staticmethod
+    def _resolve_task_ids(num_tasks: int, task_ids=None) -> list:
+        """Normalize optional task filters into an ordered task id list."""
+        raw_task_ids = task_ids
+        if raw_task_ids is None:
+            resolved = list(range(num_tasks))
+        elif isinstance(raw_task_ids, int):
+            resolved = [raw_task_ids]
+        elif isinstance(raw_task_ids, str):
+            value = raw_task_ids.strip()
+            if value.startswith('[') and value.endswith(']'):
+                value = value[1:-1]
+            resolved = [
+                int(item.strip()) for item in value.split(',')
+                if item.strip() != ''
+            ]
+        else:
+            resolved = [int(task) for task in raw_task_ids]
+
+        if len(resolved) == 0:
+            raise ValueError('At least one task id is required.')
+        if len(set(resolved)) != len(resolved):
+            raise ValueError(f'Duplicate task ids are not supported: '
+                             f'{resolved}')
+        invalid = [task for task in resolved if task < 0 or task >= num_tasks]
+        if invalid:
+            raise ValueError(f'Invalid task ids {invalid}; expected range [0, '
+                             f'{num_tasks - 1}].')
+        return resolved
+
+    @classmethod
+    def _build_local_episode_schedule(cls,
+                                      num_tasks: int,
+                                      num_trials_per_task: int,
+                                      rank: int,
+                                      world_size: int,
+                                      shard_strategy: str,
+                                      task_ids=None) -> list:
+        """Build local episode ids in task-major order."""
+        if task_ids is None:
+            task_ids = list(range(num_tasks))
+        else:
+            task_ids = list(task_ids)
+        strategy = str(shard_strategy).lower()
+        if strategy == 'episode':
+            return cls._get_local_episodes(
+                cls._build_global_episodes(num_tasks, num_trials_per_task,
+                                           task_ids), rank, world_size)
+        if strategy != 'task':
+            raise ValueError(
+                f'Unsupported eval_shard_strategy: {shard_strategy}. '
+                "Expected one of: ['task', 'episode'].")
+
+        local_tasks = cls._get_local_task_ids(task_ids, rank, world_size)
+        return [
+            task_id * num_trials_per_task + trial_id for task_id in local_tasks
+            for trial_id in range(num_trials_per_task)
+        ]
+
+    @staticmethod
+    def _build_run_id(model_family: str,
+                      timestamp: str,
+                      suffix: Optional[str] = None) -> str:
+        run_id = f'EVAL-robocasa-{model_family}-{timestamp}'
+        if suffix:
+            run_id = f'{run_id}-{suffix}'
+        return run_id
+
     def _write_robocasa_summary_artifacts(self, work_dir: Path, run_id: str,
                                           task_successes, task_episodes,
                                           task_durations) -> str:
         group_order = ['Cabinet', 'Drawer', 'Microwave', 'Generalization']
         summary_dir = work_dir / run_id
         summary_dir.mkdir(parents=True, exist_ok=True)
+        task_result_dir = summary_dir / 'robocasa'
+        task_result_dir.mkdir(parents=True, exist_ok=True)
+        manager_result_dir = None
+        if self.result_output_dir is not None:
+            manager_result_dir = (
+                Path(self.result_output_dir).expanduser().resolve() /
+                'robocasa')
+            manager_result_dir.mkdir(parents=True, exist_ok=True)
         group_stats = {
             group: {
                 'total_tasks': 0,
@@ -418,6 +550,27 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 'success_rate': rate,
                 'duration': dur,
             }
+            per_task = {
+                'task_id': task_id,
+                'env_name': str(env_name),
+                'group': group,
+                'successes': succ,
+                'total_episodes': eps,
+                'success_rate': rate,
+                'duration': dur,
+                'gpu_id': self.result_gpu_id,
+            }
+            with open(
+                    task_result_dir / f'task{task_id}_results.json',
+                    'w',
+                    encoding='utf-8') as f:
+                json.dump(per_task, f, indent=4)
+            if manager_result_dir is not None:
+                manager_result_path = (
+                    manager_result_dir /
+                    f'gpu{self.result_gpu_id}_task{task_id}_results.json')
+                with open(manager_result_path, 'w', encoding='utf-8') as f:
+                    json.dump(per_task, f, indent=4)
             total_trials += eps
             total_successes += succ
             total_time += dur
@@ -494,13 +647,22 @@ class RobocasaEvalRunner(BaseEvalRunner):
         with open(summary_json, 'w', encoding='utf-8') as f:
             json.dump(
                 {
-                    'run_id': run_id,
-                    'ckpt': self.ckpt_path,
-                    'config': cfg_filename or '',
-                    'model_family': self.model_family,
-                    'action_order': self.action_order,
-                    'group_stats': group_stats,
-                    'task_stats': task_stats,
+                    'run_id':
+                    run_id,
+                    'ckpt':
+                    self.ckpt_path,
+                    'config':
+                    cfg_filename or '',
+                    'model_family':
+                    self.model_family,
+                    'action_order':
+                    self.action_order,
+                    'task_ids':
+                    self._resolve_task_ids(len(self.task_list), self.task_ids),
+                    'group_stats':
+                    group_stats,
+                    'task_stats':
+                    task_stats,
                     'overall': {
                         'success_rate': overall_rate,
                         'total_episodes': total_trials,
@@ -513,7 +675,14 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 indent=4)
         return str(summary_json)
 
+    def _should_report_feishu_from_runner(self) -> bool:
+        """Whether this standalone eval run should upload its summary."""
+        return (bool(self.feishu_report_from_runner)
+                and self.result_output_dir is None and self.task_ids is None)
+
     def _maybe_report_feishu(self, summary_json: str) -> None:
+        if not self._should_report_feishu_from_runner():
+            return
         maybe_report_summary_to_feishu(
             summary_json,
             'robocasa',
@@ -537,12 +706,16 @@ class RobocasaEvalRunner(BaseEvalRunner):
         from robocasa.utils.gym_utils import GrootRoboCasaEnv  # noqa: F401
 
         num_tasks = len(self.task_list)
-        global_episodes = list(range(num_tasks * self.num_trials_per_task))
+        task_ids = self._resolve_task_ids(num_tasks, self.task_ids)
+        global_episode_ids = self._build_global_episodes(
+            num_tasks, self.num_trials_per_task, task_ids)
 
-        overwatch.info(f'Robocasa Eval: {num_tasks} tasks, '
+        overwatch.info(f'Robocasa Eval: {len(task_ids)}/{num_tasks} tasks, '
                        f'{self.num_trials_per_task} trials each')
         overwatch.info(f'Model family: {self.model_family}, '
                        f'chunk_size: {self.eval_chunk_size}')
+        overwatch.info(f'Task ids: {task_ids}, '
+                       f'shard_strategy: {self.eval_shard_strategy}')
         overwatch.info(f'Deterministic env: {self.deterministic_env}, '
                        f'deterministic action sampling: '
                        f'{self.deterministic_action_sampling}, '
@@ -550,13 +723,27 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
         rank = overwatch.rank()
         world_size = overwatch.world_size()
-        local_episodes = global_episodes[rank::world_size]
-        num_local_episodes = math.ceil(len(global_episodes) / world_size)
+        rank_schedules = [
+            self._build_local_episode_schedule(
+                num_tasks,
+                self.num_trials_per_task,
+                schedule_rank,
+                world_size,
+                self.eval_shard_strategy,
+                task_ids=task_ids) for schedule_rank in range(world_size)
+        ]
+        local_episodes = rank_schedules[rank]
+        num_local_episodes = max(len(schedule) for schedule in rank_schedules)
 
         data_time = time.strftime('%Y_%m_%d-%H_%M_%S')
-        run_id = f'EVAL-robocasa-{self.model_family}-{data_time}'
+        run_id = self._build_run_id(
+            self.model_family, data_time, suffix=self.run_id_suffix)
         if self.output_dir is not None:
             work_dir = Path(self.output_dir).expanduser().resolve()
+        elif self.result_output_dir is not None:
+            work_dir = (
+                Path(self.result_output_dir).expanduser().resolve() /
+                'eval_runs')
         else:
             work_dir = Path(self.ckpt_path).resolve().parent.parent
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -567,6 +754,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
         log_file.write(f'Deterministic env: {self.deterministic_env}, '
                        f'deterministic action sampling: '
                        f'{self.deterministic_action_sampling}\n')
+        log_file.write(f'Task ids: {task_ids}\n')
+        log_file.write(f'Eval shard strategy: {self.eval_shard_strategy}\n')
 
         total_episodes = torch.zeros(1, device=torch.cuda.current_device())
         total_successes = torch.zeros(1, device=torch.cuda.current_device())
@@ -580,7 +769,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
         pbar = None
         if rank == 0:
             pbar = tqdm.tqdm(
-                total=len(global_episodes),
+                total=len(global_episode_ids),
                 desc='Robocasa Eval',
                 dynamic_ncols=True)
 
