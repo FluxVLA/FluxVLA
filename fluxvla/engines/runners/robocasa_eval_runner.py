@@ -521,7 +521,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
             app_id=self.feishu_app_id,
             app_secret=self.feishu_app_secret,
             timeout=self.feishu_timeout,
-            logger=overwatch.warning)
+            logger=overwatch.warning,
+            log_unconfigured=True)
 
     def run(self):
         """Run the RoboCasa evaluation loop."""

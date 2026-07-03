@@ -60,6 +60,13 @@ class FeishuReportError(RuntimeError):
     """Raised when a Feishu report cannot be written safely."""
 
 
+def _normalize_feishu_sheet_url(sheet_url: str) -> str:
+    """Normalize common shell-escaped Feishu URL separators."""
+    return str(sheet_url).strip().replace('\\?', '?').replace('\\=',
+                                                              '=').replace(
+                                                                  '\\&', '&')
+
+
 @dataclass
 class FeishuReportResult:
     wrote: bool
@@ -74,7 +81,7 @@ def parse_feishu_spreadsheet_token(sheet_url: str) -> Optional[str]:
     if not sheet_url:
         return None
     try:
-        parsed = urllib.parse.urlparse(str(sheet_url).strip())
+        parsed = urllib.parse.urlparse(_normalize_feishu_sheet_url(sheet_url))
     except ValueError:
         return None
     if parsed.scheme not in ('http', 'https'):
@@ -101,7 +108,7 @@ def parse_feishu_sheet_id(sheet_url: str) -> Optional[str]:
     if parse_feishu_spreadsheet_token(sheet_url) is None:
         return None
     try:
-        parsed = urllib.parse.urlparse(str(sheet_url).strip())
+        parsed = urllib.parse.urlparse(_normalize_feishu_sheet_url(sheet_url))
     except ValueError:
         return None
     query = urllib.parse.parse_qs(parsed.query)
@@ -113,9 +120,24 @@ def parse_feishu_sheet_id(sheet_url: str) -> Optional[str]:
     return None
 
 
+def _feishu_target_sheet_url(sheet_url: str, sheet_id: str) -> str:
+    """Return a browser URL pointing at the actual target worksheet."""
+    normalized_url = _normalize_feishu_sheet_url(sheet_url)
+    if not sheet_id:
+        return normalized_url
+    parsed = urllib.parse.urlparse(normalized_url)
+    query_items = [(key, value)
+                   for key, value in urllib.parse.parse_qsl(parsed.query)
+                   if key not in ('sheet', 'gid')]
+    query_items.append(('sheet', sheet_id))
+    return urllib.parse.urlunparse(
+        parsed._replace(query=urllib.parse.urlencode(query_items)))
+
+
 def open_api_base_from_url(sheet_url: str) -> str:
     """Choose the matching OpenAPI host for Feishu or Lark URLs."""
-    hostname = (urllib.parse.urlparse(str(sheet_url)).hostname or '').lower()
+    hostname = (urllib.parse.urlparse(
+        _normalize_feishu_sheet_url(sheet_url)).hostname or '').lower()
     if 'larksuite.com' in hostname:
         return 'https://open.larksuite.com/open-apis'
     return 'https://open.feishu.cn/open-apis'
@@ -276,6 +298,15 @@ def _next_row_id(values: Sequence[Sequence[Any]]) -> int:
         except (IndexError, TypeError, ValueError):
             continue
     return max_id + 1 if max_id > 0 else data_rows + 1
+
+
+def _next_write_row(values: Sequence[Sequence[Any]]) -> int:
+    """Return the 1-based row after the last non-empty row."""
+    last_non_empty = 0
+    for idx, row in enumerate(values, start=1):
+        if any(_cell_text(cell) for cell in row):
+            last_non_empty = idx
+    return last_non_empty + 1
 
 
 def _feishu_error_hint(code: Optional[int], status_code: int) -> str:
@@ -487,6 +518,7 @@ class FeishuExperimentReporter:
                     'sheet_id': str(sheet['sheet_id']),
                     'title': str(sheet['title'])
                 }
+
         sheet_id = self.client.add_sheet(self.spreadsheet_token, title)
         return {'sheet_id': str(sheet_id), 'title': title}
 
@@ -541,7 +573,7 @@ class FeishuExperimentReporter:
         row_id = _next_row_id(values)
         row = [row_id] + row_without_id
         self.client.write_values(self.spreadsheet_token, sheet_id,
-                                 len(values) + 1, [row])
+                                 _next_write_row(values), [row])
         return FeishuReportResult(True, 'wrote result row', report_kind,
                                   actual_sheet_title, sheet_id)
 
@@ -561,7 +593,8 @@ def maybe_report_summary_to_feishu(
         commit_id: Optional[str] = None,
         repo_dir: Optional[str] = None,
         timeout: float = 10.0,
-        logger: Optional[Callable[[str], None]] = None) -> FeishuReportResult:
+        logger: Optional[Callable[[str], None]] = None,
+        log_unconfigured: bool = False) -> FeishuReportResult:
     """Best-effort upload of one summary JSON to Feishu Sheets."""
     sheet_url = sheet_url or os.environ.get('FEISHU_SHEET_URL', '')
     app_id = app_id or os.environ.get('FEISHU_APP_ID', '')
@@ -569,8 +602,12 @@ def maybe_report_summary_to_feishu(
     report_kind = report_kind.lower()
 
     if not sheet_url and not app_id and not app_secret:
-        return FeishuReportResult(False, 'Feishu reporting is not configured',
-                                  report_kind)
+        result = FeishuReportResult(False,
+                                    'Feishu reporting is not configured',
+                                    report_kind)
+        if log_unconfigured:
+            _log(logger, f'[feishu] skip: {result.reason}')
+        return result
     if not sheet_url or not app_id or not app_secret:
         result = FeishuReportResult(
             False,
@@ -606,14 +643,28 @@ def maybe_report_summary_to_feishu(
             api_base=open_api_base_from_url(sheet_url),
             timeout=timeout,
         )
+        preferred_sheet_id = parse_feishu_sheet_id(sheet_url)
+        _log(
+            logger,
+            f'[feishu] report enabled: kind={report_kind}, '
+            f'url_sheet_id={preferred_sheet_id or "none"}',
+        )
         reporter = FeishuExperimentReporter(
             client,
             spreadsheet_token,
-            preferred_sheet_id=parse_feishu_sheet_id(sheet_url),
+            preferred_sheet_id=preferred_sheet_id,
         )
         result = reporter.write_row(report_kind, row)
         if result.wrote:
-            _log(logger, f'[feishu] {result.reason}: {result.sheet_title}')
+            target_url = _feishu_target_sheet_url(sheet_url, result.sheet_id)
+            selection = ('url sheet'
+                         if preferred_sheet_id else 'report kind sheet')
+            _log(
+                logger,
+                f'[feishu] {result.reason}: {result.sheet_title} '
+                f'(selection={selection}, sheet_id={result.sheet_id}, '
+                f'url={target_url})',
+            )
         else:
             _log(logger, f'[feishu] skip: {result.reason}')
         return result

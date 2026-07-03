@@ -67,13 +67,31 @@ def _get_nested_eval_value(cfg, key, default=None):
     return cfg.eval.get(key, default)
 
 
+_FEISHU_ENV_KEYS = {
+    'feishu_sheet_url': 'FEISHU_SHEET_URL',
+    'feishu_app_id': 'FEISHU_APP_ID',
+    'feishu_app_secret': 'FEISHU_APP_SECRET',
+    'feishu_timeout': 'FEISHU_TIMEOUT',
+}
+
+
+def _get_report_cfg_value(cfg, key):
+    value = _get_nested_eval_value(cfg, key, None)
+    if value is not None:
+        return value
+    env_key = _FEISHU_ENV_KEYS.get(key)
+    if env_key is None:
+        return None
+    return os.environ.get(env_key)
+
+
 def _set_missing_cfg_value(cfg_obj, key, value):
     if value is None:
         return
     if isinstance(cfg_obj, dict):
-        if key not in cfg_obj:
+        if key not in cfg_obj or cfg_obj.get(key) is None:
             cfg_obj[key] = value
-    elif not hasattr(cfg_obj, key):
+    elif not hasattr(cfg_obj, key) or getattr(cfg_obj, key) is None:
         setattr(cfg_obj, key, value)
 
 
@@ -88,7 +106,7 @@ def _inject_eval_report_cfg(cfg, eval_cfg):
             'feishu_app_secret',
             'feishu_timeout',
     ):
-        _set_missing_cfg_value(eval_cfg, key, _get_nested_eval_value(cfg, key))
+        _set_missing_cfg_value(eval_cfg, key, _get_report_cfg_value(cfg, key))
 
 
 def _is_libero_eval_cfg(eval_cfg):
@@ -197,7 +215,8 @@ def _maybe_report_libero_eval(summary_paths, args, cfg):
         summary_path,
         'libero',
         config=getattr(cfg, 'filename', None) or args.config,
-        logger=overwatch.warning)
+        logger=overwatch.warning,
+        log_unconfigured=True)
 
 
 def parse_args():

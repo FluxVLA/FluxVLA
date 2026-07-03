@@ -937,7 +937,8 @@ class LiberoEvalRunner(BaseEvalRunner):
             app_secret=self.feishu_app_secret,
             config=getattr(self.cfg, 'filename', None) or '',
             timeout=self.feishu_timeout,
-            logger=overwatch.warning)
+            logger=overwatch.warning,
+            log_unconfigured=True)
 
     def _write_libero_summary_artifacts(self, task_suite, num_tasks,
                                         task_successes, task_episodes,
