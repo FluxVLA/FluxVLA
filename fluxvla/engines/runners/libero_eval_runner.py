@@ -30,6 +30,8 @@ from fluxvla.engines.utils import initialize_overwatch
 from fluxvla.engines.utils.eval_utils import (get_libero_dummy_action,
                                               get_libero_env,
                                               save_rollout_video)
+from fluxvla.engines.utils.feishu_reporter import \
+    maybe_report_summary_to_feishu
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils.root import RUNNERS
 from .base_eval_runner import BaseEvalRunner
@@ -113,6 +115,11 @@ class LiberoEvalRunner(BaseEvalRunner):
             mirrored to
             ``<result_output_dir>/<suite>/gpu{gpu_id}_task{task_id}_results.json``.
         result_gpu_id (int): GPU id written to mirrored result filenames.
+        feishu_sheet_url: Optional Feishu Sheets link for uploading results.
+        feishu_app_id: Optional Feishu custom app App ID.
+        feishu_app_secret: Optional Feishu custom app App Secret.
+        feishu_timeout: Feishu API timeout in seconds.
+        feishu_report_from_runner: Whether this runner writes Feishu directly.
         mixed_precision_dtype (str): Data type for mixed precision training.
             Default is 'bf16'.
         enable_mixed_precision_training (bool): Whether to enable mixed
@@ -399,6 +406,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                  run_id_suffix: str = None,
                  result_output_dir: str = None,
                  result_gpu_id: int = None,
+                 feishu_sheet_url: str = None,
+                 feishu_app_id: str = None,
+                 feishu_app_secret: str = None,
+                 feishu_timeout: float = 10.0,
+                 feishu_report_from_runner: bool = False,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
         from fluxvla.engines import (build_dataset_from_cfg,
@@ -491,6 +503,11 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.result_output_dir = result_output_dir
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
+        self.feishu_sheet_url = feishu_sheet_url
+        self.feishu_app_id = feishu_app_id
+        self.feishu_app_secret = feishu_app_secret
+        self.feishu_timeout = feishu_timeout
+        self.feishu_report_from_runner = feishu_report_from_runner
 
         if os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
@@ -900,6 +917,28 @@ class LiberoEvalRunner(BaseEvalRunner):
         hours, rem = divmod(seconds, 3600)
         return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'
 
+    def _should_report_feishu_from_runner(self) -> bool:
+        """Whether this standalone eval run should upload its summary."""
+        # eval_libero_manager.sh launches one worker per task and performs the
+        # final cross-suite Feishu upload itself. Worker uploads would
+        # duplicate rows and report partial suites, so only standalone
+        # full-suite evals report from the runner.
+        return (bool(self.feishu_report_from_runner)
+                and self.result_output_dir is None and self.task_ids is None)
+
+    def _maybe_report_feishu(self, summary_json: str) -> None:
+        if not self._should_report_feishu_from_runner():
+            return
+        maybe_report_summary_to_feishu(
+            summary_json,
+            'libero',
+            sheet_url=self.feishu_sheet_url,
+            app_id=self.feishu_app_id,
+            app_secret=self.feishu_app_secret,
+            config=getattr(self.cfg, 'filename', None) or '',
+            timeout=self.feishu_timeout,
+            logger=overwatch.warning)
+
     def _write_libero_summary_artifacts(self, task_suite, num_tasks,
                                         task_successes, task_episodes,
                                         task_durations, trial_success_grid,
@@ -1074,3 +1113,4 @@ class LiberoEvalRunner(BaseEvalRunner):
                 f,
                 indent=4)
         overwatch.info(f'[*] Wrote LIBERO summary artifacts to {self.run_dir}')
+        self._maybe_report_feishu(summary_json)

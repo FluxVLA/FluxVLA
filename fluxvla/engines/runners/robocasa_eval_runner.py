@@ -14,6 +14,7 @@
 """RoboCasa simulation evaluation runner."""
 
 import copy
+import csv
 import json
 import math
 import os
@@ -30,6 +31,8 @@ import tqdm
 from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
+from fluxvla.engines.utils.feishu_reporter import \
+    maybe_report_summary_to_feishu
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils.root import RUNNERS
@@ -87,6 +90,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
         deterministic_env: Whether to seed RoboCasa env construction/reset.
         deterministic_action_sampling: Whether to seed stochastic action
             sampling before every policy call.
+        feishu_sheet_url: Optional Feishu Sheets link for uploading results.
+        feishu_app_id: Optional Feishu custom app App ID.
+        feishu_app_secret: Optional Feishu custom app App Secret.
+        feishu_timeout: Feishu API timeout in seconds.
     """
 
     def __init__(self,
@@ -111,6 +118,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  norm_stats_group_names: Optional[List[str]] = None,
                  deterministic_env: bool = True,
                  deterministic_action_sampling: bool = True,
+                 feishu_sheet_url: Optional[str] = None,
+                 feishu_app_id: Optional[str] = None,
+                 feishu_app_secret: Optional[str] = None,
+                 feishu_timeout: float = 10.0,
                  **kwargs):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg)
@@ -294,6 +305,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.save_video = save_video
         self.deterministic_env = deterministic_env
         self.deterministic_action_sampling = deterministic_action_sampling
+        self.feishu_sheet_url = feishu_sheet_url
+        self.feishu_app_id = feishu_app_id
+        self.feishu_app_secret = feishu_app_secret
+        self.feishu_timeout = feishu_timeout
 
         # Attach norm_stats to the model for heads that consume them.
         if self.grouped_norm_stats:
@@ -338,6 +353,175 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.vla.freeze_projector = True
         self.vla.freeze_vlm_backbone = True
         self.vla.cuda(self.device_id)
+
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        seconds = int(round(seconds))
+        if seconds < 60:
+            return f'{seconds:02d}s'
+        if seconds < 3600:
+            return f'{seconds // 60:02d}m{seconds % 60:02d}s'
+        hours, rem = divmod(seconds, 3600)
+        return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'
+
+    @staticmethod
+    def _robocasa_group_name(env_name: str) -> str:
+        task_name = str(env_name).split('/')[-1]
+        if 'ToCabinet' in task_name:
+            return 'Cabinet'
+        if 'ToDrawer' in task_name:
+            return 'Drawer'
+        if 'ToMicrowave' in task_name:
+            return 'Microwave'
+        return 'Generalization'
+
+    def _write_robocasa_summary_artifacts(self, work_dir: Path, run_id: str,
+                                          task_successes, task_episodes,
+                                          task_durations) -> str:
+        group_order = ['Cabinet', 'Drawer', 'Microwave', 'Generalization']
+        summary_dir = work_dir / run_id
+        summary_dir.mkdir(parents=True, exist_ok=True)
+        group_stats = {
+            group: {
+                'total_tasks': 0,
+                'total_trials': 0,
+                'total_successes': 0,
+                'total_time': 0.0,
+                'max_time': 0.0,
+            }
+            for group in group_order
+        }
+        task_stats = {}
+        total_trials = 0
+        total_successes = 0
+        total_time = 0.0
+        overall_max_time = 0.0
+        for task_id, env_name in enumerate(self.task_list):
+            eps = int(task_episodes[task_id].item())
+            if eps == 0:
+                continue
+            succ = int(task_successes[task_id].item())
+            dur = float(task_durations[task_id].item())
+            rate = succ / max(eps, 1) * 100
+            group = self._robocasa_group_name(env_name)
+            stats = group_stats[group]
+            stats['total_tasks'] += 1
+            stats['total_trials'] += eps
+            stats['total_successes'] += succ
+            stats['total_time'] += dur
+            stats['max_time'] = max(stats['max_time'], dur)
+            task_stats[str(env_name)] = {
+                'task_id': task_id,
+                'group': group,
+                'total_episodes': eps,
+                'successes': succ,
+                'success_rate': rate,
+                'duration': dur,
+            }
+            total_trials += eps
+            total_successes += succ
+            total_time += dur
+            overall_max_time = max(overall_max_time, dur)
+
+        overall_rate = total_successes / max(total_trials, 1) * 100
+        summary_csv = summary_dir / 'summary.csv'
+        with open(summary_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            group_rates = []
+            for group in group_order:
+                stats = group_stats[group]
+                if stats['total_trials'] > 0:
+                    rate = stats['total_successes'] / \
+                        max(stats['total_trials'], 1) * 100
+                    group_rates.append(f'{rate:.2f}')
+                else:
+                    group_rates.append('')
+            writer.writerow([''] + group_order + ['all'])
+            writer.writerow([
+                'Success Rate (%)',
+                *group_rates,
+                f'{overall_rate:.2f}',
+            ])
+            writer.writerow([
+                'Episodes',
+                *[group_stats[group]['total_trials'] for group in group_order],
+                total_trials,
+            ])
+            writer.writerow([
+                'Successes',
+                *[
+                    group_stats[group]['total_successes']
+                    for group in group_order
+                ],
+                total_successes,
+            ])
+
+        task_csv = summary_dir / 'task_success_rates.csv'
+        with open(task_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                ['Task', 'Group', 'Successes', 'Episodes', 'Success Rate (%)'])
+            for env_name, stats in task_stats.items():
+                writer.writerow([
+                    env_name, stats['group'], stats['successes'],
+                    stats['total_episodes'], f"{stats['success_rate']:.2f}"
+                ])
+
+        summary_txt = summary_dir / 'summary.txt'
+        with open(summary_txt, 'w', encoding='utf-8') as f:
+            f.write('=== RoboCasa Evaluation Results Summary ===\n')
+            for group in group_order:
+                stats = group_stats[group]
+                rate = (
+                    stats['total_successes'] / max(stats['total_trials'], 1) *
+                    100 if stats['total_trials'] > 0 else 0.0)
+                f.write(f'\n{group}:\n')
+                f.write(f"- Tasks completed: {stats['total_tasks']}\n")
+                f.write(f"- Total attempts: {stats['total_trials']}\n")
+                f.write(f'- Successful attempts: '
+                        f"{stats['total_successes']}\n")
+                f.write(f'- Success rate: {rate:.2f}%\n')
+                f.write(f'- Total time: '
+                        f"{self._format_duration(stats['total_time'])}\n")
+            f.write('\nOverall statistics:\n')
+            f.write(f'- Success rate: {overall_rate:.2f}%\n')
+            f.write(f'- Total attempts: {total_trials}\n')
+            f.write(f'- Successful attempts: {total_successes}\n')
+            f.write(f'- Total time: {self._format_duration(total_time)}\n')
+
+        cfg_filename = getattr(self.cfg, 'filename', None)
+        summary_json = summary_dir / 'summary.json'
+        with open(summary_json, 'w', encoding='utf-8') as f:
+            json.dump(
+                {
+                    'run_id': run_id,
+                    'ckpt': self.ckpt_path,
+                    'config': cfg_filename or '',
+                    'model_family': self.model_family,
+                    'action_order': self.action_order,
+                    'group_stats': group_stats,
+                    'task_stats': task_stats,
+                    'overall': {
+                        'success_rate': overall_rate,
+                        'total_episodes': total_trials,
+                        'successes': total_successes,
+                        'total_time': total_time,
+                        'max_time': overall_max_time,
+                    },
+                },
+                f,
+                indent=4)
+        return str(summary_json)
+
+    def _maybe_report_feishu(self, summary_json: str) -> None:
+        maybe_report_summary_to_feishu(
+            summary_json,
+            'robocasa',
+            sheet_url=self.feishu_sheet_url,
+            app_id=self.feishu_app_id,
+            app_secret=self.feishu_app_secret,
+            timeout=self.feishu_timeout,
+            logger=overwatch.warning)
 
     def run(self):
         """Run the RoboCasa evaluation loop."""
@@ -385,6 +569,12 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
         total_episodes = torch.zeros(1, device=torch.cuda.current_device())
         total_successes = torch.zeros(1, device=torch.cuda.current_device())
+        task_successes = torch.zeros(
+            num_tasks, device=torch.cuda.current_device())
+        task_episodes = torch.zeros(
+            num_tasks, device=torch.cuda.current_device())
+        task_durations = torch.zeros(
+            num_tasks, device=torch.cuda.current_device())
 
         pbar = None
         if rank == 0:
@@ -444,6 +634,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 success = False
                 replay_images = []
                 t = 0
+                episode_start = time.time()
 
                 while t < self.max_episode_steps:
                     # Build input dict for the dataset transform pipeline.
@@ -550,7 +741,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 # Record result.
                 if success:
                     total_successes += 1
+                    task_successes[task_id] += 1
                 total_episodes += 1
+                task_episodes[task_id] += 1
+                task_durations[task_id] += time.time() - episode_start
 
                 result_str = 'SUCCESS' if success else 'FAIL'
                 overwatch.info(f'  Result: {result_str} (steps={t})')
@@ -609,5 +803,30 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 log_file.flush()
 
         dist.barrier()
+        global_episodes = total_episodes.clone()
+        global_successes = total_successes.clone()
+        dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
+        if rank == 0:
+            n_ep = int(global_episodes[0].item())
+            n_succ = int(global_successes[0].item())
+            rate = n_succ / max(n_ep, 1) * 100
+            overwatch.info(f'Robocasa final: {n_succ}/{n_ep} '
+                           f'({rate:.2f}%)')
+            log_file.write(f'Robocasa final: {n_succ}/{n_ep} '
+                           f'({rate:.2f}%)\n')
+            summary_json = self._write_robocasa_summary_artifacts(
+                work_dir,
+                run_id,
+                task_successes.cpu(),
+                task_episodes.cpu(),
+                task_durations.cpu(),
+            )
+            overwatch.info(f'[*] Wrote Robocasa summary to {summary_json}')
+            self._maybe_report_feishu(summary_json)
         log_file.close()
+        dist.barrier()
         exit(0)

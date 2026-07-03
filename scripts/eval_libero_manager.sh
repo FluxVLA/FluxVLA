@@ -24,6 +24,9 @@
 #   SAVE_MULTI_VIEW_ROLLOUT_VIDEOS=True
 #   ROLLOUT_DIR=work_dirs/libero_eval_manager/videos
 #   OUTPUT_DIR=work_dirs/libero_eval_manager/my_run
+#   FEISHU_SHEET_URL=https://.../sheets/...
+#   FEISHU_APP_ID=cli_xxx
+#   FEISHU_APP_SECRET=xxx
 #
 # Defaults are resolved as: environment override -> config value -> built-in
 # fallback. Manager-only defaults should be set in config via
@@ -58,6 +61,10 @@ SAVE_FAILED_ROLLOUT_VIDEOS="${SAVE_FAILED_ROLLOUT_VIDEOS:-}"
 SAVE_MULTI_VIEW_ROLLOUT_VIDEOS="${SAVE_MULTI_VIEW_ROLLOUT_VIDEOS:-}"
 ROLLOUT_DIR="${ROLLOUT_DIR:-}"
 OUTPUT_DIR="${OUTPUT_DIR:-}"
+FEISHU_SHEET_URL="${FEISHU_SHEET_URL:-}"
+FEISHU_APP_ID="${FEISHU_APP_ID:-}"
+FEISHU_APP_SECRET="${FEISHU_APP_SECRET:-}"
+FEISHU_TIMEOUT="${FEISHU_TIMEOUT:-10}"
 EXTRA_ARGS=("$@")
 
 DEFAULT_SUITES="libero_10 libero_goal libero_spatial libero_object"
@@ -91,6 +98,9 @@ CFG_OUTPUT_DIR=""
 CFG_SAVE_ROLLOUT_VIDEOS=""
 CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS=""
 CFG_ROLLOUT_DIR=""
+CFG_FEISHU_SHEET_URL=""
+CFG_FEISHU_APP_ID=""
+CFG_FEISHU_APP_SECRET=""
 
 while IFS=$'\t' read -r key value; do
   case "${key}" in
@@ -111,6 +121,9 @@ while IFS=$'\t' read -r key value; do
     CFG_SAVE_ROLLOUT_VIDEOS) CFG_SAVE_ROLLOUT_VIDEOS="${value}" ;;
     CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS) CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS="${value}" ;;
     CFG_ROLLOUT_DIR) CFG_ROLLOUT_DIR="${value}" ;;
+    CFG_FEISHU_SHEET_URL) CFG_FEISHU_SHEET_URL="${value}" ;;
+    CFG_FEISHU_APP_ID) CFG_FEISHU_APP_ID="${value}" ;;
+    CFG_FEISHU_APP_SECRET) CFG_FEISHU_APP_SECRET="${value}" ;;
   esac
 done < <(python - "${CONFIG}" <<'PY'
 import sys
@@ -177,6 +190,12 @@ fields = {
         'eval.runner.save_multi_view_rollout_videos',
         'eval.save_multi_view_rollout_videos'),
     'CFG_ROLLOUT_DIR': ('eval.runner.rollout_dir', 'eval.rollout_dir'),
+    'CFG_FEISHU_SHEET_URL': (
+        'eval.manager.feishu_sheet_url', 'eval.feishu_sheet_url'),
+    'CFG_FEISHU_APP_ID': (
+        'eval.manager.feishu_app_id', 'eval.feishu_app_id'),
+    'CFG_FEISHU_APP_SECRET': (
+        'eval.manager.feishu_app_secret', 'eval.feishu_app_secret'),
 }
 print(f'CFG_EVAL_RUNNER_PREFIX\t{eval_runner_prefix}')
 for name, paths in fields.items():
@@ -333,6 +352,16 @@ elif [[ -n "${CFG_ROLLOUT_DIR}" ]]; then
   ROLLOUT_DIR_SOURCE="config"
 else
   ROLLOUT_DIR_SOURCE="default"
+fi
+
+if [[ -z "${FEISHU_SHEET_URL}" && -n "${CFG_FEISHU_SHEET_URL}" ]]; then
+  FEISHU_SHEET_URL="${CFG_FEISHU_SHEET_URL}"
+fi
+if [[ -z "${FEISHU_APP_ID}" && -n "${CFG_FEISHU_APP_ID}" ]]; then
+  FEISHU_APP_ID="${CFG_FEISHU_APP_ID}"
+fi
+if [[ -z "${FEISHU_APP_SECRET}" && -n "${CFG_FEISHU_APP_SECRET}" ]]; then
+  FEISHU_APP_SECRET="${CFG_FEISHU_APP_SECRET}"
 fi
 
 bool_cfg() {
@@ -821,9 +850,21 @@ while [[ "${completed_tasks}" -lt "${total_tasks}" ]]; do
   fi
 done
 
-CKPT="${ckpt_abs}" CONFIG="${CONFIG}" python "${SUMMARY_TOOL}" \
-  --run-dir "${OUTPUT_DIR}" \
-  --output-dir "${OUTPUT_DIR}" \
+summary_args=(
+  --run-dir "${OUTPUT_DIR}"
+  --output-dir "${OUTPUT_DIR}"
   --title "${ckpt_stem}"
+)
+if [[ -n "${FEISHU_SHEET_URL}${FEISHU_APP_ID}${FEISHU_APP_SECRET}" ]]; then
+  summary_args+=(
+    --feishu-sheet-url "${FEISHU_SHEET_URL}"
+    --feishu-app-id "${FEISHU_APP_ID}"
+    --feishu-app-secret "${FEISHU_APP_SECRET}"
+    --feishu-timeout "${FEISHU_TIMEOUT}"
+  )
+fi
+
+CKPT="${ckpt_abs}" CONFIG="${CONFIG}" python "${SUMMARY_TOOL}" \
+  "${summary_args[@]}"
 
 echo "[manager] summary: ${OUTPUT_DIR}/summary.csv"

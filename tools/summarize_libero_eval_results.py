@@ -23,9 +23,12 @@ multi-suite ``summary.csv`` (with an ``Overall`` column), ``summary.txt`` and
 from __future__ import annotations
 import argparse
 import csv
+import importlib.util
 import json
 import os
+import sys
 from collections import defaultdict
+from pathlib import Path
 from typing import Dict, List
 
 SUITE_ORDER = [
@@ -35,6 +38,19 @@ SUITE_ORDER = [
     'libero_10',
     'libero_90',
 ]
+
+
+def _load_feishu_reporter():
+    repo_root = Path(__file__).resolve().parents[1]
+    module_path = (
+        repo_root / 'fluxvla' / 'engines' / 'utils' / 'feishu_reporter.py')
+    spec = importlib.util.spec_from_file_location('fluxvla_feishu_reporter',
+                                                  module_path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.maybe_report_summary_to_feishu
 
 
 def format_time(seconds: float) -> str:
@@ -111,7 +127,7 @@ def summarize(run_dirs: List[str]) -> Dict:
     return {'suite_stats': dict(suite_stats), 'task_results': task_results}
 
 
-def write_summaries(summary: Dict, output_dir: str, title: str) -> None:
+def write_summaries(summary: Dict, output_dir: str, title: str) -> str:
     """Write combined ``summary.{csv,txt,json}`` to ``output_dir``."""
     os.makedirs(output_dir, exist_ok=True)
     suite_stats = summary['suite_stats']
@@ -236,6 +252,7 @@ def write_summaries(summary: Dict, output_dir: str, title: str) -> None:
     print(','.join([''] + columns))
     for metric in ('Success Rate (%)', 'Average Time (s)', 'Max Time (s)'):
         print(','.join([metric] + rows[metric]))
+    return summary_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -258,6 +275,23 @@ def parse_args() -> argparse.Namespace:
         '--title',
         default='Results',
         help='Title line written at the top of summary.csv.')
+    parser.add_argument(
+        '--feishu-sheet-url',
+        default=os.environ.get('FEISHU_SHEET_URL', ''),
+        help='Optional Feishu Sheets URL for uploading LIBERO results.')
+    parser.add_argument(
+        '--feishu-app-id',
+        default=os.environ.get('FEISHU_APP_ID', ''),
+        help='Optional Feishu custom app App ID.')
+    parser.add_argument(
+        '--feishu-app-secret',
+        default=os.environ.get('FEISHU_APP_SECRET', ''),
+        help='Optional Feishu custom app App Secret.')
+    parser.add_argument(
+        '--feishu-timeout',
+        type=float,
+        default=float(os.environ.get('FEISHU_TIMEOUT', '10')),
+        help='Feishu API timeout in seconds.')
     return parser.parse_args()
 
 
@@ -265,7 +299,18 @@ def main() -> None:
     args = parse_args()
     run_dirs = _collect_run_dirs(args)
     summary = summarize(run_dirs)
-    write_summaries(summary, args.output_dir, args.title)
+    summary_json = write_summaries(summary, args.output_dir, args.title)
+    if args.feishu_sheet_url or args.feishu_app_id or args.feishu_app_secret:
+        maybe_report_summary_to_feishu = _load_feishu_reporter()
+        maybe_report_summary_to_feishu(
+            summary_json,
+            'libero',
+            sheet_url=args.feishu_sheet_url,
+            app_id=args.feishu_app_id,
+            app_secret=args.feishu_app_secret,
+            config=os.environ.get('CONFIG', ''),
+            timeout=args.feishu_timeout,
+            logger=print)
 
 
 if __name__ == '__main__':
