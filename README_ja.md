@@ -720,6 +720,7 @@ VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM 
 <summary><b>評価と推論の能力</b></summary>
 
 - マルチ GPU によるレイトレーシング非対応デバイスでの libero 評価をサポートします。
+- LIBERO と RoboCasa の評価サマリーを Feishu Sheets に自動アップロードできます。詳細は [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md) を参照してください。
 - ZMQ ベースのリモート推論インフラをサポートします。サーバー/クライアントアーキテクチャにより、モデル推論を GPU サーバーにオフロードし、リソースが限られたエッジデバイスへのデプロイを可能にします。詳細は [リモート推論サービス](docs/remote_inference_serving.md) を参照してください。
 - [RTC（Real-Time Chunking）](docs/rtc.md) をサポートし、チャンク間の軌跡の連続性を向上させます。
 - GR00T と PI0.5 の推論を高速化します。詳細は [Inference Acceleration](docs/inference_acceleration.md) を参照してください。Triton の融合カーネル、CUDA Graph のキャプチャ、CUDA のカスタム演算子が含まれます。

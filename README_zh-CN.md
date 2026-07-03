@@ -714,6 +714,7 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 <summary><b>评估与推理能力</b></summary>
 
 - 支持多 GPU 在无光追设备上评估 libero。
+- 支持将 LIBERO 和 RoboCasa 评估汇总自动写入飞书电子表格。详见 [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md)。
 - 支持基于 ZMQ 通信框架的远程推理设施，利用 server/client 架构将模型推理负载装卸到服务器端，适用于算力受限的边缘设备部署。详见 [远程推理服务](docs/remote_inference_serving.md)。
 - 支持 [RTC (Real-Time Chunking)](docs/rtc.md)，提升跨 chunk 轨迹连续性。
 - 支持 GR00T 与 PI0.5 推理加速；详见 [Inference Acceleration](docs/inference_acceleration.md)，包含 Triton 融合核、CUDA Graph 捕获与 CUDA 自定义算子。

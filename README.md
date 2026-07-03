@@ -772,6 +772,7 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 <summary><b>Evaluation and inference capabilities</b></summary>
 
 - Supports multi-GPU evaluating libero on devices without ray tracing.
+- Supports uploading LIBERO and RoboCasa evaluation summaries to Feishu Sheets; see [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md).
 - Supports remote inference infrastructure with ZMQ-based server/client architecture, enabling GPU-offloaded inference for resource-constrained edge devices. See [Remote Inference Serving](docs/remote_inference_serving.md).
 - Supports [RTC (Real-Time Chunking)](docs/rtc.md) to improve cross-chunk trajectory continuity.
 - Supports accelerated inference for GR00T and PI0.5; see [Inference Acceleration](docs/inference_acceleration.md), including Triton fused kernels, CUDA Graph capture, and CUDA custom operators.
