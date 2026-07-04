@@ -243,7 +243,7 @@ def create_server(
             actions_np = actions.cpu().numpy()
             d = denormalize_action(
                 dict(action=actions_np, task_suite_name=task_suite_name))
-            actions = torch.from_numpy(d[None].astype(np.float32))
+            actions = torch.from_numpy(d.astype(np.float32))
 
         action_bytes = serialize_actions(actions)
 
