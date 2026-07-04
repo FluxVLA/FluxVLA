@@ -27,10 +27,10 @@ _image_size = 224
 
 _action_norm_mask = [True, True, True, True, True, True, False]
 _libero_data_roots = [
-    './datasets/libero_10_lerobotv2.1',
-    './datasets/libero_goal_lerobotv2.1',
-    './datasets/libero_spatial_lerobotv2.1',
-    './datasets/libero_object_lerobotv2.1',
+    './datasets/libero_10_no_noops_lerobotv2.1',
+    './datasets/libero_goal_no_noops_lerobotv2.1',
+    './datasets/libero_spatial_no_noops_lerobotv2.1',
+    './datasets/libero_object_no_noops_lerobotv2.1',
 ]
 
 # The official release evaluates these suites independently. FluxVLA's eval
@@ -244,7 +244,7 @@ runner = dict(
 
 eval = dict(
     type='LiberoEvalRunner',
-    task_suite_name='libero_10',
+    task_suite_name=official_eval_task_suites,
     model_family='dit4dit',
     norm_stats_key='franka',
     eval_chunk_size=_action_horizon,
