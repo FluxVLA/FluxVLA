@@ -41,12 +41,16 @@ ROBOCASA_RESULT_COLUMNS = [
 
 REPORT_SPECS = {
     'libero': {
-        'sheet_title': 'libero',
-        'headers': ['id', 'commit id', 'config'] + LIBERO_RESULT_COLUMNS,
+        'sheet_title':
+        'libero',
+        'headers':
+        ['id', 'commit id', 'config', 'ckpt_path'] + LIBERO_RESULT_COLUMNS,
     },
     'robocasa': {
-        'sheet_title': 'robocasa',
-        'headers': ['id', 'commit id', 'config'] + ROBOCASA_RESULT_COLUMNS,
+        'sheet_title':
+        'robocasa',
+        'headers':
+        ['id', 'commit id', 'config', 'ckpt_path'] + ROBOCASA_RESULT_COLUMNS,
     },
 }
 
@@ -242,6 +246,7 @@ def build_report_row(summary: Dict[str, Any],
     commit = (
         commit_id if commit_id is not None else get_git_commit_id(repo_dir))
     cfg = config if config is not None else str(summary.get('config', ''))
+    ckpt_path = str(summary.get('ckpt') or summary.get('ckpt_path') or '')
 
     if report_kind == 'libero':
         suite_stats = summary.get('suite_stats', {})
@@ -264,7 +269,7 @@ def build_report_row(summary: Dict[str, Any],
                 summary.get('overall', {}).get('success_rate'))
         values.append(_format_rate(overall))
 
-    return [commit, cfg] + values
+    return [commit, cfg, ckpt_path] + values
 
 
 def _normalize_row(row: Sequence[Any], width: int) -> List[str]:

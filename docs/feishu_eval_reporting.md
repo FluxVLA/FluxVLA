@@ -21,13 +21,13 @@ deduplicate rows, so running the same command twice appends two rows.
 LIBERO uses this header:
 
 ```text
-id, commit id, config, libero_10, libero_goal, libero_object, libero_spatial, all
+id, commit id, config, ckpt_path, libero_10, libero_goal, libero_object, libero_spatial, all
 ```
 
 RoboCasa uses this header:
 
 ```text
-id, commit id, config, Cabinet, Drawer, Microwave, Generalization, all
+id, commit id, config, ckpt_path, Cabinet, Drawer, Microwave, Generalization, all
 ```
 
 Column behavior:
@@ -35,6 +35,7 @@ Column behavior:
 - `id` is an auto-incrementing row id.
 - `commit id` is `git rev-parse HEAD` from the current repo.
 - `config` is the config path passed to evaluation when available.
+- `ckpt_path` is the checkpoint path saved in the evaluation summary.
 - Suite/group columns are formatted as percentages, for example `50.00%`.
 - `all` is computed from total successes and total trials when those counts
   are present.
@@ -42,7 +43,8 @@ Column behavior:
 If the target worksheet is empty, FluxVLA writes the header and the first
 result row. If the worksheet is non-empty, the first row must exactly match the
 expected header. A header mismatch is treated as unsafe, and the worksheet is
-left unchanged.
+left unchanged. If you are migrating an older sheet, insert `ckpt_path`
+between `config` and the first result column, or use a new empty worksheet.
 
 Rows are appended after the last non-empty row. This avoids writing below a
 large block of empty rows if the Feishu API returns padded blank rows.
