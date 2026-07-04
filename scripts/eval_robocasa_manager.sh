@@ -2,8 +2,9 @@
 # Dynamic RoboCasa eval manager for configs that use RobocasaEvalRunner.
 #
 # The manager builds a task queue and launches one single-task eval worker per
-# task. Each worker runs with NPROC_PER_NODE=1 and writes per-task JSON files
-# under OUTPUT_DIR/robocasa; the manager aggregates them into one summary.
+# task. Each worker runs with NPROC_PER_NODE=1, writes full eval artifacts under
+# OUTPUT_DIR/eval_runs/<ckpt>/<run_id>, mirrors per-task JSON files under
+# OUTPUT_DIR/robocasa, and the manager aggregates them into one summary.
 #
 # Usage:
 #   CONFIG=configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
@@ -17,7 +18,7 @@
 #   TASK_IDS="0 1 2"
 #   NUM_GPUS=8
 #   MAX_TASKS_PER_GPU=1
-#   NUM_TRIALS_PER_TASK=20
+#   NUM_TRIALS_PER_TASK=50
 #   MAX_EPISODE_STEPS=720
 #   SAVE_VIDEO=False
 #   OUTPUT_DIR=work_dirs/robocasa_eval_manager/my_run
@@ -56,7 +57,7 @@ DEFAULT_MONITOR_INTERVAL="5"
 DEFAULT_STATUS_INTERVAL="30"
 DEFAULT_LAUNCH_DELAY="0.5"
 DEFAULT_SUMMARY_TOOL="tools/summarize_robocasa_eval_results.py"
-DEFAULT_NUM_TRIALS_PER_TASK="20"
+DEFAULT_NUM_TRIALS_PER_TASK="50"
 DEFAULT_SAVE_VIDEO="False"
 
 CFG_EVAL_RUNNER_PREFIX=""
@@ -471,7 +472,6 @@ launch_task() {
       "${EVAL_RUNNER_PREFIX}.run_id_suffix=${suffix}"
       "${EVAL_RUNNER_PREFIX}.result_output_dir=${OUTPUT_DIR}"
       "${EVAL_RUNNER_PREFIX}.result_gpu_id=${gpu}"
-      "${EVAL_RUNNER_PREFIX}.output_dir=${OUTPUT_DIR}/eval_runs"
       "${EVAL_RUNNER_PREFIX}.feishu_report_from_runner=False"
     )
     if [[ "${NUM_TRIALS_PER_TASK_SOURCE}" != "config" ]]; then

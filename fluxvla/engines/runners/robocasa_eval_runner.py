@@ -84,8 +84,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
         mixed_precision_dtype: Mixed precision dtype name.
         enable_mixed_precision_training: Whether autocast is enabled.
         unnorm_key: Top-level key in the dataset statistics.
-        output_dir: Optional output directory for logs and videos.
+        output_dir: Optional output root. Eval artifacts are written under
+            ``<output_dir>/eval_runs/<ckpt>/<run_id>`` to match LIBERO.
         save_video: Whether to save rollout videos.
+        rollout_video_key: Observation image key used for rollout videos.
         action_order: Action split order. Defaults to ``n15`` for GR00T and
             ``fluxvla`` otherwise.
         norm_stats_path: Optional explicit dataset statistics path.
@@ -125,6 +127,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  unnorm_key: str = 'robocasa_gr1_test',
                  output_dir: Optional[str] = None,
                  save_video: bool = True,
+                 rollout_video_key: Optional[str] = (
+                     'video.ego_view_pad_res256_freq20'),
                  norm_stats_path: Optional[str] = None,
                  action_order: Optional[str] = None,
                  grouped_norm_stats: bool = False,
@@ -324,6 +328,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
         if 'save_rollout_videos' in kwargs:
             save_video = self._coerce_bool(kwargs['save_rollout_videos'])
         self.save_video = save_video
+        self.rollout_video_key = rollout_video_key
         self.deterministic_env = deterministic_env
         self.deterministic_action_sampling = deterministic_action_sampling
         self.run_id_suffix = run_id_suffix
@@ -355,6 +360,31 @@ class RobocasaEvalRunner(BaseEvalRunner):
         if isinstance(value, str):
             return value.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
         return bool(value)
+
+    def _get_rollout_video_keys(self) -> List[str]:
+        """Return candidate obs image keys for stable rollout videos."""
+        keys = []
+        if self.rollout_video_key:
+            keys.append(self.rollout_video_key)
+
+        for transform in getattr(self.dataset, 'transforms', []):
+            img_key = getattr(transform, 'img_key', None)
+            if img_key:
+                keys.append(img_key)
+
+        keys.extend([
+            'video.ego_view_pad_res256_freq20',
+            'video.ego_view_bg_crop_pad_res256_freq20',
+        ])
+        return list(dict.fromkeys(keys))
+
+    def _get_rollout_frame(self, obs: Dict) -> Optional[np.ndarray]:
+        """Extract a single consistent obs frame for rollout video saving."""
+        for img_key in self._get_rollout_video_keys():
+            frame = obs.get(img_key, None)
+            if isinstance(frame, np.ndarray):
+                return frame.copy()
+        return None
 
     def _episode_seed(self, local_id: int) -> int:
         return self._normalize_seed(self.seed + local_id)
@@ -499,11 +529,33 @@ class RobocasaEvalRunner(BaseEvalRunner):
             run_id = f'{run_id}-{suffix}'
         return run_id
 
-    def _write_robocasa_summary_artifacts(self, work_dir: Path, run_id: str,
+    @staticmethod
+    def _build_ckpt_tag(ckpt_path: str) -> str:
+        """Stable per-checkpoint folder name for grouping eval runs."""
+        return Path(ckpt_path).resolve().stem
+
+    @staticmethod
+    def _build_run_dir(ckpt_path: str,
+                       run_id: str,
+                       output_dir: Optional[str] = None) -> str:
+        """Per-checkpoint, per-run output directory.
+
+        This mirrors ``LiberoEvalRunner`` so RoboCasa and LIBERO eval outputs
+        share the same filesystem layout.
+        """
+        if output_dir is not None:
+            root = Path(output_dir).expanduser().resolve()
+        else:
+            root = Path(ckpt_path).resolve().parent.parent
+        return os.path.join(root, 'eval_runs',
+                            RobocasaEvalRunner._build_ckpt_tag(ckpt_path),
+                            run_id)
+
+    def _write_robocasa_summary_artifacts(self, run_dir: Path, run_id: str,
                                           task_successes, task_episodes,
                                           task_durations) -> str:
         group_order = ['Cabinet', 'Drawer', 'Microwave', 'Generalization']
-        summary_dir = work_dir / run_id
+        summary_dir = run_dir
         summary_dir.mkdir(parents=True, exist_ok=True)
         task_result_dir = summary_dir / 'robocasa'
         task_result_dir.mkdir(parents=True, exist_ok=True)
@@ -738,16 +790,13 @@ class RobocasaEvalRunner(BaseEvalRunner):
         data_time = time.strftime('%Y_%m_%d-%H_%M_%S')
         run_id = self._build_run_id(
             self.model_family, data_time, suffix=self.run_id_suffix)
-        if self.output_dir is not None:
-            work_dir = Path(self.output_dir).expanduser().resolve()
-        elif self.result_output_dir is not None:
-            work_dir = (
-                Path(self.result_output_dir).expanduser().resolve() /
-                'eval_runs')
-        else:
-            work_dir = Path(self.ckpt_path).resolve().parent.parent
-        work_dir.mkdir(parents=True, exist_ok=True)
-        log_filepath = os.path.join(work_dir, run_id + '.txt')
+        output_root = self.output_dir
+        if output_root is None:
+            output_root = self.result_output_dir
+        self.run_dir = self._build_run_dir(
+            self.ckpt_path, run_id, output_dir=output_root)
+        os.makedirs(self.run_dir, exist_ok=True)
+        log_filepath = os.path.join(self.run_dir, f'rank{rank}.txt')
         log_file = open(log_filepath, 'w', encoding='utf-8', buffering=1)
         log_file.write(f'Rank {rank}/{world_size}, seed={self.seed}\n')
         log_file.write(f'PYTHONHASHSEED={os.environ.get("PYTHONHASHSEED")}\n')
@@ -823,13 +872,17 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 # Evaluation loop.
                 success = False
                 replay_images = []
+                if self.save_video:
+                    frame = self._get_rollout_frame(obs)
+                    if frame is not None:
+                        replay_images.append(frame)
                 t = 0
                 episode_start = time.time()
 
                 while t < self.max_episode_steps:
                     # Build input dict for the dataset transform pipeline.
                     obs['task_description'] = task_desc
-                    batch, replay_img = self.dataset(obs)
+                    batch, _ = self.dataset(obs)
                     debug_info = getattr(self.dataset, 'last_debug', {})
                     if t == 0:
                         state_arr = (
@@ -850,8 +903,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                             log_file.write(f'State range: min={state_min}, '
                                            f'max={state_max}\n')
                     batch['unnorm_key'] = self.unnorm_key
-                    if replay_img is not None:
-                        replay_images.append(replay_img)
 
                     # Model inference.
                     if self.deterministic_action_sampling:
@@ -913,10 +964,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
                         # Collect rendered frames for rollout videos.
                         if self.save_video:
-                            frame = obs.get('video.ego_view_pad_res256_freq20',
-                                            None)
+                            frame = self._get_rollout_frame(obs)
                             if frame is not None:
-                                replay_images.append(frame.copy())
+                                replay_images.append(frame)
 
                         t += 1
                         if info.get('success', False):
@@ -942,7 +992,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
                 # Save rollout video.
                 if self.save_video and replay_images:
-                    video_dir = os.path.join(work_dir, 'rollouts')
+                    video_dir = os.path.join(self.run_dir, 'rollouts')
                     os.makedirs(video_dir, exist_ok=True)
                     task_short = env_name.split('/')[-1][:30]
                     video_name = (
@@ -1009,7 +1059,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
             log_file.write(f'Robocasa final: {n_succ}/{n_ep} '
                            f'({rate:.2f}%)\n')
             summary_json = self._write_robocasa_summary_artifacts(
-                work_dir,
+                Path(self.run_dir),
                 run_id,
                 task_successes.cpu(),
                 task_episodes.cpu(),
