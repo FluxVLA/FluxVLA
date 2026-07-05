@@ -115,6 +115,16 @@ class LiberoEvalRunner(BaseEvalRunner):
             mirrored to
             ``<result_output_dir>/<suite>/gpu{gpu_id}_task{task_id}_results.json``.
         result_gpu_id (int): GPU id written to mirrored result filenames.
+        profile_inference (bool): Whether to collect lightweight per-rank
+            eval timing for preprocessing, model inference, and simulator
+            stepping. Disabled by default.
+        profile_warmup_predictions (int): Number of initial action prediction
+            calls excluded from profile aggregates.
+        profile_max_predictions (int): Maximum profiled action prediction
+            calls after warmup. ``None`` records all calls.
+        profile_output_path (str): Optional profile JSON output path. Relative
+            paths are resolved under the active run directory. Each rank writes
+            a rank-specific file.
         mixed_precision_dtype (str): Data type for mixed precision training.
             Default is 'bf16'.
         enable_mixed_precision_training (bool): Whether to enable mixed
@@ -371,6 +381,95 @@ class LiberoEvalRunner(BaseEvalRunner):
                 return replay_img
             raise
 
+    @staticmethod
+    def _elapsed_ms(start_time: float) -> float:
+        return (time.perf_counter() - start_time) * 1000.0
+
+    @staticmethod
+    def _profile_stats(values: list) -> Dict:
+        if not values:
+            return {}
+        sorted_values = sorted(values)
+
+        def percentile(pct: float) -> float:
+            index = min(
+                len(sorted_values) - 1,
+                max(0, int(math.ceil(len(sorted_values) * pct / 100.0)) - 1),
+            )
+            return sorted_values[index]
+
+        return {
+            'count': len(values),
+            'mean_ms': sum(values) / len(values),
+            'min_ms': sorted_values[0],
+            'p50_ms': percentile(50),
+            'p90_ms': percentile(90),
+            'p95_ms': percentile(95),
+            'p99_ms': percentile(99),
+            'max_ms': sorted_values[-1],
+        }
+
+    def _should_record_profile(self, profiled_predictions: int) -> bool:
+        if not self.profile_inference:
+            return False
+        if profiled_predictions < self.profile_warmup_predictions:
+            return False
+        if self.profile_max_predictions is None:
+            return True
+        return (profiled_predictions - self.profile_warmup_predictions
+                < self.profile_max_predictions)
+
+    def _build_profile_path(self, rank: int) -> str:
+        path = self.profile_output_path
+        if not path:
+            return os.path.join(self.run_dir, f'profile_rank{rank}.json')
+        path = os.path.expanduser(path)
+        root, ext = os.path.splitext(path)
+        if not ext:
+            ext = '.json'
+        if not os.path.isabs(path):
+            root = os.path.join(self.run_dir, root)
+        return f'{root}_rank{rank}{ext}'
+
+    def _write_profile_artifact(self, rank: int, profile_events: list,
+                                episode_events: list, profile_context: Dict):
+        if not self.profile_inference:
+            return
+        profile_path = self._build_profile_path(rank)
+        os.makedirs(os.path.dirname(profile_path), exist_ok=True)
+        summary = {}
+        for key in (
+                'preprocess_ms',
+                'predict_ms',
+                'env_step_chunk_ms',
+        ):
+            summary[key] = self._profile_stats(
+                [event[key] for event in profile_events if key in event])
+        summary['episode_ms'] = self._profile_stats(
+            [event['episode_ms'] for event in episode_events])
+        if torch.cuda.is_available():
+            summary['cuda_memory_mb'] = {
+                'max_allocated': (
+                    torch.cuda.max_memory_allocated() / 1024**2),
+                'max_reserved': torch.cuda.max_memory_reserved() / 1024**2,
+                'allocated_at_write': (
+                    torch.cuda.memory_allocated() / 1024**2),
+                'reserved_at_write': (
+                    torch.cuda.memory_reserved() / 1024**2),
+            }
+        with open(profile_path, 'w') as f:
+            json.dump(
+                {
+                    'context': profile_context,
+                    'summary': summary,
+                    'events': profile_events,
+                    'episode_events': episode_events,
+                },
+                f,
+                indent=2,
+            )
+        overwatch.info(f'[*] Wrote eval profile to {profile_path}')
+
     def __init__(self,
                  cfg: Dict,
                  seed: int,
@@ -401,6 +500,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                  run_id_suffix: str = None,
                  result_output_dir: str = None,
                  result_gpu_id: int = None,
+                 profile_inference: bool = False,
+                 profile_warmup_predictions: int = 5,
+                 profile_max_predictions: int = 100,
+                 profile_output_path: str = None,
+                 cfg_parallel: bool = False,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
         from fluxvla.engines import (build_dataset_from_cfg,
@@ -499,6 +603,11 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.result_output_dir = result_output_dir
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
+        self.profile_inference = profile_inference
+        self.profile_warmup_predictions = max(0, profile_warmup_predictions)
+        self.profile_max_predictions = profile_max_predictions
+        self.profile_output_path = profile_output_path
+        self.cfg_parallel = cfg_parallel
 
         if os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
@@ -510,6 +619,71 @@ class LiberoEvalRunner(BaseEvalRunner):
                 'You can ignore this if you are loading the base VLA (i.e. not fine-tuned) checkpoint.'  # noqa: E501
                 'Otherwise, you may run into errors when trying to call `predict_action()` due to an absent `unnorm_key`.'  # noqa: E501
             )
+
+    def _enable_model_cfg_parallel(self) -> None:
+        vla_head = getattr(self.vla, 'vla_head', None)
+        if vla_head is not None:
+            setattr(vla_head, 'cfg_parallel', bool(self.cfg_parallel))
+
+    @staticmethod
+    def _move_payload_to_cpu(value):
+        if torch.is_tensor(value):
+            return value.detach().cpu()
+        if isinstance(value, dict):
+            return {
+                key: LiberoEvalRunner._move_payload_to_cpu(item)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return type(value)(
+                LiberoEvalRunner._move_payload_to_cpu(item)
+                for item in value)
+        return value
+
+    @staticmethod
+    def _move_payload_to_device(value, device):
+        if torch.is_tensor(value):
+            return value.to(device=device, non_blocking=True)
+        if isinstance(value, dict):
+            return {
+                key: LiberoEvalRunner._move_payload_to_device(item, device)
+                for key, item in value.items()
+            }
+        if isinstance(value, (list, tuple)):
+            return type(value)(
+                LiberoEvalRunner._move_payload_to_device(item, device)
+                for item in value)
+        return value
+
+    def _cfg_parallel_broadcast_predict(self, predict_kwargs: Dict) -> None:
+        payload = {
+            'command': 'predict',
+            'predict_kwargs': self._move_payload_to_cpu(predict_kwargs),
+        }
+        dist.broadcast_object_list([payload], src=0)
+
+    @staticmethod
+    def _cfg_parallel_broadcast_stop() -> None:
+        dist.broadcast_object_list([{'command': 'stop'}], src=0)
+
+    def _run_cfg_parallel_worker(self) -> None:
+        device = torch.device('cuda', torch.cuda.current_device())
+        while True:
+            holder = [None]
+            dist.broadcast_object_list(holder, src=0)
+            payload = holder[0]
+            if payload.get('command') == 'stop':
+                return
+            if payload.get('command') != 'predict':
+                raise ValueError(f'Unknown CFG parallel command: {payload}')
+            predict_kwargs = self._move_payload_to_device(
+                payload['predict_kwargs'], device)
+            with torch.autocast(
+                    'cuda',
+                    dtype=self.mixed_precision_dtype,
+                    enabled=self.enable_mixed_precision_training):
+                with torch.no_grad():
+                    _ = self.vla.predict_action(**predict_kwargs)
 
     def run_setup(self):
         """Set up the evaluation environment and model."""
@@ -525,6 +699,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 device=self.device_id, dtype=self.mixed_precision_dtype)
         else:
             self.vla.cuda(self.device_id)
+        self._enable_model_cfg_parallel()
 
     def cleanup(self) -> None:
         """Release per-suite evaluation resources before the next suite."""
@@ -570,13 +745,31 @@ class LiberoEvalRunner(BaseEvalRunner):
             f'Using mixed precision dtype: {self.mixed_precision_dtype}')
         rank = overwatch.rank()
         world_size = overwatch.world_size()
-        local_episodes = self._build_local_episode_schedule(
-            num_tasks,
-            self.num_trials_per_task,
-            rank,
-            world_size,
-            self.eval_shard_strategy,
-            task_ids=task_ids)
+        if self.cfg_parallel:
+            if world_size != 2:
+                raise ValueError('eval.cfg_parallel=True requires exactly '
+                                 f'2 ranks, got world_size={world_size}.')
+            if self.model_family != 'dreamzero':
+                raise ValueError('eval.cfg_parallel=True is currently only '
+                                 'implemented for DreamZero.')
+            local_episodes = (
+                self._build_local_episode_schedule(
+                    num_tasks,
+                    self.num_trials_per_task,
+                    0,
+                    1,
+                    self.eval_shard_strategy,
+                    task_ids=task_ids) if rank == 0 else [])
+            overwatch.info('Using DreamZero CFG parallel mode: rank0 drives '
+                           'LIBERO env, rank1 serves CFG branch.')
+        else:
+            local_episodes = self._build_local_episode_schedule(
+                num_tasks,
+                self.num_trials_per_task,
+                rank,
+                world_size,
+                self.eval_shard_strategy,
+                task_ids=task_ids)
         # Use a single run timestamp shared across ranks so every rank writes
         # into the same per-run directory. Broadcasting from rank 0 also avoids
         # the previous collision where ranks landing in the same wall-clock
@@ -628,6 +821,27 @@ class LiberoEvalRunner(BaseEvalRunner):
             pbar = None
         # Per-task accumulators aggregated across ranks at the end.
         cuda_dev = torch.cuda.current_device()
+        if self.profile_inference and torch.cuda.is_available():
+            torch.cuda.reset_peak_memory_stats()
+        profile_events = []
+        episode_events = []
+        profiled_predictions = 0
+        profile_context = {
+            'task_suite_name': self.task_suite_name,
+            'model_family': self.model_family,
+            'ckpt_path': self.ckpt_path,
+            'rank': rank,
+            'world_size': world_size,
+            'eval_chunk_size': self.eval_chunk_size,
+            'num_trials_per_task': self.num_trials_per_task,
+            'num_inference_steps': self.num_inference_steps,
+            'profile_warmup_predictions': self.profile_warmup_predictions,
+            'profile_max_predictions': self.profile_max_predictions,
+            'cfg_parallel': self.cfg_parallel,
+            'mixed_precision_dtype': str(self.mixed_precision_dtype),
+            'enable_mixed_precision_training':
+            self.enable_mixed_precision_training,
+        }
         task_successes = torch.zeros(num_tasks, device=cuda_dev)
         task_episodes = torch.zeros(num_tasks, device=cuda_dev)
         task_durations = torch.zeros(num_tasks, device=cuda_dev)
@@ -649,6 +863,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         initial_states = None
         task_description = None
         try:
+            if self.cfg_parallel and rank != 0:
+                self._run_cfg_parallel_worker()
             for local_id in local_episodes:
                 # Get task ID from local episode index
                 task_id = local_id // self.num_trials_per_task
@@ -684,6 +900,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                 t = 0
                 replay_images = []
                 next_batch = None
+                pending_preprocess_ms = None
+                episode_profile_start = len(profile_events)
 
                 overwatch.info(f'Starting episode {trial_id+1}...')
 
@@ -705,7 +923,9 @@ class LiberoEvalRunner(BaseEvalRunner):
                     if next_batch is None:
                         obs['task_description'] = task_description
                         obs['is_new_episode'] = is_new_episode
+                        preprocess_start = time.perf_counter()
                         batch, replay_img = self.dataset(obs)
+                        preprocess_ms = self._elapsed_ms(preprocess_start)
                         if (self._should_collect_replay_images()
                                 and len(replay_images) == 0):
                             replay_images.append(
@@ -713,6 +933,10 @@ class LiberoEvalRunner(BaseEvalRunner):
                     else:
                         batch = next_batch
                         next_batch = None
+                        preprocess_ms = (
+                            pending_preprocess_ms
+                            if pending_preprocess_ms is not None else 0.0)
+                        pending_preprocess_ms = None
                     is_new_episode = False
                     batch['unnorm_key'] = unnorm_key
                     predict_kwargs = dict(batch)
@@ -721,12 +945,42 @@ class LiberoEvalRunner(BaseEvalRunner):
                             self.num_inference_steps
                     if self.inference_seed is not None:
                         predict_kwargs['seed'] = self.inference_seed
+                    record_profile = self._should_record_profile(
+                        profiled_predictions)
+                    if self.profile_inference:
+                        predict_kwargs['_profile_inference'] = record_profile
+                    if record_profile and torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    predict_start = time.perf_counter()
+                    if self.cfg_parallel and rank == 0:
+                        self._cfg_parallel_broadcast_predict(predict_kwargs)
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,
                             enabled=self.enable_mixed_precision_training):
                         with torch.no_grad():
                             actions = self.vla.predict_action(**predict_kwargs)
+                    if record_profile and torch.cuda.is_available():
+                        torch.cuda.synchronize()
+                    predict_ms = self._elapsed_ms(predict_start)
+                    profile_event = None
+                    if record_profile:
+                        profile_event = {
+                            'prediction_index': profiled_predictions,
+                            'task_id': task_id,
+                            'trial_id': trial_id,
+                            'env_timestep': t,
+                            'preprocess_ms': preprocess_ms,
+                            'predict_ms': predict_ms,
+                        }
+                        vla_head = getattr(self.vla, 'vla_head', None)
+                        if vla_head is not None:
+                            profile_event['current_start_frame'] = getattr(
+                                vla_head, 'current_start_frame', None)
+                        model_profile = getattr(self.vla,
+                                                '_last_predict_profile', {})
+                        if model_profile:
+                            profile_event['model_profile'] = model_profile
                     if len(actions.shape) == 3:
                         actions = actions[
                             0, :self.eval_chunk_size, :].float().cpu().numpy()
@@ -734,6 +988,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                         assert len(actions.shape) == 2, \
                             f'Unexpected action shape: {actions.shape}'
                         actions = actions[0, None, :].float().cpu().numpy()
+                    env_step_chunk_start = time.perf_counter()
+                    env_steps_executed = 0
                     for action in actions:
                         inputs = dict(
                             action=action,
@@ -743,6 +999,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                         action_denormed = self.denormalize_action(inputs)
                         obs, reward, done, info = env.step(
                             action_denormed.tolist())
+                        env_steps_executed += 1
                         if done:
                             total_successes += 1
                             rank_success_count += 1
@@ -754,7 +1011,10 @@ class LiberoEvalRunner(BaseEvalRunner):
                         if self.preprocess_every_step:
                             obs['task_description'] = task_description
                             obs['is_new_episode'] = False
+                            preprocess_start = time.perf_counter()
                             batch, replay_img = self.dataset(obs)
+                            pending_preprocess_ms = self._elapsed_ms(
+                                preprocess_start)
                             if self._should_collect_replay_images():
                                 replay_images.append(
                                     self._get_replay_image(obs, replay_img))
@@ -765,11 +1025,43 @@ class LiberoEvalRunner(BaseEvalRunner):
                                     self._get_replay_image(obs))
                             next_batch = None
                         t += 1
+                    env_step_chunk_ms = self._elapsed_ms(env_step_chunk_start)
+                    if profile_event is not None:
+                        profile_event.update({
+                            'action_chunk_size': int(len(actions)),
+                            'env_steps_executed': env_steps_executed,
+                            'env_step_chunk_ms': env_step_chunk_ms,
+                            'done_after_chunk': bool(done),
+                        })
+                        if torch.cuda.is_available():
+                            profile_event['cuda_memory_mb'] = {
+                                'allocated': (
+                                    torch.cuda.memory_allocated() / 1024**2),
+                                'reserved': (
+                                    torch.cuda.memory_reserved() / 1024**2),
+                            }
+                        profile_events.append(profile_event)
+                    profiled_predictions += 1
                     if done:
                         break
                 total_episodes += 1
                 rank_episode_count += 1
                 episode_duration = time.time() - episode_start
+                if self.profile_inference:
+                    episode_events.append({
+                        'task_id':
+                        task_id,
+                        'trial_id':
+                        trial_id,
+                        'episode_ms':
+                        episode_duration * 1000.0,
+                        'success':
+                        bool(done),
+                        'env_timesteps':
+                        t,
+                        'profiled_predictions':
+                        len(profile_events) - episode_profile_start,
+                    })
                 task_successes[task_id] += float(bool(done))
                 task_episodes[task_id] += 1.0
                 task_durations[task_id] += episode_duration
@@ -840,6 +1132,10 @@ class LiberoEvalRunner(BaseEvalRunner):
                 env.close()
             if pbar is not None:
                 pbar.close()
+            if self.cfg_parallel and rank == 0:
+                self._cfg_parallel_broadcast_stop()
+            self._write_profile_artifact(rank, profile_events, episode_events,
+                                         profile_context)
 
         global_episodes = total_episodes.clone()
         global_successes = total_successes.clone()
@@ -873,6 +1169,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 sf.write(f'num_inference_steps: {self.num_inference_steps}\n')
                 sf.write(f'max_steps: {self.max_steps}\n')
                 sf.write(f'eval_shard_strategy: {self.eval_shard_strategy}\n')
+                sf.write(f'cfg_parallel: {self.cfg_parallel}\n')
                 sf.write(
                     f'preprocess_every_step: {self.preprocess_every_step}\n')
                 sf.write(f'save_rollout_videos: '

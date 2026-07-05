@@ -14,10 +14,13 @@
 
 import logging
 import os
+import time
+from contextlib import contextmanager
 from importlib import import_module
 from typing import Callable, Dict, Optional, TypeAlias
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Beta
@@ -124,6 +127,7 @@ class DreamZeroHead(nn.Module):
         pretrained_name_or_path: Optional[str] = None,
         use_gradient_checkpointing: bool = True,
         cfg_scale: float = 1.0,
+        cfg_parallel: bool = False,
         max_chunk_size: int = -1,
         *args,
         **kwargs,
@@ -144,6 +148,7 @@ class DreamZeroHead(nn.Module):
         self.num_state_per_block = num_state_per_block
         self.use_cache = False
         self.cfg_scale = cfg_scale
+        self.cfg_parallel = cfg_parallel
         self.max_chunk_size = max_chunk_size
 
         # ----- build DiT model -----
@@ -185,8 +190,96 @@ class DreamZeroHead(nn.Module):
         if use_gradient_checkpointing:
             self.model.enable_gradient_checkpointing()
 
+        self._last_predict_profile = {}
         self.reset_inference_state()
         self.scheduler.set_timesteps(1000, training=True)
+
+    @staticmethod
+    def _profile_sync(enabled: bool) -> None:
+        if enabled and torch.cuda.is_available():
+            torch.cuda.synchronize()
+
+    @staticmethod
+    def _nvtx_enabled() -> bool:
+        return os.environ.get('FLUXVLA_NVTX_PROFILE', '').lower() in (
+            '1', 'true', 'yes', 'on')
+
+    @classmethod
+    @contextmanager
+    def _nvtx_range(cls, name: str):
+        if cls._nvtx_enabled() and torch.cuda.is_available():
+            torch.cuda.nvtx.range_push(name)
+            try:
+                yield
+            finally:
+                torch.cuda.nvtx.range_pop()
+            return
+        yield
+
+    @staticmethod
+    def _profile_elapsed_ms(start: float) -> float:
+        return (time.perf_counter() - start) * 1000.0
+
+    def _profile_time(self, enabled: bool, profile: Dict, name: str,
+                      fn: Callable):
+        with self._nvtx_range(f'dreamzero.head.{name}'):
+            if not enabled:
+                return fn()
+            self._profile_sync(True)
+            start = time.perf_counter()
+            output = fn()
+            self._profile_sync(True)
+            profile[name] = self._profile_elapsed_ms(start)
+            return output
+
+    def _cfg_parallel_enabled(self, prompt_count: int) -> bool:
+        if not self.cfg_parallel:
+            return False
+        if self.cfg_scale == 1.0 or prompt_count <= 1:
+            return False
+        return dist.is_available() and dist.is_initialized(
+        ) and dist.get_world_size() == 2
+
+    def _cfg_parallel_rank(self) -> int:
+        return dist.get_rank() % 2
+
+    def _select_cfg_parallel_inputs(self, prompt_embs, kv_caches,
+                                    crossattn_caches):
+        if not self._cfg_parallel_enabled(len(prompt_embs)):
+            return prompt_embs, kv_caches, crossattn_caches
+        branch_index = self._cfg_parallel_rank()
+        return ([prompt_embs[branch_index]], [kv_caches[branch_index]],
+                [crossattn_caches[branch_index]])
+
+    def _exchange_cfg_parallel_predictions(self, predictions):
+        if not self._cfg_parallel_enabled(2):
+            return predictions
+        assert len(predictions) == 1, (
+            'CFG parallel expects one local prediction per rank.')
+        local_prediction = predictions[0]
+        remote_prediction = []
+        for tensor in local_prediction:
+            if tensor is None:
+                remote_prediction.append(None)
+            else:
+                remote_prediction.append(torch.empty_like(tensor))
+
+        ops = []
+        peer = 1 - self._cfg_parallel_rank()
+        for tensor in local_prediction:
+            if tensor is not None:
+                ops.append(dist.P2POp(dist.isend, tensor, peer))
+        for tensor in remote_prediction:
+            if tensor is not None:
+                ops.append(dist.P2POp(dist.irecv, tensor, peer))
+        requests = dist.batch_isend_irecv(ops)
+        for request in requests:
+            request.wait()
+
+        output_predictions = [None, None]
+        output_predictions[self._cfg_parallel_rank()] = local_prediction
+        output_predictions[peer] = tuple(remote_prediction)
+        return output_predictions
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -481,6 +574,9 @@ class DreamZeroHead(nn.Module):
         state: torch.Tensor = None,
         embodiment_id: torch.Tensor = None,
         update_cache: bool = True,
+        profile_enabled: bool = False,
+        profile_bucket: Optional[Dict] = None,
+        profile_label: str = 'model_forward_ms',
     ) -> None:
         if reference_latents.shape[2] == 0:
             return
@@ -499,27 +595,50 @@ class DreamZeroHead(nn.Module):
 
         predictions = list()
         prompt_embs = self._as_prompt_emb_list(prompt_embs)
-        for index, prompt_emb in enumerate(prompt_embs):
-            obs_noise_pred, action_noise_pred, updated_kv_caches = self.model(
-                reference_latents,
-                timestep=timestep,
-                clip_feature=clip_feas,
-                y=ys,
-                context=prompt_emb,
-                seq_len=reference_latents.shape[2] * frame_seqlen,
-                action=action,
-                timestep_action=timestep_action,
-                state=state,
-                embodiment_id=embodiment_id,
-                kv_cache=kv_caches[index],
-                crossattn_cache=crossattn_caches[index],
-                current_start_frame=start_frame,
-            )
+        cfg_parallel = self._cfg_parallel_enabled(len(prompt_embs))
+        local_prompt_embs, local_kv_caches, local_crossattn_caches = (
+            self._select_cfg_parallel_inputs(prompt_embs, kv_caches,
+                                             crossattn_caches))
+        for index, prompt_emb in enumerate(local_prompt_embs):
+            global_prompt_index = (
+                self._cfg_parallel_rank() if cfg_parallel else index)
+            range_name = (
+                f'dreamzero.head.{profile_label}.prompt{global_prompt_index}.'
+                f'start{start_frame}.frames{reference_latents.shape[2]}')
+            with self._nvtx_range(range_name):
+                if profile_enabled:
+                    self._profile_sync(True)
+                    model_start = time.perf_counter()
+                obs_noise_pred, action_noise_pred, updated_kv_caches = (
+                    self.model(
+                        reference_latents,
+                        timestep=timestep,
+                        clip_feature=clip_feas,
+                        y=ys,
+                        context=prompt_emb,
+                        seq_len=reference_latents.shape[2] * frame_seqlen,
+                        action=action,
+                        timestep_action=timestep_action,
+                        state=state,
+                        embodiment_id=embodiment_id,
+                        kv_cache=local_kv_caches[index],
+                        crossattn_cache=local_crossattn_caches[index],
+                        current_start_frame=start_frame,
+                    ))
+                if profile_enabled:
+                    self._profile_sync(True)
+                    elapsed_ms = self._profile_elapsed_ms(model_start)
+                    if profile_bucket is not None:
+                        profile_bucket.setdefault(profile_label, []).append(
+                            elapsed_ms)
             if update_cache:
                 for block_index, updated_kv_cache in enumerate(
                         updated_kv_caches):
-                    kv_caches[index][block_index] = updated_kv_cache.clone()
+                    local_kv_caches[index][block_index] = (
+                        updated_kv_cache.clone())
             predictions.append((obs_noise_pred, action_noise_pred))
+        if cfg_parallel and not update_cache:
+            predictions = self._exchange_cfg_parallel_predictions(predictions)
         return predictions
 
     def _sample_action_block(
@@ -538,6 +657,8 @@ class DreamZeroHead(nn.Module):
         latents_dtype: torch.dtype,
         latents_shape: tuple[int, int, int, int],
         num_inference_steps: int,
+        profile_enabled: bool = False,
+        profile_bucket: Optional[Dict] = None,
     ) -> torch.Tensor:
         scheduler_module = import_module(
             'fluxvla.models.third_party_models.dreamzero.modules.'
@@ -605,6 +726,8 @@ class DreamZeroHead(nn.Module):
                 sample_scheduler.sigmas[:-1] *
                 self.scheduler.num_train_timesteps).to(torch.int64)
 
+        if profile_bucket is not None:
+            profile_bucket['denoise_steps'] = len(sample_scheduler.timesteps)
         y_future_start = min(current_start_frame, ys.shape[2])
         y_future_end = min(current_start_frame + denoise_frames, ys.shape[2])
         y_future = ys[:, :, y_future_start:y_future_end]
@@ -620,43 +743,59 @@ class DreamZeroHead(nn.Module):
             t_video = video_timestep.expand(b, denoise_frames)
             t_action = action_timestep.expand(b, self.action_horizon)
 
-            predictions = self._single_flowmatching_step(
-                prompt_embs=prompt_embs,
-                reference_latents=noisy_latents,
-                clip_feas=clip_feas,
-                ys=y_future,
-                start_frame=current_start_frame,
-                kv_caches=[kv_cache, kv_cache_neg],
-                crossattn_caches=[crossattn_cache, crossattn_cache_neg],
-                timestep=t_video,
-                timestep_action=t_action,
-                action=noisy_actions,
-                state=states,
-                embodiment_id=embodiment_ids,
-                update_cache=False,
-            )
-            flow_pred_cond, flow_pred_cond_action = predictions[0]
-            flow_pred = flow_pred_cond
+            with self._nvtx_range(
+                    f'dreamzero.head.denoise_step_{step_index}'):
+                predictions = self._single_flowmatching_step(
+                    prompt_embs=prompt_embs,
+                    reference_latents=noisy_latents,
+                    clip_feas=clip_feas,
+                    ys=y_future,
+                    start_frame=current_start_frame,
+                    kv_caches=[kv_cache, kv_cache_neg],
+                    crossattn_caches=[crossattn_cache, crossattn_cache_neg],
+                    timestep=t_video,
+                    timestep_action=t_action,
+                    action=noisy_actions,
+                    state=states,
+                    embodiment_id=embodiment_ids,
+                    update_cache=False,
+                    profile_enabled=profile_enabled,
+                    profile_bucket=profile_bucket,
+                    profile_label='denoise_model_forward_ms',
+                )
+                flow_pred_cond, flow_pred_cond_action = predictions[0]
+                flow_pred = flow_pred_cond
 
-            if use_cfg:
-                flow_pred_uncond, _ = predictions[1]
-                flow_pred = flow_pred_uncond + self.cfg_scale * (
-                    flow_pred_cond - flow_pred_uncond)
+                if use_cfg:
+                    with self._nvtx_range('dreamzero.head.cfg_combine'):
+                        flow_pred_uncond, _ = predictions[1]
+                        flow_pred = flow_pred_uncond + self.cfg_scale * (
+                            flow_pred_cond - flow_pred_uncond)
 
-            noisy_latents = sample_scheduler.step(
-                model_output=flow_pred.float(),
-                timestep=video_timestep,
-                sample=noisy_latents.float(),
-                step_index=step_index,
-                return_dict=False,
-            )[0]
-            noisy_actions = sample_scheduler_action.step(
-                model_output=flow_pred_cond_action.float(),
-                timestep=action_timestep,
-                sample=noisy_actions.float(),
-                step_index=step_index,
-                return_dict=False,
-            )[0]
+                with self._nvtx_range('dreamzero.head.scheduler_step'):
+                    if profile_enabled:
+                        self._profile_sync(True)
+                        scheduler_start = time.perf_counter()
+                    noisy_latents = sample_scheduler.step(
+                        model_output=flow_pred.float(),
+                        timestep=video_timestep,
+                        sample=noisy_latents.float(),
+                        step_index=step_index,
+                        return_dict=False,
+                    )[0]
+                    noisy_actions = sample_scheduler_action.step(
+                        model_output=flow_pred_cond_action.float(),
+                        timestep=action_timestep,
+                        sample=noisy_actions.float(),
+                        step_index=step_index,
+                        return_dict=False,
+                    )[0]
+                    if profile_enabled:
+                        self._profile_sync(True)
+                        scheduler_ms = self._profile_elapsed_ms(
+                            scheduler_start)
+                        profile_bucket.setdefault('scheduler_step_ms',
+                                                  []).append(scheduler_ms)
 
             noisy_latents = noisy_latents.to(dtype=latents_dtype)
             noisy_actions = noisy_actions.to(dtype=latents_dtype)
@@ -673,6 +812,8 @@ class DreamZeroHead(nn.Module):
         embodiment_ids: torch.Tensor,
         num_inference_steps: int,
         observed_latent_frames: int,
+        profile_enabled: bool = False,
+        profile_bucket: Optional[Dict] = None,
     ) -> torch.Tensor:
         local_kv_cache, local_kv_cache_neg = self._create_cache_pair(
             batch_size=states.shape[0],
@@ -688,16 +829,24 @@ class DreamZeroHead(nn.Module):
                 cache_seq_len=512,
             ))
         observed_latents = latents[:, :, :observed_latent_frames]
-        self._single_flowmatching_step(
-            prompt_embs=prompt_embs,
-            reference_latents=observed_latents[:, :, :1],
-            clip_feas=clip_feas,
-            ys=ys[:, :, :1],
-            start_frame=0,
-            kv_caches=[local_kv_cache, local_kv_cache_neg],
-            crossattn_caches=[
-                local_crossattn_cache, local_crossattn_cache_neg
-            ],
+        self._profile_time(
+            profile_enabled,
+            profile_bucket,
+            'stateless_cache_prefill_ms',
+            lambda: self._single_flowmatching_step(
+                prompt_embs=prompt_embs,
+                reference_latents=observed_latents[:, :, :1],
+                clip_feas=clip_feas,
+                ys=ys[:, :, :1],
+                start_frame=0,
+                kv_caches=[local_kv_cache, local_kv_cache_neg],
+                crossattn_caches=[
+                    local_crossattn_cache, local_crossattn_cache_neg
+                ],
+                profile_enabled=profile_enabled,
+                profile_bucket=profile_bucket,
+                profile_label='stateless_cache_prefill_model_forward_ms',
+            ),
         )
 
         denoise_frames = self.num_frame_per_block
@@ -724,6 +873,8 @@ class DreamZeroHead(nn.Module):
                 int(latents.shape[3] * latents.shape[4] / 4),
             ),
             num_inference_steps=num_inference_steps,
+            profile_enabled=profile_enabled,
+            profile_bucket=profile_bucket,
         )
 
     # ------------------------------------------------------------------
@@ -743,6 +894,8 @@ class DreamZeroHead(nn.Module):
         **kwargs,
     ) -> torch.Tensor:
         """Joint video+action denoising with persistent causal history."""
+        profile_enabled = bool(kwargs.get('_profile_inference', False))
+        profile = {}
         # Incoming latents are [B, T_lat, C, H_lat, W_lat] from DreamZeroVLA;
         # convert to model-facing [B, C, T_lat, H_lat, W_lat].
         latents = latents.transpose(1, 2)
@@ -758,16 +911,25 @@ class DreamZeroHead(nn.Module):
 
         if not self.use_cache:
             self.reset_inference_state()
-            return self._predict_action_stateless(
-                prompt_embs=prompt_embs,
-                latents=latents,
-                clip_feas=clip_feas,
-                ys=ys,
-                states=states,
-                embodiment_ids=embodiment_ids,
-                num_inference_steps=num_inference_steps,
-                observed_latent_frames=observed_latent_frames,
+            actions = self._profile_time(
+                profile_enabled,
+                profile,
+                'head_stateless_total_ms',
+                lambda: self._predict_action_stateless(
+                    prompt_embs=prompt_embs,
+                    latents=latents,
+                    clip_feas=clip_feas,
+                    ys=ys,
+                    states=states,
+                    embodiment_ids=embodiment_ids,
+                    num_inference_steps=num_inference_steps,
+                    observed_latent_frames=observed_latent_frames,
+                    profile_enabled=profile_enabled,
+                    profile_bucket=profile,
+                ),
             )
+            self._last_predict_profile = profile
+            return actions
         else:
             device = states.device
             observed_latents = latents[:, :, :observed_latent_frames]
@@ -822,14 +984,22 @@ class DreamZeroHead(nn.Module):
             has_reference_history = self.current_start_frame > 1
 
             if is_initial_cache_fill:
-                self._single_flowmatching_step(
-                    prompt_embs=prompt_embs,
-                    reference_latents=observed_latents[:, :, :1],
-                    clip_feas=self.inference_clip_feas,
-                    ys=self.inference_ys[:, :, :1],
-                    start_frame=0,
-                    kv_caches=kv_caches,
-                    crossattn_caches=crossattn_caches,
+                self._profile_time(
+                    profile_enabled,
+                    profile,
+                    'cache_initial_fill_ms',
+                    lambda: self._single_flowmatching_step(
+                        prompt_embs=prompt_embs,
+                        reference_latents=observed_latents[:, :, :1],
+                        clip_feas=self.inference_clip_feas,
+                        ys=self.inference_ys[:, :, :1],
+                        start_frame=0,
+                        kv_caches=kv_caches,
+                        crossattn_caches=crossattn_caches,
+                        profile_enabled=profile_enabled,
+                        profile_bucket=profile,
+                        profile_label='cache_initial_fill_model_forward_ms',
+                    ),
                 )
                 self.current_start_frame = 1
             elif has_reference_history:
@@ -850,36 +1020,52 @@ class DreamZeroHead(nn.Module):
                 if y_reference.shape[2] == 0:
                     y_reference = self.inference_ys[:, :, :reference_latents.
                                                     shape[2]]
-                self._single_flowmatching_step(
-                    prompt_embs=prompt_embs,
-                    reference_latents=reference_latents,
-                    clip_feas=self.inference_clip_feas,
-                    ys=y_reference,
-                    start_frame=reference_start_frame,
-                    kv_caches=kv_caches,
-                    crossattn_caches=crossattn_caches,
+                self._profile_time(
+                    profile_enabled,
+                    profile,
+                    'cache_update_ms',
+                    lambda: self._single_flowmatching_step(
+                        prompt_embs=prompt_embs,
+                        reference_latents=reference_latents,
+                        clip_feas=self.inference_clip_feas,
+                        ys=y_reference,
+                        start_frame=reference_start_frame,
+                        kv_caches=kv_caches,
+                        crossattn_caches=crossattn_caches,
+                        profile_enabled=profile_enabled,
+                        profile_bucket=profile,
+                        profile_label='cache_update_model_forward_ms',
+                    ),
                 )
 
             denoise_frames = self.num_frame_per_block
 
-            noisy_actions = self._sample_action_block(
-                prompt_embs=prompt_embs,
-                clip_feas=self.inference_clip_feas,
-                ys=self.inference_ys,
-                states=states,
-                embodiment_ids=embodiment_ids,
-                kv_cache=self.inference_kv_cache,
-                kv_cache_neg=self.inference_kv_cache_neg,
-                crossattn_cache=self.inference_crossattn_cache,
-                crossattn_cache_neg=self.inference_crossattn_cache_neg,
-                current_start_frame=self.current_start_frame,
-                denoise_frames=denoise_frames,
-                latents_dtype=latents.dtype,
-                latents_shape=latents_shape,
-                num_inference_steps=num_inference_steps,
+            noisy_actions = self._profile_time(
+                profile_enabled,
+                profile,
+                'sample_action_block_ms',
+                lambda: self._sample_action_block(
+                    prompt_embs=prompt_embs,
+                    clip_feas=self.inference_clip_feas,
+                    ys=self.inference_ys,
+                    states=states,
+                    embodiment_ids=embodiment_ids,
+                    kv_cache=self.inference_kv_cache,
+                    kv_cache_neg=self.inference_kv_cache_neg,
+                    crossattn_cache=self.inference_crossattn_cache,
+                    crossattn_cache_neg=self.inference_crossattn_cache_neg,
+                    current_start_frame=self.current_start_frame,
+                    denoise_frames=denoise_frames,
+                    latents_dtype=latents.dtype,
+                    latents_shape=latents_shape,
+                    num_inference_steps=num_inference_steps,
+                    profile_enabled=profile_enabled,
+                    profile_bucket=profile,
+                ),
             )
 
             self.current_start_frame += denoise_frames
+        self._last_predict_profile = profile
         return noisy_actions
 
     # ------------------------------------------------------------------
