@@ -128,6 +128,8 @@ class DreamZeroHead(nn.Module):
         use_gradient_checkpointing: bool = True,
         cfg_scale: float = 1.0,
         cfg_parallel: bool = False,
+        dit_compute_steps: Optional[int] = None,
+        dynamic_cache_schedule: bool = False,
         max_chunk_size: int = -1,
         *args,
         **kwargs,
@@ -149,6 +151,10 @@ class DreamZeroHead(nn.Module):
         self.use_cache = False
         self.cfg_scale = cfg_scale
         self.cfg_parallel = cfg_parallel
+        self.dit_compute_steps = dit_compute_steps
+        self.dynamic_cache_schedule = dynamic_cache_schedule
+        self.dynamic_cache_thresholds = (0.95, 0.93)
+        self.dynamic_cache_countdowns = (4, 2)
         self.max_chunk_size = max_chunk_size
 
         # ----- build DiT model -----
@@ -231,6 +237,71 @@ class DreamZeroHead(nn.Module):
             self._profile_sync(True)
             profile[name] = self._profile_elapsed_ms(start)
             return output
+
+    @staticmethod
+    def _build_dit_step_mask(num_inference_steps: int,
+                             dit_compute_steps: Optional[int]) -> list[bool]:
+        """Build the official DreamZero DiT-forward skip mask.
+
+        ``True`` means this denoise step runs the DiT. ``False`` means the
+        scheduler still runs, but reuses the latest DiT prediction.
+        """
+        if dit_compute_steps is None or dit_compute_steps >= num_inference_steps:
+            return [True] * num_inference_steps
+        if num_inference_steps != 16:
+            raise ValueError(
+                'DreamZero DiT step masks are only defined for '
+                f'num_inference_steps=16, got {num_inference_steps}.')
+        masks = {
+            5: [
+                True, True, True, False, False, False, False, True, False,
+                False, False, False, True, False, False, False
+            ],
+            6: [
+                True, True, False, False, False, True, False, False, False,
+                False, True, False, False, False, True, True
+            ],
+            7: [
+                True, True, True, False, False, False, True, False, False,
+                False, True, False, False, False, True, True
+            ],
+            8: [
+                True, True, True, False, False, False, True, False, False,
+                False, True, False, False, True, True, True
+            ],
+        }
+        if dit_compute_steps not in masks:
+            raise ValueError(
+                'Unsupported DreamZero dit_compute_steps='
+                f'{dit_compute_steps}; expected one of [5, 6, 7, 8] '
+                f'or >= num_inference_steps ({num_inference_steps}).')
+        return masks[dit_compute_steps]
+
+    def _should_run_dit_step(self, step_index: int,
+                             dit_step_mask: list[bool],
+                             prev_predictions: list,
+                             skip_countdown: int) -> tuple[bool, int]:
+        if not self.dynamic_cache_schedule:
+            return dit_step_mask[step_index], skip_countdown
+
+        if len(prev_predictions) < 2:
+            return True, skip_countdown
+
+        if skip_countdown > 1:
+            return False, skip_countdown - 1
+        if skip_countdown == 1:
+            return True, 0
+
+        v_last = prev_predictions[-1][1].flatten(1).float()
+        v_prev = prev_predictions[-2][1].flatten(1).float()
+        similarity = F.cosine_similarity(v_last, v_prev, dim=1).mean()
+        similarity_value = float(similarity.detach().cpu())
+
+        for threshold, countdown in zip(self.dynamic_cache_thresholds,
+                                        self.dynamic_cache_countdowns):
+            if similarity_value > threshold:
+                return False, countdown
+        return True, 0
 
     def _cfg_parallel_enabled(self, prompt_count: int) -> bool:
         if not self.cfg_parallel:
@@ -728,6 +799,10 @@ class DreamZeroHead(nn.Module):
 
         if profile_bucket is not None:
             profile_bucket['denoise_steps'] = len(sample_scheduler.timesteps)
+            profile_bucket['dit_step_mask_enabled'] = int(
+                self.dit_compute_steps is not None)
+            profile_bucket['dynamic_cache_schedule'] = int(
+                self.dynamic_cache_schedule)
         y_future_start = min(current_start_frame, ys.shape[2])
         y_future_end = min(current_start_frame + denoise_frames, ys.shape[2])
         y_future = ys[:, :, y_future_start:y_future_end]
@@ -735,6 +810,12 @@ class DreamZeroHead(nn.Module):
             y_future = ys[:, :, -denoise_frames:]
         prompt_embs = self._as_prompt_emb_list(prompt_embs)
         use_cfg = self.cfg_scale != 1.0 and len(prompt_embs) > 1
+        dit_step_mask = self._build_dit_step_mask(
+            len(sample_scheduler.timesteps), self.dit_compute_steps)
+        prev_predictions = []
+        skip_countdown = 0
+        dit_compute_steps = 0
+        dit_skipped_steps = 0
 
         for step_index in range(len(sample_scheduler.timesteps)):
             video_timestep = sample_scheduler.timesteps[step_index]
@@ -745,32 +826,50 @@ class DreamZeroHead(nn.Module):
 
             with self._nvtx_range(
                     f'dreamzero.head.denoise_step_{step_index}'):
-                predictions = self._single_flowmatching_step(
-                    prompt_embs=prompt_embs,
-                    reference_latents=noisy_latents,
-                    clip_feas=clip_feas,
-                    ys=y_future,
-                    start_frame=current_start_frame,
-                    kv_caches=[kv_cache, kv_cache_neg],
-                    crossattn_caches=[crossattn_cache, crossattn_cache_neg],
-                    timestep=t_video,
-                    timestep_action=t_action,
-                    action=noisy_actions,
-                    state=states,
-                    embodiment_id=embodiment_ids,
-                    update_cache=False,
-                    profile_enabled=profile_enabled,
-                    profile_bucket=profile_bucket,
-                    profile_label='denoise_model_forward_ms',
-                )
-                flow_pred_cond, flow_pred_cond_action = predictions[0]
-                flow_pred = flow_pred_cond
+                should_run_model, skip_countdown = self._should_run_dit_step(
+                    step_index, dit_step_mask, prev_predictions,
+                    skip_countdown)
+                if should_run_model:
+                    dit_compute_steps += 1
+                    predictions = self._single_flowmatching_step(
+                        prompt_embs=prompt_embs,
+                        reference_latents=noisy_latents,
+                        clip_feas=clip_feas,
+                        ys=y_future,
+                        start_frame=current_start_frame,
+                        kv_caches=[kv_cache, kv_cache_neg],
+                        crossattn_caches=[
+                            crossattn_cache, crossattn_cache_neg
+                        ],
+                        timestep=t_video,
+                        timestep_action=t_action,
+                        action=noisy_actions,
+                        state=states,
+                        embodiment_id=embodiment_ids,
+                        update_cache=False,
+                        profile_enabled=profile_enabled,
+                        profile_bucket=profile_bucket,
+                        profile_label='denoise_model_forward_ms',
+                    )
+                    flow_pred_cond, flow_pred_cond_action = predictions[0]
+                    flow_pred = flow_pred_cond
 
-                if use_cfg:
-                    with self._nvtx_range('dreamzero.head.cfg_combine'):
-                        flow_pred_uncond, _ = predictions[1]
-                        flow_pred = flow_pred_uncond + self.cfg_scale * (
-                            flow_pred_cond - flow_pred_uncond)
+                    if use_cfg:
+                        with self._nvtx_range('dreamzero.head.cfg_combine'):
+                            flow_pred_uncond, _ = predictions[1]
+                            flow_pred = flow_pred_uncond + self.cfg_scale * (
+                                flow_pred_cond - flow_pred_uncond)
+                    prev_predictions.append(
+                        (video_timestep, flow_pred, flow_pred_cond_action))
+                    if len(prev_predictions) > 2:
+                        prev_predictions.pop(0)
+                else:
+                    dit_skipped_steps += 1
+                    if not prev_predictions:
+                        raise RuntimeError(
+                            'Cannot skip DreamZero DiT step before any '
+                            'previous prediction is available.')
+                    _, flow_pred, flow_pred_cond_action = prev_predictions[-1]
 
                 with self._nvtx_range('dreamzero.head.scheduler_step'):
                     if profile_enabled:
@@ -799,6 +898,10 @@ class DreamZeroHead(nn.Module):
 
             noisy_latents = noisy_latents.to(dtype=latents_dtype)
             noisy_actions = noisy_actions.to(dtype=latents_dtype)
+
+        if profile_bucket is not None:
+            profile_bucket['dit_compute_steps'] = dit_compute_steps
+            profile_bucket['dit_skipped_steps'] = dit_skipped_steps
 
         return noisy_actions
 
