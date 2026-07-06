@@ -81,29 +81,6 @@ train_dataloader = dict(
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name='libero_goal_no_noops',
         reshuffle_each_epoch=True,
-        statistics_overrides=dict(
-            libero_goal_no_noops=dict(
-                action=dict(
-                    q01=[
-                        -0.8785714507102966,
-                        -0.7553571462631226,
-                        -0.9375,
-                        -0.1510714292526245,
-                        -0.1639285683631897,
-                        -0.13777500048279764,
-                        0.0,
-                    ],
-                    q99=[
-                        0.9375,
-                        0.9107142686843872,
-                        0.9375,
-                        0.20357142388820648,
-                        0.26357144117355347,
-                        0.375,
-                        1.0,
-                    ],
-                    mask=[True, True, True, True, True, True, False],
-                ), ), ),
         datasets=dict(
             type='ParquetDataset',
             data_root_path='./datasets/libero_goal_lerobotv2.1',

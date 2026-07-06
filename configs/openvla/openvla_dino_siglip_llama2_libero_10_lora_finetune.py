@@ -81,29 +81,6 @@ train_dataloader = dict(
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name='libero_10_no_noops',
         reshuffle_each_epoch=True,
-        statistics_overrides=dict(
-            libero_10_no_noops=dict(
-                action=dict(
-                    q01=[
-                        -0.6348214149475098,
-                        -0.7741071581840515,
-                        -0.7633928656578064,
-                        -0.09749999642372131,
-                        -0.14819999992847435,
-                        -0.2742857038974762,
-                        0.0,
-                    ],
-                    q99=[
-                        0.7714285850524902,
-                        0.8464285731315613,
-                        0.9375,
-                        0.13928571343421936,
-                        0.15964286029338837,
-                        0.3246428668498993,
-                        1.0,
-                    ],
-                    mask=[True, True, True, True, True, True, False],
-                ), ), ),
         datasets=dict(
             type='ParquetDataset',
             data_root_path='./datasets/libero_10_no_noops_lerobotv2.1',
