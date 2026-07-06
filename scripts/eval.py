@@ -56,57 +56,18 @@ def _get_cfg_value(cfg_obj, key, default=None):
     return getattr(cfg_obj, key, default)
 
 
-def _get_nested_eval_value(cfg, key, default=None):
-    """Read an eval value from runner, manager, or old flat eval config."""
-    for section in ('runner', 'manager'):
-        if hasattr(cfg.eval, section):
-            section_cfg = getattr(cfg.eval, section)
-            value = _get_cfg_value(section_cfg, key, None)
-            if value is not None:
-                return value
-    return cfg.eval.get(key, default)
-
-
-_FEISHU_ENV_KEYS = {
-    'feishu_sheet_url': 'FEISHU_SHEET_URL',
-    'feishu_app_id': 'FEISHU_APP_ID',
-    'feishu_app_secret': 'FEISHU_APP_SECRET',
-    'feishu_timeout': 'FEISHU_TIMEOUT',
-}
-
-
-def _get_report_cfg_value(cfg, key):
-    value = _get_nested_eval_value(cfg, key, None)
-    if value is not None:
-        return value
-    env_key = _FEISHU_ENV_KEYS.get(key)
-    if env_key is None:
-        return None
-    return os.environ.get(env_key)
-
-
-def _set_missing_cfg_value(cfg_obj, key, value):
-    if value is None:
-        return
-    if isinstance(cfg_obj, dict):
-        if key not in cfg_obj or cfg_obj.get(key) is None:
-            cfg_obj[key] = value
-    elif not hasattr(cfg_obj, key) or getattr(cfg_obj, key) is None:
-        setattr(cfg_obj, key, value)
-
-
-def _inject_eval_report_cfg(cfg, eval_cfg):
-    """Forward shared report config from eval.manager to eval runner."""
-    runner_type = _get_cfg_value(eval_cfg, 'type')
-    if runner_type not in {'LiberoEvalRunner', 'RobocasaEvalRunner'}:
-        return
+def _drop_runner_report_cfg(eval_cfg):
+    """Ignore legacy report-only keys before constructing eval runners."""
     for key in (
             'feishu_sheet_url',
             'feishu_app_id',
             'feishu_app_secret',
             'feishu_timeout',
     ):
-        _set_missing_cfg_value(eval_cfg, key, _get_report_cfg_value(cfg, key))
+        if isinstance(eval_cfg, dict):
+            eval_cfg.pop(key, None)
+        elif hasattr(eval_cfg, key):
+            delattr(eval_cfg, key)
 
 
 def _is_libero_eval_cfg(eval_cfg):
@@ -129,7 +90,7 @@ def _cleanup_eval_runner(eval_runner):
 
 def _run_eval(cfg, args, suite_name=None):
     eval_cfg = _get_eval_runner_cfg(cfg)
-    _inject_eval_report_cfg(cfg, eval_cfg)
+    _drop_runner_report_cfg(eval_cfg)
     is_libero_eval = _is_libero_eval_cfg(eval_cfg)
     if suite_name is not None:
         eval_cfg.task_suite_name = suite_name

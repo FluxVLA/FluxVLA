@@ -30,8 +30,6 @@ import tqdm
 from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
-from fluxvla.engines.utils.feishu_reporter import \
-    maybe_report_summary_to_feishu
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils.root import RUNNERS
@@ -101,12 +99,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
             result files are mirrored to
             ``<result_output_dir>/robocasa/gpu{gpu_id}_task{task_id}_results.json``.
         result_gpu_id: GPU id written to mirrored result filenames.
-        feishu_sheet_url: Optional Feishu Sheets link for uploading results.
-        feishu_app_id: Optional Feishu custom app App ID.
-        feishu_app_secret: Optional Feishu custom app App Secret.
-        feishu_timeout: Feishu API timeout in seconds.
-        feishu_report_from_runner: Whether standalone runner writes Feishu
-            directly. Manager workers never write Feishu directly.
     """
 
     def __init__(self,
@@ -138,11 +130,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  run_id_suffix: Optional[str] = None,
                  result_output_dir: Optional[str] = None,
                  result_gpu_id: Optional[int] = None,
-                 feishu_sheet_url: Optional[str] = None,
-                 feishu_app_id: Optional[str] = None,
-                 feishu_app_secret: Optional[str] = None,
-                 feishu_timeout: float = 10.0,
-                 feishu_report_from_runner: bool = True,
                  **kwargs):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg)
@@ -335,11 +322,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.result_output_dir = result_output_dir
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
-        self.feishu_sheet_url = feishu_sheet_url
-        self.feishu_app_id = feishu_app_id
-        self.feishu_app_secret = feishu_app_secret
-        self.feishu_timeout = feishu_timeout
-        self.feishu_report_from_runner = feishu_report_from_runner
 
         # Attach norm_stats to the model for heads that consume them.
         if self.grouped_norm_stats:
@@ -727,24 +709,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 indent=4)
         return str(summary_json)
 
-    def _should_report_feishu_from_runner(self) -> bool:
-        """Whether this standalone eval run should upload its summary."""
-        return (bool(self.feishu_report_from_runner)
-                and self.result_output_dir is None and self.task_ids is None)
-
-    def _maybe_report_feishu(self, summary_json: str) -> None:
-        if not self._should_report_feishu_from_runner():
-            return
-        maybe_report_summary_to_feishu(
-            summary_json,
-            'robocasa',
-            sheet_url=self.feishu_sheet_url,
-            app_id=self.feishu_app_id,
-            app_secret=self.feishu_app_secret,
-            timeout=self.feishu_timeout,
-            logger=overwatch.warning,
-            log_unconfigured=True)
-
     def run(self):
         """Run the RoboCasa evaluation loop."""
         import gymnasium as gym
@@ -1066,7 +1030,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 task_durations.cpu(),
             )
             overwatch.info(f'[*] Wrote Robocasa summary to {summary_json}')
-            self._maybe_report_feishu(summary_json)
         log_file.close()
         dist.barrier()
         exit(0)

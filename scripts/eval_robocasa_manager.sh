@@ -472,7 +472,6 @@ launch_task() {
       "${EVAL_RUNNER_PREFIX}.run_id_suffix=${suffix}"
       "${EVAL_RUNNER_PREFIX}.result_output_dir=${OUTPUT_DIR}"
       "${EVAL_RUNNER_PREFIX}.result_gpu_id=${gpu}"
-      "${EVAL_RUNNER_PREFIX}.feishu_report_from_runner=False"
     )
     if [[ "${NUM_TRIALS_PER_TASK_SOURCE}" != "config" ]]; then
       cfg_options+=("${EVAL_RUNNER_PREFIX}.num_trials_per_task=${NUM_TRIALS_PER_TASK}")
