@@ -74,6 +74,10 @@ def _is_libero_eval_cfg(eval_cfg):
     return _get_cfg_value(eval_cfg, 'type') == 'LiberoEvalRunner'
 
 
+def _is_robocasa_eval_cfg(eval_cfg):
+    return _get_cfg_value(eval_cfg, 'type') == 'RobocasaEvalRunner'
+
+
 def _resolve_suite_max_steps(max_steps, suite):
     if isinstance(max_steps, dict):
         return max_steps.get(suite)
@@ -92,6 +96,7 @@ def _run_eval(cfg, args, suite_name=None):
     eval_cfg = _get_eval_runner_cfg(cfg)
     _drop_runner_report_cfg(eval_cfg)
     is_libero_eval = _is_libero_eval_cfg(eval_cfg)
+    is_robocasa_eval = _is_robocasa_eval_cfg(eval_cfg)
     if suite_name is not None:
         eval_cfg.task_suite_name = suite_name
         eval_cfg.max_steps = _resolve_suite_max_steps(
@@ -106,10 +111,12 @@ def _run_eval(cfg, args, suite_name=None):
         eval_runner = build_runner_from_cfg(eval_cfg)
         eval_runner.run_setup()
         eval_runner.run()
-        if is_libero_eval and hasattr(eval_runner, 'run_dir'):
+        if (is_libero_eval or is_robocasa_eval) and hasattr(
+                eval_runner, 'run_dir'):
             summary_path = os.path.join(eval_runner.run_dir, 'summary.json')
             if os.path.exists(summary_path):
-                return summary_path
+                return ('libero' if is_libero_eval else 'robocasa',
+                        summary_path)
     finally:
         _cleanup_eval_runner(eval_runner)
     return None
@@ -180,6 +187,21 @@ def _maybe_report_libero_eval(summary_paths, args, cfg):
         log_unconfigured=True)
 
 
+def _maybe_report_robocasa_eval(summary_paths, args, cfg):
+    if not overwatch.is_rank_zero() or _get_eval_value(cfg, 'task_ids') \
+            is not None:
+        return
+    summary_paths = [path for path in summary_paths if path]
+    if len(summary_paths) == 0:
+        return
+    maybe_report_summary_to_feishu(
+        summary_paths[0],
+        'robocasa',
+        config=getattr(cfg, 'filename', None) or args.config,
+        logger=overwatch.warning,
+        log_unconfigured=True)
+
+
 def parse_args():
     parser = argparse.ArgumentParser(
         description='Train a model with the given configuration.')
@@ -212,9 +234,11 @@ if __name__ == '__main__':
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
     suite_names = _as_list(_get_eval_value(cfg, 'task_suite_name'))
-    libero_summary_paths = []
+    summary_paths = {'libero': [], 'robocasa': []}
     for suite_name in suite_names:
-        summary_path = _run_eval(cfg, args, suite_name=suite_name)
-        if summary_path is not None:
-            libero_summary_paths.append(summary_path)
-    _maybe_report_libero_eval(libero_summary_paths, args, cfg)
+        result = _run_eval(cfg, args, suite_name=suite_name)
+        if result is not None:
+            report_kind, summary_path = result
+            summary_paths.setdefault(report_kind, []).append(summary_path)
+    _maybe_report_libero_eval(summary_paths.get('libero', []), args, cfg)
+    _maybe_report_robocasa_eval(summary_paths.get('robocasa', []), args, cfg)

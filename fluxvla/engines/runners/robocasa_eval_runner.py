@@ -1032,4 +1032,4 @@ class RobocasaEvalRunner(BaseEvalRunner):
             overwatch.info(f'[*] Wrote Robocasa summary to {summary_json}')
         log_file.close()
         dist.barrier()
-        exit(0)
+        return
