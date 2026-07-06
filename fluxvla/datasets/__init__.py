@@ -16,12 +16,5 @@ from .arm_dataset import *  # noqa: F401, F403
 from .dataset_wrapper import *  # noqa: F401, F403
 from .parquet_dataset import *  # noqa: F401, F403
 from .parquet_dataset_v3 import *  # noqa: F401, F403
-# rlds_dataset imports TensorFlow directly, which is binary-incompatible with
-# numpy>=2 in this environment. Parquet-based training does not need it, so make
-# the import optional instead of letting it crash the whole package.
-try:
-    from .rlds_dataset import *  # noqa: F401, F403
-except Exception:
-    pass
 from .sarm_dataset import *  # noqa: F401, F403
 from .utils import *  # noqa: F401, F403
