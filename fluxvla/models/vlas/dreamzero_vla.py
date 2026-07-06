@@ -32,7 +32,7 @@ class DreamZeroVLA(BaseVLA):
     and reference code:
     https://github.com/dreamzero0/dreamzero
 
-    Uses ``WanBackbone`` (vlm_backbone) for encoding (T5, CLIP, VAE) and
+    Uses ``Wan21Backbone`` (vlm_backbone) for encoding (T5, CLIP, VAE) and
     ``DreamZeroHead`` (vla_head) for the DiT diffusion model and flow-matching.
 
     Data contract
@@ -48,7 +48,7 @@ class DreamZeroVLA(BaseVLA):
       ``[B, action_horizon, action_dim]`` boolean.
     * ``embodiment_ids`` – ``[B]`` integer (optional, defaults to 0).
 
-    Encoding (T5, CLIP, VAE) is done by ``WanBackbone`` (vlm_backbone),
+    Encoding (T5, CLIP, VAE) is done by ``Wan21Backbone`` (vlm_backbone),
     then encoded tensors are passed to ``DreamZeroHead`` (vla_head).
     """
 
@@ -200,7 +200,7 @@ class DreamZeroVLA(BaseVLA):
         video = images
         b, c, t, h, w = video.shape
 
-        # --- Encode with WanBackbone (vlm_backbone) ---
+        # --- Encode with Wan21Backbone (vlm_backbone) ---
         vlm_outputs = self.vlm_backbone(
             video=video,
             input_ids=lang_tokens.long().to(device),
@@ -325,7 +325,7 @@ class DreamZeroVLA(BaseVLA):
                 pad = video.new_zeros(b, c, t_train - t_obs, h, w)
                 video = torch.cat([video, pad], dim=2)
 
-            # --- Encode with WanBackbone (vlm_backbone) ---
+            # --- Encode with Wan21Backbone (vlm_backbone) ---
             vlm_outputs = self.vlm_backbone(
                 video=video,
                 input_ids=lang_tokens.long().to(device),

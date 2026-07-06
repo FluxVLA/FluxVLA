@@ -15,6 +15,9 @@
 import math
 from typing import Dict, Optional
 
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+
 from fluxvla.engines.utils.builder import build_optimizer_from_cfg
 from fluxvla.engines.utils.root import LR_SCHEDULERS
 from .schedulers import (get_constant_schedule,
@@ -192,6 +195,76 @@ class LinearWarmupCosineDecayLRScheduler(BaseLRSchedulerPolicy):
         for param_group in optimizer.param_groups:
             param_group['lr'] = 0.0
         return scheduler
+
+
+@LR_SCHEDULERS.register_module(name=[
+    'linear-warmup+cosine-decay-min-lr',
+    'LinearWarmupCosineDecayMinLRScheduler'
+])
+class LinearWarmupCosineDecayMinLRScheduler(BaseLRSchedulerPolicy):
+
+    def __init__(self,
+                 warmup_ratio: float = 0.0,
+                 min_lr_ratio: float = 0.01,
+                 betas: tuple = (0.9, 0.999),
+                 weight_decay_style: str = 'decay_no_decay',
+                 **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.warmup_ratio = warmup_ratio
+        self.min_lr_ratio = min_lr_ratio
+        self.betas = tuple(float(beta) for beta in betas)
+        self.weight_decay_style = weight_decay_style
+
+    def build_param_groups(self, runner, weight_decay=None):
+        style = str(self.weight_decay_style).replace('-', '_')
+        if style == 'uniform':
+            return [
+                param for param in runner.vla.parameters()
+                if param.requires_grad
+            ]
+        if style not in ('decay_no_decay', 'default'):
+            raise ValueError(f'Unsupported weight_decay_style: '
+                             f'{self.weight_decay_style}')
+        return super().build_param_groups(runner, weight_decay)
+
+    def build_optimizer(self, runner, weight_decay=None):
+        if weight_decay is None:
+            weight_decay = runner.optimizer_cfg.get('weight_decay')
+        base_lr = float(runner.optimizer_cfg['lr'])
+        groups = self.build_param_groups(runner, weight_decay)
+        kwargs = {'betas': self.betas}
+        if (str(self.weight_decay_style).replace('-', '_') == 'uniform'
+                and weight_decay is not None):
+            kwargs['weight_decay'] = weight_decay
+        return AdamW(groups, lr=base_lr, **kwargs)
+
+    def build_scheduler(self, runner, optimizer):
+        base_lr = float(runner.optimizer_cfg['lr'])
+        num_training_steps = max(int(runner.num_training_steps), 1)
+        num_warmup_steps = int(num_training_steps * self.warmup_ratio)
+        num_warmup_steps = min(
+            max(num_warmup_steps, 0), num_training_steps - 1)
+        remaining_steps = max(num_training_steps - num_warmup_steps, 1)
+
+        if num_warmup_steps <= 0:
+            return CosineAnnealingLR(
+                optimizer,
+                T_max=remaining_steps,
+                eta_min=base_lr * self.min_lr_ratio)
+
+        warmup_scheduler = LinearLR(
+            optimizer,
+            start_factor=1.0 / num_warmup_steps,
+            end_factor=1.0,
+            total_iters=num_warmup_steps)
+        main_scheduler = CosineAnnealingLR(
+            optimizer,
+            T_max=remaining_steps,
+            eta_min=base_lr * self.min_lr_ratio)
+        return SequentialLR(
+            optimizer,
+            schedulers=[warmup_scheduler, main_scheduler],
+            milestones=[num_warmup_steps])
 
 
 @LR_SCHEDULERS.register_module(name=['step-based', 'StepBasedLRScheduler'])

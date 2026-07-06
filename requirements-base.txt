@@ -9,6 +9,7 @@ easydict==1.9
 einops==0.4.1
 future==0.18.2
 gcsfs
+huggingface-hub==1.18.0
 imageio
 imageio-ffmpeg==0.6.0
 jsonlines==4.0.0
@@ -17,10 +18,13 @@ mmengine==0.10.7
 numpy==1.26.4
 opencv-python
 peft==0.11.1
+pillow==12.2.0
+safetensors==0.7.0
 sentencepiece==0.1.99
 sentry-sdk==2.27.0
 thop==0.1.1-2209072238
 timm==0.9.10
+tqdm==4.68.3
 tqdm-loggable==0.2
 transformers==5.3.0
 types-boto3-s3==1.38.26

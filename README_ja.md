@@ -610,6 +610,8 @@ SARM については、必要な SARM アノテーション列が含まれてい
 
 ARM と SARM のワークフローでは、通常は学習 / 推論用の CLIP チェックポイントが必要です。SARM の VLM ベース自動アノテーションでは、公式 SARM で使われている Qwen3-VL チェックポイントも必要です。詳細は [docs/arm.md](docs/arm.md) と [docs/sarm.md](docs/sarm.md) を参照してください。
 
+FastWAM VGM checkpoint の準備手順は [docs/fastwam.md](docs/fastwam.md) を参照してください。
+
 <details>
 <summary><b>VLA モデル</b></summary>
 
@@ -652,6 +654,16 @@ hf download limxdynamics/FluxVLAEngine \
 | Qwen 2.5 | 3B     | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-3B)                    |
 | Qwen 2.5 | 7B     | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-7B)                    |
 | Llama 2  | 7B     | [🤗 Hugging Face](https://huggingface.co/meta-llama/Llama-2-7b-hf/tree/main) |
+
+</details>
+
+<details>
+<summary><b>動画生成モデル（VGM）</b></summary>
+
+| モデル          | サイズ | ダウンロードリンク                                               |
+| --------------- | ------ | ---------------------------------------------------------------- |
+| Wan2.2-TI2V-5B  | 5B     | [🤗 Hugging Face](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B)  |
+| Wan2.1-T2V-1.3B | 1.3B   | [🤗 Hugging Face](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) |
 
 </details>
 

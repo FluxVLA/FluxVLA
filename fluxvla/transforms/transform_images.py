@@ -172,19 +172,41 @@ class ResizeImages:
         width (int): The target width for the images.
         preserve_leading_dims (bool): If True, treat the last three
             dimensions as CHW and preserve all leading dimensions.
+        backend (str): Resize backend. ``'cv2'`` preserves legacy behavior;
+            ``'torchvision'`` matches torchvision tensor resize semantics.
+        scale_to_unit_interval (bool): If True, uint8 images are converted to
+            float32 in ``[0, 1]`` before resizing.
     """
 
     def __init__(self,
                  height,
                  width,
                  preserve_leading_dims: bool = False,
+                 backend: str = 'cv2',
+                 scale_to_unit_interval: bool = False,
                  *args,
                  **kwargs):
         self.height = height
         self.width = width
         self.preserve_leading_dims = preserve_leading_dims
+        self.backend = backend
+        self.scale_to_unit_interval = scale_to_unit_interval
+        if self.backend not in ('cv2', 'torchvision'):
+            raise ValueError(
+                f"Unsupported resize backend '{backend}'. Expected 'cv2' "
+                "or 'torchvision'.")
+        self.torchvision_resize = Resize((self.height, self.width))
 
     def _resize_single_image(self, image: np.ndarray) -> np.ndarray:
+        if self.backend == 'torchvision':
+            if not isinstance(image, torch.Tensor):
+                image = torch.as_tensor(np.asarray(image))
+            if image.dtype == torch.uint8 and self.scale_to_unit_interval:
+                image = image.to(torch.float32) / 255.0
+            else:
+                image = image.to(torch.float32)
+            return self.torchvision_resize(image).cpu().numpy()
+
         return cv2.resize(
             image.transpose(1, 2, 0), (self.width, self.height),
             interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)
@@ -1353,10 +1375,13 @@ class PrepareVideo:
     def __init__(self,
                  num_views: int = 2,
                  frame_window_size: int = 1,
+                 tile_direction: str = 'vertical',
                  *args,
                  **kwargs):
+        assert tile_direction in ('vertical', 'horizontal')
         self.num_views = num_views
         self.frame_window_size = frame_window_size
+        self.tile_direction = tile_direction
 
     def __call__(self, data: dict):
         # Support both 'images' (training) and 'pixel_values' (eval) keys
@@ -1374,32 +1399,59 @@ class PrepareVideo:
         # Handle both numpy arrays and torch tensors
         is_tensor = isinstance(images, torch.Tensor)
 
+        if images.ndim == 5:
+            # [V, T, C, H, W] multi-view temporal stack -> tiled video.
+            # ``horizontal`` concatenates views along width; ``vertical``
+            # concatenates views along height (default).
+            v, t, c, h, w = images.shape
+            if self.tile_direction == 'horizontal':
+                axes = (2, 1, 3, 0, 4)  # -> [C, T, H, V, W]
+                out_shape = (c, t, h, v * w)
+            else:
+                axes = (2, 1, 0, 3, 4)  # -> [C, T, V, H, W]
+                out_shape = (c, t, v * h, w)
+            if is_tensor:
+                images = images.permute(*axes).reshape(*out_shape)
+            else:
+                images = np.transpose(images, axes).reshape(*out_shape)
+            data[img_key] = images
+            return data
+
         if images.ndim == 3:
             # [V*T*C, H, W] or [C, H, W]
             channels, h, w = images.shape
             if channels > 3 and channels % 3 == 0:
                 n_items = channels // 3
                 if T > 1 and n_items == V * T:
-                    # [V*T*C, H, W] -> [V, T, 3, H, W] -> [3, T, V, H, W]
-                    #                                    -> [3, T, V*H, W]
+                    # [V*T*C, H, W] -> [V, T, 3, H, W]. ``vertical`` (default)
+                    # tiles views along height -> [3, T, V*H, W];
+                    # ``horizontal`` tiles along width -> [3, T, H, V*W].
                     images = images.reshape(V, T, 3, h, w)
-                    if is_tensor:
-                        images = images.permute(2, 1, 0, 3, 4)
+                    if self.tile_direction == 'horizontal':
+                        axes = (2, 1, 3, 0, 4)  # -> [3, T, H, V, W]
+                        out_shape = (3, T, h, V * w)
                     else:
-                        images = images.transpose(2, 1, 0, 3, 4)
-                    images = images.reshape(3, T, V * h, w)
+                        axes = (2, 1, 0, 3, 4)  # -> [3, T, V, H, W]
+                        out_shape = (3, T, V * h, w)
+                    if is_tensor:
+                        images = images.permute(*axes)
+                    else:
+                        images = images.transpose(*axes)
+                    images = images.reshape(*out_shape)
                     data[img_key] = images
                     return data
-                # [V*C, H, W] single timestep multi-view -> [3, 1, V*H, W]
+                # [V*C, H, W] single timestep multi-view. ``horizontal``
+                # concatenates views along width -> [3, 1, H, V*W];
+                # ``vertical`` along height -> [3, 1, V*H, W].
                 images = images.reshape(n_items, 3, h, w)
-                # tile vertically: concat along H
+                cat_dim = 2 if self.tile_direction == 'horizontal' else 1
                 if is_tensor:
                     tiled = torch.cat([images[i] for i in range(n_items)],
-                                      dim=1)  # [3, n*H, W]
-                    data[img_key] = tiled.unsqueeze(1)  # [3, 1, n*H, W]
+                                      dim=cat_dim)
+                    data[img_key] = tiled.unsqueeze(1)
                 else:
                     tiled = np.concatenate([images[i] for i in range(n_items)],
-                                           axis=1)  # [3, n*H, W]
+                                           axis=cat_dim)
                     data[img_key] = tiled[:, np.newaxis, :, :]
                 return data
             # [C, H, W] single view, single timestep -> [C, 1, H, W]

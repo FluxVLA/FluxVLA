@@ -916,7 +916,7 @@ class TestDreamZero(unittest.TestCase):
             frame_window_size=9,
             pretrained_name_or_path=DREAMZERO_CKPT_PATH,
             vlm_backbone=dict(
-                type='WanBackbone',
+                type='Wan21Backbone',
                 text_encoder_path=None,
                 image_encoder_path=None,
                 vae_path=None,

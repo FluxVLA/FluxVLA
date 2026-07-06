@@ -610,6 +610,8 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 如果使用 ARM 或 SARM 工作流，通常至少需要一个 CLIP checkpoint 用于训练 / 推理；如果要用 SARM VLM 自动标注，还需要官方 SARM 使用的 Qwen3-VL checkpoint。详细用法见 [docs/arm.md](docs/arm.md) 和 [docs/sarm.md](docs/sarm.md)。
 
+FastWAM VGM checkpoint 准备步骤见 [docs/fastwam.md](docs/fastwam.md)。
+
 <details>
 <summary><b>VLA 模型</b></summary>
 
@@ -652,6 +654,16 @@ hf download limxdynamics/FluxVLAEngine \
 | Qwen 2.5 | 3B   | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-3B)                    |
 | Qwen 2.5 | 7B   | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-7B)                    |
 | Llama 2  | 7B   | [🤗 Hugging Face](https://huggingface.co/meta-llama/Llama-2-7b-hf/tree/main) |
+
+</details>
+
+<details>
+<summary><b>视频生成模型（VGM）</b></summary>
+
+| 模型            | 大小 | 下载链接                                                         |
+| --------------- | ---- | ---------------------------------------------------------------- |
+| Wan2.2-TI2V-5B  | 5B   | [🤗 Hugging Face](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B)  |
+| Wan2.1-T2V-1.3B | 1.3B | [🤗 Hugging Face](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) |
 
 </details>
 

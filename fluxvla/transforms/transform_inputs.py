@@ -12,19 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import logging
 import os
-from pathlib import Path
 from typing import Dict, List
 
 import av
 import numpy as np
 import torch
-import torchvision
 from PIL import Image
 
-from fluxvla.datasets.utils.video_decode import (
-    build_lerobot_video_path, decode_video_frames_torchvision)
+from fluxvla.datasets.utils.video_decode import (build_lerobot_video_path,
+                                                 decode_video_frames)
 from fluxvla.engines import TRANSFORMS
 from fluxvla.engines.utils.eval_utils import crop_and_resize
 from .transform_images import (_resize_hwc_lanczos3_numpy,
@@ -107,6 +104,13 @@ class ProcessParquetInputs():
         name_mappings (Dict, optional): Optional dictionary
             to map original keys to new keys.
             Defaults to None.
+        video_backend (str, optional): Video decoding backend. One of
+            ``'torchcodec'``, ``'pyav'`` or ``'video_reader'``. When ``None``
+            (default) it resolves to ``'torchcodec'`` if the package is
+            importable, otherwise ``'pyav'``. The ``'torchcodec'`` path
+            decodes by frame index (``round(ts * average_fps)``); on any
+            decode error it transparently falls back to the ``'pyav'``
+            torchvision path.
     """
 
     def __init__(self,
@@ -116,7 +120,8 @@ class ProcessParquetInputs():
                  embodiment_id: int = None,
                  embodiment_dim: int = None,
                  num_padding_imgs: int = 0,
-                 dataset_name: str = None):
+                 dataset_name: str = None,
+                 video_backend: str = None):
         self.parquet_keys = parquet_keys
         self.video_keys = video_keys
         self.name_mappings = name_mappings
@@ -124,103 +129,7 @@ class ProcessParquetInputs():
         self.embodiment_dim = embodiment_dim
         self.num_padding_imgs = num_padding_imgs
         self.dataset_name = dataset_name
-
-    def decode_video_frames_torchvision(
-        self,
-        video_path: Path | str,
-        timestamps: list[float],
-        tolerance_s: float,
-        backend: str = 'pyav',
-        log_loaded_timestamps: bool = False,
-    ) -> torch.Tensor:
-        """ Decode video frames using torchvision.
-
-        Args:
-            video_path (Path | str): Path to the video file.
-            timestamps (list[float]): List of timestamps to decode.
-            tolerance_s (float): Tolerance in seconds for the timestamps.
-            backend (str): Backend to use for video decoding.
-                Defaults to 'pyav'.
-            log_loaded_timestamps (bool): Whether to log the loaded timestamps.
-                Defaults to False.
-
-        Returns:
-            torch.Tensor: Tensor of decoded video frames.
-        """
-        video_path = str(video_path)
-
-        # set backend
-        keyframes_only = False
-        torchvision.set_video_backend(backend)
-        if backend == 'pyav':
-            keyframes_only = True  # pyav doesn't support accuracte seek
-
-        # set a video stream reader
-        # TODO(rcadene): also load audio stream at the same time
-        reader = torchvision.io.VideoReader(video_path, 'video')
-
-        # set the first and last requested timestamps
-        # Note: previous timestamps are usually loaded,
-        # since we need to access the previous key frame
-        first_ts = timestamps[0]
-        last_ts = timestamps[-1]
-
-        # access closest key frame of the first requested frame
-        # Note: closest key frame timestamp is usually smaller than
-        # `first_ts` (e.g. key frame can be the first frame of the video)
-        # for details on what `seek` is doing see:
-        # https://pyav.basswood-io.com/docs/stable/api/container.html?highlight=inputcontainer#av.container.InputContainer.seek  # noqa: E501
-        reader.seek(first_ts, keyframes_only=keyframes_only)
-
-        # load all frames until last requested frame
-        loaded_frames = []
-        loaded_ts = []
-        for frame in reader:
-            current_ts = frame['pts']
-            if log_loaded_timestamps:
-                logging.info('frame loaded at timestamp=%.4f', current_ts)
-            loaded_frames.append(frame['data'])
-            loaded_ts.append(current_ts)
-            if current_ts >= last_ts:
-                break
-
-        if backend == 'pyav':
-            reader.container.close()
-
-        reader = None
-
-        query_ts = torch.tensor(timestamps)
-        loaded_ts = torch.tensor(loaded_ts)
-
-        # compute distances between each query timestamp
-        # and timestamps of all loaded frames
-        dist = torch.cdist(query_ts[:, None], loaded_ts[:, None], p=1)
-        min_, argmin_ = dist.min(1)
-
-        is_within_tol = min_ < tolerance_s
-        assert is_within_tol.all(), (
-            f'One or several query timestamps unexpectedly violate the tolerance ({min_[~is_within_tol]} > {tolerance_s=}).'  # noqa: E501
-            'It means that the closest frame that can be loaded from the video is too far away in time.'  # noqa: E501
-            'This might be due to synchronization issues with timestamps during data collection.'  # noqa: E501
-            'To be safe, we advise to ignore this item during training.'
-            f'\nqueried timestamps: {query_ts}'
-            f'\nloaded timestamps: {loaded_ts}'
-            f'\nvideo: {video_path}'
-            f'\nbackend: {backend}')
-
-        # get closest frames to the query timestamps
-        closest_frames = torch.stack([loaded_frames[idx] for idx in argmin_])
-        closest_ts = loaded_ts[argmin_]
-
-        if log_loaded_timestamps:
-            logging.info(f'{closest_ts=}')
-
-        # convert to the pytorch format which is float32 in
-        # [0,1] range (and channel first)
-        closest_frames = closest_frames
-
-        assert len(timestamps) == len(closest_frames)
-        return closest_frames
+        self.video_backend = video_backend
 
     def __call__(self, data):
         assert 'info' in data, "Input data must contain 'info' key"
@@ -270,8 +179,8 @@ class ProcessParquetInputs():
                 video_path), f'Video file not found: {video_path}'
             # Load all requested timestamps at once (supports temporal window)
             unique_ts = sorted(set(timestamps))
-            frames_tensor = self.decode_video_frames_torchvision(
-                video_path, unique_ts, 0.1)
+            frames_tensor = decode_video_frames(
+                video_path, unique_ts, 0.1, backend=self.video_backend)
             ts_to_frame = {
                 ts: frames_tensor[i]
                 for i, ts in enumerate(unique_ts)
@@ -504,7 +413,7 @@ class DecodeLeRobotVideoSequence():
                 episode_index,
                 video_key,
             )
-            frames = decode_video_frames_torchvision(
+            frames = decode_video_frames(
                 video_path,
                 timestamps,
                 tolerance_s=self.tolerance_s,
@@ -513,3 +422,57 @@ class DecodeLeRobotVideoSequence():
             images_per_camera.append(frames.numpy())
         inputs['images'] = np.stack(images_per_camera, axis=1)
         return inputs
+
+
+@TRANSFORMS.register_module()
+class ConcatLeftAlign:
+    """Concatenate multi-field action/state dicts and left-align pad.
+
+    Operates on ``data['action']`` and ``data['state']`` dicts with
+    ``{field_key: [T, d_field]}`` values; produces ``[T, target_dim]`` tensors
+    plus ``action_dim_is_pad`` / ``state_dim_is_pad`` masks
+    (``True`` where padded).
+
+    Args:
+        shape_meta (Dict): ``{'action': [{'key', 'shape'}], 'state': [...]}``.
+        action_target_dim (int | None): pad action to this dim.
+        state_target_dim (int | None): pad state to this dim.
+    """
+
+    def __init__(self,
+                 shape_meta: Dict,
+                 action_target_dim: int = None,
+                 state_target_dim: int = None,
+                 *args,
+                 **kwargs):
+        self.action_meta = shape_meta['action']
+        self.state_meta = shape_meta['state']
+        self.action_target_dim = action_target_dim
+        self.state_target_dim = state_target_dim
+
+    @staticmethod
+    def _concat(x: Dict[str, torch.Tensor], meta) -> torch.Tensor:
+        x = torch.cat([x[m['key']] for m in meta], dim=-1)
+        assert x.ndim == 2
+        return x
+
+    @staticmethod
+    def _pad(x: torch.Tensor, dim):
+        if dim is None:
+            dim = x.shape[-1]
+        assert x.ndim == 2 and x.shape[-1] <= dim
+        pad_dim = dim - x.shape[-1]
+        x_padded = torch.nn.functional.pad(x, (0, pad_dim))
+        mask = torch.zeros_like(x[0]).bool()
+        mask = torch.nn.functional.pad(mask, (0, pad_dim), value=True)
+        return x_padded, mask
+
+    def __call__(self, data: Dict) -> Dict:
+        if 'action' in data:
+            data['action'] = self._concat(data['action'], self.action_meta)
+            data['action'], data['action_dim_is_pad'] = self._pad(
+                data['action'], self.action_target_dim)
+        data['state'] = self._concat(data['state'], self.state_meta)
+        data['state'], data['state_dim_is_pad'] = self._pad(
+            data['state'], self.state_target_dim)
+        return data

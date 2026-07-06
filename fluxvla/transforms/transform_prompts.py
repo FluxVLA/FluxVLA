@@ -12,10 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
 import os
 from typing import Dict, List, Optional
 
 import numpy as np
+import torch
 
 from fluxvla.engines import TRANSFORMS
 
@@ -369,7 +371,8 @@ class LiberoPromptFromInputs:
                  prompt_suffix: str = '',
                  use_conversation: bool = True,
                  negative_prompt: str = None,
-                 add_new_line: bool = False) -> None:
+                 add_new_line: bool = False,
+                 prompt_template: str = None) -> None:
         from fluxvla.engines import build_tokenizer_from_cfg
         if model_path is not None:
             tokenizer['model_path'] = os.path.join(model_path, 'tokenizer')
@@ -380,6 +383,7 @@ class LiberoPromptFromInputs:
         self.use_conversation = use_conversation
         self.negative_prompt = negative_prompt
         self.add_new_line = add_new_line
+        self.prompt_template = prompt_template
 
     def _tokenize_single_prompt(self, prompt: str):
         token_ids = self.tokenizer(prompt)['input_ids']
@@ -397,7 +401,9 @@ class LiberoPromptFromInputs:
     def __call__(self, inputs: Dict) -> Dict:
         assert 'task_description' in inputs, "inputs must contain 'task_description'"  # noqa: E501
         task_description = inputs['task_description']
-        if self.use_conversation:
+        if self.prompt_template is not None:
+            prompt = self.prompt_template.format(task=task_description)
+        elif self.use_conversation:
             prompt = ('In: What action should the robot take to ' +
                       str(task_description).lower() + '?\nOut:' +
                       self.prompt_suffix)
@@ -414,6 +420,85 @@ class LiberoPromptFromInputs:
 
         inputs['lang_tokens'] = np.asarray(tokens, dtype=np.int64)
         inputs['lang_masks'] = np.asarray(token_mask, dtype=np.bool_)
+        return inputs
+
+
+@TRANSFORMS.register_module()
+class LoadCachedTextEmbedding:
+    """Load precomputed text-encoder embeddings from a disk cache.
+
+    Formats the task instruction with a prompt template, hashes it with
+    SHA-256 and loads the matching ``{hash}.t5_len{L}.{enc_id}.pt`` payload
+    (``{context [L, D], mask [L]}``) from ``cache_dir``. The padded
+    embeddings are zeroed and the mask is replaced by an all-ones mask, so a
+    model consumes identical ``context`` / ``context_mask`` tensors whether
+    the text encoder runs online or from cache.
+
+    Args:
+        cache_dir (str): Directory holding the precomputed ``.pt`` caches.
+        context_len (int): Cached sequence length ``L`` (filename token).
+        enc_id (str): Text-encoder id used in the cache filename.
+        prompt_template (str, optional): Template with a ``{task}`` field.
+            Defaults to the Wan2.2 robot-view prompt.
+        task_key (str): Input key holding the task instruction.
+    """
+
+    DEFAULT_PROMPT = (
+        "A video recorded from a robot's point of view executing the "
+        'following instruction: {task}')
+
+    def __init__(self,
+                 cache_dir: str,
+                 context_len: int = 128,
+                 enc_id: str = 'wan22ti2v5b',
+                 prompt_template: Optional[str] = None,
+                 task_key: str = 'task_description') -> None:
+        self.cache_dir = cache_dir
+        self.context_len = int(context_len)
+        self.enc_id = enc_id
+        self.prompt_template = prompt_template or self.DEFAULT_PROMPT
+        self.task_key = task_key
+
+    def __call__(self, inputs: Dict) -> Dict:
+        assert self.task_key in inputs, (
+            f"inputs must contain '{self.task_key}'")
+        task = inputs[self.task_key]
+        if isinstance(task, np.ndarray):
+            task = task.item()
+        prompt = self.prompt_template.format(task=task)
+        hashed = hashlib.sha256(prompt.encode('utf-8')).hexdigest()
+        cache_path = os.path.join(
+            self.cache_dir,
+            f'{hashed}.t5_len{self.context_len}.{self.enc_id}.pt')
+        if not os.path.exists(cache_path):
+            raise FileNotFoundError(
+                f'Missing text embedding cache: {cache_path}. Run the '
+                'text-embedding precompute first.')
+        payload = torch.load(cache_path, map_location='cpu')
+        context = payload['context']
+        context_mask = payload['mask'].bool()
+        if context.ndim != 2:
+            raise ValueError('Cached `context` must be 2D [L, D], got '
+                             f'{tuple(context.shape)} in {cache_path}')
+        if context_mask.ndim != 1:
+            raise ValueError('Cached `mask` must be 1D [L], got '
+                             f'{tuple(context_mask.shape)} in {cache_path}')
+        if context.shape[0] != self.context_len:
+            raise ValueError('Cached context_len mismatch: expected '
+                             f'{self.context_len}, got {context.shape[0]} in '
+                             f'{cache_path}')
+        if context_mask.shape[0] != self.context_len:
+            raise ValueError(
+                'Cached mask_len mismatch: expected '
+                f'{self.context_len}, got {context_mask.shape[0]} '
+                f'in {cache_path}')
+        # Match online prompt encoding: zero padded embeddings and expose an
+        # all-ones context mask to the model.
+        context = context.clone()
+        context[~context_mask] = 0.0
+        context_mask = torch.ones_like(context_mask)
+        inputs['context'] = context
+        inputs['context_mask'] = context_mask
         return inputs
 
 

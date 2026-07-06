@@ -30,5 +30,6 @@ import_heterogeneous_runtime_symbols(
         'smolvla_flowmatching': ['SmolVLAFlowMatching'],
         'x_vla': ['X_VLA'],
         'dreamzero_vla': ['DreamZeroVLA'],
+        'fastwam_vla': ['FastWAMVLA'],
     },
 )

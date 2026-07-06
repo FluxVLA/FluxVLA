@@ -1,0 +1,36 @@
+Third-Party Attribution for fastwam
+
+Source projects:
+- Fast-WAM (FastWAM)
+  Paper: Fast-WAM: Do World Action Models Need Test-time Future Imagination?
+  arXiv: https://arxiv.org/abs/2603.16666
+  License: Apache-2.0
+  Note: The files under ``modules/`` are vendored largely verbatim from the
+  FastWAM ``src/fastwam/models/wan22`` package to preserve numerical parity.
+  This includes the three model variants ``fastwam.py`` (base/uncond),
+  ``fastwam_joint.py`` (action attends to all video tokens) and
+  ``fastwam_idm.py`` (teacher-forcing video conditioning). The only changes
+  applied to the vendored files are:
+    * the logger import, redirected from ``fastwam.utils.logging_config`` to
+      the local ``._logging`` shim (all files);
+    * ``action_dit.py`` only: the relative-path anchor for
+      ``action_dit_pretrained_path`` is ``Path(__file__).parents[5]`` instead
+      of ``parents[4]`` upstream, because the vendored module sits one
+      directory deeper; both resolve to the respective repository root.
+  These files are exempt from the repository's string/format pre-commit hooks
+  (see ``.pre-commit-config.yaml``) so they stay byte-identical to upstream.
+
+- Alibaba Wan Video (Wan 2.2 TI2V-5B)
+  Upstream location: https://github.com/Wan-Video/Wan2.2
+  License: Apache-2.0
+
+- DiffSynth-Studio (hash-based model loading utilities)
+  Upstream location: https://github.com/modelscope/DiffSynth-Studio
+  License: Apache-2.0
+
+License notes:
+- Please preserve upstream license headers/terms for redistributed files.
+- These files are vendored to keep the FastWAM numerical core importable from
+  FluxVLA without modifying the upstream environment.
+- For release/legal review, verify final compatibility with repository
+  distribution policy.
