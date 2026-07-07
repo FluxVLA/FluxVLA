@@ -130,6 +130,8 @@ class DreamZeroHead(nn.Module):
         cfg_parallel: bool = False,
         dit_compute_steps: Optional[int] = None,
         dynamic_cache_schedule: bool = False,
+        trt_engine_path: Optional[str] = None,
+        trt_model_type: str = 'ar_14B',
         max_chunk_size: int = -1,
         *args,
         **kwargs,
@@ -155,6 +157,10 @@ class DreamZeroHead(nn.Module):
         self.dynamic_cache_schedule = dynamic_cache_schedule
         self.dynamic_cache_thresholds = (0.95, 0.93)
         self.dynamic_cache_countdowns = (4, 2)
+        self.trt_engine_path = trt_engine_path or os.getenv(
+            'LOAD_TRT_ENGINE')
+        self.trt_model_type = trt_model_type
+        self.trt_engine = None
         self.max_chunk_size = max_chunk_size
 
         # ----- build DiT model -----
@@ -237,6 +243,67 @@ class DreamZeroHead(nn.Module):
             self._profile_sync(True)
             profile[name] = self._profile_elapsed_ms(start)
             return output
+
+    def _load_trt_engine_if_configured(self) -> None:
+        if self.trt_engine is not None or not self.trt_engine_path:
+            return
+        trt_module = import_module(
+            'fluxvla.models.third_party_models.dreamzero.tensorrt_utils')
+        self.trt_engine = trt_module.load_tensorrt_engine(
+            self.trt_engine_path, model_type=self.trt_model_type)
+        logger.info('Loaded DreamZero TensorRT engine from %s',
+                    self.trt_engine_path)
+
+    def _run_denoise_model_forward(
+        self,
+        reference_latents: torch.Tensor,
+        timestep: torch.Tensor,
+        clip_feas: torch.Tensor,
+        ys: torch.Tensor,
+        prompt_emb: torch.Tensor,
+        frame_seqlen: int,
+        action: torch.Tensor,
+        timestep_action: torch.Tensor,
+        state: torch.Tensor,
+        embodiment_id: torch.Tensor,
+        kv_cache: list[torch.Tensor],
+        crossattn_cache: list[torch.Tensor],
+        start_frame: int,
+        update_cache: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[list[torch.Tensor]], bool]:
+        if not update_cache and self.trt_engine_path:
+            self._load_trt_engine_if_configured()
+
+        if not update_cache and self.trt_engine is not None:
+            obs_noise_pred, action_noise_pred = self.trt_engine(
+                reference_latents,
+                timestep=timestep,
+                clip_feature=clip_feas,
+                y=ys,
+                context=prompt_emb,
+                action=action,
+                timestep_action=timestep_action,
+                state=state,
+                kv_cache=kv_cache,
+            )
+            return obs_noise_pred, action_noise_pred, None, True
+
+        obs_noise_pred, action_noise_pred, updated_kv_caches = self.model(
+            reference_latents,
+            timestep=timestep,
+            clip_feature=clip_feas,
+            y=ys,
+            context=prompt_emb,
+            seq_len=reference_latents.shape[2] * frame_seqlen,
+            action=action,
+            timestep_action=timestep_action,
+            state=state,
+            embodiment_id=embodiment_id,
+            kv_cache=kv_cache,
+            crossattn_cache=crossattn_cache,
+            current_start_frame=start_frame,
+        )
+        return obs_noise_pred, action_noise_pred, updated_kv_caches, False
 
     @staticmethod
     def _build_dit_step_mask(num_inference_steps: int,
@@ -680,29 +747,46 @@ class DreamZeroHead(nn.Module):
                 if profile_enabled:
                     self._profile_sync(True)
                     model_start = time.perf_counter()
-                obs_noise_pred, action_noise_pred, updated_kv_caches = (
-                    self.model(
-                        reference_latents,
-                        timestep=timestep,
-                        clip_feature=clip_feas,
-                        y=ys,
-                        context=prompt_emb,
-                        seq_len=reference_latents.shape[2] * frame_seqlen,
-                        action=action,
-                        timestep_action=timestep_action,
-                        state=state,
-                        embodiment_id=embodiment_id,
-                        kv_cache=local_kv_caches[index],
-                        crossattn_cache=local_crossattn_caches[index],
-                        current_start_frame=start_frame,
-                    ))
+                (obs_noise_pred, action_noise_pred, updated_kv_caches,
+                 used_trt) = self._run_denoise_model_forward(
+                     reference_latents=reference_latents,
+                     timestep=timestep,
+                     clip_feas=clip_feas,
+                     ys=ys,
+                     prompt_emb=prompt_emb,
+                     frame_seqlen=frame_seqlen,
+                     action=action,
+                     timestep_action=timestep_action,
+                     state=state,
+                     embodiment_id=embodiment_id,
+                     kv_cache=local_kv_caches[index],
+                     crossattn_cache=local_crossattn_caches[index],
+                     start_frame=start_frame,
+                     update_cache=update_cache,
+                 )
                 if profile_enabled:
                     self._profile_sync(True)
                     elapsed_ms = self._profile_elapsed_ms(model_start)
                     if profile_bucket is not None:
                         profile_bucket.setdefault(profile_label, []).append(
                             elapsed_ms)
+                        backend_label = (
+                            f'trt_{profile_label}'
+                            if used_trt else f'torch_{profile_label}')
+                        profile_bucket.setdefault(backend_label, []).append(
+                            elapsed_ms)
+            if profile_bucket is not None:
+                profile_bucket['trt_enabled'] = int(
+                    self.trt_engine is not None)
+                count_key = (
+                    'trt_forward_count'
+                    if used_trt else 'torch_forward_count')
+                profile_bucket[count_key] = profile_bucket.get(count_key,
+                                                               0) + 1
             if update_cache:
+                if updated_kv_caches is None:
+                    raise RuntimeError(
+                        'TensorRT denoise path cannot update KV cache.')
                 for block_index, updated_kv_cache in enumerate(
                         updated_kv_caches):
                     local_kv_caches[index][block_index] = (

@@ -2049,8 +2049,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         state,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
 
-        frame_seqlen = 880
-        seq_len = 2 * frame_seqlen
+        frame_seqlen = self.frame_seqlen
+        seq_len = x.shape[2] * frame_seqlen
         kv_cache_seq_len = kv_cache_packed.shape[3]
         current_start_frame = kv_cache_seq_len // frame_seqlen
 
@@ -2088,8 +2088,8 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         state,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
 
-        frame_seqlen = 880
-        seq_len = 2 * frame_seqlen
+        frame_seqlen = self.frame_seqlen
+        seq_len = x.shape[2] * frame_seqlen
         kv_cache_seq_len = kv_cache_packed.shape[3]
         current_start_frame = kv_cache_seq_len // frame_seqlen
 
