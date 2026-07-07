@@ -40,7 +40,7 @@
 #   task_logs/, task_status/, <suite>/gpuX_taskY_results.json,
 #   <suite>/videos/*.mp4 unless ROLLOUT_DIR/eval.rollout_dir overrides it
 #
-# Extra arguments are forwarded to scripts/eval.sh after --cfg-options.
+# Extra arguments are forwarded to scripts/eval.py after --cfg-options.
 set -euo pipefail
 
 if [[ $# -gt 0 && "${1}" != --* ]]; then
@@ -56,6 +56,7 @@ CONFIG="${CONFIG:?set CONFIG or pass it as the first argument}"
 CKPT="${CKPT:?set CKPT or pass it as the second argument}"
 MAX_STEPS="${MAX_STEPS:-}"
 EVAL_SHARD_STRATEGY="${EVAL_SHARD_STRATEGY:-}"
+TASK_IDS="${TASK_IDS:-}"
 PREPROCESS_EVERY_STEP="${PREPROCESS_EVERY_STEP:-}"
 SAVE_FAILED_ROLLOUT_VIDEOS="${SAVE_FAILED_ROLLOUT_VIDEOS:-}"
 SAVE_MULTI_VIEW_ROLLOUT_VIDEOS="${SAVE_MULTI_VIEW_ROLLOUT_VIDEOS:-}"
@@ -65,7 +66,39 @@ FEISHU_SHEET_URL="${FEISHU_SHEET_URL:-}"
 FEISHU_APP_ID="${FEISHU_APP_ID:-}"
 FEISHU_APP_SECRET="${FEISHU_APP_SECRET:-}"
 FEISHU_TIMEOUT="${FEISHU_TIMEOUT:-10}"
-EXTRA_ARGS=("$@")
+USER_CFG_OPTIONS=()
+WORKER_USER_CFG_OPTIONS=()
+FORWARDED_EXTRA_ARGS=()
+
+split_user_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cfg-options)
+        shift
+        while [[ $# -gt 0 && "$1" != --* ]]; do
+          USER_CFG_OPTIONS+=("$1")
+          case "$1" in
+            eval.manager.*) ;;
+            *) WORKER_USER_CFG_OPTIONS+=("$1") ;;
+          esac
+          shift
+        done
+        ;;
+      *)
+        FORWARDED_EXTRA_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+# Manager-only overrides control scheduling and must not reach eval.py workers.
+split_user_args "$@"
+
+CFG_PARSE_ARGS=("${CONFIG}")
+if [[ "${#USER_CFG_OPTIONS[@]}" -gt 0 ]]; then
+  CFG_PARSE_ARGS+=("--cfg-options" "${USER_CFG_OPTIONS[@]}")
+fi
 
 DEFAULT_SUITES="libero_10 libero_goal libero_spatial libero_object"
 DEFAULT_NUM_GPUS="8"
@@ -78,6 +111,7 @@ DEFAULT_SUMMARY_TOOL="tools/summarize_libero_eval_results.py"
 DEFAULT_NUM_TRIALS_PER_TASK="50"
 DEFAULT_MODEL_BUILD_DEVICE="cuda"
 DEFAULT_MODEL_BUILD_DTYPE="bf16"
+DEFAULT_EVAL_SHARD_STRATEGY="task"
 DEFAULT_SAVE_ROLLOUT_VIDEOS="True"
 DEFAULT_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS="False"
 
@@ -94,6 +128,7 @@ CFG_STATUS_INTERVAL=""
 CFG_LAUNCH_DELAY=""
 CFG_SUMMARY_TOOL=""
 CFG_TASK_FILE=""
+CFG_TASK_IDS=""
 CFG_OUTPUT_DIR=""
 CFG_SAVE_ROLLOUT_VIDEOS=""
 CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS=""
@@ -102,33 +137,10 @@ CFG_FEISHU_SHEET_URL=""
 CFG_FEISHU_APP_ID=""
 CFG_FEISHU_APP_SECRET=""
 
-while IFS=$'\t' read -r key value; do
-  case "${key}" in
-    CFG_EVAL_RUNNER_PREFIX) CFG_EVAL_RUNNER_PREFIX="${value}" ;;
-    CFG_SUITES) CFG_SUITES="${value}" ;;
-    CFG_NUM_GPUS) CFG_NUM_GPUS="${value}" ;;
-    CFG_MAX_TASKS_PER_GPU) CFG_MAX_TASKS_PER_GPU="${value}" ;;
-    CFG_NUM_TRIALS_PER_TASK) CFG_NUM_TRIALS_PER_TASK="${value}" ;;
-    CFG_MODEL_BUILD_DEVICE) CFG_MODEL_BUILD_DEVICE="${value}" ;;
-    CFG_MODEL_BUILD_DTYPE) CFG_MODEL_BUILD_DTYPE="${value}" ;;
-    CFG_MASTER_PORT_BASE) CFG_MASTER_PORT_BASE="${value}" ;;
-    CFG_MONITOR_INTERVAL) CFG_MONITOR_INTERVAL="${value}" ;;
-    CFG_STATUS_INTERVAL) CFG_STATUS_INTERVAL="${value}" ;;
-    CFG_LAUNCH_DELAY) CFG_LAUNCH_DELAY="${value}" ;;
-    CFG_SUMMARY_TOOL) CFG_SUMMARY_TOOL="${value}" ;;
-    CFG_TASK_FILE) CFG_TASK_FILE="${value}" ;;
-    CFG_OUTPUT_DIR) CFG_OUTPUT_DIR="${value}" ;;
-    CFG_SAVE_ROLLOUT_VIDEOS) CFG_SAVE_ROLLOUT_VIDEOS="${value}" ;;
-    CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS) CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS="${value}" ;;
-    CFG_ROLLOUT_DIR) CFG_ROLLOUT_DIR="${value}" ;;
-    CFG_FEISHU_SHEET_URL) CFG_FEISHU_SHEET_URL="${value}" ;;
-    CFG_FEISHU_APP_ID) CFG_FEISHU_APP_ID="${value}" ;;
-    CFG_FEISHU_APP_SECRET) CFG_FEISHU_APP_SECRET="${value}" ;;
-  esac
-done < <(python - "${CONFIG}" <<'PY'
-import sys
+CFG_VALUES="$(python - "${CFG_PARSE_ARGS[@]}" <<'PY'
+import argparse
 
-from mmengine import Config
+from mmengine import Config, DictAction
 
 
 def get_path(obj, path):
@@ -163,7 +175,14 @@ def format_value(value):
     return str(value)
 
 
-cfg = Config.fromfile(sys.argv[1])
+parser = argparse.ArgumentParser()
+parser.add_argument('config')
+parser.add_argument('--cfg-options', nargs='+', action=DictAction)
+args, _ = parser.parse_known_args()
+
+cfg = Config.fromfile(args.config)
+if args.cfg_options is not None:
+    cfg.merge_from_dict(args.cfg_options)
 eval_runner_prefix = 'eval.runner' if hasattr(cfg.eval, 'runner') else 'eval'
 fields = {
     'CFG_SUITES': ('eval.runner.task_suite_name', 'eval.task_suite_name'),
@@ -181,6 +200,8 @@ fields = {
     'CFG_LAUNCH_DELAY': ('eval.manager.launch_delay', ),
     'CFG_SUMMARY_TOOL': ('eval.manager.summary_tool', ),
     'CFG_TASK_FILE': ('eval.manager.task_file', ),
+    'CFG_TASK_IDS': (
+        'eval.manager.task_ids', 'eval.runner.task_ids', 'eval.task_ids'),
     'CFG_OUTPUT_DIR': (
         'eval.manager.output_dir', 'eval.runner.result_output_dir',
         'eval.output_dir', 'eval.result_output_dir'),
@@ -201,7 +222,33 @@ print(f'CFG_EVAL_RUNNER_PREFIX\t{eval_runner_prefix}')
 for name, paths in fields.items():
     print(f'{name}\t{format_value(first_path(cfg, *paths))}')
 PY
-)
+)"
+
+while IFS=$'\t' read -r key value; do
+  case "${key}" in
+    CFG_EVAL_RUNNER_PREFIX) CFG_EVAL_RUNNER_PREFIX="${value}" ;;
+    CFG_SUITES) CFG_SUITES="${value}" ;;
+    CFG_NUM_GPUS) CFG_NUM_GPUS="${value}" ;;
+    CFG_MAX_TASKS_PER_GPU) CFG_MAX_TASKS_PER_GPU="${value}" ;;
+    CFG_NUM_TRIALS_PER_TASK) CFG_NUM_TRIALS_PER_TASK="${value}" ;;
+    CFG_MODEL_BUILD_DEVICE) CFG_MODEL_BUILD_DEVICE="${value}" ;;
+    CFG_MODEL_BUILD_DTYPE) CFG_MODEL_BUILD_DTYPE="${value}" ;;
+    CFG_MASTER_PORT_BASE) CFG_MASTER_PORT_BASE="${value}" ;;
+    CFG_MONITOR_INTERVAL) CFG_MONITOR_INTERVAL="${value}" ;;
+    CFG_STATUS_INTERVAL) CFG_STATUS_INTERVAL="${value}" ;;
+    CFG_LAUNCH_DELAY) CFG_LAUNCH_DELAY="${value}" ;;
+    CFG_SUMMARY_TOOL) CFG_SUMMARY_TOOL="${value}" ;;
+    CFG_TASK_FILE) CFG_TASK_FILE="${value}" ;;
+    CFG_TASK_IDS) CFG_TASK_IDS="${value}" ;;
+    CFG_OUTPUT_DIR) CFG_OUTPUT_DIR="${value}" ;;
+    CFG_SAVE_ROLLOUT_VIDEOS) CFG_SAVE_ROLLOUT_VIDEOS="${value}" ;;
+    CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS) CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS="${value}" ;;
+    CFG_ROLLOUT_DIR) CFG_ROLLOUT_DIR="${value}" ;;
+    CFG_FEISHU_SHEET_URL) CFG_FEISHU_SHEET_URL="${value}" ;;
+    CFG_FEISHU_APP_ID) CFG_FEISHU_APP_ID="${value}" ;;
+    CFG_FEISHU_APP_SECRET) CFG_FEISHU_APP_SECRET="${value}" ;;
+  esac
+done <<< "${CFG_VALUES}"
 
 EVAL_RUNNER_PREFIX="${CFG_EVAL_RUNNER_PREFIX:-eval}"
 
@@ -295,6 +342,15 @@ else
   TASK_FILE=""
 fi
 
+if [[ -n "${TASK_IDS:-}" ]]; then
+  TASK_IDS_SOURCE="env"
+elif [[ -n "${CFG_TASK_IDS}" ]]; then
+  TASK_IDS="${CFG_TASK_IDS}"
+  TASK_IDS_SOURCE="config"
+else
+  TASK_IDS_SOURCE="default"
+fi
+
 if [[ -n "${NUM_TRIALS_PER_TASK:-}" ]]; then
   NUM_TRIALS_PER_TASK_SOURCE="env"
 elif [[ -n "${CFG_NUM_TRIALS_PER_TASK}" ]]; then
@@ -323,6 +379,13 @@ elif [[ -n "${CFG_MODEL_BUILD_DTYPE}" ]]; then
 else
   MODEL_BUILD_DTYPE="${DEFAULT_MODEL_BUILD_DTYPE}"
   MODEL_BUILD_DTYPE_SOURCE="default"
+fi
+
+if [[ -n "${EVAL_SHARD_STRATEGY:-}" ]]; then
+  EVAL_SHARD_STRATEGY_SOURCE="env"
+else
+  EVAL_SHARD_STRATEGY="${DEFAULT_EVAL_SHARD_STRATEGY}"
+  EVAL_SHARD_STRATEGY_SOURCE="default"
 fi
 
 if [[ -n "${SAVE_ROLLOUT_VIDEOS:-}" ]]; then
@@ -394,7 +457,7 @@ task_file="${OUTPUT_DIR}/tasks.txt"
 if [[ -n "${TASK_FILE}" ]]; then
   cp "${TASK_FILE}" "${task_file}"
 else
-  python - "${task_file}" "${CONFIG}" ${SUITES} <<'PY'
+  python - "${task_file}" "${CONFIG}" "${TASK_IDS:-}" ${SUITES} <<'PY'
 import sys
 
 from libero.libero import benchmark
@@ -413,9 +476,35 @@ def get_eval_runner_cfg(cfg):
     return cfg.eval
 
 
+def parse_task_ids(raw_value, num_tasks):
+    if raw_value is None:
+        return list(range(num_tasks))
+    value = str(raw_value).strip()
+    if value == '' or value.lower() == 'none':
+        return list(range(num_tasks))
+    if value.startswith('[') and value.endswith(']'):
+        value = value[1:-1]
+    value = value.replace(',', ' ')
+    task_ids = [
+        int(item.strip()) for item in value.split()
+        if item.strip() != ''
+    ]
+    if len(task_ids) == 0:
+        raise SystemExit('TASK_IDS did not contain any valid task ids.')
+    if len(set(task_ids)) != len(task_ids):
+        raise SystemExit(f'Duplicate TASK_IDS are not supported: {task_ids}')
+    invalid = [task for task in task_ids if task < 0 or task >= num_tasks]
+    if invalid:
+        raise SystemExit(
+            f'Invalid TASK_IDS {invalid}; expected range [0, '
+            f'{num_tasks - 1}].')
+    return task_ids
+
+
 output_file = sys.argv[1]
 config_path = sys.argv[2]
-suite_names = sys.argv[3:]
+raw_task_ids = sys.argv[3]
+suite_names = sys.argv[4:]
 if len(suite_names) == 0:
     cfg = Config.fromfile(config_path)
     suite_names = as_list(get_eval_runner_cfg(cfg).task_suite_name)
@@ -424,7 +513,7 @@ benchmark_dict = benchmark.get_benchmark_dict()
 with open(output_file, 'w', encoding='utf-8') as f:
     for suite_name in suite_names:
         task_suite = benchmark_dict[suite_name]()
-        for task_id in range(int(task_suite.n_tasks)):
+        for task_id in parse_task_ids(raw_task_ids, int(task_suite.n_tasks)):
             f.write(f'{suite_name},{task_id}\n')
 PY
 fi
@@ -460,6 +549,8 @@ write_manager_config() {
     echo "num_trials_per_task: ${NUM_TRIALS_PER_TASK:-config default}"
     echo "model_build_device: ${MODEL_BUILD_DEVICE:-config default}"
     echo "model_build_dtype: ${MODEL_BUILD_DTYPE:-config default}"
+    echo "eval_shard_strategy: ${EVAL_SHARD_STRATEGY}"
+    echo "task_ids: ${TASK_IDS:-all}"
     echo "preprocess_every_step: ${PREPROCESS_EVERY_STEP:-config default}"
     echo "save_rollout_videos: ${SAVE_ROLLOUT_VIDEOS:-config default}"
     echo "save_failed_rollout_videos: ${SAVE_FAILED_ROLLOUT_VIDEOS:-config default}"
@@ -537,6 +628,52 @@ cleanup_children() {
 }
 trap cleanup_children INT TERM
 
+build_worker_cfg_options() {
+  local suite="$1"
+  local task_id="$2"
+  local gpu="$3"
+  local suffix="$4"
+  local cfg_options=(
+    "${EVAL_RUNNER_PREFIX}.task_suite_name=${suite}"
+    "${EVAL_RUNNER_PREFIX}.task_ids=[${task_id}]"
+    "${EVAL_RUNNER_PREFIX}.eval_shard_strategy=${EVAL_SHARD_STRATEGY}"
+    "${EVAL_RUNNER_PREFIX}.run_id_suffix=${suffix}"
+    "${EVAL_RUNNER_PREFIX}.result_output_dir=${OUTPUT_DIR}"
+    "${EVAL_RUNNER_PREFIX}.result_gpu_id=${gpu}"
+  )
+
+  if [[ "${NUM_TRIALS_PER_TASK_SOURCE}" != "config" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.num_trials_per_task=${NUM_TRIALS_PER_TASK}")
+  fi
+  if [[ -n "${MAX_STEPS}" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.max_steps=${MAX_STEPS}")
+  fi
+  if [[ "${MODEL_BUILD_DEVICE_SOURCE}" != "config" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.model_build_device=${MODEL_BUILD_DEVICE}")
+  fi
+  if [[ "${MODEL_BUILD_DTYPE_SOURCE}" != "config" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.model_build_dtype=${MODEL_BUILD_DTYPE}")
+  fi
+  if [[ -n "${PREPROCESS_EVERY_STEP}" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.preprocess_every_step=$(bool_cfg "${PREPROCESS_EVERY_STEP}")")
+  fi
+  if [[ "${SAVE_ROLLOUT_VIDEOS_SOURCE}" != "config" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.save_rollout_videos=$(bool_cfg "${SAVE_ROLLOUT_VIDEOS}")")
+  fi
+  if [[ -n "${SAVE_FAILED_ROLLOUT_VIDEOS}" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.save_failed_rollout_videos=$(bool_cfg "${SAVE_FAILED_ROLLOUT_VIDEOS}")")
+  fi
+  if [[ "${SAVE_MULTI_VIEW_ROLLOUT_VIDEOS_SOURCE}" != "config" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.save_multi_view_rollout_videos=$(bool_cfg "${SAVE_MULTI_VIEW_ROLLOUT_VIDEOS}")")
+  fi
+  if [[ "${ROLLOUT_DIR_SOURCE}" == "env" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.rollout_dir=${ROLLOUT_DIR}")
+  fi
+
+  # Per-task overrides come last so manager task assignment always wins.
+  worker_cfg_options=("${WORKER_USER_CFG_OPTIONS[@]}" "${cfg_options[@]}")
+}
+
 launch_task() {
   local suite="$1"
   local task_id="$2"
@@ -554,52 +691,27 @@ launch_task() {
 
   (
     set +e
-    cfg_options=(
-      "${EVAL_RUNNER_PREFIX}.task_suite_name=${suite}"
-      "${EVAL_RUNNER_PREFIX}.task_ids=[${task_id}]"
-      "${EVAL_RUNNER_PREFIX}.run_id_suffix=${suffix}"
-      "${EVAL_RUNNER_PREFIX}.result_output_dir=${OUTPUT_DIR}"
-      "${EVAL_RUNNER_PREFIX}.result_gpu_id=${gpu}"
-    )
-    if [[ "${NUM_TRIALS_PER_TASK_SOURCE}" != "config" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.num_trials_per_task=${NUM_TRIALS_PER_TASK}")
-    fi
-    if [[ -n "${MAX_STEPS}" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.max_steps=${MAX_STEPS}")
-    fi
-    if [[ -n "${EVAL_SHARD_STRATEGY}" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.eval_shard_strategy=${EVAL_SHARD_STRATEGY}")
-    fi
-    if [[ "${MODEL_BUILD_DEVICE_SOURCE}" != "config" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.model_build_device=${MODEL_BUILD_DEVICE}")
-    fi
-    if [[ "${MODEL_BUILD_DTYPE_SOURCE}" != "config" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.model_build_dtype=${MODEL_BUILD_DTYPE}")
-    fi
-    if [[ -n "${PREPROCESS_EVERY_STEP}" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.preprocess_every_step=$(bool_cfg "${PREPROCESS_EVERY_STEP}")")
-    fi
-    if [[ "${SAVE_ROLLOUT_VIDEOS_SOURCE}" != "config" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.save_rollout_videos=$(bool_cfg "${SAVE_ROLLOUT_VIDEOS}")")
-    fi
-    if [[ -n "${SAVE_FAILED_ROLLOUT_VIDEOS}" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.save_failed_rollout_videos=$(bool_cfg "${SAVE_FAILED_ROLLOUT_VIDEOS}")")
-    fi
-    if [[ "${SAVE_MULTI_VIEW_ROLLOUT_VIDEOS_SOURCE}" != "config" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.save_multi_view_rollout_videos=$(bool_cfg "${SAVE_MULTI_VIEW_ROLLOUT_VIDEOS}")")
-    fi
-    if [[ "${ROLLOUT_DIR_SOURCE}" == "env" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.rollout_dir=${ROLLOUT_DIR}")
-    fi
+    build_worker_cfg_options "${suite}" "${task_id}" "${gpu}" "${suffix}"
 
-    CUDA_VISIBLE_DEVICES="${gpu}" \
+    OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" \
+      FLUXVLA_ALLOW_LIBERO_TASK_SHARDING=1 \
+      CUDA_VISIBLE_DEVICES="${gpu}" \
       NPROC_PER_NODE=1 \
       WORLD_SIZE=1 \
       RANK=0 \
       MASTER_ADDR="${MASTER_ADDR:-localhost}" \
       MASTER_PORT="${port}" \
-      bash scripts/eval.sh "${CONFIG}" "${ckpt_abs}" \
-        --cfg-options "${cfg_options[@]}" "${EXTRA_ARGS[@]}" \
+      torchrun \
+        --nproc-per-node=1 \
+        --nnodes=1 \
+        --node_rank=0 \
+        --master_addr="${MASTER_ADDR:-localhost}" \
+        --master_port="${port}" \
+        "scripts/eval.py" \
+        --config "${CONFIG}" \
+        --ckpt-path "${ckpt_abs}" \
+        --cfg-options "${worker_cfg_options[@]}" \
+        "${FORWARDED_EXTRA_ARGS[@]}" \
         > "${log_file}" 2>&1
     rc=$?
     if [[ "${rc}" -eq 0 && -f "${result_file}" ]]; then
@@ -817,6 +929,8 @@ echo "[manager] max_tasks_per_gpu=${MAX_TASKS_PER_GPU}"
 echo "[manager] num_trials_per_task=${NUM_TRIALS_PER_TASK:-config default}"
 echo "[manager] model_build_device=${MODEL_BUILD_DEVICE:-config default}"
 echo "[manager] model_build_dtype=${MODEL_BUILD_DTYPE:-config default}"
+echo "[manager] eval_shard_strategy=${EVAL_SHARD_STRATEGY}"
+echo "[manager] task_ids=${TASK_IDS:-all}"
 echo "[manager] output=${OUTPUT_DIR}"
 echo "[manager] task_file=${task_file}"
 

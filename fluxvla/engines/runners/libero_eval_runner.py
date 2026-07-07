@@ -35,6 +35,7 @@ from ..utils.root import RUNNERS
 from .base_eval_runner import BaseEvalRunner
 
 overwatch = initialize_overwatch(__name__)
+LIBERO_TASK_SHARDING_ALLOWED_ENV = 'FLUXVLA_ALLOW_LIBERO_TASK_SHARDING'
 
 
 def _get_libero_benchmark():
@@ -92,8 +93,9 @@ class LiberoEvalRunner(BaseEvalRunner):
             existing model construction behavior.
         eval_shard_strategy (str): Episode assignment strategy. ``task``
             keeps all trials for a task on the same rank, reusing the LIBERO
-            env. ``episode`` preserves the old round-robin episode
-            sharding.
+            env and is only enabled for ``scripts/eval_libero_manager.sh``
+            workers. ``episode`` preserves the old round-robin episode
+            sharding for direct eval launches.
         preprocess_every_step (bool): Whether to build the next model batch
             after every simulator step. Chunked eval only preprocesses
             when a new action chunk is needed.
@@ -481,7 +483,13 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.model_build_device = model_build_device
         self.model_build_dtype = self._resolve_model_build_dtype(
             model_build_dtype)
-        self.eval_shard_strategy = eval_shard_strategy
+        self.eval_shard_strategy = str(eval_shard_strategy).lower()
+        if (self.eval_shard_strategy == 'task'
+                and os.environ.get(LIBERO_TASK_SHARDING_ALLOWED_ENV) != '1'):
+            raise ValueError(
+                'LIBERO task sharding is only supported through '
+                'scripts/eval_libero_manager.sh. Direct eval launches should '
+                'use eval_shard_strategy=episode.')
         self.preprocess_every_step = preprocess_every_step
         self.save_rollout_videos = save_rollout_videos
         self.save_failed_rollout_videos = save_failed_rollout_videos

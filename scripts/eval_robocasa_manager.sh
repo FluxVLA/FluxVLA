@@ -48,7 +48,39 @@ FEISHU_SHEET_URL="${FEISHU_SHEET_URL:-}"
 FEISHU_APP_ID="${FEISHU_APP_ID:-}"
 FEISHU_APP_SECRET="${FEISHU_APP_SECRET:-}"
 FEISHU_TIMEOUT="${FEISHU_TIMEOUT:-10}"
-EXTRA_ARGS=("$@")
+USER_CFG_OPTIONS=()
+WORKER_USER_CFG_OPTIONS=()
+FORWARDED_EXTRA_ARGS=()
+
+split_user_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --cfg-options)
+        shift
+        while [[ $# -gt 0 && "$1" != --* ]]; do
+          USER_CFG_OPTIONS+=("$1")
+          case "$1" in
+            eval.manager.*) ;;
+            *) WORKER_USER_CFG_OPTIONS+=("$1") ;;
+          esac
+          shift
+        done
+        ;;
+      *)
+        FORWARDED_EXTRA_ARGS+=("$1")
+        shift
+        ;;
+    esac
+  done
+}
+
+# Manager-only overrides control scheduling and must not reach eval.py workers.
+split_user_args "$@"
+
+CFG_PARSE_ARGS=("${CONFIG}")
+if [[ "${#USER_CFG_OPTIONS[@]}" -gt 0 ]]; then
+  CFG_PARSE_ARGS+=("--cfg-options" "${USER_CFG_OPTIONS[@]}")
+fi
 
 DEFAULT_NUM_GPUS="8"
 DEFAULT_MAX_TASKS_PER_GPU="1"
@@ -77,29 +109,10 @@ CFG_FEISHU_SHEET_URL=""
 CFG_FEISHU_APP_ID=""
 CFG_FEISHU_APP_SECRET=""
 
-while IFS=$'\t' read -r key value; do
-  case "${key}" in
-    CFG_EVAL_RUNNER_PREFIX) CFG_EVAL_RUNNER_PREFIX="${value}" ;;
-    CFG_NUM_GPUS) CFG_NUM_GPUS="${value}" ;;
-    CFG_MAX_TASKS_PER_GPU) CFG_MAX_TASKS_PER_GPU="${value}" ;;
-    CFG_NUM_TRIALS_PER_TASK) CFG_NUM_TRIALS_PER_TASK="${value}" ;;
-    CFG_MASTER_PORT_BASE) CFG_MASTER_PORT_BASE="${value}" ;;
-    CFG_MONITOR_INTERVAL) CFG_MONITOR_INTERVAL="${value}" ;;
-    CFG_STATUS_INTERVAL) CFG_STATUS_INTERVAL="${value}" ;;
-    CFG_LAUNCH_DELAY) CFG_LAUNCH_DELAY="${value}" ;;
-    CFG_SUMMARY_TOOL) CFG_SUMMARY_TOOL="${value}" ;;
-    CFG_TASK_FILE) CFG_TASK_FILE="${value}" ;;
-    CFG_TASK_IDS) CFG_TASK_IDS="${value}" ;;
-    CFG_OUTPUT_DIR) CFG_OUTPUT_DIR="${value}" ;;
-    CFG_SAVE_VIDEO) CFG_SAVE_VIDEO="${value}" ;;
-    CFG_FEISHU_SHEET_URL) CFG_FEISHU_SHEET_URL="${value}" ;;
-    CFG_FEISHU_APP_ID) CFG_FEISHU_APP_ID="${value}" ;;
-    CFG_FEISHU_APP_SECRET) CFG_FEISHU_APP_SECRET="${value}" ;;
-  esac
-done < <(python - "${CONFIG}" <<'PY'
-import sys
+CFG_VALUES="$(python - "${CFG_PARSE_ARGS[@]}" <<'PY'
+import argparse
 
-from mmengine import Config
+from mmengine import Config, DictAction
 
 
 def get_path(obj, path):
@@ -134,7 +147,14 @@ def format_value(value):
     return str(value)
 
 
-cfg = Config.fromfile(sys.argv[1])
+parser = argparse.ArgumentParser()
+parser.add_argument('config')
+parser.add_argument('--cfg-options', nargs='+', action=DictAction)
+args, _ = parser.parse_known_args()
+
+cfg = Config.fromfile(args.config)
+if args.cfg_options is not None:
+    cfg.merge_from_dict(args.cfg_options)
 eval_runner_prefix = 'eval.runner' if hasattr(cfg.eval, 'runner') else 'eval'
 fields = {
     'CFG_NUM_GPUS': ('eval.manager.num_gpus', ),
@@ -165,7 +185,28 @@ print(f'CFG_EVAL_RUNNER_PREFIX\t{eval_runner_prefix}')
 for name, paths in fields.items():
     print(f'{name}\t{format_value(first_path(cfg, *paths))}')
 PY
-)
+)"
+
+while IFS=$'\t' read -r key value; do
+  case "${key}" in
+    CFG_EVAL_RUNNER_PREFIX) CFG_EVAL_RUNNER_PREFIX="${value}" ;;
+    CFG_NUM_GPUS) CFG_NUM_GPUS="${value}" ;;
+    CFG_MAX_TASKS_PER_GPU) CFG_MAX_TASKS_PER_GPU="${value}" ;;
+    CFG_NUM_TRIALS_PER_TASK) CFG_NUM_TRIALS_PER_TASK="${value}" ;;
+    CFG_MASTER_PORT_BASE) CFG_MASTER_PORT_BASE="${value}" ;;
+    CFG_MONITOR_INTERVAL) CFG_MONITOR_INTERVAL="${value}" ;;
+    CFG_STATUS_INTERVAL) CFG_STATUS_INTERVAL="${value}" ;;
+    CFG_LAUNCH_DELAY) CFG_LAUNCH_DELAY="${value}" ;;
+    CFG_SUMMARY_TOOL) CFG_SUMMARY_TOOL="${value}" ;;
+    CFG_TASK_FILE) CFG_TASK_FILE="${value}" ;;
+    CFG_TASK_IDS) CFG_TASK_IDS="${value}" ;;
+    CFG_OUTPUT_DIR) CFG_OUTPUT_DIR="${value}" ;;
+    CFG_SAVE_VIDEO) CFG_SAVE_VIDEO="${value}" ;;
+    CFG_FEISHU_SHEET_URL) CFG_FEISHU_SHEET_URL="${value}" ;;
+    CFG_FEISHU_APP_ID) CFG_FEISHU_APP_ID="${value}" ;;
+    CFG_FEISHU_APP_SECRET) CFG_FEISHU_APP_SECRET="${value}" ;;
+  esac
+done <<< "${CFG_VALUES}"
 
 EVAL_RUNNER_PREFIX="${CFG_EVAL_RUNNER_PREFIX:-eval}"
 
@@ -319,10 +360,10 @@ task_file="${OUTPUT_DIR}/tasks.txt"
 if [[ -n "${TASK_FILE}" ]]; then
   cp "${TASK_FILE}" "${task_file}"
 else
-  python - "${task_file}" "${CONFIG}" "${TASK_IDS}" <<'PY'
-import sys
+  python - "${task_file}" "${TASK_IDS}" "${CFG_PARSE_ARGS[@]}" <<'PY'
+import argparse
 
-from mmengine import Config
+from mmengine import Config, DictAction
 
 
 def get_eval_runner_cfg(cfg):
@@ -348,12 +389,20 @@ def parse_task_ids(raw, num_tasks):
     return task_ids
 
 
-output_file, config_path, raw_task_ids = sys.argv[1:4]
-cfg = Config.fromfile(config_path)
+parser = argparse.ArgumentParser()
+parser.add_argument('output_file')
+parser.add_argument('raw_task_ids')
+parser.add_argument('config')
+parser.add_argument('--cfg-options', nargs='+', action=DictAction)
+args, _ = parser.parse_known_args()
+
+cfg = Config.fromfile(args.config)
+if args.cfg_options is not None:
+    cfg.merge_from_dict(args.cfg_options)
 runner_cfg = get_eval_runner_cfg(cfg)
 num_tasks = len(runner_cfg.task_list)
-with open(output_file, 'w', encoding='utf-8') as f:
-    for task_id in parse_task_ids(raw_task_ids, num_tasks):
+with open(args.output_file, 'w', encoding='utf-8') as f:
+    for task_id in parse_task_ids(args.raw_task_ids, num_tasks):
         f.write(f'{task_id}\n')
 PY
 fi
@@ -450,6 +499,32 @@ cleanup_children() {
 }
 trap cleanup_children INT TERM
 
+build_worker_cfg_options() {
+  local task_id="$1"
+  local gpu="$2"
+  local suffix="$3"
+  local cfg_options=(
+    "${EVAL_RUNNER_PREFIX}.task_ids=[${task_id}]"
+    "${EVAL_RUNNER_PREFIX}.eval_shard_strategy=${EVAL_SHARD_STRATEGY}"
+    "${EVAL_RUNNER_PREFIX}.run_id_suffix=${suffix}"
+    "${EVAL_RUNNER_PREFIX}.result_output_dir=${OUTPUT_DIR}"
+    "${EVAL_RUNNER_PREFIX}.result_gpu_id=${gpu}"
+  )
+
+  if [[ "${NUM_TRIALS_PER_TASK_SOURCE}" != "config" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.num_trials_per_task=${NUM_TRIALS_PER_TASK}")
+  fi
+  if [[ -n "${MAX_EPISODE_STEPS}" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.max_episode_steps=${MAX_EPISODE_STEPS}")
+  fi
+  if [[ "${SAVE_VIDEO_SOURCE}" != "config" ]]; then
+    cfg_options+=("${EVAL_RUNNER_PREFIX}.save_video=$(bool_cfg "${SAVE_VIDEO}")")
+  fi
+
+  # Per-task overrides come last so manager task assignment always wins.
+  worker_cfg_options=("${WORKER_USER_CFG_OPTIONS[@]}" "${cfg_options[@]}")
+}
+
 launch_task() {
   local task_id="$1"
   local gpu="$2"
@@ -466,31 +541,26 @@ launch_task() {
 
   (
     set +e
-    cfg_options=(
-      "${EVAL_RUNNER_PREFIX}.task_ids=[${task_id}]"
-      "${EVAL_RUNNER_PREFIX}.eval_shard_strategy=${EVAL_SHARD_STRATEGY}"
-      "${EVAL_RUNNER_PREFIX}.run_id_suffix=${suffix}"
-      "${EVAL_RUNNER_PREFIX}.result_output_dir=${OUTPUT_DIR}"
-      "${EVAL_RUNNER_PREFIX}.result_gpu_id=${gpu}"
-    )
-    if [[ "${NUM_TRIALS_PER_TASK_SOURCE}" != "config" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.num_trials_per_task=${NUM_TRIALS_PER_TASK}")
-    fi
-    if [[ -n "${MAX_EPISODE_STEPS}" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.max_episode_steps=${MAX_EPISODE_STEPS}")
-    fi
-    if [[ "${SAVE_VIDEO_SOURCE}" != "config" ]]; then
-      cfg_options+=("${EVAL_RUNNER_PREFIX}.save_video=$(bool_cfg "${SAVE_VIDEO}")")
-    fi
+    build_worker_cfg_options "${task_id}" "${gpu}" "${suffix}"
 
-    CUDA_VISIBLE_DEVICES="${gpu}" \
+    OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" \
+      CUDA_VISIBLE_DEVICES="${gpu}" \
       NPROC_PER_NODE=1 \
       WORLD_SIZE=1 \
       RANK=0 \
       MASTER_ADDR="${MASTER_ADDR:-localhost}" \
       MASTER_PORT="${port}" \
-      bash scripts/eval.sh "${CONFIG}" "${ckpt_abs}" \
-        --cfg-options "${cfg_options[@]}" "${EXTRA_ARGS[@]}" \
+      torchrun \
+        --nproc-per-node=1 \
+        --nnodes=1 \
+        --node_rank=0 \
+        --master_addr="${MASTER_ADDR:-localhost}" \
+        --master_port="${port}" \
+        "scripts/eval.py" \
+        --config "${CONFIG}" \
+        --ckpt-path "${ckpt_abs}" \
+        --cfg-options "${worker_cfg_options[@]}" \
+        "${FORWARDED_EXTRA_ARGS[@]}" \
         > "${log_file}" 2>&1
     rc=$?
     if [[ "${rc}" -eq 0 && -f "${result_file}" ]]; then
