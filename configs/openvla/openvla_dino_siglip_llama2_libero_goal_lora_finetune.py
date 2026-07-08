@@ -83,7 +83,7 @@ train_dataloader = dict(
         reshuffle_each_epoch=True,
         datasets=dict(
             type='ParquetDataset',
-            data_root_path='./datasets/libero_goal_lerobotv2.1',
+            data_root_path='./datasets/libero_goal_no_noops_lerobotv2.1',
             transforms=[
                 dict(
                     type='ProcessParquetInputs',
