@@ -189,8 +189,7 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=6,
-    learning_rate=5e-5,
-    weight_decay=0.01,
+    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.01),
     max_grad_norm=1.0,
     sharding_strategy='no-shard',
     collator=dict(
@@ -201,7 +200,6 @@ runner = dict(
         ],
         meta_keys=['task_description', 'prompt', 'info', 'stats']),
     sampler=None,
-    warmup_ratio=0.03,
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path='checkpoints/pi05_base',
@@ -212,7 +210,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler_type='linear-warmup+cosine-decay',
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.03,
+    ),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',

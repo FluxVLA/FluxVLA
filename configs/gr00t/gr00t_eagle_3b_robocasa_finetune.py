@@ -153,7 +153,6 @@ runner = dict(
     save_iter_interval=500,
     save_epoch_interval=1,
     max_keep_ckpts=5,
-    save_full_model=True,
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path='fluxvla/models/third_party_models/eagle2_hg_model'),

@@ -187,7 +187,6 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    stage='vla-full-train',
     max_epochs=3,
     optimizer=dict(lr=2e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,

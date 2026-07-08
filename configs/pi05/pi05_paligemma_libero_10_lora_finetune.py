@@ -205,7 +205,6 @@ runner = dict(
     max_epochs=24,
     optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,
-    sharding_strategy='no-shard',
     collator=dict(
         type='DictCollator',
         keys=[
@@ -229,8 +228,7 @@ runner = dict(
     ),
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
-    mixed_precision_dtype='bf16',
-    change_key_name=False)
+    mixed_precision_dtype='bf16')
 
 eval = dict(
     type='LiberoEvalRunner',
