@@ -17,6 +17,7 @@ import gc
 import json
 import math
 import os
+import pickle
 import time
 from pathlib import Path
 from typing import Dict
@@ -655,23 +656,51 @@ class LiberoEvalRunner(BaseEvalRunner):
                 for item in value)
         return value
 
+    @staticmethod
+    def _cfg_parallel_broadcast_payload(payload=None, src: int = 0):
+        """Broadcast a small Python payload as a CUDA uint8 tensor.
+
+        This follows the official DreamZero serving path more closely than
+        ``broadcast_object_list``: rank 0 pickles the payload, broadcasts the
+        byte count, then broadcasts the serialized bytes as a tensor.
+        """
+        device = torch.device('cuda', torch.cuda.current_device())
+        rank = dist.get_rank()
+        if rank == src:
+            serialized = pickle.dumps(payload, protocol=pickle.HIGHEST_PROTOCOL)
+            data_size = len(serialized)
+            size_tensor = torch.tensor(
+                [data_size], dtype=torch.int64, device=device)
+            dist.broadcast(size_tensor, src=src)
+            data_tensor = torch.frombuffer(
+                bytearray(serialized), dtype=torch.uint8).to(
+                    device=device, non_blocking=True)
+            dist.broadcast(data_tensor, src=src)
+            return payload
+
+        size_tensor = torch.zeros(1, dtype=torch.int64, device=device)
+        dist.broadcast(size_tensor, src=src)
+        data_size = int(size_tensor.item())
+        data_tensor = torch.empty(data_size, dtype=torch.uint8, device=device)
+        dist.broadcast(data_tensor, src=src)
+        return pickle.loads(data_tensor.cpu().numpy().tobytes())
+
     def _cfg_parallel_broadcast_predict(self, predict_kwargs: Dict) -> None:
-        payload = {
+        self._cfg_parallel_broadcast_payload({
             'command': 'predict',
             'predict_kwargs': self._move_payload_to_cpu(predict_kwargs),
-        }
-        dist.broadcast_object_list([payload], src=0)
+        })
 
     @staticmethod
     def _cfg_parallel_broadcast_stop() -> None:
-        dist.broadcast_object_list([{'command': 'stop'}], src=0)
+        LiberoEvalRunner._cfg_parallel_broadcast_payload({
+            'command': 'stop'
+        })
 
     def _run_cfg_parallel_worker(self) -> None:
         device = torch.device('cuda', torch.cuda.current_device())
         while True:
-            holder = [None]
-            dist.broadcast_object_list(holder, src=0)
-            payload = holder[0]
+            payload = self._cfg_parallel_broadcast_payload(src=0)
             if payload.get('command') == 'stop':
                 return
             if payload.get('command') != 'predict':
