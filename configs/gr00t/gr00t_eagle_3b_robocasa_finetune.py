@@ -75,7 +75,7 @@ _ROBOCASA_TASK_DIRS = [
 ]
 
 train_dataloader = dict(
-    per_device_batch_size=4,
+    per_device_batch_size=16,
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
@@ -146,13 +146,14 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_epochs=12,
-    optimizer=dict(lr=2e-5, type='AdamW', weight_decay=0.0),
+    max_epochs=None,
+    max_steps=30000,
+    optimizer=dict(lr=6e-5, type='AdamW', weight_decay=1e-5),
     max_grad_norm=1.0,
     sampler=None,
-    save_iter_interval=500,
+    save_iter_interval=5000,
     save_epoch_interval=1,
-    max_keep_ckpts=5,
+    max_keep_ckpts=1,
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path='fluxvla/models/third_party_models/eagle2_hg_model'),
@@ -170,7 +171,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler=dict(type='constant'),
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.05,
+    ),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
