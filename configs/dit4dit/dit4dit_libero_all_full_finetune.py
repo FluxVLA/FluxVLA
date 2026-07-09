@@ -75,9 +75,9 @@ model = dict(
         conditional_frame_timestep=0.0001,
         future_loss_type='flow_matching',
         detach_hidden_states=True,
-        flow_matching_time_distribution='logit_normal',
-        flow_matching_high_sigma_ratio=0.05,
-        flow_matching_high_sigma_min=0.98,
+        flow_matching_time_distribution='uniform',
+        flow_matching_high_sigma_ratio=None,
+        flow_matching_high_sigma_min=None,
         fsdp_min_num_params=10_000_000,
     ),
     vla_head=dict(

@@ -348,7 +348,8 @@ class ProcessDiT4DiTLiberoEvalInputs:
 
     The reference DiT4DiT LIBERO client rotates both camera views, resizes
     each view with OpenCV INTER_AREA, concatenates primary and wrist views
-    along width, then feeds a single CHW frame in [0, 1].
+    along width, then feeds a single CHW frame in [-1, 1], matching the
+    DiT4DiT training image range.
     """
 
     def __init__(self,
@@ -387,7 +388,8 @@ class ProcessDiT4DiTLiberoEvalInputs:
         concat_img = np.concatenate(resized_views, axis=1)
         pixel_values = torch.from_numpy(concat_img).permute(
             2, 0, 1).contiguous().float()
-        inputs['pixel_values'] = (pixel_values / 255.0).unsqueeze(0)
+        inputs['pixel_values'] = ((pixel_values / 255.0) * 2.0 -
+                                  1.0).unsqueeze(0)
         inputs['img_masks'] = [True]
         inputs['replay_img'] = replay_img
         if self.embodiment_id is not None:
