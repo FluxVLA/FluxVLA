@@ -111,7 +111,7 @@ model = dict(
 )
 
 train_dataloader = dict(
-    per_device_batch_size=4,
+    per_device_batch_size=8,
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
