@@ -132,10 +132,9 @@ model = dict(
     # language backbone must adapt to the RoboCasa 64-token state format.
     freeze_llm_backbone=False,
     freeze_vision_backbone=False,
-    # --- 预训练权重 ---
-    # 使用 PI0.5 base 预训练权重 (非 LIBERO 微调权重)
-    # 这样模型从通用 base 开始，在 Robocasa 数据上从头微调
-    pretrained_name_or_path='./checkpoints/pi05_base/model.safetensors',
+    pretrained_name_or_path=(
+        'work_dirs/pi05_paligemma_robocasa_finetune_ebac93bfb_bs128/'
+        'step-658448-epoch-07-loss=0.0075.safetensors'),
     # --- 权重 key 映射 (预训练权重 → FluxVLA 模型) ---
     name_mapping={
         'llm_backbone': 'paligemma_with_expert.paligemma.model.language_model',
