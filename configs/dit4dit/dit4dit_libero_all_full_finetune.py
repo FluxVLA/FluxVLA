@@ -110,6 +110,13 @@ model = dict(
     freeze_vlm_backbone=False,
 )
 
+inference_model = model.copy()
+inference_model.update(
+    pretrained_name_or_path=None,
+    name_mapping=None,
+    strict_mapping=False,
+)
+
 train_dataloader = dict(
     per_device_batch_size=8,
     per_device_num_workers=4,
