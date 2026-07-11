@@ -12,6 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .cross_attention_dit import SelfAttentionTransformer
+from .cross_attention_dit import AlternateVLDiT, DiT, SelfAttentionTransformer
 
-__all__ = ['SelfAttentionTransformer']
+__all__ = ['AlternateVLDiT', 'DiT', 'SelfAttentionTransformer']

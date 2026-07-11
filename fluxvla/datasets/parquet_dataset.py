@@ -724,3 +724,49 @@ class PrivateInferenceDataset:
                 2 * (normalized_states - state_low) /
                 (state_high - state_low + 1e-8) - 1, -1, 1), normalized_states)
         return states
+
+
+@DATASETS.register_module()
+class LiberoN17EvalDataset:
+    """LIBERO eval adapter for native GR00T N1.7.
+
+    Keeps the official LIBERO Gymnasium wrapper observation keys unchanged and
+    passes them to ``GrootN17VLA.predict_n17_action_dicts`` through the native
+    processor path.
+    """
+
+    def __init__(self, replay_key: str = 'video.image', **kwargs) -> None:
+        del kwargs
+        self.replay_key = replay_key
+        self.last_debug: Dict[str, Any] = {}
+
+    def __call__(self, inputs: Dict[str, Any]) -> tuple:
+        task = inputs.get('annotation.human.action.task_description',
+                          inputs.get('task_description', ''))
+        observation = {
+            'video.image': np.asarray(inputs['video.image'],
+                                      dtype=np.uint8).copy(),
+            'video.wrist_image': np.asarray(inputs['video.wrist_image'],
+                                            dtype=np.uint8).copy(),
+            'annotation.human.action.task_description': task,
+            'task_description': task,
+        }
+        for key in ('x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'):
+            obs_key = f'state.{key}'
+            if obs_key not in inputs:
+                raise KeyError(f'Missing LIBERO N1.7 observation key '
+                               f'{obs_key!r}. Available: {list(inputs.keys())}')
+            observation[obs_key] = np.asarray(
+                inputs[obs_key], dtype=np.float32).copy()
+
+        replay_img = np.asarray(inputs.get(self.replay_key,
+                                           inputs['video.image'])).copy()
+        self.last_debug = {
+            'task_description': task,
+            'text': task,
+            'prompt': task,
+        }
+        return {
+            'n17_observation': observation,
+            'n17_task': task,
+        }, replay_img
