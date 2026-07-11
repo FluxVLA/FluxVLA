@@ -17,6 +17,7 @@ from typing import Callable, Dict, Optional
 import numpy as np
 import torch
 from PIL import Image
+from safetensors.torch import load_file
 
 from fluxvla.engines import HEADS, VLAS, initialize_overwatch
 from fluxvla.engines.utils.name_map import str_to_dtype
@@ -29,6 +30,8 @@ from ..third_party_models.fastwam.modules.helpers.loader import \
     load_wan22_ti2v_5b_components  # noqa: E501
 from ..third_party_models.fastwam.modules.mot import MoT
 from ..third_party_models.fastwam.modules.wan_video_dit import WanVideoDiT
+from ..third_party_models.fastwam.modules.wan_video_text_encoder import \
+    WanTextEncoder
 from ..third_party_models.fastwam.modules.wan_video_vae import WanVideoVAE38
 from .base_vla import BaseVLA
 
@@ -143,7 +146,9 @@ class FastWAMVLA(BaseVLA):
             action_expert = ActionDiT(**action_dit_config).to(
                 device=device, dtype=self.torch_dtype)
             vae = WanVideoVAE38().to(device=device, dtype=self.torch_dtype)
-            text_encoder = None
+            text_encoder = (
+                WanTextEncoder().to(device=device, dtype=self.torch_dtype) if
+                bool(backbone_cfg.get('load_text_encoder', False)) else None)
         else:
             components = load_wan22_ti2v_5b_components(
                 device=device,
@@ -663,6 +668,25 @@ class FastWAMVLA(BaseVLA):
         torch.save(payload, path)
 
     def load_checkpoint(self, path, optimizer=None):
+        path = str(path)
+        if path.endswith('.safetensors'):
+            state_dict = load_file(path, device='cpu')
+            missing, unexpected = self.load_state_dict(
+                state_dict, strict=False)
+            if missing:
+                overwatch.warning(
+                    'Missing keys while loading FastWAM safetensors: '
+                    f'{missing[:10]}')
+            if unexpected:
+                overwatch.warning(
+                    'Unexpected keys while loading FastWAM safetensors: '
+                    f'{unexpected[:10]}')
+            return {
+                'model': state_dict,
+                'missing_keys': list(missing),
+                'unexpected_keys': list(unexpected),
+            }
+
         payload = torch.load(path, map_location='cpu')
         if isinstance(payload, dict) and 'mot' in payload:
             self.vla_head.mot.load_state_dict(payload['mot'], strict=False)

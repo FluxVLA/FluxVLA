@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import inspect
+import os
 from typing import Any
 
 import torch
@@ -138,6 +139,14 @@ def _resolve_configs(model_id: str, tokenizer_model_id: str, redirect_common_fil
     return dit_config, text_config, vae_config, tokenizer_config
 
 
+def _as_tokenizer_dir(path):
+    if isinstance(path, list):
+        if len(path) == 0:
+            raise FileNotFoundError('Tokenizer path resolution returned no files.')
+        return os.path.commonpath(path)
+    return path
+
+
 def load_wan22_ti2v_5b_components(
     device: str = "cuda",
     torch_dtype: torch.dtype = torch.bfloat16,
@@ -196,7 +205,7 @@ def load_wan22_ti2v_5b_components(
             device=device,
         )
         tokenizer = HuggingfaceTokenizer(
-            name=tokenizer_config.path,
+            name=_as_tokenizer_dir(tokenizer_config.path),
             seq_len=int(tokenizer_max_len),
             clean="whitespace",
         )

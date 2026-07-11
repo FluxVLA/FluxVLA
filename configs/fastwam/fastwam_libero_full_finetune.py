@@ -15,8 +15,12 @@
 # FastWAM world-action model (uncond) jointly trained on all four LIBERO
 # suites (spatial + object + goal + 10).
 
-_ckpt_root = './checkpoints'
-_tokenizer = _ckpt_root + '/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl'
+_fastwam_package_root = (
+    '/mnt/data/cpfs/mnt/data/liyinhao/checkpoints/fastwam_base_full')
+_fastwam_safetensors = (
+    _fastwam_package_root + '/fastwam_base_full.safetensors')
+_text_embed_cache_dir = _fastwam_package_root + '/text_embeds_cache/libero'
+_tokenizer = _fastwam_package_root + '/tokenizer'
 
 _frame_window_size = 9
 _action_window_size = 32
@@ -39,7 +43,9 @@ _statistic_name = 'libero_30hz_statefix_no_noops'
 
 model = dict(
     type='FastWAMVLA',
-    pretrained_name_or_path=None,
+    pretrained_name_or_path=_fastwam_safetensors,
+    skip_load=True,
+    torch_dtype='bf16',
     num_views=2,
     frame_window_size=_frame_window_size,
     proprio_dim=8,
@@ -90,10 +96,8 @@ model = dict(
             eps=1.0e-06,
             use_gradient_checkpointing=True,
         ),
-        action_dit_pretrained_path=(
-            _ckpt_root +
-            '/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt'),
-        skip_dit_load_from_pretrain=False,
+        action_dit_pretrained_path=None,
+        skip_dit_load_from_pretrain=True,
         video_scheduler=dict(
             train_shift=5.0, infer_shift=5.0, num_train_timesteps=1000),
         action_scheduler=dict(
@@ -175,8 +179,7 @@ train_dataloader = dict(
                 ),
                 dict(
                     type='LoadCachedTextEmbedding',
-                    cache_dir=('/root/projects/ryanhu/data/'
-                               'text_embeds_cache/libero'),
+                    cache_dir=_text_embed_cache_dir,
                     context_len=128,
                     enc_id='wan22ti2v5b',
                 ),
