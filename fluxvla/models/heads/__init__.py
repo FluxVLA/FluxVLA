@@ -24,6 +24,7 @@ import_heterogeneous_runtime_symbols(
     {
         'dit4dit_action_head': ['DiT4DiTActionHead'],
         'flow_matching_inference_head': ['FlowMatchingInferenceHead'],
+        'groot_n17_action_head': ['GrootN17ActionHead'],
         'xvla_head': ['XVLAFlowMatchingHead'],
         'dreamzero_head': ['DreamZeroHead'],
         'fastwam_head': ['FastWAMHead', 'FastWAMJointHead', 'FastWAMIDMHead'],
