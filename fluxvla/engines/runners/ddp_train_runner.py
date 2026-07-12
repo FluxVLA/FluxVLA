@@ -118,6 +118,7 @@ class DDPTrainRunner(BaseTrainRunner):
                  evaluator: Optional[Dict] = None,
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None,
+                 lora_before_device_move: bool = True,
                  static_graph: bool = True,
                  **kwargs) -> None:
 
@@ -150,6 +151,7 @@ class DDPTrainRunner(BaseTrainRunner):
         self.cfg = cfg
         self.args = args
         self.max_grad_norm = max_grad_norm
+        self.lora_before_device_move = lora_before_device_move
         self.static_graph = static_graph
         self.distributed_state = overwatch.distributed_state
         self.recent_losses = deque(maxlen=self.grad_accumulation_steps)
@@ -173,6 +175,35 @@ class DDPTrainRunner(BaseTrainRunner):
         if overwatch.is_rank_zero():
             overwatch.info('DDP model state restored from checkpoint')
 
+    def _model_uses_lora(self) -> bool:
+        return bool(getattr(self.cfg.model, 'use_lora', False))
+
+    def _move_vla_to_device(self, target_device: torch.device) -> None:
+        torch.cuda.empty_cache()
+        if (self.enable_mixed_precision_training
+                and self.mixed_precision_dtype == torch.bfloat16):
+            self.vla = self.vla.to(device=target_device, dtype=torch.bfloat16)
+        else:
+            self.vla = self.vla.to(target_device)
+
+    def _apply_lora(self) -> None:
+        # Use configured lora_alpha, default to lora_rank if not specified.
+        lora_alpha = getattr(self.cfg.model, 'lora_alpha',
+                             self.cfg.model.lora_rank)
+        modules_to_save = getattr(self.cfg.model, 'modules_to_save', None)
+        target_modules = _resolve_lora_target_modules(
+            self.vla, self.cfg.model.lora_target_modules)
+        lora_config = LoraConfig(
+            r=self.cfg.model.lora_rank,
+            lora_alpha=lora_alpha,
+            lora_dropout=self.cfg.model.lora_dropout,
+            target_modules=target_modules,
+            modules_to_save=modules_to_save,
+            init_lora_weights='gaussian',
+        )
+        self.vla = get_peft_model(self.vla, lora_config)
+        self.vla.print_trainable_parameters()
+
     def run_setup(self, n_train_examples: int) -> None:
         """Setup DDP-specific model configuration and distributed training."""
         torch.cuda.empty_cache()
@@ -182,36 +213,23 @@ class DDPTrainRunner(BaseTrainRunner):
         self.vla.freeze_backbones()
         self.vla.from_pretrained()
 
-        # Match the official OpenVLA LoRA setup: load the base model in bf16
-        # first, then let PEFT create trainable adapter weights afterward.
-        torch.cuda.empty_cache()
-        if self.enable_mixed_precision_training and self.mixed_precision_dtype == torch.bfloat16:  # noqa: E501
-            self.vla = self.vla.to(device=target_device, dtype=torch.bfloat16)
+        use_lora = self._model_uses_lora()
+        if use_lora and self.lora_before_device_move:
+            self._apply_lora()
+
+            # Preserve the OpenVLA LoRA recipe that produced the known-good
+            # LIBERO results: create adapters and bind optimizer before the
+            # mixed-precision device move, then move the full PEFT-wrapped
+            # model together.
+            self._setup_optimizer_and_scheduler(n_train_examples)
+            self._move_vla_to_device(target_device)
         else:
-            self.vla = self.vla.to(target_device)
+            self._move_vla_to_device(target_device)
+            if use_lora:
+                self._apply_lora()
 
-        # Apply LoRA if specified
-        if hasattr(self.cfg.model, 'use_lora') and self.cfg.model.use_lora:
-            # Use configured lora_alpha, default to lora_rank if not specified
-            lora_alpha = getattr(self.cfg.model, 'lora_alpha',
-                                 self.cfg.model.lora_rank)
-            # Get modules_to_save for full fine-tuning of specific modules
-            modules_to_save = getattr(self.cfg.model, 'modules_to_save', None)
-            target_modules = _resolve_lora_target_modules(
-                self.vla, self.cfg.model.lora_target_modules)
-            lora_config = LoraConfig(
-                r=self.cfg.model.lora_rank,
-                lora_alpha=lora_alpha,
-                lora_dropout=self.cfg.model.lora_dropout,
-                target_modules=target_modules,
-                modules_to_save=modules_to_save,
-                init_lora_weights='gaussian',
-            )
-            self.vla = get_peft_model(self.vla, lora_config)
-            self.vla.print_trainable_parameters()
-
-        # Setup optimizer and scheduler using base class method.
-        self._setup_optimizer_and_scheduler(n_train_examples)
+            # Setup optimizer and scheduler using base class method.
+            self._setup_optimizer_and_scheduler(n_train_examples)
 
         # Apply Gradient Checkpointing (after moving to device)
         if self.enable_gradient_checkpointing:

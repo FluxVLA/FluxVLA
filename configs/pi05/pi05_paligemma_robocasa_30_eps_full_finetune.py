@@ -134,7 +134,7 @@ model = dict(
     freeze_vision_backbone=False,
     pretrained_name_or_path=(
         'work_dirs/pi05_paligemma_robocasa_finetune_ebac93bfb_bs128/'
-        'step-658448-epoch-07-loss=0.0075.safetensors'),
+        'checkpoints/step-658448-epoch-07-loss=0.0075.safetensors'),
     # --- 权重 key 映射 (预训练权重 → FluxVLA 模型) ---
     name_mapping={
         'llm_backbone': 'paligemma_with_expert.paligemma.model.language_model',
