@@ -335,7 +335,7 @@ train_dataloader = dict(
 # ============================================================
 runner = dict(
     type='FSDPTrainRunner',  # Fully Sharded Data Parallel
-    max_epochs=12,
+    max_epochs=6,
     # PI0.5 RoboCasa 需要 full-finetune 语言主干来学习离散 state prompt；
     # 使用和现有 PI0.5 full-finetune 配置一致的 warmup+cosine recipe。
     optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
