@@ -17,6 +17,9 @@
 
 _ckpt_root = './checkpoints'
 _tokenizer = _ckpt_root + '/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl'
+_text_prompt_template = (
+    "A video recorded from a robot's point of view executing the following "
+    'instruction: {task}')
 
 _frame_window_size = 9
 _action_window_size = 32
@@ -50,7 +53,13 @@ model = dict(
         model_id='Wan-AI/Wan2.2-TI2V-5B',
         tokenizer_model_id='Wan-AI/Wan2.1-T2V-1.3B',
         tokenizer_max_len=128,
-        load_text_encoder=False,
+        load_text_encoder=True,
+        text_embed_cache_dir=None,
+        text_embed_cache_context_len=128,
+        text_embed_cache_enc_id='wan22ti2v5b',
+        text_embed_cache_size=256,
+        text_embed_cache_device='cpu',
+        text_embed_prompt_template=_text_prompt_template,
         redirect_common_files=False,
     ),
     vla_head=dict(
@@ -102,8 +111,8 @@ model = dict(
     ),
 )
 
-# Evaluation loads the T5 text encoder so prompts are encoded on the fly,
-# while training keeps the cached-context path (load_text_encoder=False).
+# Training and evaluation encode unseen prompts online, then reuse a
+# per-process CPU-memory LRU cache without reading or writing cache files.
 inference_model = model.copy()
 inference_model['vlm_backbone'] = dict(
     model['vlm_backbone'], load_text_encoder=True)
@@ -174,11 +183,12 @@ train_dataloader = dict(
                     tile_direction='horizontal',
                 ),
                 dict(
-                    type='LoadCachedTextEmbedding',
-                    cache_dir=('/root/projects/ryanhu/data/'
-                               'text_embeds_cache/libero'),
-                    context_len=128,
-                    enc_id='wan22ti2v5b',
+                    type='LiberoPromptFromInputs',
+                    tokenizer=dict(
+                        type='PretrainedTokenizer', model_path=_tokenizer),
+                    max_len=128,
+                    use_conversation=False,
+                    prompt_template=_text_prompt_template,
                 ),
             ],
             action_window_size=_action_window_size,
@@ -207,8 +217,8 @@ runner = dict(
             'action_masks',
             'embodiment_ids',
             'frame_masks',
-            'context',
-            'context_mask',
+            'lang_tokens',
+            'lang_masks',
         ],
         meta_keys=['task_description', 'prompt', 'info', 'stats', 'timestamp'],
     ),

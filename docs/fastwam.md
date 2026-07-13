@@ -72,7 +72,26 @@ You can reuse the same output path for the default FastWAM LIBERO configs becaus
 
 ## Text Embedding Cache
 
-FastWAM training configs usually set `load_text_encoder=False` and consume cached `context/context_mask` tensors through `LoadCachedTextEmbedding`. Create the cache before training:
+FastWAM encodes text online by default. The data pipeline tokenizes each task,
+and the frozen T5 encoder only runs when a prompt is not already cached. The
+default LIBERO configs keep embeddings in a per-process CPU-memory LRU cache
+and do not read or write cache files. No precompute command is required. The
+cache is rebuilt after each process restart.
+
+The relevant `vlm_backbone` options are:
+
+- `load_text_encoder=True`
+- `text_embed_cache_dir=None`: disable disk caching
+- `text_embed_cache_device='cpu'`: keep cached embeddings in system RAM
+- `text_embed_cache_size`: maximum number of in-memory prompt embeddings
+- `text_embed_cache_context_len` and `text_embed_cache_enc_id`: disk-cache
+  compatibility fields, used only if disk caching is enabled
+
+One 128x4096 BF16 embedding uses roughly 1 MiB. A four-suite LIBERO run with
+about 40 unique tasks therefore uses roughly 40 MiB of CPU RAM per rank.
+
+To persist embeddings across restarts, set `text_embed_cache_dir` to a writable
+directory. The old precompute tool can then optionally warm that disk cache:
 
 ```bash
 python tools/fastwam/precompute_text_embeds.py \
@@ -81,7 +100,14 @@ python tools/fastwam/precompute_text_embeds.py \
   --context-len 128
 ```
 
-Repeat `--dataset-dir` for multiple dataset roots. Keep the `cache_dir`, `context_len`, and `enc_id` aligned with the `LoadCachedTextEmbedding` transform in your config.
+Repeat `--dataset-dir` for multiple dataset roots. Keep `cache_dir`,
+`context_len`, and `enc_id` aligned with the model cache options. Existing
+precomputed cache files remain compatible when disk caching is enabled.
+
+Online encoding keeps the frozen T5 encoder resident on every training rank
+(roughly 11 GiB of additional BF16 weights). If GPU memory is tighter than
+startup convenience, keep using the optional precompute tool and the legacy
+`LoadCachedTextEmbedding` path instead.
 
 ## Related Configs
 
@@ -91,4 +117,6 @@ Common FastWAM configs include:
 - `configs/fastwam/fastwam_joint_libero_full_finetune.py`
 - `configs/fastwam/fastwam_idm_libero_full_finetune.py`
 
-For RoboCasa or private-data configs, check the config-local `_text_embed_cache_dir`, `_ckpt_root`, and `action_dit_pretrained_path` values before launching training.
+For RoboCasa or private-data configs, check the config-local `_ckpt_root`,
+`text_embed_cache_*`, and `action_dit_pretrained_path` values before launching
+training.

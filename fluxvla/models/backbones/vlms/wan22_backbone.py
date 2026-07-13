@@ -12,7 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Optional
+import hashlib
+import os
+import uuid
+from collections import OrderedDict
+from pathlib import Path
+from typing import Optional, Sequence
 
 import torch
 import torch.nn as nn
@@ -42,11 +47,20 @@ class Wan22Backbone(WanBaseBackbone):
     """
 
     frozen_module_names = ('text_encoder', 'vae')
+    DEFAULT_TEXT_PROMPT = (
+        "A video recorded from a robot's point of view executing the "
+        'following instruction: {task}')
 
     def __init__(
         self,
         vae: Optional[nn.Module] = None,
         text_encoder: Optional[nn.Module] = None,
+        text_embed_cache_dir: Optional[str] = None,
+        text_embed_cache_context_len: int = 128,
+        text_embed_cache_enc_id: str = 'wan22ti2v5b',
+        text_embed_cache_size: int = 256,
+        text_embed_cache_device: str = 'cpu',
+        text_embed_prompt_template: Optional[str] = None,
         device: str = 'cpu',
         torch_dtype: torch.dtype = torch.float32,
         freeze: bool = True,
@@ -58,6 +72,23 @@ class Wan22Backbone(WanBaseBackbone):
             raise ValueError('`Wan22Backbone` requires a `vae` module.')
         self.vae = vae
         self.text_encoder = text_encoder
+        self.text_embed_cache_dir = (
+            None if text_embed_cache_dir is None else str(
+                Path(text_embed_cache_dir).expanduser()))
+        self.text_embed_cache_context_len = int(text_embed_cache_context_len)
+        self.text_embed_cache_enc_id = str(text_embed_cache_enc_id)
+        self.text_embed_cache_size = int(text_embed_cache_size)
+        self.text_embed_cache_device = str(text_embed_cache_device).lower()
+        self.text_embed_prompt_template = (
+            text_embed_prompt_template or self.DEFAULT_TEXT_PROMPT)
+        if self.text_embed_cache_context_len <= 0:
+            raise ValueError('`text_embed_cache_context_len` must be > 0.')
+        if self.text_embed_cache_size < 0:
+            raise ValueError('`text_embed_cache_size` must be >= 0.')
+        if self.text_embed_cache_device not in {'cpu', 'model'}:
+            raise ValueError(
+                '`text_embed_cache_device` must be "cpu" or "model".')
+        self._text_embed_cache = OrderedDict()
 
         if freeze:
             self.freeze_encoder_modules()
@@ -79,6 +110,178 @@ class Wan22Backbone(WanBaseBackbone):
         post-processing.
         """
         return self.encode_prompt_context(input_ids, attention_mask)
+
+    def _text_cache_path(self, cache_key: str) -> Optional[Path]:
+        if self.text_embed_cache_dir is None:
+            return None
+        filename = (f'{cache_key}.t5_len{self.text_embed_cache_context_len}.'
+                    f'{self.text_embed_cache_enc_id}.pt')
+        return Path(self.text_embed_cache_dir) / filename
+
+    @staticmethod
+    def _token_cache_key(input_ids: torch.Tensor,
+                         attention_mask: torch.Tensor) -> str:
+        valid_ids = input_ids[attention_mask].detach().to(
+            device='cpu', dtype=torch.int64).contiguous()
+        return hashlib.sha256(valid_ids.numpy().tobytes()).hexdigest()
+
+    def _resolve_text_cache_keys(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        prompts: Optional[Sequence[str]],
+    ) -> list[str]:
+        batch_size = int(input_ids.shape[0])
+        if prompts is not None:
+            if isinstance(prompts, str):
+                prompts = [prompts]
+            prompts = list(prompts)
+            if len(prompts) != batch_size:
+                raise ValueError(
+                    '`prompts` length must match the token batch size: '
+                    f'{len(prompts)} != {batch_size}.')
+            return [
+                hashlib.sha256(str(prompt).encode('utf-8')).hexdigest()
+                for prompt in prompts
+            ]
+        return [
+            self._token_cache_key(input_ids[index], attention_mask[index])
+            for index in range(batch_size)
+        ]
+
+    def _get_memory_cached_text(self, cache_key: str):
+        cached = self._text_embed_cache.get(cache_key)
+        if cached is None:
+            return None
+        self._text_embed_cache.move_to_end(cache_key)
+        context, context_mask = cached
+        return (
+            context.to(device=self.device, dtype=self.torch_dtype),
+            context_mask.to(device=self.device, dtype=torch.bool),
+        )
+
+    def _put_memory_cached_text(self, cache_key: str, context: torch.Tensor,
+                                context_mask: torch.Tensor) -> None:
+        if self.text_embed_cache_size == 0:
+            return
+        cache_device = (
+            self.device if self.text_embed_cache_device == 'model' else
+            torch.device('cpu'))
+        self._text_embed_cache[cache_key] = (
+            context.detach().to(device=cache_device).clone(),
+            context_mask.detach().to(device=cache_device).clone(),
+        )
+        self._text_embed_cache.move_to_end(cache_key)
+        while len(self._text_embed_cache) > self.text_embed_cache_size:
+            self._text_embed_cache.popitem(last=False)
+
+    def _load_disk_cached_text(self, cache_key: str):
+        cache_path = self._text_cache_path(cache_key)
+        if cache_path is None or not cache_path.exists():
+            return None
+        payload = torch.load(cache_path, map_location='cpu', weights_only=True)
+        context = payload['context']
+        source_mask = payload['mask'].bool()
+        expected_len = self.text_embed_cache_context_len
+        if context.ndim != 2 or context.shape[0] != expected_len:
+            raise ValueError(
+                'Cached `context` must have shape [context_len, D], got '
+                f'{tuple(context.shape)} in {cache_path}.')
+        if source_mask.ndim != 1 or source_mask.shape[0] != expected_len:
+            raise ValueError(
+                'Cached `mask` must have shape [context_len], got '
+                f'{tuple(source_mask.shape)} in {cache_path}.')
+        context = context.to(device=self.device, dtype=self.torch_dtype)
+        source_mask = source_mask.to(device=self.device, dtype=torch.bool)
+        context = context.clone()
+        context[~source_mask] = 0
+        return context, torch.ones_like(source_mask)
+
+    def _save_disk_cached_text(self, cache_key: str, context: torch.Tensor,
+                               source_mask: torch.Tensor) -> None:
+        cache_path = self._text_cache_path(cache_key)
+        if cache_path is None or cache_path.exists():
+            return
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_path = cache_path.parent / (
+            f'.{cache_path.name}.tmp.{os.getpid()}.{uuid.uuid4().hex}')
+        payload = {
+            'context':
+            context.detach().to(device='cpu',
+                                dtype=torch.bfloat16).contiguous(),
+            'mask':
+            source_mask.detach().to(device='cpu',
+                                    dtype=torch.bool).contiguous(),
+        }
+        try:
+            torch.save(payload, temp_path)
+            os.replace(temp_path, cache_path)
+        finally:
+            if temp_path.exists():
+                temp_path.unlink()
+
+    @torch.no_grad()
+    def encode_prompt_cached(
+        self,
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+        prompts: Optional[Sequence[str]] = None,
+    ):
+        """Encode each unique prompt once and reuse memory/disk cache hits."""
+        ids, mask = self._prepare_prompt_inputs(input_ids, attention_mask)
+        if ids.shape[1] != self.text_embed_cache_context_len:
+            raise ValueError(
+                'Token sequence length must match '
+                f'`text_embed_cache_context_len`: {ids.shape[1]} != '
+                f'{self.text_embed_cache_context_len}.')
+        caching_enabled = (
+            self.text_embed_cache_size > 0
+            or self.text_embed_cache_dir is not None)
+        if not caching_enabled:
+            return self.encode_prompt_context(ids, mask)
+
+        cache_keys = self._resolve_text_cache_keys(ids, mask, prompts)
+        resolved = [None] * len(cache_keys)
+        missing_by_key = OrderedDict()
+        newly_encoded = {}
+        for index, cache_key in enumerate(cache_keys):
+            cached = self._get_memory_cached_text(cache_key)
+            if cached is None:
+                cached = self._load_disk_cached_text(cache_key)
+                if cached is not None:
+                    self._put_memory_cached_text(cache_key, *cached)
+            if cached is not None:
+                resolved[index] = cached
+            elif cache_key not in missing_by_key:
+                missing_by_key[cache_key] = index
+
+        if missing_by_key:
+            missing_keys = list(missing_by_key)
+            missing_indices = [missing_by_key[key] for key in missing_keys]
+            index_tensor = torch.tensor(
+                missing_indices, device=ids.device, dtype=torch.long)
+            missing_ids = ids.index_select(0, index_tensor)
+            missing_mask = mask.index_select(0, index_tensor)
+            contexts, context_masks = self.encode_prompt_context(
+                missing_ids, missing_mask)
+            for offset, cache_key in enumerate(missing_keys):
+                context = contexts[offset]
+                context_mask = context_masks[offset]
+                newly_encoded[cache_key] = (context, context_mask)
+                self._put_memory_cached_text(cache_key, context, context_mask)
+                self._save_disk_cached_text(cache_key, context,
+                                            missing_mask[offset])
+
+        for index, cache_key in enumerate(cache_keys):
+            if resolved[index] is None:
+                resolved[index] = newly_encoded.get(cache_key)
+            if resolved[index] is None:
+                resolved[index] = self._get_memory_cached_text(cache_key)
+            if resolved[index] is None:
+                raise RuntimeError(
+                    f'Failed to resolve cached text embedding {cache_key}.')
+        contexts, context_masks = zip(*resolved)
+        return torch.stack(contexts), torch.stack(context_masks)
 
     @torch.no_grad()
     def encode_prompt_tokens(self, lang_tokens, lang_masks):

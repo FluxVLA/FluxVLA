@@ -188,6 +188,17 @@ class FastWAMVLA(BaseVLA):
         backbone = Wan22Backbone(
             vae=vae,
             text_encoder=text_encoder,
+            text_embed_cache_dir=backbone_cfg.get('text_embed_cache_dir'),
+            text_embed_cache_context_len=int(
+                backbone_cfg.get('text_embed_cache_context_len', 128)),
+            text_embed_cache_enc_id=backbone_cfg.get('text_embed_cache_enc_id',
+                                                     'wan22ti2v5b'),
+            text_embed_cache_size=int(
+                backbone_cfg.get('text_embed_cache_size', 256)),
+            text_embed_cache_device=backbone_cfg.get('text_embed_cache_device',
+                                                     'cpu'),
+            text_embed_prompt_template=backbone_cfg.get(
+                'text_embed_prompt_template'),
             device=device,
             torch_dtype=self.torch_dtype,
             freeze=True,
@@ -230,6 +241,9 @@ class FastWAMVLA(BaseVLA):
         images: Optional[torch.Tensor] = None,
         context: Optional[torch.Tensor] = None,
         context_mask: Optional[torch.Tensor] = None,
+        lang_tokens: Optional[torch.Tensor] = None,
+        lang_masks: Optional[torch.Tensor] = None,
+        task_description=None,
         states: Optional[torch.Tensor] = None,
         actions: Optional[torch.Tensor] = None,
         action_masks: Optional[torch.Tensor] = None,
@@ -237,11 +251,32 @@ class FastWAMVLA(BaseVLA):
         img_masks: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Dict[str, torch.Tensor]:
-        if images is None or context is None or context_mask is None \
-                or actions is None:
+        has_context = context is not None or context_mask is not None
+        has_tokens = lang_tokens is not None or lang_masks is not None
+        if has_context and has_tokens:
             raise ValueError(
-                'FastWAMVLA.forward requires `images`, `context`, '
-                '`context_mask` and `actions`.')
+                '`context/context_mask` and `lang_tokens/lang_masks` are '
+                'mutually exclusive.')
+        if has_tokens:
+            if lang_tokens is None or lang_masks is None:
+                raise ValueError(
+                    '`lang_tokens` and `lang_masks` must be provided '
+                    'together.')
+            prompts = self._format_text_cache_prompts(
+                task_description, int(lang_tokens.shape[0]))
+            context, context_mask = self.vlm_backbone.encode_prompt_cached(
+                lang_tokens, lang_masks, prompts=prompts)
+        elif not has_context:
+            raise ValueError(
+                'FastWAMVLA.forward requires either `context/context_mask` '
+                'or `lang_tokens/lang_masks`.')
+        elif context is None or context_mask is None:
+            raise ValueError(
+                '`context` and `context_mask` must be provided together.')
+
+        if images is None or actions is None:
+            raise ValueError(
+                'FastWAMVLA.forward requires `images` and `actions`.')
         if images.ndim != 5:
             raise ValueError('`images` must be 5D [B, 3, T, H, W], got shape '
                              f'{tuple(images.shape)}')
@@ -304,6 +339,7 @@ class FastWAMVLA(BaseVLA):
         images: Optional[torch.Tensor] = None,
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
+        task_description=None,
         states: Optional[torch.Tensor] = None,
         num_inference_steps: int = 20,
         sigma_shift: Optional[float] = None,
@@ -344,6 +380,7 @@ class FastWAMVLA(BaseVLA):
             proprio=proprio,
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
+            task_description=task_description,
         )
 
         # Joint / idm heads denoise a full imagined video, so they need the
@@ -394,6 +431,7 @@ class FastWAMVLA(BaseVLA):
         proprio: Optional[torch.Tensor],
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
+        task_description=None,
     ):
         if prompt is not None:
             raise ValueError(
@@ -417,8 +455,10 @@ class FastWAMVLA(BaseVLA):
                 raise ValueError(
                     '`lang_tokens` and `lang_masks` must be provided '
                     'together.')
-            context, context_mask = self.vlm_backbone.encode_prompt(
-                lang_tokens, lang_masks)
+            prompts = self._format_text_cache_prompts(
+                task_description, int(lang_tokens.shape[0]))
+            context, context_mask = self.vlm_backbone.encode_prompt_cached(
+                lang_tokens, lang_masks, prompts=prompts)
         else:
             if context is None or context_mask is None:
                 raise ValueError(
@@ -433,6 +473,29 @@ class FastWAMVLA(BaseVLA):
             context, context_mask = self.vla_head._append_proprio_to_context(
                 context=context, context_mask=context_mask, proprio=proprio)
         return context, context_mask
+
+    def _format_text_cache_prompts(self, task_description, batch_size: int):
+        if task_description is None:
+            return None
+        if isinstance(task_description, str):
+            task_descriptions = [task_description]
+        elif isinstance(task_description, np.ndarray):
+            task_descriptions = ([
+                task_description.item()
+            ] if task_description.ndim == 0 else task_description.tolist())
+        else:
+            task_descriptions = list(task_description)
+        if len(task_descriptions) != batch_size:
+            raise ValueError(
+                '`task_description` length must match the token batch size: '
+                f'{len(task_descriptions)} != {batch_size}.')
+        template = self.vlm_backbone.text_embed_prompt_template
+        prompts = []
+        for task in task_descriptions:
+            if isinstance(task, np.ndarray) and task.ndim == 0:
+                task = task.item()
+            prompts.append(template.format(task=str(task)))
+        return prompts
 
     @torch.no_grad()
     def infer(
@@ -490,6 +553,7 @@ class FastWAMVLA(BaseVLA):
             proprio=proprio,
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
+            task_description=None,
         )
         video_latent_shape = self._build_video_latent_shape(
             input_image, num_frames)
@@ -654,6 +718,20 @@ class FastWAMVLA(BaseVLA):
     # ------------------------------------------------------------------
     # Checkpoint I/O (FastWAM ``{mot, proprio_encoder}`` format)
     # ------------------------------------------------------------------
+    def checkpoint_state_dict(self):
+        """Return trainable state without duplicating the frozen T5 weights.
+
+        Model construction supplies the frozen text encoder from the base
+        weights, so including it in every fine-tuning checkpoint would add
+        roughly 11 GiB without changing resume/eval behavior.
+        """
+        state_dict = super().state_dict()
+        prefix = 'vlm_backbone.text_encoder.'
+        return {
+            key: value
+            for key, value in state_dict.items() if not key.startswith(prefix)
+        }
+
     def save_checkpoint(self, path, optimizer=None, step=None) -> None:
         payload = {
             'mot': self.vla_head.mot.state_dict(),
