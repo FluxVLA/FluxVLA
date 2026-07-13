@@ -1515,13 +1515,13 @@ install_av() {
 
   case "${FLUXVLA_AV_INSTALLER}" in
     pip)
-      pip_install_with_mirrors --only-binary=:all: av==14.4.0
+      pip_install_with_mirrors --only-binary=:all: av==14.2.0
       ;;
     conda)
       install_av_with_conda
       ;;
     auto)
-      if pip_install_with_mirrors --only-binary=:all: av==14.4.0; then
+      if pip_install_with_mirrors --only-binary=:all: av==14.2.0; then
         return
       fi
       echo "pip av wheel install failed or timed out; falling back to conda." >&2
