@@ -232,7 +232,7 @@ python -m pip install --upgrade --only-binary=:all: "av==14.2.0"
 python -m pip install --upgrade "torchcodec==0.7.0"  # Torch 2.8; use 0.2.1 for Torch 2.6
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
-python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@7264a820b82e981f5a7f9e1f1fce93d94f01b884"
+python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 python -m pip install --no-build-isolation -e .
 python -c "import av, diffusers, peft, transformers; from diffusers import Cosmos2_5_PredictBasePipeline; print(av.__version__, diffusers.__version__, peft.__version__, transformers.__version__)"
 ```
@@ -383,7 +383,7 @@ If you are not using the installer, the equivalent manual commands are:
 
 ```bash
 pip install "mujoco==3.2.6" gymnasium lxml
-pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@7264a820b82e981f5a7f9e1f1fce93d94f01b884"
+pip install "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 
 git clone https://github.com/NVIDIA/Isaac-GR00T.git ./src/Isaac-GR00T
 git -C ./src/Isaac-GR00T checkout 4af2b622892f7dcb5aae5a3fb70bcb02dc217b96
