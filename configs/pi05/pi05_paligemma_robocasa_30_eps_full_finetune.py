@@ -135,22 +135,14 @@ model = dict(
     pretrained_name_or_path=(
         'work_dirs/pi05_paligemma_robocasa_finetune_ebac93bfb_bs128/'
         'checkpoints/step-658448-epoch-07-loss=0.0075.safetensors'),
-    # --- 权重 key 映射 (预训练权重 → FluxVLA 模型) ---
-    name_mapping={
-        'llm_backbone': 'paligemma_with_expert.paligemma.model.language_model',
-        'vision_backbone.vision':
-        'paligemma_with_expert.paligemma.model.vision_tower',
-        'projector.projector':
-        'paligemma_with_expert.paligemma.model.multi_modal_projector.linear',
-        'llm_expert': 'paligemma_with_expert.gemma_expert.model',
-        'time_mlp_in.projector': 'time_mlp_in',
-        'time_mlp_out.projector': 'time_mlp_out',
-        'action_in_proj.projector': 'action_in_proj',
-        'action_out_proj.projector': 'action_out_proj',
-        'llm_backbone.embed_tokens': 'paligemma_with_expert.paligemma.lm_head',
-        'llm_expert.embed_tokens':
-        'paligemma_with_expert.gemma_expert.lm_head',
-    },
+    # This is a FluxVLA checkpoint whose 812 keys already use the local model
+    # names. The mapping used by checkpoints/pi05_base is intentionally
+    # disabled here; applying it to a FluxVLA checkpoint skips every weight
+    # and silently starts training from random initialization.
+    name_mapping=None,
+    # A full FluxVLA checkpoint must match exactly. Fail at startup instead of
+    # silently training with missing or unexpected parameters.
+    strict_mapping=True,
     # --- 需要转 bf16 的模块 (节省显存) ---
     params_to_change_dtype=[
         'llm_expert.llm.model.layers',
