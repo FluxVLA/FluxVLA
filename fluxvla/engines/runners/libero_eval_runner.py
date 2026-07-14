@@ -44,7 +44,7 @@ def _get_libero_benchmark():
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             'LIBERO is required for simulation evaluation. Install it with '
-            '`bash scripts/install_env.sh sim-only` or '
+            '`bash scripts/install_env.sh sim-only --skip-robocasa` or '
             '`bash scripts/install_env.sh full`.') from exc
     return benchmark
 
@@ -275,6 +275,14 @@ class LiberoEvalRunner(BaseEvalRunner):
         repeats = math.ceil(num_trials / len(initial_states))
         return list(initial_states) * repeats
 
+    def _make_native_libero_env(self, task):
+        """Create the native N1.7 LIBERO Gymnasium env."""
+        import gymnasium as gym
+        from fluxvla.envs.libero_gymnasium_env import register_libero_envs
+
+        register_libero_envs()
+        return gym.make(f'libero_sim/{task.name}')
+
     @staticmethod
     def _build_run_id(task_suite_name: str,
                       model_family: str,
@@ -336,7 +344,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                 if img_keys:
                     break
         if not img_keys:
-            img_keys = ['agentview_image']
+            img_keys = (['video.image', 'video.wrist_image']
+                        if self._native_n17_eval else ['agentview_image'])
 
         img_keys = list(dict.fromkeys(img_keys))
         if self.save_multi_view_rollout_videos:
@@ -349,22 +358,47 @@ class LiberoEvalRunner(BaseEvalRunner):
         view_names = {
             'agentview_image': 'image',
             'robot0_eye_in_hand_image': 'wrist_image',
+            'video.image': 'image',
+            'video.wrist_image': 'wrist_image',
         }
         return view_names.get(img_key, img_key)
+
+    @staticmethod
+    def _resolve_replay_image(obs: Dict, img_key: str):
+        """Resolve replay image keys across raw LIBERO and native N1.7 obs."""
+        if img_key in obs:
+            return obs[img_key], img_key
+        aliases = {
+            'agentview_image': 'video.image',
+            'robot0_eye_in_hand_image': 'video.wrist_image',
+            'video.image': 'agentview_image',
+            'video.wrist_image': 'robot0_eye_in_hand_image',
+        }
+        alias = aliases.get(img_key)
+        if alias is not None and alias in obs:
+            return obs[alias], alias
+        raise KeyError(img_key)
+
+    @staticmethod
+    def _format_replay_image(img, img_key: str):
+        """Return replay image in display orientation."""
+        if img_key.startswith('video.'):
+            return img.copy()
+        return img[::-1, ::-1].copy()
 
     def _get_replay_image(self, obs: Dict, replay_img=None):
         """Extract replay frame, falling back to dataset-produced frame."""
         img_keys = self._get_replay_img_keys()
         try:
             if len(img_keys) == 1:
-                img = obs[img_keys[0]]
-                return img[::-1, ::-1].copy()
+                img, resolved_key = self._resolve_replay_image(obs, img_keys[0])
+                return self._format_replay_image(img, resolved_key)
 
             replay_images = {}
             for img_key in img_keys:
-                img = obs[img_key]
+                img, resolved_key = self._resolve_replay_image(obs, img_key)
                 replay_images[self._get_replay_view_name(img_key)] = \
-                    img[::-1, ::-1].copy()
+                    self._format_replay_image(img, resolved_key)
             return replay_images
         except KeyError:
             if replay_img is not None:
@@ -604,6 +638,8 @@ class LiberoEvalRunner(BaseEvalRunner):
             f'Using mixed precision dtype: {self.mixed_precision_dtype}')
         rank = overwatch.rank()
         world_size = overwatch.world_size()
+        distributed_enabled = (
+            world_size > 1 and dist.is_available() and dist.is_initialized())
         local_episodes = self._build_local_episode_schedule(
             num_tasks,
             self.num_trials_per_task,
@@ -618,7 +654,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         run_timestamp = (
             time.strftime('%Y_%m_%d-%H_%M_%S') if rank == 0 else None)
         run_timestamp_holder = [run_timestamp]
-        dist.broadcast_object_list(run_timestamp_holder, src=0)
+        if distributed_enabled:
+            dist.broadcast_object_list(run_timestamp_holder, src=0)
         run_timestamp = run_timestamp_holder[0]
         run_id = self._build_run_id(
             self.task_suite_name,
@@ -696,18 +733,13 @@ class LiberoEvalRunner(BaseEvalRunner):
                 log_file.write(
                     f'Evaluating Task {task_id}, Trial {trial_id}\n')
 
-                if task_id != current_task_id:
+                if (self._native_n17_eval or env is None
+                        or task_id != current_task_id):
                     if env is not None:
                         env.close()
                     task = task_suite.get_task(task_id)
                     if self._native_n17_eval:
-                        if hasattr(self.vla, '_ensure_official_gr00t_importable'):
-                            self.vla._ensure_official_gr00t_importable()
-                        import gymnasium as gym
-                        from gr00t.eval.sim.LIBERO.libero_env import \
-                            register_libero_envs
-                        register_libero_envs()
-                        env = gym.make(f'libero_sim/{task.name}')
+                        env = self._make_native_libero_env(task)
                         initial_states = None
                         task_description = task.language
                     else:
@@ -913,6 +945,9 @@ class LiberoEvalRunner(BaseEvalRunner):
                                f'({rank_success_rate:.1f}%)\n')
                 log_file.write(success_log)
                 log_file.flush()
+                if self._native_n17_eval and env is not None:
+                    env.close()
+                    env = None
         finally:
             if env is not None:
                 env.close()
@@ -922,16 +957,17 @@ class LiberoEvalRunner(BaseEvalRunner):
         global_episodes = total_episodes.clone()
         global_successes = total_successes.clone()
         task_start_times = torch.tensor(task_start_times, device=cuda_dev)
-        dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
-        # Each (task, trial) is run by exactly one rank under the configured
-        # sharding, so MAX recovers that rank's 0/1 outcome (unrun cells stay
-        # ``-1``); MIN recovers the earliest per-task start time.
-        dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
-        dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
+        if distributed_enabled:
+            dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
+            # Each (task, trial) is run by exactly one rank under the configured
+            # sharding, so MAX recovers that rank's 0/1 outcome (unrun cells stay
+            # ``-1``); MIN recovers the earliest per-task start time.
+            dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
+            dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
         global_episode_count = int(global_episodes[0].item())
         global_success_count = int(global_successes[0].item())
         global_success_rate = (
@@ -972,7 +1008,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                                                  trial_success_grid.cpu(),
                                                  task_start_times.cpu())
         log_file.close()
-        dist.barrier()
+        if distributed_enabled:
+            dist.barrier()
         return
 
     @staticmethod

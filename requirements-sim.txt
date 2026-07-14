@@ -6,5 +6,5 @@ hydra-core==1.2.0
 lxml
 mujoco==3.2.6
 robomimic==0.2.0
--e git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049#egg=robosuite
+-e git+https://github.com/yinchimaoliang/robosuite.git@7264a820b82e981f5a7f9e1f1fce93d94f01b884#egg=robosuite
 tensorflow==2.15.0
