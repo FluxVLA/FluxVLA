@@ -156,14 +156,6 @@ def _check_assets(args, suites: list[str]) -> bool:
     ]
     env_ok = _print_results(env_results)
 
-    print("\n[INFO] official Isaac-GR00T is required for native N1.7 LIBERO "
-          "simulation evaluation. Training with assembly_runtime='native' "
-          "does not import it.")
-    gr00t_ok = _print_results([_check_module("gr00t")])
-    if not gr00t_ok:
-        print("[HINT] Install NVIDIA/Isaac-GR00T N1.7 or set "
-              "FLUXVLA_GROOT_N17_PATH to a local checkout before eval.")
-
     _print_section("Checkpoints")
     ckpt_results = [
         _check_path("GR00T-N1.7-3B",
