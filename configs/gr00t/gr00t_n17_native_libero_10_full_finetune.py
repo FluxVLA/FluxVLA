@@ -131,8 +131,11 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_steps=int(os.environ.get('N17_MAX_STEPS', '20000')),
-    learning_rate=float(os.environ.get('N17_LR', '1e-4')),
-    weight_decay=float(os.environ.get('N17_WEIGHT_DECAY', '1e-5')),
+    optimizer=dict(
+        lr=float(os.environ.get('N17_LR', '1e-4')),
+        type='AdamW',
+        weight_decay=float(os.environ.get('N17_WEIGHT_DECAY', '1e-5')),
+    ),
     max_grad_norm=float(os.environ.get('N17_MAX_GRAD_NORM', '1.0')),
     grad_accumulation_steps=int(
         os.environ.get('N17_GRAD_ACCUM_STEPS', '1')),
@@ -140,7 +143,6 @@ runner = dict(
     save_iter_interval=int(os.environ.get('N17_SAVE_ITER_INTERVAL', '1000')),
     save_epoch_interval=1,
     max_keep_ckpts=int(os.environ.get('N17_MAX_KEEP_CKPTS', '5')),
-    save_full_model=True,
     collator=dict(
         type='GrootN17NativeCollator',
         processor_path=_N17_PROCESSOR_META,
@@ -155,9 +157,11 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler_type=os.environ.get(
-        'N17_LR_SCHEDULER_TYPE', 'linear-warmup+cosine-decay'),
-    warmup_ratio=float(os.environ.get('N17_WARMUP_RATIO', '0.05')),
+    lr_scheduler=dict(
+        type=os.environ.get(
+            'N17_LR_SCHEDULER_TYPE', 'linear-warmup+cosine-decay'),
+        warmup_ratio=float(os.environ.get('N17_WARMUP_RATIO', '0.05')),
+    ),
     enable_gradient_checkpointing=bool(
         int(os.environ.get('N17_ENABLE_GRAD_CKPT', '0'))),
     enable_mixed_precision_training=True,
