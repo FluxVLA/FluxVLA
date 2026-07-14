@@ -12,8 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# FastWAM world-action model (joint) jointly trained on all four LIBERO
-# suites (spatial + object + goal + 10).
+# FastWAM world-action model (joint) trained on LIBERO-10.
 
 _ckpt_root = './checkpoints'
 _tokenizer = _ckpt_root + '/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl'
@@ -25,20 +24,9 @@ _frame_window_size = 9
 _action_window_size = 32
 _frame_sample_stride = 4
 
-# This 30Hz statefix export keeps the same four LIBERO suites in LeRobot v2.1
-# format, but uses 256x256 H.264 videos and different state statistics from
-# the MuJoCo 3.3.2 release. Use a separate statistic key so checkpoints do not
-# silently reuse the old 20Hz `libero_no_noops` normalization.
-_libero_root = (
-    '/mnt/data/cpfs/mnt/data/yanis/datasets/'
-    'libero_4suite_unified_lerobotv2_30hz_statefix_fullfintuneeval/')
-_data_root_path = [
-    _libero_root + 'libero_spatial_lerobotv2.1',
-    _libero_root + 'libero_object_lerobotv2.1',
-    _libero_root + 'libero_goal_lerobotv2.1',
-    _libero_root + 'libero_10_lerobotv2.1',
-]
-_statistic_name = 'libero_30hz_statefix_no_noops'
+# Match the standard GR00T LIBERO-10 data and statistics namespace.
+_data_root_path = 'datasets/libero_10_no_noops_lerobotv2.1'
+_statistic_name = 'libero_10_no_noops'
 
 model = dict(
     type='FastWAMVLA',
@@ -250,18 +238,11 @@ runner = dict(
     ),
 )
 
-# Default full-suite rollout. eval.py runs each listed suite in sequence.
-# norm_stats_key keeps the merged 30Hz statefix statistics carried by the
-# checkpoint.
+# Default LIBERO-10 rollout using the training checkpoint statistics.
 eval = dict(
     runner=dict(
         type='LiberoEvalRunner',
-        task_suite_name=[
-            'libero_spatial',
-            'libero_object',
-            'libero_goal',
-            'libero_10',
-        ],
+        task_suite_name='libero_10',
         model_family='fastwam',
         task_ids=None,
         allowed_missing_key_prefixes=('vlm_backbone.text_encoder.', ),
@@ -270,12 +251,7 @@ eval = dict(
         eval_shard_strategy='task',
         preprocess_every_step=False,
         num_inference_steps=10,
-        max_steps=dict(
-            libero_spatial=400,
-            libero_object=400,
-            libero_goal=400,
-            libero_10=700,
-        ),
+        max_steps=700,
         inference_seed=42,
         resize_size=224,
         num_trials_per_task=50,
