@@ -18,7 +18,7 @@
 from __future__ import annotations
 from contextlib import nullcontext
 from functools import partial
-from typing import Callable, Dict, List, Optional, Sequence, Union
+from typing import Callable, Dict, Optional, Sequence, Union
 
 import torch
 import torch.nn.functional as F
@@ -36,8 +36,9 @@ class DiT4DiTVLA(BaseVLA):
     The wrapper follows FluxVLA runner contracts:
     ``forward(**batch) -> {"loss": loss, ...}`` for training and
     ``predict_action(**batch) -> Tensor[B, T, action_dim]`` for evaluation.
-    It expects raw text in ``task_description``/``prompt``/``lang`` because
-    the Cosmos backbone owns its tokenizer and text encoder.
+    It primarily consumes Cosmos-tokenized ``lang_tokens`` and ``lang_masks``
+    from the transform pipeline. Raw prompt text remains a compatibility path
+    for older callers.
     """
 
     def __init__(
@@ -93,28 +94,24 @@ class DiT4DiTVLA(BaseVLA):
                 self.vlm_backbone, 'freeze_configured_submodules')):
             self.vlm_backbone.freeze_configured_submodules()
 
+    @staticmethod
     def _resolve_prompts(
-        self,
+        prompt: Optional[Union[str, Sequence[str]]],
         batch_size: int,
         task_description: Optional[Union[str, Sequence[str]]] = None,
-        prompt: Optional[Union[str, Sequence[str]]] = None,
         lang: Optional[Union[str, Sequence[str]]] = None,
-        instruction: Optional[Union[str, Sequence[str]]] = None,
-        instructions: Optional[Union[str, Sequence[str]]] = None,
         **kwargs,
-    ) -> List[str]:
-        prompts = task_description
-        prompts = prompts if prompts is not None else prompt
+    ) -> list[str]:
+        prompts = prompt
+        prompts = prompts if prompts is not None else task_description
         prompts = prompts if prompts is not None else lang
-        prompts = prompts if prompts is not None else instruction
-        prompts = prompts if prompts is not None else instructions
+        prompts = prompts if prompts is not None else kwargs.get('instruction')
+        prompts = prompts if prompts is not None else kwargs.get(
+            'instructions')
         prompts = prompts if prompts is not None else kwargs.get('text')
-
         if prompts is None:
             raise ValueError(
-                'DiT4DiTVLA requires raw text prompts via '
-                '`task_description`, `prompt`, `lang`, or `instruction`. '
-                'Token IDs are not enough for Cosmos25Backbone.')
+                'DiT4DiTVLA requires Cosmos `lang_tokens` or a raw prompt.')
         if isinstance(prompts, str):
             prompts = [prompts] * batch_size
         else:
@@ -222,11 +219,19 @@ class DiT4DiTVLA(BaseVLA):
         target_dim = self.vla_head.state_dim
         return self._match_last_dim(states, target_dim, 0.0)
 
-    def _encode_backbone(self, images, prompts: Sequence[str],
-                         **kwargs) -> tuple[torch.Tensor, object]:
+    def _encode_backbone(
+        self,
+        images,
+        prompts: Optional[Sequence[str]] = None,
+        lang_tokens: Optional[torch.Tensor] = None,
+        lang_masks: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> tuple[torch.Tensor, object]:
         backbone_outputs = self.vlm_backbone(
             images=images,
             prompts=prompts,
+            lang_tokens=lang_tokens,
+            lang_masks=lang_masks,
             output_hidden_states=True,
             return_dict=True,
             **kwargs,
@@ -248,9 +253,11 @@ class DiT4DiTVLA(BaseVLA):
         states: Optional[torch.Tensor] = None,
         actions: Optional[torch.Tensor] = None,
         action_masks: Optional[torch.Tensor] = None,
-        task_description: Optional[List[str]] = None,
-        prompt: Optional[List[str]] = None,
-        lang: Optional[List[str]] = None,
+        lang_tokens: Optional[torch.Tensor] = None,
+        lang_masks: Optional[torch.Tensor] = None,
+        prompt: Optional[Union[str, Sequence[str]]] = None,
+        task_description: Optional[Union[str, Sequence[str]]] = None,
+        lang: Optional[Union[str, Sequence[str]]] = None,
         **kwargs,
     ) -> Dict:
         if images is None:
@@ -258,16 +265,22 @@ class DiT4DiTVLA(BaseVLA):
         images = self._prepare_images(images)
         batch_size = images.shape[0] if torch.is_tensor(images) else len(
             images)
-        prompts = self._resolve_prompts(
-            batch_size,
-            task_description=task_description,
-            prompt=prompt,
-            lang=lang,
-            **kwargs,
-        )
+        prompts = None
+        if lang_tokens is None:
+            prompts = self._resolve_prompts(
+                prompt,
+                batch_size,
+                task_description=task_description,
+                lang=lang,
+                **kwargs,
+            )
 
         last_hidden, backbone_outputs = self._encode_backbone(
-            images=images, prompts=prompts)
+            images=images,
+            prompts=prompts,
+            lang_tokens=lang_tokens,
+            lang_masks=lang_masks,
+        )
         if actions is None:
             raise ValueError('DiT4DiTVLA.forward requires `actions`.')
         actions, action_masks = self._prepare_actions_and_masks(
@@ -311,23 +324,32 @@ class DiT4DiTVLA(BaseVLA):
         self,
         images: torch.Tensor,
         states: Optional[torch.Tensor] = None,
-        task_description: Optional[List[str]] = None,
-        prompt: Optional[List[str]] = None,
-        lang: Optional[List[str]] = None,
+        lang_tokens: Optional[torch.Tensor] = None,
+        lang_masks: Optional[torch.Tensor] = None,
+        prompt: Optional[Union[str, Sequence[str]]] = None,
+        task_description: Optional[Union[str, Sequence[str]]] = None,
+        lang: Optional[Union[str, Sequence[str]]] = None,
         **kwargs,
     ) -> torch.Tensor:
         images = self._prepare_images(images)
         batch_size = images.shape[0] if torch.is_tensor(images) else len(
             images)
-        prompts = self._resolve_prompts(
-            batch_size,
-            task_description=task_description,
-            prompt=prompt,
-            lang=lang,
-            **kwargs,
-        )
+        prompts = None
+        if lang_tokens is None:
+            prompts = self._resolve_prompts(
+                prompt,
+                batch_size,
+                task_description=task_description,
+                lang=lang,
+                **kwargs,
+            )
 
-        last_hidden, _ = self._encode_backbone(images=images, prompts=prompts)
+        last_hidden, _ = self._encode_backbone(
+            images=images,
+            prompts=prompts,
+            lang_tokens=lang_tokens,
+            lang_masks=lang_masks,
+        )
         states = self._prepare_states(
             states,
             batch_size=batch_size,

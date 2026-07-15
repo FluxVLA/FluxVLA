@@ -12,10 +12,54 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from unittest.mock import patch
+
 import numpy as np
 import torch
 
 from fluxvla.transforms.transform_inputs import ProcessDiT4DiTLiberoEvalInputs
+from fluxvla.transforms.transform_prompts import (CanonicalizePrompt,
+                                                  ProcessCosmos25Prompt)
+
+
+def test_dit4dit_prompt_aliases_are_canonicalized_in_transform():
+    transform = CanonicalizePrompt(remove_source_keys=True)
+
+    output = transform({
+        'task_description': 'put the bowl on the plate',
+        'lang': 'lower-priority alias',
+    })
+
+    assert output['prompt'] == 'put the bowl on the plate'
+    assert 'task_description' not in output
+    assert 'lang' not in output
+
+
+def test_dit4dit_prompt_is_tokenized_in_transform():
+
+    class FakeCosmosTokenizer:
+        pad_token_id = 0
+        model_max_length = 3
+
+        def apply_chat_template(self, conversations, **kwargs):
+            assert conversations[1]['content'][0]['text'] == (
+                'put the bowl on the plate')
+            assert kwargs['max_length'] == self.model_max_length
+            return [11, 12, 0]
+
+    with patch(
+            'fluxvla.engines.build_tokenizer_from_cfg',
+            return_value=FakeCosmosTokenizer()):
+        transform = ProcessCosmos25Prompt(
+            tokenizer=dict(type='PretrainedTokenizer'),
+            remove_input_key=True,
+        )
+
+    output = transform({'prompt': 'put the bowl on the plate'})
+
+    np.testing.assert_array_equal(output['lang_tokens'], [11, 12, 0])
+    np.testing.assert_array_equal(output['lang_masks'], [True, True, False])
+    assert 'prompt' not in output
 
 
 def test_dit4dit_libero_eval_images_match_training_range():

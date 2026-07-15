@@ -14,6 +14,12 @@
 
 _ckpt_root = './checkpoints'
 _cosmos_base_model = _ckpt_root + '/Cosmos-Predict2.5-2B'
+_cosmos_revision = 'diffusers/base/post-trained'
+_cosmos_tokenizer = dict(
+    type='PretrainedTokenizer',
+    model_path=_cosmos_base_model + '/tokenizer',
+    model_max_length=512,
+)
 _official_dit4dit_ckpt = (
     _ckpt_root + '/dit4dit-model/dit4dit_libero/final_model/pytorch_model.pt')
 
@@ -61,7 +67,7 @@ model = dict(
     vlm_backbone=dict(
         type='Cosmos25Backbone',
         base_model=_cosmos_base_model,
-        revision='diffusers/base/post-trained',
+        revision=_cosmos_revision,
         torch_dtype='bf16',
         local_files_only=True,
         extract_layer=17,
@@ -152,7 +158,17 @@ train_dataloader = dict(
                         'actions': ['actions'],
                     },
                 ),
-                dict(type='ParquetPrompter', use_conversation=False),
+                dict(
+                    type='CanonicalizePrompt',
+                    output_key='prompt',
+                    remove_source_keys=True,
+                ),
+                dict(
+                    type='ProcessCosmos25Prompt',
+                    tokenizer=_cosmos_tokenizer,
+                    input_key='prompt',
+                    remove_input_key=True,
+                ),
                 dict(
                     type='ResizeImages', height=_image_size,
                     width=_image_size),
@@ -231,9 +247,12 @@ runner = dict(
             'actions',
             'action_masks',
             'frame_masks',
+            'lang_tokens',
+            'lang_masks',
         ],
-        meta_keys=['task_description', 'prompt', 'info', 'stats'],
+        meta_keys=['info', 'stats'],
     ),
+    tokenizer=_cosmos_tokenizer,
     sampler=None,
     metric=dict(
         type='VLAMetric',
@@ -270,9 +289,19 @@ eval = dict(
     dataset=dict(
         type='LiberoParquetEvalDataset',
         img_buffer_len=1,
-        include_task_description=True,
-        require_lang_tokens=False,
+        require_lang_tokens=True,
         transforms=[
+            dict(
+                type='CanonicalizePrompt',
+                output_key='prompt',
+                remove_source_keys=True,
+            ),
+            dict(
+                type='ProcessCosmos25Prompt',
+                tokenizer=_cosmos_tokenizer,
+                input_key='prompt',
+                remove_input_key=True,
+            ),
             dict(
                 type='ProcessDiT4DiTLiberoEvalInputs',
                 img_keys=['agentview_image', 'robot0_eye_in_hand_image'],

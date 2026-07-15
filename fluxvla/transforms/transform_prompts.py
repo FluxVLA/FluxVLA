@@ -16,8 +16,151 @@ import os
 from typing import Dict, List, Optional
 
 import numpy as np
+import torch
 
 from fluxvla.engines import TRANSFORMS
+
+
+@TRANSFORMS.register_module()
+class CanonicalizePrompt:
+    """Resolve raw-text aliases to one canonical sample-level prompt key.
+
+    Field-name compatibility belongs to the data pipeline. Model wrappers can
+    therefore consume one stable key without knowing dataset-specific names.
+    """
+
+    DEFAULT_INPUT_KEYS = (
+        'task_description',
+        'prompt',
+        'lang',
+        'instruction',
+        'instructions',
+        'text',
+    )
+
+    def __init__(self,
+                 output_key: str = 'prompt',
+                 input_keys: Optional[List[str]] = None,
+                 remove_source_keys: bool = False) -> None:
+        self.output_key = output_key
+        self.input_keys = tuple(input_keys or self.DEFAULT_INPUT_KEYS)
+        self.remove_source_keys = bool(remove_source_keys)
+        if not self.input_keys:
+            raise ValueError('CanonicalizePrompt requires input keys.')
+
+    def __call__(self, inputs: Dict) -> Dict:
+        source_key = None
+        prompt = None
+        for key in self.input_keys:
+            if key in inputs and inputs[key] is not None:
+                source_key = key
+                prompt = inputs[key]
+                break
+        if source_key is None:
+            raise KeyError('No raw text prompt found. Expected one of '
+                           f'{self.input_keys}.')
+
+        if isinstance(prompt, (list, tuple)):
+            if len(prompt) != 1:
+                raise ValueError(
+                    'CanonicalizePrompt operates on individual samples and '
+                    f'expected one prompt, got {len(prompt)}.')
+            prompt = prompt[0]
+        inputs[self.output_key] = str(prompt)
+
+        if self.remove_source_keys:
+            for key in self.input_keys:
+                if key != self.output_key:
+                    inputs.pop(key, None)
+        return inputs
+
+
+@TRANSFORMS.register_module()
+class ProcessCosmos25Prompt:
+    """Tokenize one raw prompt with the Cosmos 2.5 chat template.
+
+    The configured tokenizer is loaded from the same diffusers component as
+    :class:`Cosmos25Backbone`. The transform emits the standard FluxVLA
+    ``lang_tokens`` and ``lang_masks`` sample fields.
+    """
+
+    SYSTEM_PROMPT = (
+        'You are a helpful assistant who will provide prompts to an image '
+        'generator.')
+
+    def __init__(self,
+                 tokenizer: Dict,
+                 input_key: str = 'prompt',
+                 remove_input_key: bool = False) -> None:
+        from fluxvla.engines import build_tokenizer_from_cfg
+        self.tokenizer = build_tokenizer_from_cfg(tokenizer)
+        self.input_key = input_key
+        self.remove_input_key = bool(remove_input_key)
+
+    def _tokenize_prompt(self, prompt: str) -> torch.Tensor:
+        tokenizer = getattr(self.tokenizer, 'tokenizer', self.tokenizer)
+        conversations = [
+            {
+                'role': 'system',
+                'content': [{
+                    'type': 'text',
+                    'text': self.SYSTEM_PROMPT,
+                }],
+            },
+            {
+                'role': 'user',
+                'content': [{
+                    'type': 'text',
+                    'text': str(prompt),
+                }],
+            },
+        ]
+        token_ids = tokenizer.apply_chat_template(
+            conversations,
+            tokenize=True,
+            add_generation_prompt=False,
+            add_vision_id=False,
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+            padding='max_length',
+        )
+        if isinstance(token_ids, str):
+            token_ids = tokenizer(
+                token_ids,
+                add_special_tokens=False,
+                max_length=tokenizer.model_max_length,
+                truncation=True,
+                padding='max_length',
+            )
+        if isinstance(token_ids, dict):
+            token_ids = token_ids['input_ids']
+        elif hasattr(token_ids, 'input_ids'):
+            token_ids = token_ids.input_ids
+        return torch.as_tensor(token_ids, dtype=torch.long)
+
+    def __call__(self, inputs: Dict) -> Dict:
+        if self.input_key not in inputs:
+            raise KeyError(
+                f"ProcessCosmos25Prompt requires '{self.input_key}'.")
+        token_ids = self._tokenize_prompt(inputs[self.input_key])
+        if token_ids.ndim == 2 and token_ids.shape[0] == 1:
+            token_ids = token_ids.squeeze(0)
+        if token_ids.ndim != 1:
+            raise ValueError('ProcessCosmos25Prompt expected one token '
+                             f'sequence, got shape {tuple(token_ids.shape)}.')
+
+        pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            token_mask = torch.ones_like(token_ids, dtype=torch.bool)
+        else:
+            token_mask = token_ids.ne(int(pad_token_id))
+        inputs['lang_tokens'] = token_ids.cpu().numpy().astype(
+            np.int64, copy=False)
+        inputs['lang_masks'] = token_mask.cpu().numpy().astype(
+            np.bool_, copy=False)
+        if self.remove_input_key:
+            inputs.pop(self.input_key, None)
+        return inputs
 
 
 @TRANSFORMS.register_module()

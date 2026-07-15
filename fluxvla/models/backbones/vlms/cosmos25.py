@@ -54,10 +54,9 @@ class Cosmos25Backbone(nn.Module):
 
     The backbone runs the Cosmos2.5 video transformer for one or more denoising
     steps, captures a selected transformer block output, and exposes it as
-    ``hidden_states=[Tensor[B, S, D]]`` for an action head. It accepts raw text
-    prompts through ``task_description``/``prompts``. Using already-tokenized
-    language ids is intentionally not supported because Cosmos owns its text
-    encoder and tokenizer.
+    ``hidden_states=[Tensor[B, S, D]]`` for an action head. Its primary input
+    is Cosmos-tokenized ``lang_tokens`` from the dataset transform. Raw text
+    prompts remain supported as a compatibility path.
 
     Args:
         model_id_or_path: Local path or HF id for Cosmos-Predict2.5.
@@ -532,10 +531,9 @@ class Cosmos25Backbone(nn.Module):
 
         if prompts is None:
             raise ValueError(
-                'Cosmos25Backbone requires raw text prompts via `prompts`, '
-                '`task_description`, `prompt`, `instruction`, '
-                '`instructions`, or `lang`. Token IDs from other FluxVLA '
-                'tokenizers are not valid Cosmos prompts.')
+                'Cosmos25Backbone requires Cosmos `lang_tokens` or raw text '
+                'via `prompts`, `task_description`, `prompt`, '
+                '`instruction`, `instructions`, or `lang`.')
 
         if isinstance(prompts, str):
             prompts = [prompts] * batch_size
@@ -550,67 +548,75 @@ class Cosmos25Backbone(nn.Module):
 
     def _get_prompt_embeds(
         self,
-        prompts: list[str],
+        prompts: Optional[list[str]],
         device: torch.device,
         dtype: torch.dtype,
+        input_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-
-        def to_input_ids(conversations) -> torch.Tensor:
-            ids = self.tokenizer.apply_chat_template(
-                conversations,
-                tokenize=True,
-                add_generation_prompt=False,
-                add_vision_id=False,
-                max_length=self.max_sequence_length,
-                truncation=True,
-                padding='max_length',
-            )
-            if isinstance(ids, str):
-                ids = self.tokenizer(
-                    ids,
-                    add_special_tokens=False,
+        if input_ids is None:
+            if prompts is None:
+                raise ValueError('Cosmos prompt text or lang_tokens is '
+                                 'required to encode language.')
+            token_sequences = []
+            for prompt in prompts:
+                conversations = [
+                    {
+                        'role':
+                        'system',
+                        'content': [{
+                            'type':
+                            'text',
+                            'text':
+                            'You are a helpful assistant who will provide prompts to an image generator.',  # noqa: E501
+                        }],
+                    },
+                    {
+                        'role': 'user',
+                        'content': [{
+                            'type': 'text',
+                            'text': prompt
+                        }]
+                    },
+                ]
+                ids = self.tokenizer.apply_chat_template(
+                    conversations,
+                    tokenize=True,
+                    add_generation_prompt=False,
+                    add_vision_id=False,
                     max_length=self.max_sequence_length,
                     truncation=True,
                     padding='max_length',
                 )
-            if isinstance(ids, dict):
-                ids = ids['input_ids']
-            elif hasattr(ids, 'input_ids'):
-                ids = ids.input_ids
+                if isinstance(ids, str):
+                    ids = self.tokenizer(
+                        ids,
+                        add_special_tokens=False,
+                        max_length=self.max_sequence_length,
+                        truncation=True,
+                        padding='max_length',
+                    )
+                if isinstance(ids, dict):
+                    ids = ids['input_ids']
+                elif hasattr(ids, 'input_ids'):
+                    ids = ids.input_ids
+                ids = torch.as_tensor(ids, dtype=torch.long)
+                if ids.ndim == 2 and ids.shape[0] == 1:
+                    ids = ids.squeeze(0)
+                if ids.ndim != 1:
+                    raise ValueError(
+                        'Cosmos tokenizer must return one input-id sequence '
+                        f'per prompt, got shape {tuple(ids.shape)}.')
+                token_sequences.append(ids)
+            input_ids = torch.stack(token_sequences, dim=0)
+        else:
+            input_ids = torch.as_tensor(input_ids, dtype=torch.long)
+            if input_ids.ndim == 1:
+                input_ids = input_ids.unsqueeze(0)
+            if input_ids.ndim != 2:
+                raise ValueError('Cosmos lang_tokens must have shape [B, L], '
+                                 f'got {tuple(input_ids.shape)}.')
 
-            ids = torch.as_tensor(ids, dtype=torch.long)
-            if ids.ndim == 2 and ids.shape[0] == 1:
-                ids = ids.squeeze(0)
-            if ids.ndim != 1:
-                raise ValueError(
-                    'Cosmos tokenizer must return one input-id sequence per '
-                    f'prompt, got shape {tuple(ids.shape)}.')
-            return ids
-
-        input_ids = []
-        for prompt in prompts:
-            conversations = [
-                {
-                    'role':
-                    'system',
-                    'content': [{
-                        'type':
-                        'text',
-                        'text':
-                        'You are a helpful assistant who will provide prompts to an image generator.',  # noqa: E501
-                    }],
-                },
-                {
-                    'role': 'user',
-                    'content': [{
-                        'type': 'text',
-                        'text': prompt
-                    }]
-                },
-            ]
-            input_ids.append(to_input_ids(conversations))
-
-        input_ids = torch.stack(input_ids, dim=0).to(device)
+        input_ids = input_ids.to(device=device, dtype=torch.long)
         outputs = self.text_encoder(input_ids, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         normalized = []
@@ -918,6 +924,8 @@ class Cosmos25Backbone(nn.Module):
         videos: Optional[Union[torch.Tensor, Sequence[Any]]] = None,
         prompts: Optional[Union[str, Sequence[str]]] = None,
         task_description: Optional[Union[str, Sequence[str]]] = None,
+        lang_tokens: Optional[torch.Tensor] = None,
+        lang_masks: Optional[torch.Tensor] = None,
         future_videos: Optional[torch.Tensor] = None,
         num_frames_out: Optional[int] = None,
         num_inference_steps: Optional[int] = None,
@@ -937,12 +945,30 @@ class Cosmos25Backbone(nn.Module):
             future_videos = inferred_future
 
         batch_size = condition_video.shape[0]
-        prompt_list = self._resolve_prompts(
-            batch_size,
-            prompts=prompts,
-            task_description=task_description,
-            **kwargs,
-        )
+        prompt_list = None
+        if lang_tokens is None:
+            prompt_list = self._resolve_prompts(
+                batch_size,
+                prompts=prompts,
+                task_description=task_description,
+                **kwargs,
+            )
+        else:
+            lang_tokens = torch.as_tensor(lang_tokens, dtype=torch.long)
+            if lang_tokens.ndim == 1:
+                lang_tokens = lang_tokens.unsqueeze(0)
+            if lang_tokens.ndim != 2 or lang_tokens.shape[0] != batch_size:
+                raise ValueError(
+                    'Cosmos lang_tokens must have shape [B, L] matching the '
+                    f'video batch; got {tuple(lang_tokens.shape)} for B='
+                    f'{batch_size}.')
+            if lang_masks is not None:
+                lang_masks = torch.as_tensor(lang_masks)
+                if lang_masks.shape != lang_tokens.shape:
+                    raise ValueError(
+                        'Cosmos lang_masks must match lang_tokens, got '
+                        f'{tuple(lang_masks.shape)} and '
+                        f'{tuple(lang_tokens.shape)}.')
         condition_video = condition_video.to(self.device)
         height = int(condition_video.shape[-2])
         width = int(condition_video.shape[-1])
@@ -956,7 +982,11 @@ class Cosmos25Backbone(nn.Module):
 
         transformer_dtype = getattr(self.transformer, 'dtype', self.dtype)
         prompt_embeds = self._get_prompt_embeds(
-            prompt_list, device=self.device, dtype=transformer_dtype)
+            prompt_list,
+            device=self.device,
+            dtype=transformer_dtype,
+            input_ids=lang_tokens,
+        )
         if num_frames_out is None:
             num_frames_out = self.num_frames_out
         num_frames_out = self._infer_num_frames_out(condition_video,
