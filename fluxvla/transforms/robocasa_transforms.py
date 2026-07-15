@@ -299,12 +299,13 @@ class DenormalizeRobocasaAction:
     Differences from DenormalizeLiberoAction:
     - no ``_no_noops`` suffix on the statistics key
     - no gripper binarization or inversion post-processing
-    - min-max normalization by default
+    - supports the same quantile normalization used by PI0.5 upstream
 
     Args:
         norm_stats: Normalization statistics path or dict.
         action_dim: Number of active RoboCasa action dimensions.
-        norm_type: Normalization type.
+        norm_type: Normalization type (``quantile``, ``min_max``, or
+            ``mean_std``).
         clip_actions: If True, clip normalized actions to [-1, 1] first.
         stats_order: Order of the flat action statistics. Use ``native`` when
             statistics already match the predicted action order, or ``fluxvla``
@@ -358,7 +359,9 @@ class DenormalizeRobocasaAction:
         # Keep only the active action dimensions.
         action = action[:self.action_dim]
 
-        if self.norm_type == 'min_max':
+        if self.norm_type == 'quantile':
+            action = self._denormalize_quantile(action, action_stats)
+        elif self.norm_type == 'min_max':
             action = self._denormalize_min_max(action, action_stats)
         elif self.norm_type == 'mean_std':
             mean = np.array(action_stats['mean'])[:self.action_dim]
@@ -368,6 +371,18 @@ class DenormalizeRobocasaAction:
             raise ValueError(f'Unknown norm_type: {self.norm_type}')
 
         return action
+
+    def _denormalize_quantile(self, action: np.ndarray,
+                              stats: Dict) -> np.ndarray:
+        """Map PI0.5 actions from [-1, 1] back through q01/q99 stats."""
+        if stats.get('q01') is None or stats.get('q99') is None:
+            raise ValueError(
+                'Quantile denormalization requires non-null q01/q99 stats.')
+        low = np.asarray(stats['q01'])[:self.action_dim]
+        high = np.asarray(stats['q99'])[:self.action_dim]
+        if self.clip_actions:
+            action = np.clip(action, -1.0, 1.0)
+        return 0.5 * (action + 1.0) * (high - low + 1e-6) + low
 
     def _reorder_action_stats(self, action_stats: Dict) -> Dict:
         if self.stats_permutation is None:

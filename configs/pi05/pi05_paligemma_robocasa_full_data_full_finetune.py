@@ -7,10 +7,10 @@
 #
 # 与 LIBERO 配置的差异:
 #   - 数据集: Robocasa GR1 29 维关节 (vs LIBERO 7 维末端执行器)
-#   - 归一化: min_max (vs LIBERO mean_std)
+#   - 归一化: PI0.5 quantile q01/q99
 #   - 视频: 单相机 ego_view (vs LIBERO 双相机 agentview + wrist)
 #   - 动作: 绝对关节位置 (vs LIBERO delta 末端位姿)
-#   - state: 29D joint angles -> 58D sin/cos, padded to 64
+#   - state: 29D joint angles, quantile-normalized and discretized in prompt
 #   - action_window_size: 16 (每次预测 16 步未来动作)
 #
 # 数据准备:
@@ -128,8 +128,8 @@ model = dict(
         use_cache=True,
         vocab_size=257152),
     # --- 训练设置 ---
-    # PI0.5 injects proprio state through discrete prompt tokens, so the
-    # language backbone must adapt to the RoboCasa 64-token state format.
+    # PI0.5 injects the normalized 29D proprio state through discrete prompt
+    # tokens, so the language backbone remains trainable during adaptation.
     freeze_llm_backbone=False,
     freeze_vision_backbone=False,
     # --- 预训练权重 ---
@@ -152,6 +152,7 @@ model = dict(
         'llm_expert.embed_tokens':
         'paligemma_with_expert.gemma_expert.lm_head',
     },
+    strict_mapping=True,
     # --- 需要转 bf16 的模块 (节省显存) ---
     params_to_change_dtype=[
         'llm_expert.llm.model.layers',
@@ -162,8 +163,10 @@ model = dict(
     ori_action_dim=29,  # Robocasa 实际动作维度 (29 个活跃关节)
 )
 
-_ROBOCASA_STATISTIC_NAME = ('robocasa_gr1_24tasks_v21_n15_sincos_h16')
+_ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_30ep'
 _ROBOCASA_DATA_ROOT = './datasets/robocasa_lerobot_V2.1'
+_OFFICIAL_GR1_STATS_PATH = ('./datasets/robocasa_gr1_24tasks_first30ep/'
+                            'official_groot_gr1_dataset_statistics.json')
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
 
@@ -184,7 +187,7 @@ def _robocasa_task_env(task_name):
 #   - 观测: 单相机 ego_view (256x256 → resize 224x224)
 #   - 状态: 29 维关节角度 (绝对值, 非 delta)
 #   - 动作: 29 维目标关节位置 (绝对值)
-#   - 归一化: min_max (映射到 [-1, 1])
+#   - 归一化: quantile q01/q99 (映射到 [-1, 1])
 #   - 24 个任务（6 Seen + 18 Novel）, 每任务约 1000 episodes
 train_dataloader = dict(
     per_device_batch_size=4,  # 2×A800 80GB, 需实测是否可提到 8
@@ -202,6 +205,9 @@ train_dataloader = dict(
         statistic_keys=['observation.state', 'timestamp', 'action'],
         # --- statistic_name: 用于 dataset_statistics.json 的命名空间 ---
         statistic_name=_ROBOCASA_STATISTIC_NAME,
+        # PI0.5 upstream uses q01/q99 quantile statistics. Reuse one fixed
+        # robot/task statistics asset for both full-data training and eval.
+        dataset_statistics_path=_OFFICIAL_GR1_STATS_PATH,
         # --- 数据集列表 (可指定多个任务目录) ---
         datasets=dict(
             type='ParquetDataset',
@@ -269,40 +275,26 @@ train_dataloader = dict(
                         'observation.state': ['states'],
                         'actions': ['actions'],
                     }),
-                # --- Step 2: 对齐 RoboCasa GR1 state/action 表示 ---
-                # FluxVLA 转换数据为 left_arm+left_hand+right_arm+right_hand+waist。
-                # StarVLA / GR00T 使用 N1.5 fourier 顺序：
-                # left_arm+right_arm+left_hand+right_hand+waist。
-                # 同时将 29D state 编码为 58D sin/cos，action 和 action stats 重排到 N1.5。
-                dict(type='RobocasaGR1N15Bridge'),
-                # --- Step 3: 归一化动作、pad 状态和动作 ---
-                # state 已经是 sin/cos ∈ [-1, 1]，不再做 min_max 归一化。
-                # action 仍做 min_max，并从 29 维 pad 到 32 维。
+                # --- Step 2: PI0.5 原生 quantile 归一化 ---
+                # Keep the converted dataset's native ordering and tokenize
+                # the actual 29D normalized state, as OpenPI does.
                 dict(
                     type='NormalizeStatesAndActions',
                     action_dim=32,  # 零填充到模型维度
-                    state_dim=64,  # 58D sin/cos state pad 到 64
+                    state_dim=29,
                     state_key='proprio',
                     action_key='action',
-                    norm_type='min_max',
-                    normalize_states=False),
-                # --- Step 4: 构造 prompt (含 state 信息) ---
-                # 格式: "Task: <task_desc>, State: <discretized_state>;\n"
-                # 对齐 OpenPI PI0.5 policy-time tokenization：action 不作为
-                # language postfix，动作由 flow head 生成。
-                # state 被离散化为 256 bins 嵌入 prompt
+                    norm_type='quantile'),
+                # --- Step 3: 构造官方 PI0.5 state prompt ---
                 dict(
                     type='PreparePromptWithState',
-                    max_state_dim=64,
-                    lowercase_task_description=True,
-                    add_action_prefix=False),
-                # --- Step 5: Tokenize prompt ---
-                # 64D state rendered as decimal text makes RoboCasa prompts
-                # about 280 PaliGemma tokens. Keep enough room for the full
-                # state instead of truncating right-hand / waist dimensions.
+                    max_state_dim=29,
+                    lowercase_task_description=False,
+                    add_action_prefix=True),
+                # --- Step 4: Tokenize prompt ---
                 dict(
                     type='ProcessPrompts',
-                    max_len=320,
+                    max_len=200,
                     tokenizer=dict(
                         type='PretrainedTokenizer',
                         model_path='checkpoints/pi05_base',
@@ -335,7 +327,10 @@ train_dataloader = dict(
 # ============================================================
 runner = dict(
     type='FSDPTrainRunner',  # Fully Sharded Data Parallel
-    max_epochs=6,
+    max_epochs=None,
+    # Match OpenPI's full-dataset PI0.5 budget and avoid tying the number of
+    # optimizer updates to future dataset-size changes.
+    max_steps=100000,
     # PI0.5 RoboCasa 需要 full-finetune 语言主干来学习离散 state prompt；
     # 使用和现有 PI0.5 full-finetune 配置一致的 warmup+cosine recipe。
     optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
@@ -354,7 +349,7 @@ runner = dict(
     collator=dict(
         type='DictCollator',
         keys=[
-            'states',  # (B, 64) 58D sin/cos + 零填充后的状态
+            'states',  # (B, 29) quantile-normalized joint state
             'observation.eepose',  # 可能不存在，DictCollator 会跳过
             'timestamp',  # (B,) 时间戳
             'images',  # (B, N_views, C, H, W) 图像
@@ -378,7 +373,7 @@ runner = dict(
         window_size=1),
     lr_scheduler=dict(
         type='linear-warmup+cosine-decay',
-        warmup_ratio=0.03,
+        warmup_ratio=0.01,
     ),
     enable_gradient_checkpointing=True,  # 省显存 (2×A800 开)
     enable_mixed_precision_training=True,
@@ -400,7 +395,7 @@ runner = dict(
 #   --cfg-options eval.num_trials_per_task=20 eval.seed=7
 #
 # 注意: unnorm_key 必须和训练时的 statistic_name 保持一致
-#      (训练 statistic_name: robocasa_gr1_24tasks_v21_n15_sincos_h16)
+#      (训练 statistic_name: robocasa_gr1_24tasks_30ep)
 eval = dict(
     type='RobocasaEvalRunner',
     model_family='pi0',
@@ -448,7 +443,7 @@ eval = dict(
     num_trials_per_task=20,  # 每任务 20 次，总 24×20=480 episode
     seed=7,  # 与 GR00T RoboCasa eval 保持同一批初始状态
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
-    action_order='n15',
+    action_order='fluxvla',
     dataset=dict(
         type='RobocasaEvalDataset',
         unnorm_key=_ROBOCASA_STATISTIC_NAME,
@@ -467,31 +462,29 @@ eval = dict(
                 center_crop_scale=0.95,
                 normalize=True,
                 value_range='tanh'),
-            dict(type='RobocasaGR1N15Bridge'),
             dict(
                 type='NormalizeStatesAndActions',
-                state_dim=64,
+                state_dim=29,
                 state_key='proprio',
                 action_key='action',
-                norm_type='min_max',
-                normalize_states=False),
+                norm_type='quantile'),
             dict(
                 type='PreparePromptWithState',
-                max_state_dim=64,
-                lowercase_task_description=True,
-                add_action_prefix=False),
+                max_state_dim=29,
+                lowercase_task_description=False,
+                add_action_prefix=True),
             dict(
                 type='ProcessPrompts',
-                max_len=320,
+                max_len=200,
                 tokenizer=dict(
                     type='PretrainedTokenizer',
                     model_path='checkpoints/pi05_base')),
         ]),
     denormalize_action=dict(
         type='DenormalizeRobocasaAction',
-        norm_type='min_max',
+        norm_type='quantile',
         action_dim=29,  # Robocasa 29 维活跃关节
         clip_actions=False,
-        stats_order='fluxvla',
+        stats_order='native',
     ),
 )
