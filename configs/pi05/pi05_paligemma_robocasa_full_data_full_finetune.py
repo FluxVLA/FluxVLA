@@ -17,10 +17,13 @@
 #   运行 scripts/convert_robocasa_for_fluxvla.py 将原始 44 维数据
 #   裁剪为 29 维并生成 episodes_stats.jsonl
 #
-# 训练命令:
-#   torchrun --nproc_per_node=2 scripts/train.py \
-#       --config configs/pi05/pi05_paligemma_robocasa_finetune.py \
-#       --work_dir work_dirs/pi05_robocasa_finetune
+# 训练命令（2 台机器，每台 8 卡；两台使用相同 MASTER_ADDR/PORT）:
+#   torchrun --nnodes=2 --nproc_per_node=8 \
+#       --node_rank=${NODE_RANK} --master_addr=${MASTER_ADDR} \
+#       --master_port=${MASTER_PORT} scripts/train.py \
+#       --config \
+#       configs/pi05/pi05_paligemma_robocasa_full_data_full_finetune.py \
+#       --work-dir work_dirs/pi05_paligemma_robocasa_full_data_full_finetune
 #
 # 作者: yiming | 创建: 2026-04-13
 # ============================================================
@@ -190,8 +193,10 @@ def _robocasa_task_env(task_name):
 #   - 归一化: quantile q01/q99 (映射到 [-1, 1])
 #   - 24 个任务（6 Seen + 18 Novel）, 每任务约 1000 episodes
 train_dataloader = dict(
-    per_device_batch_size=4,  # 2×A800 80GB, 需实测是否可提到 8
-    per_device_num_workers=4,
+    # 16×A800, global batch = 16 GPUs × 16/GPU = 256.
+    per_device_batch_size=16,
+    # 8 GPUs/node × 8 workers/GPU = 64 data workers per node.
+    per_device_num_workers=8,
     dataset=dict(
         type='DistributedRepeatingDataset',
         # --- 列名映射: parquet 列名 → 统计量 key ---
@@ -328,9 +333,11 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',  # Fully Sharded Data Parallel
     max_epochs=None,
-    # Match OpenPI's full-dataset PI0.5 budget and avoid tying the number of
-    # optimizer updates to future dataset-size changes.
-    max_steps=100000,
+    # 6,020,058 frames / global batch 256 = 23,516 steps/epoch. 50k updates
+    # process about 12.8M samples (2.13 epochs), which retains the useful
+    # two-epoch budget without the previous six-epoch over-training.
+    max_steps=50000,
+    grad_accumulation_steps=1,
     # PI0.5 RoboCasa 需要 full-finetune 语言主干来学习离散 state prompt；
     # 使用和现有 PI0.5 full-finetune 配置一致的 warmup+cosine recipe。
     optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),

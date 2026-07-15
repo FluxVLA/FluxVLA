@@ -132,26 +132,15 @@ model = dict(
     # tokens, so the language backbone remains trainable during adaptation.
     freeze_llm_backbone=False,
     freeze_vision_backbone=False,
-    # Start from the official PI0.5 base. Previous RoboCasa checkpoints used
-    # a non-upstream state prompt and min/max normalization, so resuming them
-    # would preserve the representation mismatch.
-    pretrained_name_or_path='./checkpoints/pi05_base/model.safetensors',
-    name_mapping={
-        'llm_backbone': 'paligemma_with_expert.paligemma.model.language_model',
-        'vision_backbone.vision':
-        'paligemma_with_expert.paligemma.model.vision_tower',
-        'projector.projector':
-        'paligemma_with_expert.paligemma.model.multi_modal_projector.linear',
-        'llm_expert': 'paligemma_with_expert.gemma_expert.model',
-        'time_mlp_in.projector': 'time_mlp_in',
-        'time_mlp_out.projector': 'time_mlp_out',
-        'action_in_proj.projector': 'action_in_proj',
-        'action_out_proj.projector': 'action_out_proj',
-        'llm_backbone.embed_tokens': 'paligemma_with_expert.paligemma.lm_head',
-        'llm_expert.embed_tokens':
-        'paligemma_with_expert.gemma_expert.lm_head',
-    },
-    # All 812 parameters in pi05_base have a unique mapped local key.
+    # Continue from the final model in the requested full-data work directory.
+    # config.json is experiment metadata rather than a loadable checkpoint.
+    # FluxVLA-trained checkpoints already use native parameter names, so the
+    # external PI0.5 name mapping must be disabled for strict loading.
+    pretrained_name_or_path=(
+        '/root/projects/FluxVLA/work_dirs/'
+        'pi05_paligemma_robocasa_full_data_full_finetune_1240778e9_bs512/'
+        'checkpoints/step-141096-epoch-06-loss=0.0072.safetensors'),
+    name_mapping=None,
     strict_mapping=True,
     # --- 需要转 bf16 的模块 (节省显存) ---
     params_to_change_dtype=[
