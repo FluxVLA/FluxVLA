@@ -118,7 +118,8 @@ inference_model.update(
 )
 
 train_dataloader = dict(
-    per_device_batch_size=8,
+    # 2 nodes * 8 GPUs/node * 16 samples/GPU = global batch 256.
+    per_device_batch_size=16,
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
@@ -200,15 +201,20 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_steps=100000,
+    # The released 98.6% checkpoint was trained for 160k optimizer updates.
+    # The public run script's older 80k setting does not describe that model.
+    max_steps=160000,
+    # No accumulation is needed for the 16-GPU launch.
+    grad_accumulation_steps=1,
     optimizer=dict(
-        lr=1e-5,
+        # Match dit4dit_libero/config.yaml shipped with the official model.
+        lr=3e-5,
         type='AdamW',
         weight_decay=1e-8,
         eps=1e-8,
         betas=(0.9, 0.95),
         paramwise_learning_rate={
-            'vlm_backbone.transformer': 1e-5,
+            'vlm_backbone.transformer': 1e-4,
             'vla_head': 1e-4,
         },
     ),
@@ -238,7 +244,7 @@ runner = dict(
     ),
     lr_scheduler=dict(
         type='cosine_with_min_lr',
-        warmup_steps=5000,
+        warmup_steps=10000,
         min_lr=5e-7,
     ),
     sharding_strategy='full-shard',
