@@ -333,13 +333,15 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',  # Fully Sharded Data Parallel
     max_epochs=None,
-    # 6,020,058 frames / global batch 256 = 23,516 steps/epoch. 50k updates
-    # process about 12.8M samples (2.13 epochs), which retains the useful
-    # two-epoch budget without the previous six-epoch over-training.
-    max_steps=50000,
+    # Match OpenPI's full-data PI0.5 recipe: global batch 256 and 100k
+    # optimizer updates. Do not shorten the LR horizon when changing the
+    # sample/epoch budget; the previous 50k cosine run reached near-zero LR
+    # at 40k and under-optimized the full-finetuned backbone.
+    max_steps=100000,
     grad_accumulation_steps=1,
-    # PI0.5 RoboCasa 需要 full-finetune 语言主干来学习离散 state prompt；
-    # 使用和现有 PI0.5 full-finetune 配置一致的 warmup+cosine recipe。
+    # PI0.5 RoboCasa 需要 full-finetune 语言主干来学习离散 state prompt。
+    # OpenPI full-data PI0.5 uses a 1k-step warmup followed by a constant
+    # 5e-5 LR; decaying to zero over 50k steps materially reduced updates.
     optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,  # 梯度裁剪
     # --- checkpoint 保存策略 ---
@@ -379,8 +381,8 @@ runner = dict(
         grad_accumulation_steps=1,
         window_size=1),
     lr_scheduler=dict(
-        type='linear-warmup+cosine-decay',
-        warmup_ratio=0.01,
+        type='linear-warmup+constant',
+        warmup_steps=1000,
     ),
     enable_gradient_checkpointing=True,  # 省显存 (2×A800 开)
     enable_mixed_precision_training=True,

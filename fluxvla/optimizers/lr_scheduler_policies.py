@@ -18,6 +18,7 @@ from typing import Dict, Optional
 from fluxvla.engines.utils.builder import build_optimizer_from_cfg
 from fluxvla.engines.utils.root import LR_SCHEDULERS
 from .schedulers import (get_constant_schedule,
+                         get_constant_schedule_with_warmup,
                          get_cosine_schedule_with_warmup,
                          get_step_based_schedule)
 
@@ -158,6 +159,21 @@ class ConstantLRScheduler(BaseLRSchedulerPolicy):
 
     def build_scheduler(self, runner, optimizer):
         return get_constant_schedule(optimizer)
+
+
+@LR_SCHEDULERS.register_module(
+    name=['linear-warmup+constant', 'LinearWarmupConstantLRScheduler'])
+class LinearWarmupConstantLRScheduler(BaseLRSchedulerPolicy):
+
+    def __init__(self, warmup_steps: int = 0, **kwargs) -> None:
+        super().__init__(**kwargs)
+        if warmup_steps < 0:
+            raise ValueError('warmup_steps must be non-negative')
+        self.warmup_steps = warmup_steps
+
+    def build_scheduler(self, runner, optimizer):
+        return get_constant_schedule_with_warmup(
+            optimizer, num_warmup_steps=self.warmup_steps)
 
 
 @LR_SCHEDULERS.register_module(
