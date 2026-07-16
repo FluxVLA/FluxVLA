@@ -49,7 +49,22 @@ class WanBaseBackbone(nn.Module):
         return self._device
 
     def freeze_encoder_modules(self) -> None:
+        """Freeze encoder parameters and keep their stochastic layers off."""
         self.requires_grad_(False)
+        self.set_frozen_modules_to_eval_mode()
+
+    def train(self, mode: bool = True) -> 'WanBaseBackbone':
+        """Set the backbone mode while keeping frozen encoders in eval mode.
+
+        Args:
+            mode: Whether to enable training mode for the backbone.
+
+        Returns:
+            This backbone with the requested mode applied.
+        """
+        super().train(mode)
+        self.set_frozen_modules_to_eval_mode()
+        return self
 
     def set_frozen_modules_to_eval_mode(self) -> None:
         for module_name in self.frozen_module_names:

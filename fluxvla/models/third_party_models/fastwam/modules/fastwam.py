@@ -93,7 +93,7 @@ class FastWAM(torch.nn.Module):
         device: str = "cuda",
         torch_dtype: torch.dtype = torch.bfloat16,
         model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
-        tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
+        tokenizer_model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
         tokenizer_max_len: int = 512,
         load_text_encoder: bool = True,
         proprio_dim: Optional[int] = None,

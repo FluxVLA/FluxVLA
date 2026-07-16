@@ -15,7 +15,7 @@
 # FastWAM world-action model (joint) trained on LIBERO-10.
 
 _ckpt_root = './checkpoints'
-_tokenizer = _ckpt_root + '/Wan-AI/Wan2.1-T2V-1.3B/google/umt5-xxl'
+_tokenizer = _ckpt_root + '/Wan-AI/Wan2.2-TI2V-5B/google/umt5-xxl'
 _text_prompt_template = (
     "A video recorded from a robot's point of view executing the following "
     'instruction: {task}')
@@ -39,7 +39,7 @@ model = dict(
     vlm_backbone=dict(
         type='Wan22Backbone',
         model_id='Wan-AI/Wan2.2-TI2V-5B',
-        tokenizer_model_id='Wan-AI/Wan2.1-T2V-1.3B',
+        tokenizer_model_id='Wan-AI/Wan2.2-TI2V-5B',
         tokenizer_max_len=128,
         load_text_encoder=True,
         text_embed_cache_dir=None,

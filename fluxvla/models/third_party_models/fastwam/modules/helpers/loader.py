@@ -33,7 +33,7 @@ class Wan22LoadedComponents:
 
 WAN22_MODEL_REGISTRY = [
     {
-        # Example: ModelConfig(model_id="Wan-AI/Wan2.1-T2V-14B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth")
+        # Example: ModelConfig(model_id="Wan-AI/Wan2.2-TI2V-5B", origin_file_pattern="models_t5_umt5-xxl-enc-bf16.pth")
         "model_hash": "9c8818c2cbea55eca56c7b447df170da",
         "model_name": "wan_video_text_encoder",
         "model_class": WanTextEncoder,
@@ -151,7 +151,7 @@ def load_wan22_ti2v_5b_components(
     device: str = "cuda",
     torch_dtype: torch.dtype = torch.bfloat16,
     model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
-    tokenizer_model_id: str = "Wan-AI/Wan2.1-T2V-1.3B",
+    tokenizer_model_id: str = "Wan-AI/Wan2.2-TI2V-5B",
     tokenizer_max_len: int = 512,
     redirect_common_files: bool = False,
     dit_config: dict[str, Any] | None = None,

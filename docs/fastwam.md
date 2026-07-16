@@ -18,19 +18,18 @@ Recommended local layout:
 checkpoints/
 ├── ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt
 ├── Wan-AI/
-│   ├── Wan2.1-T2V-1.3B/
-│   │   └── google/umt5-xxl/
 │   └── Wan2.2-TI2V-5B/
 │       ├── Wan2.2_VAE.pth
 │       ├── diffusion_pytorch_model*.safetensors
+│       ├── google/umt5-xxl/
 │       └── models_t5_umt5-xxl-enc-bf16.pth
 └── text_embeds_cache/  # optional; many configs use an external cache path
 ```
 
 FastWAM configs use these model repositories:
 
-- `Wan-AI/Wan2.2-TI2V-5B`: Wan2.2 video DiT, Wan2.2 VAE, and Wan text encoder weights.
-- `Wan-AI/Wan2.1-T2V-1.3B`: tokenizer files used by online text-encoding eval configs.
+- `Wan-AI/Wan2.2-TI2V-5B`: Wan2.2 video DiT, Wan2.2 VAE, Wan text
+  encoder weights, and UMT5 tokenizer files.
 - `ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt`: preprocessed ActionDiT backbone initialization.
 
 ### Wan2.2-TI2V-5B
@@ -39,6 +38,7 @@ FastWAM configs use these model repositories:
 hf download Wan-AI/Wan2.2-TI2V-5B \
   --include "diffusion_pytorch_model*.safetensors" \
   --include "Wan2.2_VAE.pth" \
+  --include "google/umt5-xxl/*" \
   --include "models_t5_umt5-xxl-enc-bf16.pth" \
   --local-dir ./checkpoints/Wan-AI/Wan2.2-TI2V-5B
 ```
@@ -47,14 +47,6 @@ hf download Wan-AI/Wan2.2-TI2V-5B \
 loader reads the Hugging Face `.pth` VAE and text encoder files from this local
 model directory. The loader checks local files only and raises an error if any
 required weight is missing.
-
-### Wan2.1-T2V-1.3B
-
-```bash
-hf download Wan-AI/Wan2.1-T2V-1.3B \
-  --include "google/umt5-xxl/*" \
-  --local-dir ./checkpoints/Wan-AI/Wan2.1-T2V-1.3B
-```
 
 ### ActionDiT Backbone Initialization
 

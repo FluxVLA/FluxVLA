@@ -155,7 +155,7 @@ class FastWAMVLA(BaseVLA):
                 torch_dtype=self.torch_dtype,
                 model_id=backbone_cfg.get('model_id', 'Wan-AI/Wan2.2-TI2V-5B'),
                 tokenizer_model_id=backbone_cfg.get('tokenizer_model_id',
-                                                    'Wan-AI/Wan2.1-T2V-1.3B'),
+                                                    'Wan-AI/Wan2.2-TI2V-5B'),
                 tokenizer_max_len=int(
                     backbone_cfg.get('tokenizer_max_len', 512)),
                 redirect_common_files=bool(
