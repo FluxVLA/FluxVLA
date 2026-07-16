@@ -35,7 +35,8 @@ model = dict(
         './checkpoints/Llama-2-7b-hf',  # noqa: E501
         llm_max_length=2048,
         hf_token=None,
-        inference_mode=False),
+        inference_mode=False,
+        pad_token_id=32000),
     projector=dict(
         type='FusedMLPProjector', fused_vision_dim=2176, llm_dim=4096),
     tokenizer=dict(
@@ -137,6 +138,7 @@ train_dataloader = dict(
                     state_norm_type='min_max',
                     action_norm_type='quantile',
                     clip_norm=True,
+                    normalization_epsilon=1e-8,
                     action_norm_mask=[
                         True,
                         True,
@@ -171,9 +173,16 @@ train_dataloader = dict(
                 ),
                 dict(
                     type='ResizeImagesLanczos',
+                    height=256,
+                    width=256,
+                    backend='tensorflow',
+                ),
+                dict(
+                    type='ResizeImagesLanczos',
                     height=224,
                     width=224,
                     backend='tensorflow',
+                    jpeg_roundtrip=True,
                 ),
                 dict(
                     type='AugImage',

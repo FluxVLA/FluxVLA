@@ -357,6 +357,7 @@ class NormalizeStatesAndActions:
                  pad_value: float = 0.0,
                  action_norm_mask: List[bool] = None,
                  clip_norm: bool = False,
+                 normalization_epsilon: float = 1e-6,
                  normalize_states: bool = True,
                  *args,
                  **kwargs):
@@ -369,6 +370,7 @@ class NormalizeStatesAndActions:
         self.action_dim = action_dim
         self.state_dim = state_dim
         self.clip_norm = clip_norm
+        self.normalization_epsilon = float(normalization_epsilon)
         self.normalize_states = normalize_states
         if action_norm_mask is not None:
             assert len(action_norm_mask) == action_dim, \
@@ -439,7 +441,8 @@ class NormalizeStatesAndActions:
         if norm_mask is None:
             norm_mask = [True] * x.shape[-1]
         return np.where(norm_mask, (x - np.array(stats['mean'])) /
-                        (np.array(stats['std']) + 1e-6), x)
+                        (np.array(stats['std']) + self.normalization_epsilon),
+                        x)
 
     def _normalize_quantile(self,
                             x,
@@ -449,10 +452,9 @@ class NormalizeStatesAndActions:
         assert stats['q99'] is not None
         if norm_mask is None:
             norm_mask = [True] * x.shape[-1]
-        normalized = (
-            (x - np.array(stats['q01'])) /
-            (np.array(stats['q99']) - np.array(stats['q01']) + 1e-6) * 2.0 -
-            1.0)
+        normalized = ((x - np.array(stats['q01'])) /
+                      (np.array(stats['q99']) - np.array(stats['q01']) +
+                       self.normalization_epsilon) * 2.0 - 1.0)
         if self.clip_norm:
             normalized = np.clip(normalized, -1, 1)
         return np.where(norm_mask, normalized, x)
@@ -462,10 +464,9 @@ class NormalizeStatesAndActions:
         assert 'max' in stats and stats['max'] is not None
         if norm_mask is None:
             norm_mask = [True] * x.shape[-1]
-        normalized = (
-            (x - np.array(stats['min'])) /
-            (np.array(stats['max']) - np.array(stats['min']) + 1e-6) * 2.0 -
-            1.0)
+        normalized = ((x - np.array(stats['min'])) /
+                      (np.array(stats['max']) - np.array(stats['min']) +
+                       self.normalization_epsilon) * 2.0 - 1.0)
         if self.clip_norm:
             normalized = np.clip(normalized, -1, 1)
         return np.where(norm_mask, normalized, x)
