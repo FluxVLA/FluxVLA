@@ -12,12 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Tuple
 
 import numpy as np
 import torch
 from PIL import Image
-from safetensors.torch import load_file
 
 from fluxvla.engines import HEADS, VLAS, initialize_overwatch
 from fluxvla.engines.utils.name_map import str_to_dtype
@@ -26,8 +25,6 @@ from fluxvla.engines.utils.video_metrics import (pil_frames_to_video_tensor,
 from ..backbones.vlms.wan22_backbone import Wan22Backbone
 from ..heads.fastwam_head import FastWAMHead
 from ..third_party_models.fastwam.modules.action_dit import ActionDiT
-from ..third_party_models.fastwam.modules.helpers.loader import \
-    load_wan22_ti2v_5b_components  # noqa: E501
 from ..third_party_models.fastwam.modules.mot import MoT
 from ..third_party_models.fastwam.modules.wan_video_dit import WanVideoDiT
 from ..third_party_models.fastwam.modules.wan_video_text_encoder import \
@@ -75,24 +72,24 @@ class FastWAMVLA(BaseVLA):
         frame_window_size: Optional[int] = None,
         num_views: Optional[int] = None,
         mot_checkpoint_mixed_attn: bool = False,
-        skip_load: bool = False,
         pretrained_name_or_path: Optional[str] = None,
-        name_mapping: Optional[Dict] = None,
-        strict_mapping: bool = False,
         freeze_vlm_backbone: bool = True,
         device: str = 'cpu',
         torch_dtype: torch.dtype = torch.float32,
-        *args,
-        **kwargs,
     ) -> None:
         super().__init__(
             vlm_backbone=None,
             vla_head=None,
             freeze_vlm_backbone=freeze_vlm_backbone,
-            pretrained_name_or_path=None,
-            name_mapping=name_mapping,
-            strict_mapping=strict_mapping,
+            pretrained_name_or_path=pretrained_name_or_path,
+            name_mapping=None,
+            strict_mapping=True,
         )
+        if (pretrained_name_or_path is not None
+                and not str(pretrained_name_or_path).endswith('.safetensors')):
+            raise ValueError(
+                'FastWAM base weights must be a complete `.safetensors` '
+                f'checkpoint, got: {pretrained_name_or_path}')
         # ``BaseVLA.device`` is a read-only property (parameter device), so
         # keep the requested build device under a private attribute.
         self._build_device = str(device)
@@ -110,21 +107,30 @@ class FastWAMVLA(BaseVLA):
             backbone_cfg=dict(vlm_backbone or {}),
             head_cfg=dict(vla_head or {}),
             mot_checkpoint_mixed_attn=mot_checkpoint_mixed_attn,
-            skip_load=skip_load,
+            build_text_encoder=pretrained_name_or_path is not None,
         )
         self.vlm_backbone = backbone
         self.vla_head = head
 
         self.all_module_keys = ['vlm_backbone', 'vla_head']
 
-        if pretrained_name_or_path is not None:
-            self.load_checkpoint(pretrained_name_or_path)
-
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
-    def _build_components(self, backbone_cfg, head_cfg,
-                          mot_checkpoint_mixed_attn, skip_load):
+    def _build_components(
+        self,
+        backbone_cfg: Dict,
+        head_cfg: Dict,
+        mot_checkpoint_mixed_attn: bool,
+        build_text_encoder: bool,
+    ) -> Tuple[Wan22Backbone, FastWAMHead]:
+        """Construct FastWAM modules without loading component checkpoints.
+
+        ``pretrained_name_or_path=None`` is reserved for lightweight tests and
+        conversion scaffolding, where context tensors are supplied directly.
+        Every production config provides a complete checkpoint and therefore
+        constructs the Online T5 encoder.
+        """
         backbone_cfg.pop('type', None)
         # Capture the head variant before stripping ``type`` (the head is
         # built explicitly below, not via the registry).
@@ -137,45 +143,17 @@ class FastWAMVLA(BaseVLA):
         if 'text_dim' not in video_dit_config:
             raise ValueError('`video_dit_config[text_dim]` is required.')
         action_dit_config = head_cfg.get('action_dit_config') or {}
-        skip_dit = bool(head_cfg.get('skip_dit_load_from_pretrain', False))
         device = self._build_device
 
-        if skip_load:
-            video_expert = WanVideoDiT(**video_dit_config).to(
+        video_expert = WanVideoDiT(**video_dit_config).to(
+            device=device, dtype=self.torch_dtype)
+        action_expert = ActionDiT(**action_dit_config).to(
+            device=device, dtype=self.torch_dtype)
+        vae = WanVideoVAE38().to(device=device, dtype=self.torch_dtype)
+        text_encoder = None
+        if build_text_encoder:
+            text_encoder = WanTextEncoder().to(
                 device=device, dtype=self.torch_dtype)
-            action_expert = ActionDiT(**action_dit_config).to(
-                device=device, dtype=self.torch_dtype)
-            vae = WanVideoVAE38().to(device=device, dtype=self.torch_dtype)
-            text_encoder = (
-                WanTextEncoder().to(device=device, dtype=self.torch_dtype) if
-                bool(backbone_cfg.get('load_text_encoder', False)) else None)
-        else:
-            components = load_wan22_ti2v_5b_components(
-                device=device,
-                torch_dtype=self.torch_dtype,
-                model_id=backbone_cfg.get('model_id', 'Wan-AI/Wan2.2-TI2V-5B'),
-                tokenizer_model_id=backbone_cfg.get('tokenizer_model_id',
-                                                    'Wan-AI/Wan2.2-TI2V-5B'),
-                tokenizer_max_len=int(
-                    backbone_cfg.get('tokenizer_max_len', 512)),
-                redirect_common_files=bool(
-                    backbone_cfg.get('redirect_common_files', False)),
-                dit_config=video_dit_config,
-                skip_dit_load_from_pretrain=skip_dit,
-                load_text_encoder=bool(
-                    backbone_cfg.get('load_text_encoder', False)),
-            )
-            video_expert = components.dit
-            vae = components.vae
-            text_encoder = components.text_encoder
-            action_expert = ActionDiT.from_pretrained(
-                action_dit_config=action_dit_config,
-                action_dit_pretrained_path=head_cfg.get(
-                    'action_dit_pretrained_path'),
-                skip_dit_load_from_pretrain=skip_dit,
-                device=device,
-                torch_dtype=self.torch_dtype,
-            )
 
         mot = MoT(
             mixtures={
@@ -714,75 +692,6 @@ class FastWAMVLA(BaseVLA):
                                                       vae_video_tensor,
                                                       gt_video_tensor)
         return {'metrics': metrics, 'video_frames': video_frames}
-
-    # ------------------------------------------------------------------
-    # Checkpoint I/O (FastWAM ``{mot, proprio_encoder}`` format)
-    # ------------------------------------------------------------------
-    def checkpoint_state_dict(self):
-        """Return trainable state without duplicating the frozen T5 weights.
-
-        Model construction supplies the frozen text encoder from the base
-        weights, so including it in every fine-tuning checkpoint would add
-        roughly 11 GiB without changing resume/eval behavior.
-        """
-        state_dict = super().state_dict()
-        prefix = 'vlm_backbone.text_encoder.'
-        return {
-            key: value
-            for key, value in state_dict.items() if not key.startswith(prefix)
-        }
-
-    def save_checkpoint(self, path, optimizer=None, step=None) -> None:
-        payload = {
-            'mot': self.vla_head.mot.state_dict(),
-            'step': step,
-            'torch_dtype': str(self.torch_dtype),
-        }
-        if self.vla_head.proprio_encoder is not None:
-            payload['proprio_encoder'] = \
-                self.vla_head.proprio_encoder.state_dict()
-        if optimizer is not None:
-            payload['optimizer'] = optimizer.state_dict()
-        torch.save(payload, path)
-
-    def load_checkpoint(self, path, optimizer=None):
-        path = str(path)
-        if path.endswith('.safetensors'):
-            state_dict = load_file(path, device='cpu')
-            missing, unexpected = self.load_state_dict(
-                state_dict, strict=False)
-            if missing:
-                overwatch.warning(
-                    'Missing keys while loading FastWAM safetensors: '
-                    f'{missing[:10]}')
-            if unexpected:
-                overwatch.warning(
-                    'Unexpected keys while loading FastWAM safetensors: '
-                    f'{unexpected[:10]}')
-            return {
-                'model': state_dict,
-                'missing_keys': list(missing),
-                'unexpected_keys': list(unexpected),
-            }
-
-        payload = torch.load(path, map_location='cpu')
-        if isinstance(payload, dict) and 'mot' in payload:
-            self.vla_head.mot.load_state_dict(payload['mot'], strict=False)
-        elif isinstance(payload, dict) and 'dit' in payload:
-            overwatch.warning(
-                'Loading legacy `dit` checkpoint into video expert only.')
-            self.vla_head.video_expert.load_state_dict(
-                payload['dit'], strict=False)
-        else:
-            raise ValueError(
-                f'Checkpoint missing both `mot` and `dit` keys: {path}')
-        if self.vla_head.proprio_encoder is not None \
-                and 'proprio_encoder' in payload:
-            self.vla_head.proprio_encoder.load_state_dict(
-                payload['proprio_encoder'], strict=True)
-        if optimizer is not None and 'optimizer' in payload:
-            optimizer.load_state_dict(payload['optimizer'])
-        return payload
 
     # ------------------------------------------------------------------
     # BaseVLA abstract method implementations

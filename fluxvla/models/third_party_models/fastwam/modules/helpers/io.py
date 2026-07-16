@@ -67,7 +67,7 @@ class ModelConfig:
             f"missing_patterns={missing_patterns!r}. "
             "FastWAM does not auto-download model weights; place the files under "
             "./checkpoints or set DIFFSYNTH_MODEL_BASE_PATH to the local "
-            "checkpoint root. See docs/fastwam.md for checkpoint preparation."
+            "checkpoint root."
         )
 
     def resolve_local_path(self):

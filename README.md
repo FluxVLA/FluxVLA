@@ -678,8 +678,6 @@ Download the required pretrained checkpoints and place them under `./checkpoints
 
 For ARM and SARM workflows, you typically need a CLIP checkpoint for training / inference. SARM VLM-based annotation also needs the Qwen3-VL checkpoint used by the official SARM workflow. Detailed usage is documented in [docs/arm.md](docs/arm.md) and [docs/sarm.md](docs/sarm.md).
 
-FastWAM VGM checkpoint setup is documented in [docs/fastwam.md](docs/fastwam.md).
-
 <details>
 <summary><b>VLA models</b></summary>
 
@@ -728,10 +726,9 @@ hf download limxdynamics/FluxVLAEngine \
 <details>
 <summary><b>Video Generation Models (VGM)</b></summary>
 
-| Model           | Size | Download link                                                    |
-| --------------- | ---- | ---------------------------------------------------------------- |
-| Wan2.2-TI2V-5B  | 5B   | [🤗 Hugging Face](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B)  |
-| Wan2.1-T2V-1.3B | 1.3B | [🤗 Hugging Face](https://huggingface.co/Wan-AI/Wan2.1-T2V-1.3B) |
+| Model          | Size | Download link                                                   |
+| -------------- | ---- | --------------------------------------------------------------- |
+| Wan2.2-TI2V-5B | 5B   | [🤗 Hugging Face](https://huggingface.co/Wan-AI/Wan2.2-TI2V-5B) |
 
 </details>
 

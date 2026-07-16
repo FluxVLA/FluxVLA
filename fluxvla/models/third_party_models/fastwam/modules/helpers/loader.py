@@ -204,13 +204,14 @@ def load_wan22_ti2v_5b_components(
             torch_dtype=torch_dtype,
             device=device,
         )
+        tokenizer_dir = _as_tokenizer_dir(tokenizer_config.path)
         tokenizer = HuggingfaceTokenizer(
-            name=_as_tokenizer_dir(tokenizer_config.path),
+            name=tokenizer_dir,
             seq_len=int(tokenizer_max_len),
             clean="whitespace",
         )
         text_encoder_path = str(text_config.path)
-        tokenizer_path = str(tokenizer_config.path)
+        tokenizer_path = str(tokenizer_dir)
     else:
         logger.info(
             "Skipping pretrained text encoder/tokenizer load (`load_text_encoder=False`); "

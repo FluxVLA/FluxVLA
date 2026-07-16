@@ -15,7 +15,7 @@
 # FastWAM world-action model (idm, teacher-forcing) trained on LIBERO-10.
 
 _ckpt_root = './checkpoints'
-_tokenizer = _ckpt_root + '/Wan-AI/Wan2.2-TI2V-5B/google/umt5-xxl'
+_tokenizer = _ckpt_root + '/fastwam_base_full/tokenizer'
 _text_prompt_template = (
     "A video recorded from a robot's point of view executing the following "
     'instruction: {task}')
@@ -30,7 +30,9 @@ _statistic_name = 'libero_10_no_noops'
 
 model = dict(
     type='FastWAMVLA',
-    pretrained_name_or_path=None,
+    pretrained_name_or_path=  # noqa: E251
+    _ckpt_root + '/fastwam_base_full/fastwam_base_full.safetensors',
+    torch_dtype='bf16',
     num_views=2,
     frame_window_size=_frame_window_size,
     proprio_dim=8,
@@ -38,17 +40,12 @@ model = dict(
     mot_checkpoint_mixed_attn=True,
     vlm_backbone=dict(
         type='Wan22Backbone',
-        model_id='Wan-AI/Wan2.2-TI2V-5B',
-        tokenizer_model_id='Wan-AI/Wan2.2-TI2V-5B',
-        tokenizer_max_len=128,
-        load_text_encoder=True,
         text_embed_cache_dir=None,
         text_embed_cache_context_len=128,
         text_embed_cache_enc_id='wan22ti2v5b',
         text_embed_cache_size=256,
         text_embed_cache_device='cpu',
         text_embed_prompt_template=_text_prompt_template,
-        redirect_common_files=False,
     ),
     vla_head=dict(
         type='FastWAMIDMHead',
@@ -87,10 +84,6 @@ model = dict(
             eps=1.0e-06,
             use_gradient_checkpointing=True,
         ),
-        action_dit_pretrained_path=(
-            _ckpt_root +
-            '/ActionDiT_linear_interp_Wan22_alphascale_1024hdim.pt'),
-        skip_dit_load_from_pretrain=False,
         video_scheduler=dict(
             train_shift=5.0, infer_shift=5.0, num_train_timesteps=1000),
         action_scheduler=dict(
@@ -102,8 +95,6 @@ model = dict(
 # Training and evaluation encode unseen prompts online, then reuse a
 # per-process CPU-memory LRU cache without reading or writing cache files.
 inference_model = model.copy()
-inference_model['vlm_backbone'] = dict(
-    model['vlm_backbone'], load_text_encoder=True)
 
 train_dataloader = dict(
     per_device_batch_size=16,
