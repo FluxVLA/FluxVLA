@@ -310,7 +310,6 @@ class FastWAMVLA(BaseVLA):
         self,
         input_image: Optional[torch.Tensor] = None,
         action_horizon: Optional[int] = None,
-        prompt: Optional[str] = None,
         context: Optional[torch.Tensor] = None,
         context_mask: Optional[torch.Tensor] = None,
         proprio: Optional[torch.Tensor] = None,
@@ -352,7 +351,6 @@ class FastWAMVLA(BaseVLA):
             input_image, tiled=tiled)
 
         context, context_mask = self._prepare_inference_context(
-            prompt=prompt,
             context=context,
             context_mask=context_mask,
             proprio=proprio,
@@ -403,7 +401,6 @@ class FastWAMVLA(BaseVLA):
 
     def _prepare_inference_context(
         self,
-        prompt: Optional[str],
         context: Optional[torch.Tensor],
         context_mask: Optional[torch.Tensor],
         proprio: Optional[torch.Tensor],
@@ -411,13 +408,6 @@ class FastWAMVLA(BaseVLA):
         lang_masks: Optional[torch.Tensor] = None,
         task_description=None,
     ):
-        if prompt is not None:
-            raise ValueError(
-                'FastWAMVLA no longer tokenizes raw prompt strings inside '
-                'the model. Add a prompt transform that provides '
-                '`lang_tokens/lang_masks`, or provide precomputed '
-                '`context/context_mask`.')
-
         use_context = context is not None or context_mask is not None
         use_tokens = lang_tokens is not None or lang_masks is not None
         if use_context and use_tokens:
@@ -478,7 +468,6 @@ class FastWAMVLA(BaseVLA):
     @torch.no_grad()
     def infer(
         self,
-        prompt: Optional[str],
         input_image: torch.Tensor,
         num_frames: int,
         action: Optional[torch.Tensor] = None,
@@ -488,17 +477,13 @@ class FastWAMVLA(BaseVLA):
         context_mask: Optional[torch.Tensor] = None,
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
-        negative_prompt: Optional[str] = None,
-        text_cfg_scale: float = 1.0,
-        action_cfg_scale: float = 1.0,
         num_inference_steps: int = 20,
         sigma_shift: Optional[float] = None,
         seed: Optional[int] = None,
         rand_device: str = 'cpu',
         tiled: bool = False,
-        **kwargs,
+        task_description=None,
     ):
-        del negative_prompt, text_cfg_scale, action_cfg_scale, kwargs
         self.eval()
         if action_horizon is None:
             action_horizon = self.action_horizon
@@ -525,13 +510,12 @@ class FastWAMVLA(BaseVLA):
         first_frame_latents = self.vlm_backbone.encode_input_image_latents(
             input_image, tiled=tiled)
         context, context_mask = self._prepare_inference_context(
-            prompt=prompt,
             context=context,
             context_mask=context_mask,
             proprio=proprio,
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
-            task_description=None,
+            task_description=task_description,
         )
         video_latent_shape = self._build_video_latent_shape(
             input_image, num_frames)
@@ -620,13 +604,16 @@ class FastWAMVLA(BaseVLA):
         context0 = context[0].detach() if context is not None else None
         context_mask0 = (
             context_mask[0].detach() if context_mask is not None else None)
-        prompt = self._select_first_meta_value(batch.get('prompt'))
-        if prompt is None:
-            prompt = self._select_first_meta_value(
-                batch.get('task_description'))
+        lang_tokens = batch.get('lang_tokens')
+        lang_masks = batch.get('lang_masks')
+        lang_tokens0 = (
+            lang_tokens[:1].detach() if lang_tokens is not None else None)
+        lang_masks0 = (
+            lang_masks[:1].detach() if lang_masks is not None else None)
+        task_description = self._select_first_meta_value(
+            batch.get('task_description'))
 
         pred = self.infer(
-            prompt=None if context0 is not None else prompt,
             input_image=input_image,
             num_frames=num_frames,
             action=action0,
@@ -635,6 +622,9 @@ class FastWAMVLA(BaseVLA):
             proprio=proprio0,
             context=context0,
             context_mask=context_mask0,
+            lang_tokens=lang_tokens0,
+            lang_masks=lang_masks0,
+            task_description=task_description,
             num_inference_steps=num_inference_steps,
             seed=seed,
             tiled=False,

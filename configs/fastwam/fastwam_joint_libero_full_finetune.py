@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# FastWAM world-action model (joint) trained on LIBERO-10.
+# FastWAM world-action model (joint) trained on all LIBERO suites.
 
 _ckpt_root = './checkpoints'
 _tokenizer = _ckpt_root + '/fastwam_base_full/tokenizer'
@@ -24,9 +24,14 @@ _frame_window_size = 9
 _action_window_size = 32
 _frame_sample_stride = 4
 
-# Match the standard GR00T LIBERO-10 data and statistics namespace.
-_data_root_path = 'datasets/libero_10_no_noops_lerobotv2.1'
-_statistic_name = 'libero_10_no_noops'
+# Train jointly on every no-noops LIBERO suite.
+_data_root_paths = [
+    'datasets/libero_10_no_noops_lerobotv2.1',
+    'datasets/libero_goal_no_noops_lerobotv2.1',
+    'datasets/libero_object_no_noops_lerobotv2.1',
+    'datasets/libero_spatial_no_noops_lerobotv2.1',
+]
+_statistic_name = 'libero_all_no_noops'
 
 model = dict(
     type='FastWAMVLA',
@@ -97,7 +102,9 @@ model = dict(
 inference_model = model.copy()
 
 train_dataloader = dict(
-    per_device_batch_size=16,
+    # Microbatch 4 x 4 accumulation steps preserves the original
+    # per-device effective batch size of 16 without the forward-pass OOM.
+    per_device_batch_size=4,
     per_device_num_workers=8,
     dataset=dict(
         type='DistributedRepeatingDataset',
@@ -109,7 +116,7 @@ train_dataloader = dict(
         statistic_name=_statistic_name,
         datasets=dict(
             type='ParquetDataset',
-            data_root_path=_data_root_path,
+            data_root_path=_data_root_paths,
             transforms=[
                 dict(
                     type='ProcessParquetInputs',
@@ -199,7 +206,7 @@ runner = dict(
             'lang_tokens',
             'lang_masks',
         ],
-        meta_keys=['task_description', 'prompt', 'info', 'stats', 'timestamp'],
+        meta_keys=['task_description', 'info', 'stats', 'timestamp'],
     ),
     sampler=None,
     metric=dict(
@@ -217,8 +224,9 @@ runner = dict(
     ),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
-    grad_accumulation_steps=1,
+    grad_accumulation_steps=4,
     mixed_precision_dtype='bf16',
+    static_graph=False,
     evaluator=dict(
         type='training-eval',
         eval_every=200,
@@ -229,11 +237,16 @@ runner = dict(
     ),
 )
 
-# Default LIBERO-10 rollout using the training checkpoint statistics.
+# Evaluate every LIBERO suite using the combined training statistics.
 eval = dict(
     runner=dict(
         type='LiberoEvalRunner',
-        task_suite_name='libero_10',
+        task_suite_name=[
+            'libero_10',
+            'libero_goal',
+            'libero_object',
+            'libero_spatial',
+        ],
         model_family='fastwam',
         task_ids=None,
         allowed_missing_key_prefixes=('vlm_backbone.text_encoder.', ),
