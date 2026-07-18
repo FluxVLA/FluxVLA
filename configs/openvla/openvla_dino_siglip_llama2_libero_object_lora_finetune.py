@@ -14,7 +14,6 @@
 
 model = dict(
     type='OpenVLA',
-    arch_specifier='no-align+fused-gelu-mlp',
     vision_backbone=dict(
         type='DinoSigLIPViTBackbone',
         vision_backbone_id='dinosiglip-vit-so-224px',
@@ -23,7 +22,6 @@ model = dict(
             file=  # noqa: E251
             './checkpoints/vit_large_patch14_reg4_dinov2.lvd142m/model.safetensors'  # noqa: E501
         ),
-        image_resize_strategy='resize-naive',
         siglip_config=dict(
             model_id='siglip_224',
             file=  # noqa: E251

@@ -61,8 +61,7 @@ class UROperator(BaseOperator):
                  cartesian_cmd_topic='/cmd/servol',
                  gripper_cmd_topic='/cmd/gripper',
                  joint_names=None,
-                 gripper_open_position=GRIPPER_OPEN_POSITION,
-                 **unused_kwargs):
+                 gripper_open_position=GRIPPER_OPEN_POSITION):
         """Configure UR observation topics, sync settings, and publishers."""
         self.img_left_topic = img_left_topic
         self.img_front_topic = img_front_topic

@@ -23,7 +23,6 @@ model = dict(
             file=  # noqa: E251
             './checkpoints/vit_large_patch14_reg4_dinov2.lvd142m/model.safetensors'  # noqa: E501
         ),
-        image_resize_strategy='resize-naive',
         siglip_config=dict(
             model_id='siglip_224',
             file=  # noqa: E251

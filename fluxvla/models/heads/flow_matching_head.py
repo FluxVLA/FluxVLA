@@ -231,9 +231,7 @@ class FlowMatchingHead(nn.Module):
                      output_dim=1024,
                      positional_embeddings=None),
                  ori_action_dim=None,
-                 rtc_training_config=None,
-                 *args,
-                 **kwargs):
+                 rtc_training_config=None):
         super().__init__()
         self.rtc_training_config = rtc_training_config
         self.hidden_size = hidden_size

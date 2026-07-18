@@ -141,9 +141,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                      output_dim=1024,
                      positional_embeddings=None),
                  ori_action_dim=None,
-                 max_input_seq_len: int = 600,
-                 *args,
-                 **kwargs):
+                 max_input_seq_len: int = 600):
         super().__init__(hidden_size, state_dim, input_embedding_dim,
                          action_dim, num_inference_timesteps,
                          max_num_embodiments, use_vlln,
@@ -151,7 +149,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                          vl_self_attention_cfg, add_positional_embeddings,
                          max_seq_len, num_timestep_buckets, noise_s,
                          noise_beta_alpha, noise_beta_beta, num_steps,
-                         diffusion_model_cfg, ori_action_dim, *args, **kwargs)
+                         diffusion_model_cfg, ori_action_dim)
 
         # ---- Derived hyperparameters ----
         E = max_num_embodiments

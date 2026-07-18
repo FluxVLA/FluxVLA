@@ -69,14 +69,10 @@ model = dict(
         state_dim=32,
         hidden_size=1024,
         input_embedding_dim=1536,
-        num_layers=1,
-        num_heads=4,
         num_inference_timesteps=4,
-        traj_length=10,
         action_dim=32),
     freeze_vlm_backbone=False,
-    freeze_projector=False,
-    ori_action_dim=7)
+    freeze_projector=False)
 
 train_dataloader = dict(
     per_device_batch_size=8,

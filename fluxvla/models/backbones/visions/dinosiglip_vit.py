@@ -65,9 +65,7 @@ class DinoSigLIPViTBackbone(VisionBackbone):
                  dino_config: Dict,
                  siglip_config: Dict,
                  pretrained: bool = True,
-                 img_size: int = 224,
-                 *args,
-                 **kwargs) -> None:
+                 img_size: int = 224) -> None:
         super().__init__(vision_backbone_id)
         dino_timm_path_or_url = VISION_BACKBONE_CONFIGS[dino_config.pop(
             'model_id')]['model_id']
