@@ -12,6 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+seed = 7
+
 model = dict(
     type='OpenVLA',
     vision_backbone=dict(
@@ -54,9 +56,9 @@ model = dict(
     freeze_llm_backbone=False,
     freeze_projector=False,
     use_lora=True,
-    lora_rank=32,
-    lora_alpha=16,
-    lora_dropout=0.0,
+    lora_rank=64,
+    lora_alpha=32,
+    lora_dropout=0.05,
     lora_target_modules='all-linear',
     name_mapping={
         'llm_backbone.llm': 'language_model',
@@ -187,7 +189,7 @@ train_dataloader = dict(
                 dict(
                     type='AugImage',
                     rotation_range=0.0,
-                    crop_scale=(0.9, 0.9),
+                    crop_scale=(0.85, 1.0),
                     crop_ratio=(1.0, 1.0),
                     prob=1.0,
                     brightness_delta=0.2,
@@ -219,10 +221,10 @@ runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,
     optimizer=dict(lr=5e-4, type='AdamW', weight_decay=None),
-    max_steps=50000,
-    max_grad_norm=None,
+    max_steps=100000,
+    max_grad_norm=1.0,
     save_iter_interval=5000,
-    max_keep_ckpts=1,
+    max_keep_ckpts=3,
     sampler=None,
     collator=dict(
         type='PaddedCollatorForActionPrediction',
@@ -237,7 +239,10 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler=dict(type='constant'),
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.03,
+    ),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',

@@ -841,19 +841,27 @@ class BaseTrainRunner(ABC):
 
     @staticmethod
     def _collect_output_loss_metrics(output) -> Dict[str, torch.Tensor]:
-        """Collect scalar loss components returned by a VLA forward pass."""
+        """Collect scalar loss components and policy diagnostics."""
         if not hasattr(output, 'items'):
             return {}
 
         metrics = {}
         reserved_keys = {'loss'}
+        metric_aliases = {
+            'action_accuracy': 'action_accuracy',
+            'action_l1_loss': 'l1_loss',
+        }
         for key, value in output.items():
             if key in reserved_keys:
                 continue
-            if not (key.startswith('loss_') or key.endswith('_loss')):
+            metric_key = metric_aliases.get(key)
+            if metric_key is None and (key.startswith('loss_')
+                                       or key.endswith('_loss')):
+                metric_key = key
+            if metric_key is None:
                 continue
             if isinstance(value, torch.Tensor) and value.numel() == 1:
-                metrics[key] = value
+                metrics[metric_key] = value
         return metrics
 
     def _training_step(self, batch, should_step: bool = True) -> torch.Tensor:
