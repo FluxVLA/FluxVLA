@@ -1,5 +1,6 @@
 # ------------------------------------------------------------------------------
 # Copyright 2025 2toINF (https://github.com/2toINF)
+# Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -17,14 +18,13 @@
 # Origin: Modified from
 # Upstream-Repo: 2toINF/X-VLA
 # Upstream-Path: models/action_hub.py
-# Upstream-Ref: main
+# Upstream-Ref: origin/main@6bc2513f5f1cbec715cc668b414392a6cae5c671
 # SPDX-License-Identifier: Apache-2.0
 #
 # Notes: Adapted into FluxVLA's action-space registry; the EE6D / joint / auto
 # layouts preserve X-VLA semantics while fitting FluxVLA's module structure.
 
 from __future__ import annotations
-
 from typing import Dict, Iterable, Optional, Tuple, Type
 
 import torch
@@ -40,9 +40,8 @@ def register_action(name: str):
     def _wrap(cls):
         key = name.lower()
         if key in ACTION_REGISTRY:
-            raise KeyError(
-                f"ActionSpace '{key}' already registered -> "
-                f'{ACTION_REGISTRY[key]}')
+            raise KeyError(f"ActionSpace '{key}' already registered -> "
+                           f'{ACTION_REGISTRY[key]}')
         ACTION_REGISTRY[key] = cls
         cls.name = key
         return cls
@@ -54,9 +53,8 @@ def build_action_space(name: str, **kwargs) -> 'BaseActionSpace':
     """Instantiate a registered action space by name."""
     key = name.lower()
     if key not in ACTION_REGISTRY:
-        raise KeyError(
-            f"Unknown action space '{name}'. "
-            f'Available: {list(ACTION_REGISTRY.keys())}')
+        raise KeyError(f"Unknown action space '{name}'. "
+                       f'Available: {list(ACTION_REGISTRY.keys())}')
     return ACTION_REGISTRY[key](**kwargs)
 
 
@@ -128,7 +126,8 @@ def _masked_reduce(losses: torch.Tensor,
     return (losses * mask).sum() / (mask.sum() + 1e-8)
 
 
-def _masked_mse(pred: torch.Tensor, target: torch.Tensor,
+def _masked_mse(pred: torch.Tensor,
+                target: torch.Tensor,
                 action_masks: Optional[torch.Tensor] = None) -> torch.Tensor:
     losses = F.mse_loss(pred, target, reduction='none')
     return _masked_reduce(losses, action_masks)
@@ -139,8 +138,7 @@ def _masked_bce_with_logits(
     target: torch.Tensor,
     action_masks: Optional[torch.Tensor] = None,
 ) -> torch.Tensor:
-    losses = F.binary_cross_entropy_with_logits(
-        pred, target, reduction='none')
+    losses = F.binary_cross_entropy_with_logits(pred, target, reduction='none')
     return _masked_reduce(losses, action_masks)
 
 
@@ -176,25 +174,20 @@ class EE6DActionSpace(BaseActionSpace):
                 _select_mask(action_masks, gi),
             ) for gi in self.gripper_idx
         ]
-        gripper_loss = sum(g_losses) / len(self.gripper_idx) * self.GRIPPER_SCALE
+        gripper_loss = (
+            sum(g_losses) / len(self.gripper_idx) * self.GRIPPER_SCALE)
 
-        pos_loss = (
-            _masked_mse(pred[:, :, self.POS_IDX_1],
-                        target[:, :, self.POS_IDX_1],
-                        _select_mask(action_masks, self.POS_IDX_1))
-            + _masked_mse(pred[:, :, self.POS_IDX_2],
-                          target[:, :, self.POS_IDX_2],
-                          _select_mask(action_masks, self.POS_IDX_2))
-        ) * self.XYZ_SCALE
+        pos_loss = (_masked_mse(
+            pred[:, :, self.POS_IDX_1], target[:, :, self.POS_IDX_1],
+            _select_mask(action_masks, self.POS_IDX_1)) + _masked_mse(
+                pred[:, :, self.POS_IDX_2], target[:, :, self.POS_IDX_2],
+                _select_mask(action_masks, self.POS_IDX_2))) * self.XYZ_SCALE
 
-        rot_loss = (
-            _masked_mse(pred[:, :, self.ROT_IDX_1],
-                        target[:, :, self.ROT_IDX_1],
-                        _select_mask(action_masks, self.ROT_IDX_1))
-            + _masked_mse(pred[:, :, self.ROT_IDX_2],
-                          target[:, :, self.ROT_IDX_2],
-                          _select_mask(action_masks, self.ROT_IDX_2))
-        ) * self.ROT_SCALE
+        rot_loss = (_masked_mse(
+            pred[:, :, self.ROT_IDX_1], target[:, :, self.ROT_IDX_1],
+            _select_mask(action_masks, self.ROT_IDX_1)) + _masked_mse(
+                pred[:, :, self.ROT_IDX_2], target[:, :, self.ROT_IDX_2],
+                _select_mask(action_masks, self.ROT_IDX_2))) * self.ROT_SCALE
 
         return {
             'position_loss': pos_loss,
@@ -212,8 +205,9 @@ class EE6DActionSpace(BaseActionSpace):
 
     def postprocess(self, action: torch.Tensor) -> torch.Tensor:
         if action.size(-1) > max(self.gripper_idx):
-            action[..., self.gripper_idx] = torch.sigmoid(
-                action[..., self.gripper_idx])
+            action[...,
+                   self.gripper_idx] = torch.sigmoid(action[...,
+                                                            self.gripper_idx])
         return action
 
 
@@ -243,10 +237,11 @@ class JointActionSpace(BaseActionSpace):
                 _select_mask(action_masks, gi),
             ) for gi in self.gripper_idx
         ]
-        gripper_loss = sum(g_losses) / len(self.gripper_idx) * self.GRIPPER_SCALE
+        gripper_loss = (
+            sum(g_losses) / len(self.gripper_idx) * self.GRIPPER_SCALE)
 
-        joints_idx = tuple(i for i in range(D)
-                           if i not in set(self.gripper_idx))
+        joints_idx = tuple(
+            i for i in range(D) if i not in set(self.gripper_idx))
         joints_loss = _masked_mse(
             pred[:, :, joints_idx],
             target[:, :, joints_idx],
@@ -268,8 +263,9 @@ class JointActionSpace(BaseActionSpace):
 
     def postprocess(self, action: torch.Tensor) -> torch.Tensor:
         if action.size(-1) > max(self.gripper_idx):
-            action[..., self.gripper_idx] = torch.sigmoid(
-                action[..., self.gripper_idx])
+            action[...,
+                   self.gripper_idx] = torch.sigmoid(action[...,
+                                                            self.gripper_idx])
         return action
 
 
@@ -301,22 +297,16 @@ class AGIBOTEE6DActionSpace(BaseActionSpace):
             target[:, :, self.gripper_idx],
             _select_mask(action_masks, self.gripper_idx),
         ) * self.GRIPPER_SCALE
-        pos_loss = (
-            _masked_mse(pred[:, :, self.POS_IDX_1],
-                        target[:, :, self.POS_IDX_1],
-                        _select_mask(action_masks, self.POS_IDX_1))
-            + _masked_mse(pred[:, :, self.POS_IDX_2],
-                          target[:, :, self.POS_IDX_2],
-                          _select_mask(action_masks, self.POS_IDX_2))
-        ) * self.XYZ_SCALE
-        rot_loss = (
-            _masked_mse(pred[:, :, self.ROT_IDX_1],
-                        target[:, :, self.ROT_IDX_1],
-                        _select_mask(action_masks, self.ROT_IDX_1))
-            + _masked_mse(pred[:, :, self.ROT_IDX_2],
-                          target[:, :, self.ROT_IDX_2],
-                          _select_mask(action_masks, self.ROT_IDX_2))
-        ) * self.ROT_SCALE
+        pos_loss = (_masked_mse(
+            pred[:, :, self.POS_IDX_1], target[:, :, self.POS_IDX_1],
+            _select_mask(action_masks, self.POS_IDX_1)) + _masked_mse(
+                pred[:, :, self.POS_IDX_2], target[:, :, self.POS_IDX_2],
+                _select_mask(action_masks, self.POS_IDX_2))) * self.XYZ_SCALE
+        rot_loss = (_masked_mse(
+            pred[:, :, self.ROT_IDX_1], target[:, :, self.ROT_IDX_1],
+            _select_mask(action_masks, self.ROT_IDX_1)) + _masked_mse(
+                pred[:, :, self.ROT_IDX_2], target[:, :, self.ROT_IDX_2],
+                _select_mask(action_masks, self.ROT_IDX_2))) * self.ROT_SCALE
 
         return {
             'position_loss': pos_loss,
@@ -351,17 +341,15 @@ class AutoActionSpace(BaseActionSpace):
             return x
         if x.size(-1) != self.ori_action_dim:
             if x.size(-1) < self.ori_action_dim:
-                pad_shape = list(x.shape[:-1]) + [
-                    self.ori_action_dim - x.size(-1)
-                ]
+                pad_shape = list(
+                    x.shape[:-1]) + [self.ori_action_dim - x.size(-1)]
                 pad = x.new_zeros(pad_shape)
                 x = torch.cat([x, pad], dim=-1)
             else:
                 x = x[..., :self.ori_action_dim]
 
-        pad_shape = list(x.shape[:-1]) + [
-            self.dim_action - self.ori_action_dim
-        ]
+        pad_shape = list(
+            x.shape[:-1]) + [self.dim_action - self.ori_action_dim]
         pad = x.new_zeros(pad_shape)
         return torch.cat([x, pad], dim=-1)
 

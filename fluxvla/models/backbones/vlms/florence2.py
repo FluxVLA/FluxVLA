@@ -1,3 +1,4 @@
+# Copyright 2025 2toINF (https://github.com/2toINF)
 # Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,7 +16,7 @@
 # Origin: Modified from
 # Upstream-Repo: 2toINF/X-VLA
 # Upstream-Path: models/modeling_xvla.py
-# Upstream-Ref: main
+# Upstream-Ref: origin/main@6bc2513f5f1cbec715cc668b414392a6cae5c671
 # SPDX-License-Identifier: Apache-2.0
 #
 # Notes: Extracted the Florence2 encoder path into a FluxVLA backbone wrapper
@@ -29,10 +30,13 @@ from torch import nn
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 
 from fluxvla.engines import VLM_BACKBONES
-from fluxvla.models.third_party_models.xvla_models.configuration_florence2 import (
-    Florence2Config)
-from fluxvla.models.third_party_models.xvla_models.modeling_florence2 import (
-    Florence2EncoderLayer, Florence2ForConditionalGeneration)
+from fluxvla.models.third_party_models.xvla_models import (
+    configuration_florence2, modeling_florence2)
+
+Florence2Config = configuration_florence2.Florence2Config
+Florence2EncoderLayer = modeling_florence2.Florence2EncoderLayer
+Florence2ForConditionalGeneration = (
+    modeling_florence2.Florence2ForConditionalGeneration)
 
 
 @VLM_BACKBONES.register_module()
@@ -96,7 +100,8 @@ class Florence2Backbone(nn.Module):
 
         if vlm_path is None:
             raise ValueError(
-                'Florence2Backbone requires either `vlm_config` or `vlm_path`.')
+                'Florence2Backbone requires either `vlm_config` or '
+                '`vlm_path`.')
         load_kwargs = {'trust_remote_code': True}
         if target_dtype is not None:
             load_kwargs['torch_dtype'] = target_dtype
@@ -109,7 +114,8 @@ class Florence2Backbone(nn.Module):
 
     def _reshape_images(self, images: torch.Tensor) -> torch.Tensor:
         if images.ndim == 4:
-            batch_size, views_channels, image_height, image_width = images.shape
+            batch_size, views_channels, image_height, image_width = (
+                images.shape)
             num_views = views_channels // 3
             images = images.view(batch_size, num_views, 3, image_height,
                                  image_width)
@@ -117,10 +123,11 @@ class Florence2Backbone(nn.Module):
 
     def _flatten_valid_view_indices(self,
                                     img_masks: torch.Tensor) -> torch.Tensor:
-        valid_view_indices = img_masks.view(-1).to(torch.bool).nonzero(
-            as_tuple=False).flatten()
+        valid_view_indices = img_masks.view(-1).to(
+            torch.bool).nonzero(as_tuple=False).flatten()
         if valid_view_indices.numel() == 0:
-            raise ValueError('At least one image view must be valid per batch.')
+            raise ValueError(
+                'At least one image view must be valid per batch.')
         return valid_view_indices
 
     def _scatter_valid_view_features(
@@ -182,8 +189,9 @@ class Florence2Backbone(nn.Module):
             attention_mask=attention_mask,
             inputs_embeds=merged_embeds,
         )[0]
-        aux_visual_inputs = image_features[:, 1:].reshape(
-            batch_size, -1, hidden_size)
+        aux_visual_inputs = image_features[:,
+                                           1:].reshape(batch_size, -1,
+                                                       hidden_size)
         return enc_out, attention_mask, aux_visual_inputs
 
     def forward(

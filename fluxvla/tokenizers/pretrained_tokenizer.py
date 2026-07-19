@@ -51,8 +51,7 @@ class PretrainedTokenizer:
         else:
             tokenizer_type = getattr(transformers, tokenizer_cls, None)
             if tokenizer_type is None:
-                raise ValueError(
-                    f'Unknown tokenizer class: {tokenizer_cls}')
+                raise ValueError(f'Unknown tokenizer class: {tokenizer_cls}')
             self.tokenizer = tokenizer_type.from_pretrained(
                 model_path,
                 model_max_length=model_max_length,
@@ -258,10 +257,6 @@ class PretrainedTokenizer:
             # export the full tokenizer to the target directory.
             self.tokenizer.save_pretrained(dst.as_posix())
 
-        print(f'Tokenizers saved to: {dst.resolve()}')
-        # Quick summary of what is present for verification
-        present = sorted(p.name for p in dst.iterdir() if p.is_file())
-        print('Files in target dir:', present)
         return save_directory
 
     # ---------------- New implementation ends ----------------

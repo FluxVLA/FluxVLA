@@ -34,7 +34,9 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 | FluxVLA(Pi)                 |      98.6      |     99.0      |    97.8     |   96±1.0    |     97.85      |
 | FluxVLA(Qwen3VL 0.6B+GR00T) |      98.6      |     99.6      |    95.6     |  92.2±1.8   |     96.50      |
 | FluxVLA(DreamZero)          |      96.8      |     97.4      |  90.8±1.5   |    93.6     |     94.65      |
-| FluxVLA(XVLA)               |      98.8      |     99.8      |    96.8     |    93.2     |     97.15      |
+| FluxVLA(X-VLA)              | [97.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [87.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) |     95.10      |
+
+*FluxVLA(X-VLA) 结果来自使用共享 XVLA LIBERO LeRobot 数据和 `abs_action_6d` 动作训练的最终 4-suite checkpoint。*
 
 ## 📢 最新动态
 
@@ -256,6 +258,8 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 将 `libero_10_no_noops_lerobotv2.1` 替换为其他数据集对应的文件夹名即可下载。
 
+XVLA LIBERO 配置需要将共享 LIBERO LeRobot suite 目录放置或软链接到 `./datasets/libero_xvla_lerobot` 下，例如 `./datasets/libero_xvla_lerobot/libero_10_no_noops_lerobot`。这些配置会在加载阶段使用 `abs_action_6d` 字段。
+
 </details>
 
 <details>
@@ -309,7 +313,10 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 | PI0_base    | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)    |
 | PI05_base   | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)   |
 | PI05_libero | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero) |
-| X-VLA-PT    | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-PT) |
+| X-VLA-PT    | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Pt-fluxvla) |
+| X-VLA-Libero | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Libero)     |
+
+> **XVLA 说明**：FluxVLA 的 XVLA 训练配置需要将转换后的 `X-VLA-PT` checkpoint 放到 `./checkpoints/X-VLA-Pt-fluxvla`。这是 X-VLA 预训练 checkpoint 转成 FluxVLA 兼容权重和 tokenizer 布局后的版本，用于继续微调。官方 `X-VLA-Libero` checkpoint 已经过 LIBERO 微调，并采用官方评测图像约定；请使用 `configs/xvla/xvla_libero_4suite_official_ckpt_eval.py`，该配置只旋转 `agentview_image`，不旋转腕部视角。
 
 </details>
 
@@ -362,6 +369,7 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 huggingface-cli download limxdynamics/FluxVLAEngine --include "pi05_paligemma_libero_10_full_finetune_bs64/*" --local-dir ./checkpoints/pi05_paligemma_libero_10_full_finetune_bs64
 ```
 
+</details>
 
 ## 🌟 特性
 

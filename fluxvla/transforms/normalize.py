@@ -154,6 +154,8 @@ class DenormalizeLiberoAction:
         """
         if self.norm_stats is not None and self.denorm_action:
             norm_stats_key = data.get('norm_stats_key')
+            if norm_stats_key is None:
+                norm_stats_key = data.get('task_suite_name', '') + '_no_noops'
             norm_stats = self.norm_stats[norm_stats_key]
             action = data.get('action', None)
             assert action is not None, \
@@ -559,35 +561,21 @@ class LiberoProprioFromInputs:
                 (state_high - state_low + 1e-8) - 1, -1, 1), normalized_states)
         return states
 
-
-@TRANSFORMS.register_module()
-class LiberoEE6DStateTransform:
-    """Convert LIBERO state vector to X-VLA EE6D proprio format (20D)."""
-
-    def __init__(self, state_key: str = 'states', target_dim: int = 20) -> None:
-        self.state_key = state_key
-        self.target_dim = target_dim
-
-    @staticmethod
-    def _axisangle_to_rot6d(aa: np.ndarray) -> np.ndarray:
-        from scipy.spatial.transform import Rotation as R
-        mat = R.from_rotvec(aa).as_matrix()
-        return np.concatenate([mat[:3, 0], mat[:3, 1]], axis=-1).astype(
-            np.float32)
-
-    def __call__(self, data: Dict) -> Dict:
-        s = np.asarray(data[self.state_key], dtype=np.float32)
-        assert s.shape[0] >= 8, \
-            f'LiberoEE6DStateTransform expects state dim >= 8, got {s.shape[0]}'
-        xyz = s[:3]
-        rot6d = self._axisangle_to_rot6d(s[3:6])
-        gripper = np.array([s[6:8].mean()], dtype=np.float32)
-        arm1 = np.concatenate([xyz, rot6d, gripper])
-        out_state = np.zeros(self.target_dim, dtype=np.float32)
-        out_state[:len(arm1)] = arm1
-        out = dict(data)
-        out[self.state_key] = out_state
-        return out
+    def _normalize_min_max(self, normalized_states: np.ndarray, stats: Dict):
+        assert 'min' in stats and stats['min'] is not None
+        assert 'max' in stats and stats['max'] is not None
+        state_high = np.array(stats['max'])
+        state_low = np.array(stats['min'])
+        if 'mask' in stats:
+            mask = np.array(stats['mask'])
+        else:
+            mask = np.ones_like(state_high, dtype=bool)
+        states = np.where(
+            mask,
+            np.clip(
+                2 * (normalized_states - state_low) /
+                (state_high - state_low + 1e-8) - 1, -1, 1), normalized_states)
+        return states
 
 
 @TRANSFORMS.register_module()
@@ -612,8 +600,8 @@ class LiberoEE6DProprioFromInputs:
     def _quat_to_rot6d(q: np.ndarray) -> np.ndarray:
         from scipy.spatial.transform import Rotation as R
         mat = R.from_quat(q).as_matrix()
-        return np.concatenate([mat[:3, 0], mat[:3, 1]], axis=-1).astype(
-            np.float32)
+        return np.concatenate([mat[:3, 0], mat[:3, 1]],
+                              axis=-1).astype(np.float32)
 
     def __call__(self, data: Dict) -> Dict:
         pos = np.asarray(data[self.pos_key], dtype=np.float32)
@@ -627,19 +615,3 @@ class LiberoEE6DProprioFromInputs:
         out = dict(data)
         out[self.out_key] = state
         return out
-
-    def _normalize_min_max(self, normalized_states: np.ndarray, stats: Dict):
-        assert 'min' in stats and stats['min'] is not None
-        assert 'max' in stats and stats['max'] is not None
-        state_high = np.array(stats['max'])
-        state_low = np.array(stats['min'])
-        if 'mask' in stats:
-            mask = np.array(stats['mask'])
-        else:
-            mask = np.ones_like(state_high, dtype=bool)
-        states = np.where(
-            mask,
-            np.clip(
-                2 * (normalized_states - state_low) /
-                (state_high - state_low + 1e-8) - 1, -1, 1), normalized_states)
-        return states

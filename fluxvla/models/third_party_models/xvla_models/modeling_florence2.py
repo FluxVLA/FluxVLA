@@ -16,7 +16,7 @@
 # Origin: Source
 # Upstream-Repo: 2toINF/X-VLA
 # Upstream-Path: models/modeling_florence2.py
-# Upstream-Ref: main
+# Upstream-Ref: origin/main@6bc2513f5f1cbec715cc668b414392a6cae5c671
 # SPDX-License-Identifier: Apache-2.0
 #
 # Notes: Vendored verbatim from X-VLA; original Microsoft/HuggingFace notices
@@ -74,7 +74,7 @@ if is_flash_attn_2_available():
 
 logger = logging.get_logger(__name__)
 
-_CONFIG_FOR_DOC = "Florence2Config"
+_CONFIG_FOR_DOC = 'Florence2Config'
 
 class LearnedAbsolutePositionEmbedding2D(nn.Module):
     """
@@ -141,7 +141,7 @@ class PositionalEmbeddingCosine1D(nn.Module):
         pos_idx_to_embed[:, 0::2] = torch.sin(frequencies)
         pos_idx_to_embed[:, 1::2] = torch.cos(frequencies)
         # Save the positional embeddings in a constant buffer.
-        self.register_buffer("pos_idx_to_embed", pos_idx_to_embed)
+        self.register_buffer('pos_idx_to_embed', pos_idx_to_embed)
 
     def forward(self, seq_embeds: torch.Tensor) -> torch.Tensor:
         """
@@ -253,9 +253,9 @@ class Mlp(nn.Module):
         out_features = out_features or in_features
         hidden_features = hidden_features or in_features
         self.net = nn.Sequential(OrderedDict([
-            ("fc1", nn.Linear(in_features, hidden_features)),
-            ("act", act_layer()),
-            ("fc2", nn.Linear(hidden_features, out_features))
+            ('fc1', nn.Linear(in_features, hidden_features)),
+            ('act', act_layer()),
+            ('fc2', nn.Linear(hidden_features, out_features))
         ]))
 
     def forward(self, x, size):
@@ -434,7 +434,7 @@ class WindowAttention(nn.Module):
 
         H, W = size
         B, L, C = x.shape
-        assert L == H * W, "input feature has wrong size"
+        assert L == H * W, 'input feature has wrong size'
 
         x = x.view(B, H, W, C)
 
@@ -698,7 +698,7 @@ def shift_tokens_right(input_ids: torch.Tensor, pad_token_id: int, decoder_start
     shifted_input_ids[:, 0] = decoder_start_token_id
 
     if pad_token_id is None:
-        raise ValueError("self.model.config.pad_token_id has to be defined.")
+        raise ValueError('self.model.config.pad_token_id has to be defined.')
     # replace possible -100 values in labels by `pad_token_id`
     shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
 
@@ -762,8 +762,8 @@ class Florence2Attention(nn.Module):
 
         if (self.head_dim * num_heads) != self.embed_dim:
             raise ValueError(
-                f"embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim}"
-                f" and `num_heads`: {num_heads})."
+                f'embed_dim must be divisible by num_heads (got `embed_dim`: {self.embed_dim}'
+                f' and `num_heads`: {num_heads}).'
             )
         self.scaling = self.head_dim**-0.5
         self.is_decoder = is_decoder
@@ -843,14 +843,14 @@ class Florence2Attention(nn.Module):
 
         if attn_weights.size() != (bsz * self.num_heads, tgt_len, src_len):
             raise ValueError(
-                f"Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is"
-                f" {attn_weights.size()}"
+                f'Attention weights should be of size {(bsz * self.num_heads, tgt_len, src_len)}, but is'
+                f' {attn_weights.size()}'
             )
 
         if attention_mask is not None:
             if attention_mask.size() != (bsz, 1, tgt_len, src_len):
                 raise ValueError(
-                    f"Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}"
+                    f'Attention mask should be of size {(bsz, 1, tgt_len, src_len)}, but is {attention_mask.size()}'
                 )
             attn_weights = attn_weights.view(bsz, self.num_heads, tgt_len, src_len) + attention_mask
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
@@ -860,8 +860,8 @@ class Florence2Attention(nn.Module):
         if layer_head_mask is not None:
             if layer_head_mask.size() != (self.num_heads,):
                 raise ValueError(
-                    f"Head mask for a single layer should be of size {(self.num_heads,)}, but is"
-                    f" {layer_head_mask.size()}"
+                    f'Head mask for a single layer should be of size {(self.num_heads,)}, but is'
+                    f' {layer_head_mask.size()}'
                 )
             attn_weights = layer_head_mask.view(1, -1, 1, 1) * attn_weights.view(bsz, self.num_heads, tgt_len, src_len)
             attn_weights = attn_weights.view(bsz * self.num_heads, tgt_len, src_len)
@@ -882,8 +882,8 @@ class Florence2Attention(nn.Module):
 
         if attn_output.size() != (bsz * self.num_heads, tgt_len, self.head_dim):
             raise ValueError(
-                f"`attn_output` should be of size {(bsz * self.num_heads, tgt_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
+                f'`attn_output` should be of size {(bsz * self.num_heads, tgt_len, self.head_dim)}, but is'
+                f' {attn_output.size()}'
             )
 
         attn_output = attn_output.view(bsz, self.num_heads, tgt_len, self.head_dim)
@@ -928,7 +928,7 @@ class Florence2FlashAttention2(Florence2Attention):
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
         # Florence2FlashAttention2 attention does not support output_attentions
         if output_attentions:
-            raise ValueError("Florence2FlashAttention2 attention does not support output_attentions")
+            raise ValueError('Florence2FlashAttention2 attention does not support output_attentions')
 
         # if key_value_states are provided this layer is used as a cross-attention layer
         # for the decoder
@@ -990,15 +990,15 @@ class Florence2FlashAttention2(Florence2Attention):
             if torch.is_autocast_enabled():
                 target_dtype = torch.get_autocast_gpu_dtype()
             # Handle the case where the model is quantized
-            elif hasattr(self.config, "_pre_quantization_dtype"):
+            elif hasattr(self.config, '_pre_quantization_dtype'):
                 target_dtype = self.config._pre_quantization_dtype
             else:
                 target_dtype = self.q_proj.weight.dtype
 
             logger.warning_once(
-                f"The input hidden states seems to be silently casted in float32, this might be related to"
-                f" the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in"
-                f" {target_dtype}."
+                f'The input hidden states seems to be silently casted in float32, this might be related to'
+                f' the fact you have upcasted embedding or layer norm layers in float32. We will cast back the input in'
+                f' {target_dtype}.'
             )
 
             query_states = query_states.to(target_dtype)
@@ -1131,7 +1131,7 @@ class Florence2SdpaAttention(Florence2Attention):
         if output_attentions or layer_head_mask is not None:
             # TODO: Improve this warning with e.g. `model.config._attn_implementation = "manual"` once this is implemented.
             logger.warning_once(
-                "Florence2Model is using Florence2SdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True` or `layer_head_mask` not None. Falling back to the manual attention"
+                'Florence2Model is using Florence2SdpaAttention, but `torch.nn.functional.scaled_dot_product_attention` does not support `output_attentions=True` or `layer_head_mask` not None. Falling back to the manual attention'
                 ' implementation, but specifying the manual implementation will be required from Transformers version v5.0.0 onwards. This warning can be removed using the argument `attn_implementation="eager"` when loading the model.'
             )
             return super().forward(
@@ -1208,8 +1208,8 @@ class Florence2SdpaAttention(Florence2Attention):
 
         if attn_output.size() != (bsz, self.num_heads, tgt_len, self.head_dim):
             raise ValueError(
-                f"`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is"
-                f" {attn_output.size()}"
+                f'`attn_output` should be of size {(bsz, self.num_heads, tgt_len, self.head_dim)}, but is'
+                f' {attn_output.size()}'
             )
 
         attn_output = attn_output.transpose(1, 2)
@@ -1224,9 +1224,9 @@ class Florence2SdpaAttention(Florence2Attention):
 
 
 FLORENCE2_ATTENTION_CLASSES = {
-    "eager": Florence2Attention,
-    "sdpa": Florence2SdpaAttention,
-    "flash_attention_2": Florence2FlashAttention2,
+    'eager': Florence2Attention,
+    'sdpa': Florence2SdpaAttention,
+    'flash_attention_2': Florence2FlashAttention2,
 }
 
 
@@ -1423,11 +1423,11 @@ class Florence2DecoderLayer(nn.Module):
 
 class Florence2LanguagePreTrainedModel(PreTrainedModel):
     config_class = Florence2LanguageConfig
-    base_model_prefix = "model"
+    base_model_prefix = 'model'
     supports_gradient_checkpointing = True
-    _keys_to_ignore_on_load_unexpected = ["encoder.version", "decoder.version"]
-    _no_split_modules = [r"Florence2EncoderLayer", r"Florence2DecoderLayer"]
-    _skip_keys_device_placement = "past_key_values"
+    _keys_to_ignore_on_load_unexpected = ['encoder.version', 'decoder.version']
+    _no_split_modules = [r'Florence2EncoderLayer', r'Florence2DecoderLayer']
+    _skip_keys_device_placement = 'past_key_values'
     _supports_flash_attn_2 = True
     _supports_sdpa = True
 
@@ -1444,7 +1444,7 @@ class Florence2LanguagePreTrainedModel(PreTrainedModel):
         elif isinstance(module, nn.Conv2d):
             nn.init.normal_(module.weight, std=0.02)
             for name, _ in module.named_parameters():
-                if name == "bias":
+                if name == 'bias':
                     nn.init.constant_(module.bias, 0)
         elif isinstance(module, nn.LayerNorm):
             nn.init.constant_(module.weight, 1.0)
@@ -1458,8 +1458,8 @@ class Florence2LanguagePreTrainedModel(PreTrainedModel):
         pad_token = self.config.pad_token_id
         input_ids = torch.tensor([[0, 6, 10, 4, 2], [0, 8, 12, 2, pad_token]], device=self.device)
         dummy_inputs = {
-            "attention_mask": input_ids.ne(pad_token),
-            "input_ids": input_ids,
+            'attention_mask': input_ids.ne(pad_token),
+            'input_ids': input_ids,
         }
         return dummy_inputs
 
@@ -1497,8 +1497,8 @@ class Florence2Encoder(Florence2LanguagePreTrainedModel):
             embed_dim,
         )
         self.layers = nn.ModuleList([Florence2EncoderLayer(config) for _ in range(config.encoder_layers)])
-        self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
-        self._use_sdpa = config._attn_implementation == "sdpa"
+        self._use_flash_attention_2 = config._attn_implementation == 'flash_attention_2'
+        self._use_sdpa = config._attn_implementation == 'sdpa'
         self.layernorm_embedding = nn.LayerNorm(embed_dim)
 
         self.gradient_checkpointing = False
@@ -1565,14 +1565,14 @@ class Florence2Encoder(Florence2LanguagePreTrainedModel):
 
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both input_ids and inputs_embeds at the same time")
+            raise ValueError('You cannot specify both input_ids and inputs_embeds at the same time')
         elif input_ids is not None:
             input = input_ids
             input_ids = input_ids.view(-1, input_ids.shape[-1])
         elif inputs_embeds is not None:
             input = inputs_embeds[:, :, -1]
         else:
-            raise ValueError("You have to specify either input_ids or inputs_embeds")
+            raise ValueError('You have to specify either input_ids or inputs_embeds')
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
@@ -1604,8 +1604,8 @@ class Florence2Encoder(Florence2LanguagePreTrainedModel):
         if head_mask is not None:
             if head_mask.size()[0] != (len(self.layers)):
                 raise ValueError(
-                    f"The head_mask should be specified for {len(self.layers)} layers, but it is for"
-                    f" {head_mask.size()[0]}."
+                    f'The head_mask should be specified for {len(self.layers)} layers, but it is for'
+                    f' {head_mask.size()[0]}.'
                 )
 
         for idx, encoder_layer in enumerate(self.layers):
@@ -1681,8 +1681,8 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
             config.d_model,
         )
         self.layers = nn.ModuleList([Florence2DecoderLayer(config) for _ in range(config.decoder_layers)])
-        self._use_flash_attention_2 = config._attn_implementation == "flash_attention_2"
-        self._use_sdpa = config._attn_implementation == "sdpa"
+        self._use_flash_attention_2 = config._attn_implementation == 'flash_attention_2'
+        self._use_sdpa = config._attn_implementation == 'sdpa'
 
         self.layernorm_embedding = nn.LayerNorm(config.d_model)
 
@@ -1785,7 +1785,7 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
 
         # retrieve input_ids and inputs_embeds
         if input_ids is not None and inputs_embeds is not None:
-            raise ValueError("You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time")
+            raise ValueError('You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time')
         elif input_ids is not None:
             input = input_ids
             input_shape = input.shape
@@ -1794,7 +1794,7 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
             input_shape = inputs_embeds.size()[:-1]
             input = inputs_embeds[:, :, -1]
         else:
-            raise ValueError("You have to specify either decoder_input_ids or decoder_inputs_embeds")
+            raise ValueError('You have to specify either decoder_input_ids or decoder_inputs_embeds')
 
         # past_key_values_length
         past_key_values_length = past_key_values[0][0].shape[2] if past_key_values is not None else 0
@@ -1851,7 +1851,7 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
         if self.gradient_checkpointing and self.training:
             if use_cache:
                 logger.warning_once(
-                    "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
+                    '`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`...'
                 )
                 use_cache = False
 
@@ -1862,12 +1862,12 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
         next_decoder_cache = () if use_cache else None
 
         # check if head_mask/cross_attn_head_mask has a correct number of layers specified if desired
-        for attn_mask, mask_name in zip([head_mask, cross_attn_head_mask], ["head_mask", "cross_attn_head_mask"]):
+        for attn_mask, mask_name in zip([head_mask, cross_attn_head_mask], ['head_mask', 'cross_attn_head_mask']):
             if attn_mask is not None:
                 if attn_mask.size()[0] != (len(self.layers)):
                     raise ValueError(
-                        f"The `{mask_name}` should be specified for {len(self.layers)} layers, but it is for"
-                        f" {head_mask.size()[0]}."
+                        f'The `{mask_name}` should be specified for {len(self.layers)} layers, but it is for'
+                        f' {head_mask.size()[0]}.'
                     )
 
         for idx, decoder_layer in enumerate(self.layers):
@@ -1940,7 +1940,7 @@ class Florence2Decoder(Florence2LanguagePreTrainedModel):
 
 
 class Florence2LanguageModel(Florence2LanguagePreTrainedModel):
-    _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight"]
+    _tied_weights_keys = ['encoder.embed_tokens.weight', 'decoder.embed_tokens.weight']
 
     def __init__(self, config: Florence2LanguageConfig):
         super().__init__(config)
@@ -1996,9 +1996,9 @@ class Florence2LanguageModel(Florence2LanguagePreTrainedModel):
         if decoder_input_ids is None and decoder_inputs_embeds is None:
             if input_ids is None:
                 raise ValueError(
-                    "If no `decoder_input_ids` or `decoder_inputs_embeds` are "
-                    "passed, `input_ids` cannot be `None`. Please pass either "
-                    "`input_ids` or `decoder_input_ids` or `decoder_inputs_embeds`."
+                    'If no `decoder_input_ids` or `decoder_inputs_embeds` are '
+                    'passed, `input_ids` cannot be `None`. Please pass either '
+                    '`input_ids` or `decoder_input_ids` or `decoder_inputs_embeds`.'
                 )
 
             decoder_input_ids = shift_tokens_right(
@@ -2062,14 +2062,14 @@ class Florence2LanguageModel(Florence2LanguagePreTrainedModel):
 
 
 class Florence2LanguageForConditionalGeneration(Florence2LanguagePreTrainedModel, GenerationMixin):
-    base_model_prefix = "model"
-    _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
-    _keys_to_ignore_on_load_missing = ["final_logits_bias"]
+    base_model_prefix = 'model'
+    _tied_weights_keys = ['encoder.embed_tokens.weight', 'decoder.embed_tokens.weight', 'lm_head.weight']
+    _keys_to_ignore_on_load_missing = ['final_logits_bias']
 
     def __init__(self, config: Florence2LanguageConfig):
         super().__init__(config)
         self.model = Florence2LanguageModel(config)
-        self.register_buffer("final_logits_bias", torch.zeros((1, self.model.shared.num_embeddings)))
+        self.register_buffer('final_logits_bias', torch.zeros((1, self.model.shared.num_embeddings)))
         self.lm_head = nn.Linear(config.d_model, self.model.shared.num_embeddings, bias=False)
 
         # Initialize weights and apply final processing
@@ -2099,7 +2099,7 @@ class Florence2LanguageForConditionalGeneration(Florence2LanguagePreTrainedModel
         else:
             extra_bias = torch.zeros((1, new_num_tokens - old_num_tokens), device=self.final_logits_bias.device)
             new_bias = torch.cat([self.final_logits_bias, extra_bias], dim=1)
-        self.register_buffer("final_logits_bias", new_bias)
+        self.register_buffer('final_logits_bias', new_bias)
 
     def get_output_embeddings(self):
         return self.lm_head
@@ -2138,7 +2138,7 @@ class Florence2LanguageForConditionalGeneration(Florence2LanguagePreTrainedModel
 
         if labels is not None:
             if use_cache:
-                logger.warning("The `use_cache` argument is changed to `False` since `labels` is provided.")
+                logger.warning('The `use_cache` argument is changed to `False` since `labels` is provided.')
             use_cache = False
             if decoder_input_ids is None and decoder_inputs_embeds is None:
                 decoder_input_ids = shift_tokens_right(
@@ -2215,16 +2215,16 @@ class Florence2LanguageForConditionalGeneration(Florence2LanguagePreTrainedModel
             decoder_input_ids = decoder_input_ids[:, remove_prefix_length:]
 
         return {
-            "input_ids": None,  # encoder_outputs is defined. input_ids not needed
-            "encoder_outputs": encoder_outputs,
-            "past_key_values": past_key_values,
-            "decoder_input_ids": decoder_input_ids,
-            "attention_mask": attention_mask,
-            "decoder_attention_mask": decoder_attention_mask,
-            "head_mask": head_mask,
-            "decoder_head_mask": decoder_head_mask,
-            "cross_attn_head_mask": cross_attn_head_mask,
-            "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
+            'input_ids': None,  # encoder_outputs is defined. input_ids not needed
+            'encoder_outputs': encoder_outputs,
+            'past_key_values': past_key_values,
+            'decoder_input_ids': decoder_input_ids,
+            'attention_mask': attention_mask,
+            'decoder_attention_mask': decoder_attention_mask,
+            'head_mask': head_mask,
+            'decoder_head_mask': decoder_head_mask,
+            'cross_attn_head_mask': cross_attn_head_mask,
+            'use_cache': use_cache,  # change this to avoid caching (presumably for debugging)
         }
 
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):
@@ -2331,14 +2331,14 @@ FLORENCE2_START_DOCSTRING = r"""
 
 
 @add_start_docstrings(
-    "The bare Florence-2 Model outputting raw hidden-states without any specific head on top.",
+    'The bare Florence-2 Model outputting raw hidden-states without any specific head on top.',
     FLORENCE2_START_DOCSTRING,
 )
 class Florence2PreTrainedModel(PreTrainedModel):
     config_class = Florence2Config
-    base_model_prefix = "model"
+    base_model_prefix = 'model'
     supports_gradient_checkpointing = True
-    _skip_keys_device_placement = "past_key_values"
+    _skip_keys_device_placement = 'past_key_values'
 
     @property
     def _supports_flash_attn_2(self):
@@ -2538,7 +2538,7 @@ class Florence2VisionModelWithProjection(Florence2PreTrainedModel):
     FLORENCE2_START_DOCSTRING,
 )
 class Florence2ForConditionalGeneration(Florence2PreTrainedModel):
-    _tied_weights_keys = ["language_model.encoder.embed_tokens.weight", "language_model.decoder.embed_tokens.weight", "language_model.lm_head.weight"]
+    _tied_weights_keys = ['language_model.encoder.embed_tokens.weight', 'language_model.decoder.embed_tokens.weight', 'language_model.lm_head.weight']
 
     def __init__(self, config: Florence2Config):
         super().__init__(config)
@@ -2835,17 +2835,17 @@ class Florence2ForConditionalGeneration(Florence2PreTrainedModel):
             decoder_input_ids = decoder_input_ids[:, remove_prefix_length:]
         
         return {
-            "input_ids": None,  # encoder_outputs is defined. input_ids not needed
-            "encoder_outputs": encoder_outputs,
-            "past_key_values": past_key_values,
-            "decoder_input_ids": decoder_input_ids,
-            "attention_mask": attention_mask,
-            "pixel_values": pixel_values,
-            "decoder_attention_mask": decoder_attention_mask,
-            "head_mask": head_mask,
-            "decoder_head_mask": decoder_head_mask,
-            "cross_attn_head_mask": cross_attn_head_mask,
-            "use_cache": use_cache,  # change this to avoid caching (presumably for debugging)
+            'input_ids': None,  # encoder_outputs is defined. input_ids not needed
+            'encoder_outputs': encoder_outputs,
+            'past_key_values': past_key_values,
+            'decoder_input_ids': decoder_input_ids,
+            'attention_mask': attention_mask,
+            'pixel_values': pixel_values,
+            'decoder_attention_mask': decoder_attention_mask,
+            'head_mask': head_mask,
+            'decoder_head_mask': decoder_head_mask,
+            'cross_attn_head_mask': cross_attn_head_mask,
+            'use_cache': use_cache,  # change this to avoid caching (presumably for debugging)
         }
     
     def prepare_decoder_input_ids_from_labels(self, labels: torch.Tensor):

@@ -35,7 +35,9 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 | FluxVLA(Qwen3VL 0.6B+GR00T) |      98.6      |     99.6      |    95.6     |  92.2±1.8   |     96.50      |
 | FluxVLA(DreamZero)          |      96.8      |     97.4      |  90.8±1.5   |    93.6     |     94.65      |
 | FluxVLA(SmolVLA)            |      87.4      |     93.2      |    92.0     |    63.4     |      84.0      |
-| FluxVLA(XVLA)               |      98.8      |     99.8      |    96.8     |    93.2     |     97.15      |
+| FluxVLA(X-VLA)              | [97.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [87.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) |     95.10      |
+
+*FluxVLA(X-VLA) is reported from the final 4-suite checkpoint trained on the shared XVLA LIBERO LeRobot data with `abs_action_6d` actions.*
 
 ## 📢 Latest News
 
@@ -257,6 +259,8 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 Replace `libero_10_no_noops_lerobotv2.1` with the corresponding folder name of the dataset you want to download.
 
+For XVLA LIBERO configs, place or symlink the shared LIBERO LeRobot suite folders under `./datasets/libero_xvla_lerobot`, for example `./datasets/libero_xvla_lerobot/libero_10_no_noops_lerobot`. These configs use the `abs_action_6d` field during loading.
+
 </details>
 
 <details>
@@ -311,7 +315,10 @@ Download the required pretrained checkpoints and place them under `./checkpoints
 | PI05_base   | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)   |
 | PI05_libero | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero) |
 | SmolVLA     | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                             |
-| X-VLA-PT    | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-PT) |
+| X-VLA-PT    | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Pt-fluxvla) |
+| X-VLA-Libero | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Libero)     |
+
+> **XVLA note**: For FluxVLA XVLA training configs, place the converted `X-VLA-PT` checkpoint under `./checkpoints/X-VLA-Pt-fluxvla`. This is the X-VLA pretraining checkpoint converted to FluxVLA-compatible weights and tokenizer layout for fine-tuning. The official `X-VLA-Libero` checkpoint is already LIBERO-finetuned and uses the official eval image convention; use `configs/xvla/xvla_libero_4suite_official_ckpt_eval.py`, which rotates only `agentview_image` and leaves the wrist view unchanged.
 
 </details>
 

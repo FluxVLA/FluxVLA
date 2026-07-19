@@ -15,7 +15,7 @@
 # Origin: Source
 # Upstream-Repo: 2toINF/X-VLA
 # Upstream-Path: models/configuration_florence2.py
-# Upstream-Ref: main
+# Upstream-Ref: origin/main@6bc2513f5f1cbec715cc668b414392a6cae5c671
 # SPDX-License-Identifier: Apache-2.0
 #
 # Notes: Vendored verbatim from X-VLA; original Microsoft/HuggingFace notices
@@ -86,8 +86,8 @@ class Florence2VisionConfig(PretrainedConfig):
     >>> configuration = model.config
     ```"""
 
-    model_type = "davit"
-    keys_to_ignore_at_inference = ["past_key_values"]
+    model_type = 'davit'
+    keys_to_ignore_at_inference = ['past_key_values']
 
     def __init__(
         self,
@@ -105,7 +105,7 @@ class Florence2VisionConfig(PretrainedConfig):
         projection_dim=1024,
         visual_temporal_embedding=None,
         image_pos_embed=None,
-        image_feature_source=["spatial_avg_pool", "temporal_avg_pool"],
+        image_feature_source=['spatial_avg_pool', 'temporal_avg_pool'],
         **kwargs,
     ):
         self.drop_path_rate = drop_path_rate
@@ -204,9 +204,9 @@ class Florence2LanguageConfig(PretrainedConfig):
     >>> configuration = model.config
     ```"""
 
-    model_type = "florence2_language"
-    keys_to_ignore_at_inference = ["past_key_values"]
-    attribute_map = {"num_attention_heads": "encoder_attention_heads", "hidden_size": "d_model"}
+    model_type = 'florence2_language'
+    keys_to_ignore_at_inference = ['past_key_values']
+    attribute_map = {'num_attention_heads': 'encoder_attention_heads', 'hidden_size': 'd_model'}
 
     def __init__(
         self,
@@ -220,7 +220,7 @@ class Florence2LanguageConfig(PretrainedConfig):
         decoder_attention_heads=16,
         encoder_layerdrop=0.0,
         decoder_layerdrop=0.0,
-        activation_function="gelu",
+        activation_function='gelu',
         d_model=1024,
         dropout=0.1,
         attention_dropout=0.0,
@@ -271,11 +271,11 @@ class Florence2LanguageConfig(PretrainedConfig):
         )
 
         # ensure backward compatibility for BART CNN models
-        if self.forced_bos_token_id is None and kwargs.get("force_bos_token_to_be_generated", False):
+        if self.forced_bos_token_id is None and kwargs.get('force_bos_token_to_be_generated', False):
             self.forced_bos_token_id = self.bos_token_id
             warnings.warn(
-                f"Please make sure the config includes `forced_bos_token_id={self.bos_token_id}` in future versions. "
-                "The config can simply be saved and uploaded again to be fixed."
+                f'Please make sure the config includes `forced_bos_token_id={self.bos_token_id}` in future versions. '
+                'The config can simply be saved and uploaded again to be fixed.'
             )
 
 class Florence2Config(PretrainedConfig):
@@ -320,7 +320,7 @@ class Florence2Config(PretrainedConfig):
     >>> configuration = model.config
     ```"""
 
-    model_type = "florence2"
+    model_type = 'florence2'
     is_composition = False
 
     def __init__(

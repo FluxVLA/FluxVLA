@@ -1,7 +1,20 @@
-_XVLA_CHECKPOINT_PATH = './checkpoints/X-VLA-PT'
-_XVLA_RESOURCE_PATH = _XVLA_CHECKPOINT_PATH
-_XVLA_PRETRAINED_PATH = f'{_XVLA_CHECKPOINT_PATH}/model.safetensors'
-_LEROBOT_ROOT = './datasets/libero_4suite_lerobotv2.1'
+# Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+_XVLA_RESOURCE_PATH = './checkpoints/X-VLA-Pt-fluxvla'
+_XVLA_PRETRAINED_PATH = f'{_XVLA_RESOURCE_PATH}/model.safetensors'
+_LEROBOT_ROOT = './datasets/libero_xvla_lerobot'
 
 _FLORENCE_CONFIG = dict(
     model_type='florence2',
@@ -76,7 +89,7 @@ _FLORENCE_CONFIG = dict(
     is_encoder_decoder=True,
 )
 model = dict(
-    type='XVLAFlowMatching',
+    type='X_VLA',
     pretrained_name_or_path=_XVLA_PRETRAINED_PATH,
     vlm_backbone=dict(
         type='Florence2Backbone',
@@ -104,6 +117,86 @@ model = dict(
     ),
 )
 
+inference_model = dict(
+    type='X_VLA',
+    eval_closed_loop_state=True,
+    pretrained_name_or_path=_XVLA_PRETRAINED_PATH,
+    vlm_backbone=model['vlm_backbone'].copy(),
+    vla_head=model['vla_head'].copy(),
+)
+
+_XVLA_LIBERO_IMAGE_MEAN = [123.675, 116.28, 103.53]
+_XVLA_LIBERO_IMAGE_STD = [58.395, 57.12, 57.375]
+
+
+def _xvla_libero_transforms():
+    return [
+        dict(
+            type='ProcessParquetInputs',
+            embodiment_id=3,
+            num_padding_imgs=1,
+            parquet_keys=[
+                'abs_action_6d',
+                'timestamp',
+                'actions',
+                'info',
+                'stats',
+                'action_masks',
+            ],
+            video_keys=[
+                'observation.images.image',
+                'observation.images.wrist_image',
+            ],
+            name_mappings={
+                'abs_action_6d': ['states'],
+                'actions': ['actions'],
+            },
+        ),
+        dict(type='XVLAEE6DTo20D'),
+        dict(
+            type='LiberoPromptFromInputs',
+            tokenizer=dict(
+                type='PretrainedTokenizer',
+                model_path=_XVLA_RESOURCE_PATH,
+                tokenizer_cls='BartTokenizerFast',
+            ),
+            max_len=50,
+            pad_token_id=1,
+            use_conversation=False,
+        ),
+        dict(
+            type='ResizeImages',
+            height=224,
+            width=224,
+            interpolation='bicubic',
+        ),
+        dict(
+            type='ColorJitterImages',
+            brightness=0.2,
+            contrast=0.2,
+            saturation=0.2,
+            hue=0.0,
+        ),
+        dict(
+            type='NormalizeImages',
+            means=[_XVLA_LIBERO_IMAGE_MEAN.copy() for _ in range(3)],
+            stds=[_XVLA_LIBERO_IMAGE_STD.copy() for _ in range(3)],
+        ),
+    ]
+
+
+def _xvla_libero_dataset(suite_name):
+    return dict(
+        type='ParquetDataset',
+        data_root_path=f'{_LEROBOT_ROOT}/{suite_name}_no_noops_lerobot',
+        transforms=_xvla_libero_transforms(),
+        action_window_size=30,
+        action_key='abs_action_6d',
+        window_start_idx=1,
+        image_frame_offset=1,
+    )
+
+
 train_dataloader = dict(
     per_device_batch_size=16,
     per_device_num_workers=4,
@@ -113,126 +206,10 @@ train_dataloader = dict(
         statistic_keys=[],
         statistic_name='private',
         datasets=[
-            dict(
-                type='LiberoLeRobotEE6DDataset',
-                data_root_path=f'{_LEROBOT_ROOT}/libero_10_lerobotv2.1',
-                num_actions=30,
-                num_views=3,
-                embodiment_id=3,
-                training=True,
-                statistic_name='private',
-                image_size=224,
-                future_window_seconds=1.0,
-                frame_tolerance_s=0.1,
-                drop_incomplete_future=True,
-                image_keys=[
-                    'observation.images.image',
-                    'observation.images.wrist_image',
-                ],
-                transforms=[
-                    dict(
-                        type='LiberoPromptFromInputs',
-                        tokenizer=dict(
-                            type='PretrainedTokenizer',
-                            model_path=_XVLA_RESOURCE_PATH,
-                            tokenizer_cls='BartTokenizerFast',
-                        ),
-                        max_len=50,
-                        pad_token_id=1,
-                        use_conversation=False,
-                    ),
-                ],
-            ),
-            dict(
-                type='LiberoLeRobotEE6DDataset',
-                data_root_path=f'{_LEROBOT_ROOT}/libero_goal_lerobotv2.1',
-                num_actions=30,
-                num_views=3,
-                embodiment_id=3,
-                training=True,
-                statistic_name='private',
-                image_size=224,
-                future_window_seconds=1.0,
-                frame_tolerance_s=0.1,
-                drop_incomplete_future=True,
-                image_keys=[
-                    'observation.images.image',
-                    'observation.images.wrist_image',
-                ],
-                transforms=[
-                    dict(
-                        type='LiberoPromptFromInputs',
-                        tokenizer=dict(
-                            type='PretrainedTokenizer',
-                            model_path=_XVLA_RESOURCE_PATH,
-                            tokenizer_cls='BartTokenizerFast',
-                        ),
-                        max_len=50,
-                        pad_token_id=1,
-                        use_conversation=False,
-                    ),
-                ],
-            ),
-            dict(
-                type='LiberoLeRobotEE6DDataset',
-                data_root_path=f'{_LEROBOT_ROOT}/libero_object_lerobotv2.1',
-                num_actions=30,
-                num_views=3,
-                embodiment_id=3,
-                training=True,
-                statistic_name='private',
-                image_size=224,
-                future_window_seconds=1.0,
-                frame_tolerance_s=0.1,
-                drop_incomplete_future=True,
-                image_keys=[
-                    'observation.images.image',
-                    'observation.images.wrist_image',
-                ],
-                transforms=[
-                    dict(
-                        type='LiberoPromptFromInputs',
-                        tokenizer=dict(
-                            type='PretrainedTokenizer',
-                            model_path=_XVLA_RESOURCE_PATH,
-                            tokenizer_cls='BartTokenizerFast',
-                        ),
-                        max_len=50,
-                        pad_token_id=1,
-                        use_conversation=False,
-                    ),
-                ],
-            ),
-            dict(
-                type='LiberoLeRobotEE6DDataset',
-                data_root_path=f'{_LEROBOT_ROOT}/libero_spatial_lerobotv2.1',
-                num_actions=30,
-                num_views=3,
-                embodiment_id=3,
-                training=True,
-                statistic_name='private',
-                image_size=224,
-                future_window_seconds=1.0,
-                frame_tolerance_s=0.1,
-                drop_incomplete_future=True,
-                image_keys=[
-                    'observation.images.image',
-                    'observation.images.wrist_image',
-                ],
-                transforms=[
-                    dict(
-                        type='LiberoPromptFromInputs',
-                        tokenizer=dict(
-                            type='PretrainedTokenizer',
-                            model_path=_XVLA_RESOURCE_PATH,
-                            tokenizer_cls='BartTokenizerFast',
-                        ),
-                        max_len=50,
-                        pad_token_id=1,
-                        use_conversation=False,
-                    ),
-                ],
-            ),
+            _xvla_libero_dataset('libero_10'),
+            _xvla_libero_dataset('libero_goal'),
+            _xvla_libero_dataset('libero_object'),
+            _xvla_libero_dataset('libero_spatial'),
         ],
     ),
 )
@@ -240,6 +217,7 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_steps=60000,
+    max_epochs=None,
     learning_rate=1e-4,
     weight_decay=0.0,
     max_grad_norm=1.0,
@@ -247,9 +225,14 @@ runner = dict(
     collator=dict(
         type='DictCollator',
         keys=[
-            'states', 'images', 'img_masks',
-            'lang_tokens', 'lang_masks',
-            'actions', 'action_masks', 'embodiment_ids',
+            'states',
+            'images',
+            'img_masks',
+            'lang_tokens',
+            'lang_masks',
+            'actions',
+            'action_masks',
+            'embodiment_ids',
         ],
         meta_keys=['task_description', 'prompt', 'info', 'stats', 'timestamp'],
     ),
@@ -260,14 +243,16 @@ runner = dict(
         grad_accumulation_steps=1,
         window_size=1,
     ),
-    lr_scheduler_type='groupwise-freeze-warmup-cosine',
-    freeze_steps=1000,
-    warmup_steps=2000,
+    lr_scheduler=dict(
+        type='groupwise-freeze-warmup-cosine',
+        freeze_steps=1000,
+        warmup_steps=2000,
+        lr_coef=0.1,
+        use_cosine_decay=False,
+        min_lr_ratio=0.1,
+    ),
     save_iter_interval=60000,
-    lr_coef=0.1,
     betas=(0.9, 0.95),
-    warmup_ratio=0.03,
-    use_cosine_decay=False,
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
@@ -275,35 +260,32 @@ runner = dict(
 
 eval = dict(
     type='LiberoEvalRunner',
-    task_suite_name='libero_spatial',
+    task_suite_name='libero_10',
     model_family='xvla',
     eval_chunk_size=30,
     resize_size=224,
     num_trials_per_task=50,
     num_steps_wait=10,
+    norm_stats_key='private',
     controller_use_delta=False,
     seed=7,
     dataset=dict(
         type='LiberoParquetEvalDataset',
-        allow_private_stats_fallback=True,
         transforms=[
             dict(
                 type='ProcessLiberoEvalInputs',
                 embodiment_id=3,
                 img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
                 num_padding_imgs=1,
-                defer_resize=True,
             ),
             dict(
                 type='TransformImage',
                 image_resize_strategy='resize-naive',
                 interpolation='bicubic',
                 input_sizes=[[3, 224, 224], [3, 224, 224], [3, 224, 224]],
-                means=[[123.675, 116.28, 103.53],
-                       [123.675, 116.28, 103.53],
+                means=[[123.675, 116.28, 103.53], [123.675, 116.28, 103.53],
                        [123.675, 116.28, 103.53]],
-                stds=[[58.395, 57.12, 57.375],
-                      [58.395, 57.12, 57.375],
+                stds=[[58.395, 57.12, 57.375], [58.395, 57.12, 57.375],
                       [58.395, 57.12, 57.375]],
             ),
             dict(

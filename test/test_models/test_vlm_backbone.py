@@ -30,6 +30,17 @@ QWEN_VL_DATA_DIR = 'test/data/models/vlm_backbones/qwen_vl'
 XVLA_VLM_DATA_DIR = 'test/data/models/vlm_backbones/xvla_florence2'
 
 
+def _load_xvla_fixture(root, name, dtype=None):
+    path = os.path.join(root, f'{name}.npy')
+    if name.endswith('_bf16'):
+        tensor = torch.from_numpy(np.load(path)).view(torch.bfloat16).cuda()
+    else:
+        tensor = torch.from_numpy(np.load(path, allow_pickle=True)).cuda()
+    if dtype is not None:
+        tensor = tensor.to(dtype)
+    return tensor
+
+
 class TestPaligemmaBackbone(unittest.TestCase):
 
     def setUp(self):
@@ -275,7 +286,8 @@ class TestQWenVLBackbone(unittest.TestCase):
 @pytest.mark.skipif(
     not os.path.exists(XVLA_RESOURCE_PATH)
     or not os.path.exists(XVLA_PRETRAINED_PATH),
-    reason=(f'Checkpoint not found: {XVLA_RESOURCE_PATH} or ' f'{XVLA_PRETRAINED_PATH}'))
+    reason=(f'Checkpoint not found: {XVLA_RESOURCE_PATH} or '
+            f'{XVLA_PRETRAINED_PATH}'))
 class TestXVLAFloence2Backbone(unittest.TestCase):
 
     def setUp(self):
@@ -290,7 +302,7 @@ class TestXVLAFloence2Backbone(unittest.TestCase):
     @staticmethod
     def _build_loaded_xvla_vla():
         cfg = dict(
-            type='XVLAFlowMatching',
+            type='X_VLA',
             pretrained_name_or_path=XVLA_PRETRAINED_PATH,
             vlm_backbone=dict(
                 type='Florence2Backbone',
@@ -328,22 +340,11 @@ class TestXVLAFloence2Backbone(unittest.TestCase):
         reason='No GPU available.')
     def test_xvla_florence2_forward(self):
         vlm_backbone = self._build_loaded_xvla_vla().vlm_backbone
-        images = torch.from_numpy(
-            np.load(
-                os.path.join(XVLA_VLM_DATA_DIR, 'images.npy'),
-                allow_pickle=True)).cuda().to(torch.bfloat16)
-        img_masks = torch.from_numpy(
-            np.load(
-                os.path.join(XVLA_VLM_DATA_DIR, 'img_masks.npy'),
-                allow_pickle=True)).cuda()
-        lang_tokens = torch.from_numpy(
-            np.load(
-                os.path.join(XVLA_VLM_DATA_DIR, 'lang_tokens.npy'),
-                allow_pickle=True)).cuda()
-        lang_masks = torch.from_numpy(
-            np.load(
-                os.path.join(XVLA_VLM_DATA_DIR, 'lang_masks.npy'),
-                allow_pickle=True)).cuda()
+        images = _load_xvla_fixture(XVLA_VLM_DATA_DIR, 'images_bf16',
+                                    torch.bfloat16)
+        img_masks = _load_xvla_fixture(XVLA_VLM_DATA_DIR, 'img_masks')
+        lang_tokens = _load_xvla_fixture(XVLA_VLM_DATA_DIR, 'lang_tokens')
+        lang_masks = _load_xvla_fixture(XVLA_VLM_DATA_DIR, 'lang_masks')
 
         with torch.no_grad():
             with torch.autocast('cuda', dtype=torch.bfloat16, enabled=True):
@@ -354,30 +355,23 @@ class TestXVLAFloence2Backbone(unittest.TestCase):
                     lang_masks=lang_masks,
                 )
 
-        features_target = torch.from_numpy(
-            np.load(
-                os.path.join(XVLA_VLM_DATA_DIR, 'vlm_features.npy'),
-                allow_pickle=True)).cuda()
-        attention_mask_target = torch.from_numpy(
-            np.load(
-                os.path.join(XVLA_VLM_DATA_DIR, 'attention_mask.npy'),
-                allow_pickle=True)).cuda()
-        aux_visual_inputs_target = torch.from_numpy(
-            np.load(
-                os.path.join(XVLA_VLM_DATA_DIR, 'aux_visual_inputs.npy'),
-                allow_pickle=True)).cuda()
+        features_target = _load_xvla_fixture(XVLA_VLM_DATA_DIR,
+                                             'vlm_features_slice_bf16')
+        attention_mask_target = _load_xvla_fixture(XVLA_VLM_DATA_DIR,
+                                                   'attention_mask')
+        aux_visual_inputs_target = _load_xvla_fixture(
+            XVLA_VLM_DATA_DIR, 'aux_visual_inputs_slice_bf16')
 
         self.assertTrue(
             torch.allclose(
                 features.float()[:, ::10, ::10],
-                features_target[:, ::10, ::10],
+                features_target.float(),
                 rtol=1e-3,
                 atol=1e-1))
-        self.assertTrue(
-            torch.equal(attention_mask, attention_mask_target))
+        self.assertTrue(torch.equal(attention_mask, attention_mask_target))
         self.assertTrue(
             torch.allclose(
                 aux_visual_inputs.float()[:, ::10, ::10],
-                aux_visual_inputs_target[:, ::10, ::10],
+                aux_visual_inputs_target.float(),
                 rtol=1e-3,
                 atol=1e-1))

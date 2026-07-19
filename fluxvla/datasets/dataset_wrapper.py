@@ -249,12 +249,11 @@ class DistributedRepeatingDataset(IterableDataset):
 
         # Collect statistics from each dataset
         for stat in stats:
-            stat_inner = stat.get('stats', stat)
             for key in static_keys:
-                if key not in stat_inner:
+                if key not in stat['stats']:
                     raise KeyError(f"Key '{key}' not found in dataset.")
 
-                stat_data = stat_inner[key]
+                stat_data = stat['stats'][key]
 
                 # Collect basic statistics
                 dataset_statistics[key]['min'].append(stat_data['min'])
@@ -315,26 +314,35 @@ class DistributedRepeatingDataset(IterableDataset):
             # Compute weighted mean and combined std
             if 'count' in key_stats and len(key_stats['count']) > 0:
                 # If count information is available,
-                # use it for weighted calculations
+                # use it for weighted calculations.
                 means = np.array(key_stats['mean'])
-                counts = np.array(key_stats['count']).repeat(means.shape[1], 1)
+                counts = np.array(key_stats['count'], dtype=np.float64)
+                if counts.ndim == 1:
+                    counts = counts[:, None]
+                if counts.shape[-1] == 1 and means.ndim == 2:
+                    counts = np.repeat(counts, means.shape[1], axis=1)
+                elif counts.shape != means.shape:
+                    counts = np.broadcast_to(counts, means.shape)
                 stds = np.array(key_stats['std'])
 
-                # Weighted mean
-                total_count = counts.sum()
-                if total_count > 0:
-                    weighted_mean = np.average(
-                        means, weights=counts, axis=0).tolist()
+                # Weighted mean and variance are computed independently for
+                # each feature dimension. Using a scalar sum over all feature
+                # counts would underestimate std by sqrt(num_features).
+                count_sum = counts.sum(axis=0)
+                if np.all(count_sum > 0):
+                    weighted_mean_array = (means *
+                                           counts).sum(axis=0) / count_sum
+                    weighted_mean = weighted_mean_array.tolist()
 
                     # Merge standard deviations using the formula:
                     # Var_combined = Σ(n_i * (σ_i^2 + (μ_i -
                     # μ_combined)^2)) / Σn_i
                     variances = stds**2
-                    mean_diffs_sq = (means - weighted_mean)**2
+                    mean_diffs_sq = (means - weighted_mean_array)**2
 
                     combined_variance = np.sum(
                         counts *
-                        (variances + mean_diffs_sq), axis=0) / total_count
+                        (variances + mean_diffs_sq), axis=0) / count_sum
                     combined_std = np.sqrt(combined_variance).tolist()
                 else:
                     weighted_mean = np.array(

@@ -34,6 +34,9 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 | FluxVLA(Pi)                 |      98.6      |     99.0      |    97.8     |   96±1.0    |     97.85      |
 | FluxVLA(Qwen3VL 0.6B+GR00T) |      98.6      |     99.6      |    95.6     |  92.2±1.8   |     96.50      |
 | FluxVLA(DreamZero)          |      96.8      |     97.4      |  90.8±1.5   |    93.6     |     94.65      |
+| FluxVLA(X-VLA)              | [97.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) | [87.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128) |     95.10      |
+
+*FluxVLA(X-VLA) は、共有 XVLA LIBERO LeRobot データと `abs_action_6d` アクションで学習した最終 4-suite チェックポイントの結果です。*
 
 ## 📢 最新情報
 
@@ -255,6 +258,8 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 `libero_10_no_noops_lerobotv2.1` を、ダウンロードしたいデータセットに対応するフォルダ名に置き換えてください。
 
+XVLA LIBERO 設定では、共有 LIBERO LeRobot suite ディレクトリを `./datasets/libero_xvla_lerobot` 以下に配置するかシンボリックリンクしてください。例：`./datasets/libero_xvla_lerobot/libero_10_no_noops_lerobot`。これらの設定は読み込み時に `abs_action_6d` フィールドを使用します。
+
 </details>
 
 <details>
@@ -308,6 +313,10 @@ fluxvla をプライベートデータセットで学習する場合、まず生
 | PI0_base    | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)    |
 | PI05_base   | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)   |
 | PI05_libero | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero) |
+| X-VLA-PT    | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Pt-fluxvla) |
+| X-VLA-Libero | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Libero)     |
+
+> **XVLA 注記**：FluxVLA の XVLA 学習設定では、変換済みの `X-VLA-PT` チェックポイントを `./checkpoints/X-VLA-Pt-fluxvla` に配置してください。これは X-VLA の事前学習チェックポイントを FluxVLA 互換の重みと tokenizer レイアウトに変換したもので、追加微調整に使います。公式の `X-VLA-Libero` チェックポイントは LIBERO で微調整済みで、公式評価時の画像向きに従います。評価には `configs/xvla/xvla_libero_4suite_official_ckpt_eval.py` を使ってください。この設定は `agentview_image` だけを回転し、手首視点は回転しません。
 
 </details>
 

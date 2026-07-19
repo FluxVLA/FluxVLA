@@ -1,3 +1,4 @@
+# Copyright 2025 2toINF (https://github.com/2toINF)
 # Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,14 +17,13 @@
 # Upstream-Repo: 2toINF/X-VLA
 # Upstream-Path: models/transformer.py
 # Upstream-Path: models/modeling_xvla.py
-# Upstream-Ref: main
+# Upstream-Ref: origin/main@6bc2513f5f1cbec715cc668b414392a6cae5c671
 # SPDX-License-Identifier: Apache-2.0
 #
 # Notes: Transformer helpers are adapted from X-VLA; the FluxVLA head wrapper,
 # registry integration, and action-space plumbing are FluxVLA-specific.
 
 from __future__ import annotations
-
 import math
 from functools import partial
 from typing import Callable, Final, Iterable, Optional, Tuple
@@ -71,8 +71,9 @@ class Mlp(nn.Module):
         self.fc1 = linear_layer(in_features, hidden_features, bias=bias[0])
         self.act = nn.GELU(approximate='tanh')
         self.drop1 = nn.Dropout(drop_probs[0])
-        self.norm = (norm_layer(hidden_features)
-                     if norm_layer is not None else nn.Identity())
+        self.norm = (
+            norm_layer(hidden_features)
+            if norm_layer is not None else nn.Identity())
         self.fc2 = linear_layer(hidden_features, out_features, bias=bias[1])
         self.drop2 = nn.Dropout(drop_probs[1])
 
@@ -115,8 +116,8 @@ class Attention(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, T, C = x.shape
-        qkv = self.qkv(x).reshape(
-            B, T, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, T, 3, self.num_heads,
+                                  self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
@@ -153,8 +154,7 @@ def timestep_embedding(t: torch.Tensor,
     half = dim // 2
     freqs = torch.exp(
         -math.log(max_period) *
-        torch.arange(start=0, end=half, dtype=t.dtype, device=t.device) /
-        half)
+        torch.arange(start=0, end=half, dtype=t.dtype, device=t.device) / half)
     args = t[:, None] * freqs[None]
     embedding = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
     if dim % 2 == 1:
@@ -272,8 +272,8 @@ class SoftPromptedTransformer(nn.Module):
             hidden_size, dim_action, num_domains=num_domains)
 
         if len_soft_prompts > 0:
-            self.soft_prompt_hub = nn.Embedding(
-                num_domains, len_soft_prompts * hidden_size)
+            self.soft_prompt_hub = nn.Embedding(num_domains,
+                                                len_soft_prompts * hidden_size)
             nn.init.normal_(self.soft_prompt_hub.weight, std=0.02)
 
         self.apply(basic_init)
@@ -307,16 +307,18 @@ class SoftPromptedTransformer(nn.Module):
                           dim=1)
         else:
             x = torch.cat(
-                [x, self.vlm_proj(vlm_features),
-                 self.aux_visual_proj(aux_visual_inputs)],
+                [
+                    x,
+                    self.vlm_proj(vlm_features),
+                    self.aux_visual_proj(aux_visual_inputs)
+                ],
                 dim=1,
             )
 
         seq_len = x.shape[1]
         if seq_len > self.pos_emb.shape[1]:
-            raise ValueError(
-                f'Sequence length {seq_len} exceeds '
-                f'max_len_seq={self.pos_emb.shape[1]}.')
+            raise ValueError(f'Sequence length {seq_len} exceeds '
+                             f'max_len_seq={self.pos_emb.shape[1]}.')
         x = x + self.pos_emb[:, :seq_len, :]
 
         if self.len_soft_prompts > 0:
@@ -407,10 +409,12 @@ class XVLAFlowMatchingHead(nn.Module):
         batch_size = input_features.shape[0]
         device = input_features.device
 
-        t = ((torch.rand(1, device=device) + torch.arange(
-            batch_size, device=device) / batch_size) % (1 - 1e-5))
-        action_noisy = (torch.randn_like(actions) * t.view(-1, 1, 1)
-                        + actions * (1 - t).view(-1, 1, 1))
+        t = ((torch.rand(1, device=device) +
+              torch.arange(batch_size, device=device) / batch_size) %
+             (1 - 1e-5))
+        action_noisy = (
+            torch.randn_like(actions) * t.view(-1, 1, 1) + actions *
+            (1 - t).view(-1, 1, 1))
         proprio_m, action_noisy_m = self.action_space.preprocess(
             states, action_noisy)
 
@@ -467,7 +471,10 @@ class XVLAFlowMatchingHead(nn.Module):
         action = torch.zeros_like(x1)
         steps = max(1, self.num_inference_steps)
         for i in range(steps, 0, -1):
-            t = torch.full((batch_size,), i / steps, device=device, dtype=dtype)
+            t = torch.full((batch_size, ),
+                           i / steps,
+                           device=device,
+                           dtype=dtype)
             x_t = x1 * t.view(-1, 1, 1) + action * (1 - t).view(-1, 1, 1)
             proprio_m, x_t_m = self.action_space.preprocess(states, x_t)
             action = self.transformer(
@@ -482,6 +489,7 @@ class XVLAFlowMatchingHead(nn.Module):
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         return partial(_module_wrap_policy, module_classes={TransformerBlock})
+
 
 __all__ = [
     'XVLAFlowMatchingHead',

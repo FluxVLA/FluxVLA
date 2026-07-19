@@ -47,6 +47,7 @@ GR00T_DATA_DIR = 'test/data/models/vlas/gr00t'
 PI0_DATA_DIR = 'test/data/models/vlas/pi0'
 PI05_DATA_DIR = 'test/data/models/vlas/pi05'
 DREAMZERO_DATA_DIR = 'test/data/models/vlas/dreamzero'
+XVLA_VLM_DATA_DIR = 'test/data/models/vlm_backbones/xvla_florence2'
 XVLA_DATA_DIR = 'test/data/models/vlas/xvla'
 DREAMZERO_NUM_INFERENCE_STEPS = 2
 XVLA_CONFIG_PATH = 'configs/xvla/xvla_libero_4suite_full_finetune.py'
@@ -64,6 +65,21 @@ def _ensure_single_process_group() -> bool:
         init_method='env://',
     )
     return True
+
+
+def _load_xvla_fixture(root, name, dtype=None):
+    path = os.path.join(root, f'{name}.npy')
+    if name.endswith('_bf16'):
+        tensor = torch.from_numpy(np.load(path)).view(torch.bfloat16).cuda()
+    else:
+        tensor = torch.from_numpy(np.load(path, allow_pickle=True)).cuda()
+    if dtype is not None:
+        tensor = tensor.to(dtype)
+    return tensor
+
+
+def _load_xvla_array(root, name):
+    return np.load(os.path.join(root, f'{name}.npy'), allow_pickle=True)
 
 
 @pytest.mark.skipif(
@@ -1478,13 +1494,15 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
 @pytest.mark.skipif(
     not os.path.exists(XVLA_RESOURCE_PATH)
     or not os.path.exists(XVLA_PRETRAINED_PATH),
-    reason=(f'Checkpoint not found: {XVLA_RESOURCE_PATH} or ' f'{XVLA_PRETRAINED_PATH}'))
+    reason=(f'Checkpoint not found: {XVLA_RESOURCE_PATH} or '
+            f'{XVLA_PRETRAINED_PATH}'))
 class TestXVLA(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
         cls._owns_process_group = False
-        if torch.cuda.is_available() and os.path.exists(XVLA_RESOURCE_PATH) and os.path.exists(XVLA_PRETRAINED_PATH):
+        if (torch.cuda.is_available() and os.path.exists(XVLA_RESOURCE_PATH)
+                and os.path.exists(XVLA_PRETRAINED_PATH)):
             cls._owns_process_group = _ensure_single_process_group()
 
     @classmethod
@@ -1496,7 +1514,7 @@ class TestXVLA(unittest.TestCase):
         gc.collect()
         torch.cuda.empty_cache()
         self.cfg = dict(
-            type='XVLAFlowMatching',
+            type='X_VLA',
             pretrained_name_or_path=XVLA_PRETRAINED_PATH,
             vlm_backbone=dict(
                 type='Florence2Backbone',
@@ -1531,6 +1549,9 @@ class TestXVLA(unittest.TestCase):
 
     def _build_runner_cfg(self):
         cfg = Config.fromfile(XVLA_CONFIG_PATH)
+        cfg.model.pretrained_name_or_path = XVLA_PRETRAINED_PATH
+        cfg.model.vlm_backbone.vlm_path = XVLA_RESOURCE_PATH
+        cfg.runner.sharding_strategy = 'no-shard'
         cfg.runner.metric.active_trackers = ()
         cfg.runner.metric.run_dir = tempfile.mkdtemp(prefix='xvla_runner_')
         cfg.runner.max_steps = 1
@@ -1541,15 +1562,12 @@ class TestXVLA(unittest.TestCase):
         return cfg
 
     def _load_tensor(self, name, dtype=None):
-        arr = np.load(os.path.join(XVLA_DATA_DIR, f'{name}.npy'),
-                      allow_pickle=True)
-        tensor = torch.from_numpy(arr).cuda()
-        if dtype is not None:
-            tensor = tensor.to(dtype)
-        return tensor
+        if name in ('images_bf16', 'img_masks', 'lang_tokens', 'lang_masks'):
+            return _load_xvla_fixture(XVLA_VLM_DATA_DIR, name, dtype)
+        return _load_xvla_fixture(XVLA_DATA_DIR, name, dtype)
 
     def test_forward(self):
-        images = self._load_tensor('images', torch.bfloat16)
+        images = self._load_tensor('images_bf16', torch.bfloat16)
         img_masks = self._load_tensor('img_masks')
         lang_tokens = self._load_tensor('lang_tokens').long()
         lang_masks = self._load_tensor('lang_masks').long()
@@ -1558,13 +1576,10 @@ class TestXVLA(unittest.TestCase):
         action_masks = self._load_tensor('action_masks')
         embodiment_ids = self._load_tensor('embodiment_ids').long()
 
-        loss_ref = np.load(os.path.join(XVLA_DATA_DIR, 'loss.npy'))
-        position_loss_ref = np.load(
-            os.path.join(XVLA_DATA_DIR, 'position_loss.npy'))
-        rotate6d_loss_ref = np.load(
-            os.path.join(XVLA_DATA_DIR, 'rotate6D_loss.npy'))
-        gripper_loss_ref = np.load(
-            os.path.join(XVLA_DATA_DIR, 'gripper_loss.npy'))
+        loss_ref = _load_xvla_array(XVLA_DATA_DIR, 'loss')
+        position_loss_ref = _load_xvla_array(XVLA_DATA_DIR, 'position_loss')
+        rotate6d_loss_ref = _load_xvla_array(XVLA_DATA_DIR, 'rotate6D_loss')
+        gripper_loss_ref = _load_xvla_array(XVLA_DATA_DIR, 'gripper_loss')
 
         set_seed_everywhere(0)
         with torch.no_grad():
@@ -1581,9 +1596,8 @@ class TestXVLA(unittest.TestCase):
                 )
 
         self.assertTrue(
-            np.allclose(output['loss'].float().cpu().numpy(),
-                        loss_ref,
-                        atol=1e-2))
+            np.allclose(
+                output['loss'].float().cpu().numpy(), loss_ref, atol=1e-2))
         self.assertTrue(
             np.allclose(
                 output['position_loss'].float().cpu().numpy(),
@@ -1601,15 +1615,14 @@ class TestXVLA(unittest.TestCase):
                 atol=1e-2))
 
     def test_predict_action(self):
-        images = self._load_tensor('images', torch.bfloat16)
+        images = self._load_tensor('images_bf16', torch.bfloat16)
         img_masks = self._load_tensor('img_masks')
         lang_tokens = self._load_tensor('lang_tokens').long()
         lang_masks = self._load_tensor('lang_masks').long()
         states = self._load_tensor('states', torch.bfloat16)
         embodiment_ids = self._load_tensor('embodiment_ids').long()
 
-        pred_actions_ref = np.load(
-            os.path.join(XVLA_DATA_DIR, 'pred_actions.npy'))
+        pred_actions_ref = _load_xvla_array(XVLA_DATA_DIR, 'pred_actions')
 
         set_seed_everywhere(0)
         with torch.no_grad():
@@ -1631,32 +1644,68 @@ class TestXVLA(unittest.TestCase):
 
     def test_groupwise_scheduler_explicit_groups(self):
         cfg = self._build_runner_cfg()
+        new_cfg = self._build_runner_cfg()
         vla = build_vla_from_cfg(cfg.model)
 
-        runner = build_runner_from_cfg(dict(cfg.runner), default_args=dict(cfg=cfg))
+        runner = build_runner_from_cfg(
+            dict(cfg.runner), default_args=dict(cfg=cfg))
         runner.vla = vla
         runner.all_module_keys = vla.all_module_keys
-        runner.trainable_module_keys = []
 
         vla.freeze_backbones()
-        param_groups = runner._build_groupwise_param_groups(weight_decay=0.0)
+        runner._setup_optimizer_and_scheduler(
+            n_train_examples=1, weight_decay=0.0)
+        param_groups = runner.optimizer.param_groups
+        scheduler_cfg = runner.lr_scheduler_cfg
 
+        self.assertEqual(
+            type(runner.lr_scheduler).__name__,
+            'GroupwiseFreezeWarmupCosineLRScheduler')
         self.assertEqual(
             [group['name'] for group in param_groups],
             ['vlm', 'transformer_core', 'soft_prompts', 'action_heads'],
         )
         self.assertEqual(
             [group['lr'] for group in param_groups],
-            [0.0, 0.0, runner.learning_rate * runner.lr_coef, runner.learning_rate],
+            [
+                0.0, 0.0, runner.learning_rate * scheduler_cfg['lr_coef'],
+                runner.learning_rate
+            ],
         )
-        self.assertIn('vla_head', vla.trainable_module_keys)
-        self.assertTrue(all(len(group['params']) > 0 for group in param_groups))
+        self.assertTrue(
+            all(len(group['params']) > 0 for group in param_groups))
+
+        new_cfg.runner.lr_scheduler = dict(
+            type='groupwise-freeze-warmup-cosine',
+            freeze_steps=scheduler_cfg['freeze_steps'],
+            warmup_steps=scheduler_cfg['warmup_steps'],
+            lr_coef=scheduler_cfg['lr_coef'],
+            use_cosine_decay=scheduler_cfg['use_cosine_decay'],
+            min_lr_ratio=scheduler_cfg['min_lr_ratio'],
+        )
+        new_runner = build_runner_from_cfg(
+            dict(new_cfg.runner), default_args=dict(cfg=new_cfg))
+        new_runner.vla = vla
+        new_runner.all_module_keys = vla.all_module_keys
+        new_runner._setup_optimizer_and_scheduler(
+            n_train_examples=1, weight_decay=0.0)
+
+        self.assertEqual(
+            type(new_runner.lr_scheduler).__name__,
+            'GroupwiseFreezeWarmupCosineLRScheduler')
+        self.assertEqual(
+            [group['name'] for group in param_groups],
+            [group['name'] for group in new_runner.optimizer.param_groups])
+        self.assertEqual(
+            [group['lr'] for group in param_groups],
+            [group['lr'] for group in new_runner.optimizer.param_groups])
 
     def test_fsdp_run_setup_wraps_xvla(self):
         cfg = self._build_runner_cfg()
-        runner = build_runner_from_cfg(dict(cfg.runner), default_args=dict(cfg=cfg))
+        runner = build_runner_from_cfg(
+            dict(cfg.runner), default_args=dict(cfg=cfg))
 
-        self.assertEqual(type(runner.vla).__name__, 'XVLAFlowMatching')
+        self.assertEqual(type(runner.vla).__name__, 'X_VLA')
         pre_policy = runner.vla.get_fsdp_wrapping_policy()
         self.assertTrue(callable(pre_policy))
         self.assertIs(getattr(pre_policy, 'func', None), _or_policy)
@@ -1680,13 +1729,12 @@ class TestXVLA(unittest.TestCase):
         self.assertTrue(called['value'])
         self.assertIsInstance(runner.vla, FSDP)
         self.assertEqual(
-            type(runner.vla._fsdp_wrapped_module).__name__, 'XVLAFlowMatching')
-        self.assertIn('vla_head', runner.trainable_module_keys)
+            type(runner.vla._fsdp_wrapped_module).__name__, 'X_VLA')
         self.assertEqual(
             [group.get('name') for group in runner.optimizer.param_groups],
             ['vlm', 'transformer_core', 'soft_prompts', 'action_heads'],
         )
-        self.assertEqual(runner.lr_scheduler_type,
+        self.assertEqual(runner.lr_scheduler_policy_type,
                          'groupwise-freeze-warmup-cosine')
 
         del runner

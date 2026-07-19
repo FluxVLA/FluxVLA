@@ -19,7 +19,7 @@ import numpy as np
 import timm
 import torch
 from PIL import Image
-from torchvision.transforms import Compose, Resize
+from torchvision.transforms import ColorJitter, Compose, Resize
 from transformers import AutoImageProcessor
 from transformers.models.qwen2_vl.image_processing_qwen2_vl import \
     PILImageResampling
@@ -86,14 +86,46 @@ class ResizeImages:
     Args:
         height (int): The target height for the images.
         width (int): The target width for the images.
+        preserve_leading_dims (bool): If True, treat the last three
+            dimensions as CHW and preserve all leading dimensions.
     """
 
-    def __init__(self, height, width, *args, **kwargs):
+    def __init__(self,
+                 height,
+                 width,
+                 preserve_leading_dims: bool = False,
+                 *args,
+                 **kwargs):
         self.height = height
         self.width = width
+        self.preserve_leading_dims = preserve_leading_dims
+
+    def _resize_single_image(self, image: np.ndarray) -> np.ndarray:
+        return cv2.resize(
+            image.transpose(1, 2, 0), (self.width, self.height),
+            interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)
+
+    def _resize_preserve_leading_dims(self, images: np.ndarray) -> np.ndarray:
+        original_shape = images.shape
+        if images.ndim < 4:
+            raise ValueError(
+                'Input image sequence must have at least 4 dimensions')
+        flat_images = images.reshape(-1, original_shape[-3],
+                                     original_shape[-2], original_shape[-1])
+        resized_images = [
+            self._resize_single_image(image) for image in flat_images
+        ]
+        return np.stack(
+            resized_images, axis=0).reshape(*original_shape[:-2], self.height,
+                                            self.width)
 
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
+        if self.preserve_leading_dims:
+            data['images'] = self._resize_preserve_leading_dims(
+                np.asarray(data['images']))
+            return data
+
         if isinstance(data['images'], np.ndarray):
             assert data['images'].ndim == 3, \
                 "Input 'images' must be a 4D numpy array"
@@ -104,10 +136,7 @@ class ResizeImages:
             images = data['images']
         resized_images = list()
         for image in images:
-            resized_images.append(
-                cv2.resize(
-                    image.transpose(1, 2, 0), (self.width, self.height),
-                    interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1))
+            resized_images.append(self._resize_single_image(image))
 
         resized_images = np.concatenate(resized_images, axis=0)
         data['images'] = resized_images
@@ -277,6 +306,50 @@ class AugImage:
         if data['images'].ndim == 3:
             augmented_images = augmented_images.reshape(data['images'].shape)
         data['images'] = augmented_images
+        return data
+
+
+@TRANSFORMS.register_module()
+class ColorJitterImages:
+    """Apply torchvision ColorJitter to CHW uint8/float images."""
+
+    def __init__(self,
+                 brightness: float = 0.2,
+                 contrast: float = 0.2,
+                 saturation: float = 0.2,
+                 hue: float = 0.0,
+                 *args,
+                 **kwargs):
+        del args, kwargs
+        self.jitter = ColorJitter(
+            brightness=brightness,
+            contrast=contrast,
+            saturation=saturation,
+            hue=hue,
+        )
+
+    def _to_pil(self, image: np.ndarray) -> Image.Image:
+        img = image.transpose(1, 2, 0)
+        if np.issubdtype(img.dtype, np.floating):
+            img = np.clip(img, 0, 255).astype(np.uint8)
+        return Image.fromarray(img).convert('RGB')
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        original = data['images']
+        if isinstance(original, np.ndarray):
+            images = original.reshape(-1, 3, original.shape[-2],
+                                      original.shape[-1])
+        else:
+            images = original
+
+        jittered_images = []
+        for image in images:
+            pil_img = self._to_pil(np.asarray(image))
+            jittered = np.asarray(self.jitter(pil_img), dtype=np.float32)
+            jittered_images.append(jittered.transpose(2, 0, 1))
+
+        data['images'] = np.concatenate(jittered_images, axis=0)
         return data
 
 
@@ -459,18 +532,18 @@ class TransformImage:
             np.ndarray: The transformed pixel values as a numpy array."""
         if self.image_resize_strategy == 'resize-naive':
             # Resize without keeping the aspect ratio (naive resize)
-            img_resized = img.resize(resize_param['size'],
-                                     self._get_pil_resampling(
-                                         resize_param['interpolation']))
+            img_resized = img.resize(
+                resize_param['size'],
+                self._get_pil_resampling(resize_param['interpolation']))
         else:
             if self.do_letterbox:
                 img = self.letterbox_pad_transform(
                     img, resize_param['size'], resize_param['interpolation'],
                     self.letterbox_fill)
             # Resize the image
-            img_resized = img.resize(resize_param['size'],
-                                     self._get_pil_resampling(
-                                         resize_param['interpolation']))
+            img_resized = img.resize(
+                resize_param['size'],
+                self._get_pil_resampling(resize_param['interpolation']))
 
         # Center crop
         left = (img_resized.width - crop_param['output_size'][0]) // 2
@@ -860,6 +933,7 @@ class QWen2VLImageTransform:
         merge_size: int = 2,
         img_key: str = 'images',
         to_tensor: bool = False,
+        exact_resize_size: Optional[Tuple[int, int]] = None,
         **kwargs,
     ) -> None:
         self.img_transform = Qwen2VLImageProcessorHF(
@@ -880,11 +954,29 @@ class QWen2VLImageTransform:
             **kwargs)
         self.img_key = img_key
         self.to_tensor = to_tensor
+        self.exact_resize_size = exact_resize_size
+
+    def _exact_resize(self, images: np.ndarray) -> np.ndarray:
+        if self.exact_resize_size is None:
+            return images
+        if len(self.exact_resize_size) != 2:
+            raise ValueError(
+                'exact_resize_size must be a (height, width) pair.')
+        height, width = self.exact_resize_size
+        resized_images = []
+        for image in images:
+            resized_images.append(
+                cv2.resize(
+                    image.transpose(1, 2, 0), (width, height),
+                    interpolation=cv2.INTER_CUBIC).transpose(2, 0, 1))
+        return np.stack(resized_images, axis=0)
 
     def __call__(self, inputs):
-        ret_dict = self.img_transform(inputs[self.img_key].reshape(
-            -1, 3, inputs[self.img_key].shape[-2],
-            inputs[self.img_key].shape[-1]))
+        images = inputs[self.img_key].reshape(-1, 3,
+                                              inputs[self.img_key].shape[-2],
+                                              inputs[self.img_key].shape[-1])
+        images = self._exact_resize(images)
+        ret_dict = self.img_transform(images)
         if self.to_tensor:
             inputs[self.img_key] = torch.from_numpy(ret_dict['pixel_values'])
             inputs['image_grid_thw'] = torch.from_numpy(

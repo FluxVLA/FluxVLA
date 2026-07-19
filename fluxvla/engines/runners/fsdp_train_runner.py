@@ -55,8 +55,6 @@ class FSDPTrainRunner(BaseTrainRunner):
             based on epochs. Defaults to 1.
         max_keep_ckpts (int, optional): Maximum number of checkpoints to keep.
             Defaults to 2.
-        save_full_model (bool, optional): Whether to save the full model.
-            Defaults to True.
         lr_scheduler (Dict): Learning rate scheduler policy configuration.
         enable_gradient_checkpointing (bool, optional): Enable gradient
             checkpointing. Defaults to True.
@@ -83,7 +81,6 @@ class FSDPTrainRunner(BaseTrainRunner):
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
-                 save_full_model: bool = True,
                  lr_scheduler: Optional[Dict] = None,
                  betas: tuple = (0.9, 0.999),
                  enable_gradient_checkpointing: bool = True,
@@ -110,7 +107,6 @@ class FSDPTrainRunner(BaseTrainRunner):
             save_epoch_interval=save_epoch_interval,
             save_iter_interval=save_iter_interval,
             max_keep_ckpts=max_keep_ckpts,
-            save_full_model=save_full_model,
             lr_scheduler=lr_scheduler,
             betas=betas,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
@@ -147,7 +143,6 @@ class FSDPTrainRunner(BaseTrainRunner):
         global_step: int,
         epoch: int,
         train_loss: Optional[float] = None,
-        only_trainable: bool = True,
     ) -> None:
         """Saves the checkpoint of the model.
 
@@ -157,8 +152,6 @@ class FSDPTrainRunner(BaseTrainRunner):
             epoch (int): Current epoch.
             train_loss (Optional[float], optional): Training loss.
                 Defaults to None.
-            only_trainable (bool, optional): Whether to save only
-                trainable parameters. Defaults to True.
         """
         assert isinstance(self.vla, FSDP), \
             'FSDPStrategy.save_checkpoint assumes VLA is \
@@ -179,15 +172,14 @@ class FSDPTrainRunner(BaseTrainRunner):
         with FSDP.state_dict_type(self.vla, self.fsdp_state_dict_type,
                                   self.fsdp_save_policy):
             full_vla_state_dict = self.vla.state_dict()
-            model_state_dicts = {
-                mkey: OrderedDict()
-                for mkey in (self.trainable_module_keys
-                             if only_trainable else self.all_module_keys)
-            }
 
             # Iterate through `full_vlm_state_dict` and split
             # `mkey.{full_dotted_path}` -> `mkey: {full_dotted_path}`
             if self.change_key_name:
+                model_state_dicts = {
+                    mkey: OrderedDict()
+                    for mkey in self.all_module_keys
+                }
                 for key, param in full_vla_state_dict.items():
                     for mkey in model_state_dicts:
                         if key.startswith(mprefix := f'{mkey}.'):
@@ -316,7 +308,6 @@ class FSDPTrainRunner(BaseTrainRunner):
                 buffer_dtype=torch.float32)
 
         self.vla.freeze_backbones()
-        self.trainable_module_keys = self.vla.trainable_module_keys
 
         if is_no_shard:
             target_dtype = torch.bfloat16

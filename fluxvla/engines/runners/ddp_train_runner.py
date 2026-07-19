@@ -67,7 +67,6 @@ class DDPTrainRunner(BaseTrainRunner):
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
-                 save_full_model: bool = True,
                  lr_scheduler: Optional[Dict] = None,
                  betas: tuple = (0.9, 0.999),
                  enable_gradient_checkpointing: bool = True,
@@ -92,7 +91,6 @@ class DDPTrainRunner(BaseTrainRunner):
             save_epoch_interval=save_epoch_interval,
             save_iter_interval=save_iter_interval,
             max_keep_ckpts=max_keep_ckpts,
-            save_full_model=save_full_model,
             lr_scheduler=lr_scheduler,
             betas=betas,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
@@ -254,7 +252,6 @@ class DDPTrainRunner(BaseTrainRunner):
         global_step: int,
         epoch: int,
         train_loss: Optional[float] = None,
-        only_trainable: bool = True,
     ) -> None:
         """Save checkpoint with DDP and LoRA specific handling."""
         if overwatch.is_rank_zero():

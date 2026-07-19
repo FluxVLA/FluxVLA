@@ -13,9 +13,7 @@
 # limitations under the License.
 import json
 import os
-from dataclasses import dataclass
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any, Dict, List, Union
 
 import numpy as np
 import torch
@@ -36,7 +34,8 @@ class ParquetDataset(Dataset):
                  use_delta: bool = False,
                  statistic_name: str = 'private',
                  window_start_idx: int = 1,
-                 frame_window_size: int = 1) -> None:
+                 frame_window_size: int = 1,
+                 image_frame_offset: int = 0) -> None:
         """Initialize the Parquet dataset.
 
         Args:
@@ -63,8 +62,14 @@ class ParquetDataset(Dataset):
                 Defaults to 'private'.
             window_start_idx (int): Start index for the action window.
                 Defaults to 1.
+            frame_window_size (int): Number of frame timestamps to expose to
+                downstream video transforms. Defaults to 1.
+            image_frame_offset (int): Row offset for the first decoded frame.
+                Defaults to 0 to preserve the original current-frame behavior.
         """
         super().__init__()
+        if image_frame_offset < 0:
+            raise ValueError('`image_frame_offset` must be non-negative.')
         self.action_window_size = action_window_size
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
@@ -128,6 +133,7 @@ class ParquetDataset(Dataset):
         self.statistic_name = statistic_name
         self.window_start_idx = window_start_idx
         self.frame_window_size = frame_window_size
+        self.image_frame_offset = image_frame_offset
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
 
@@ -151,20 +157,56 @@ class ParquetDataset(Dataset):
             self.dataset_cumulative_sizes, index, side='right') - 1
         return dataset_idx
 
+    def _same_episode_and_dataset(self, base_data: Dict, index: int,
+                                  dataset_idx: int) -> bool:
+        if index >= len(self.dataset):
+            return False
+        return (base_data['episode_index']
+                == self.dataset[index]['episode_index']
+                and self._get_dataset_index(index) == dataset_idx)
+
+    def _has_frame_at_offset(self, index: int, dataset_idx: int) -> bool:
+        if self.image_frame_offset == 0:
+            return True
+        data = self.dataset[index]
+        return self._same_episode_and_dataset(data,
+                                              index + self.image_frame_offset,
+                                              dataset_idx)
+
+    def _build_frame_timestamps(self, index: int,
+                                dataset_idx: int) -> tuple[List, np.ndarray]:
+        data = self.dataset[index]
+        frame_timestamps = []
+        frame_masks = []
+        last_timestamp = data['timestamp']
+
+        for frame_offset in range(self.frame_window_size):
+            frame_idx = index + self.image_frame_offset + frame_offset
+            if self._same_episode_and_dataset(data, frame_idx, dataset_idx):
+                last_timestamp = self.dataset[frame_idx]['timestamp']
+                frame_timestamps.append(last_timestamp)
+                frame_masks.append(1)
+            else:
+                frame_timestamps.append(last_timestamp)
+                frame_masks.append(0)
+
+        return frame_timestamps, np.array(frame_masks, dtype=np.float32)
+
     def __getitem__(self, index, dataset_statistics):
         data = self.dataset[index]
         # Determine which dataset the data belongs to
         dataset_idx = self._get_dataset_index(index)
         while (index == len(self.dataset) - 1
-               or self.dataset[index]['episode_index'] !=
-               self.dataset[index + 1]['episode_index']
+               or self.dataset[index]['episode_index']
+               != self.dataset[index + 1]['episode_index']
                or self._get_dataset_index(index + 1) != dataset_idx or
                self.tasks[dataset_idx][self.dataset[index +
                                                     1]['task_index']]['task']
                == 'empty' or
                self.tasks[dataset_idx][self.dataset[index +
                                                     1]['task_index']]['task']
-               == 'static'):
+               == 'static'
+               or not self._has_frame_at_offset(index, dataset_idx)):
 
             index = self._rand_another()
             data = self.dataset[index]
@@ -184,8 +226,8 @@ class ParquetDataset(Dataset):
                                             ['task_index']]['task'] != 'empty'
                     and  # noqa: E501
                     self.tasks[dataset_idx][self.dataset[index + window_idx]
-                                            ['task_index']]['task'] !=
-                    'static'):  # noqa: E501
+                                            ['task_index']]['task']
+                    != 'static'):  # noqa: E501
                 if self.use_delta:
                     actions.append(
                         np.array(self.dataset[index +
@@ -214,24 +256,12 @@ class ParquetDataset(Dataset):
                     actions.append(data[self.action_key])
                 action_masks.append(0)
             window_idx += 1
-        # Collect forward-looking frame timestamps for video models
-        if self.frame_window_size > 1:
-            frame_timestamps = [data['timestamp']]
-            frame_masks = [1]
-            for fi in range(1, self.frame_window_size):
-                future_idx = index + fi
-                if (future_idx < len(self.dataset)
-                        and self.dataset[future_idx]['episode_index']
-                        == data['episode_index'] and
-                        self._get_dataset_index(future_idx) == dataset_idx):
-                    frame_timestamps.append(
-                        self.dataset[future_idx]['timestamp'])
-                    frame_masks.append(1)
-                else:
-                    frame_timestamps.append(frame_timestamps[-1])
-                    frame_masks.append(0)
+        if self.image_frame_offset > 0 or self.frame_window_size > 1:
+            frame_timestamps, frame_masks = self._build_frame_timestamps(
+                index, dataset_idx)
             data['frame_timestamps'] = frame_timestamps
-            data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
+            if self.frame_window_size > 1:
+                data['frame_masks'] = frame_masks
 
         data['info'] = self.info[dataset_idx]
         data['stats'] = dataset_statistics[self.statistic_name]
@@ -249,379 +279,6 @@ class ParquetDataset(Dataset):
         return len(self.dataset)
 
         # Additional initialization can be added here if needed.
-
-
-@dataclass
-class _EpisodeRecord:
-    episode_index: int
-    episode_chunk: int
-    task_description: str
-    timestamps: np.ndarray
-    traj_20d: np.ndarray
-
-
-def _load_jsonl(path: Path) -> List[Dict]:
-    with open(path, 'r', encoding='utf-8') as f:
-        return [json.loads(line) for line in f]
-
-
-def _load_parquet_columns(path: Path,
-                          columns: Sequence[str]) -> Dict[str, np.ndarray]:
-    import pyarrow.parquet as pq
-
-    table = pq.read_table(path, columns=list(columns))
-    data = table.to_pydict()
-    return {key: np.asarray(value) for key, value in data.items()}
-
-
-@DATASETS.register_module()
-class LiberoLeRobotEE6DDataset(Dataset):
-    """Map-style X-VLA dataset backed by LeRobot parquet and videos.
-
-    The dataset stays within LeRobot v2 storage conventions, but restores
-    X-VLA's training contract from `abs_action_6d` supervision:
-
-    1. single-arm 10D EE6D trajectory expanded to 20D by zero-padding arm-2
-    2. 1 second future window interpolated to `num_actions + 1` steps
-    3. current step becomes `states`, remaining steps become `actions`
-    4. camera frames are decoded from LeRobot videos instead of HDF5 blobs
-    """
-
-    def __init__(
-        self,
-        data_root_path: str,
-        transforms: List[Dict],
-        num_actions: int = 30,
-        num_views: int = 3,
-        image_keys: Optional[List[str]] = None,
-        embodiment_id: int = 3,
-        training: bool = True,
-        statistic_name: str = 'private',
-        image_size: int = 224,
-        future_window_seconds: float = 1.0,
-        frame_tolerance_s: float = 0.1,
-        drop_incomplete_future: bool = True,
-        image_frame_offset: int = 1,
-        episode_indices: Optional[List[int]] = None,
-        max_episodes: Optional[int] = None,
-        static_threshold: float = 1e-5,
-    ) -> None:
-        super().__init__()
-        from torchvision import transforms as tv_transforms
-        from torchvision.transforms import InterpolationMode
-
-        self.data_root = Path(data_root_path)
-        self.num_actions = num_actions
-        self.num_views = num_views
-        self.embodiment_id = embodiment_id
-        self.statistic_name = statistic_name
-        self.image_size = image_size
-        self.future_window_seconds = future_window_seconds
-        self.frame_tolerance_s = frame_tolerance_s
-        self.drop_incomplete_future = drop_incomplete_future
-        self.image_frame_offset = image_frame_offset
-        self.static_threshold = static_threshold
-        self.image_keys = list(image_keys) if image_keys is not None else [
-            'observation.images.image',
-            'observation.images.wrist_image',
-        ]
-        if not self.image_keys:
-            raise ValueError('`image_keys` must contain at least one video key.')
-        if self.image_frame_offset < 0:
-            raise ValueError('`image_frame_offset` must be non-negative.')
-
-        meta_root = self.data_root / 'meta'
-        info_path = meta_root / 'info.json'
-        if not info_path.exists():
-            raise FileNotFoundError(f'Metadata file not found: {info_path}')
-        with open(info_path, 'r', encoding='utf-8') as f:
-            self.info = json.load(f)
-
-        feature_info = self.info.get('features', {})
-        if 'abs_action_6d' not in feature_info:
-            raise KeyError(
-                '`abs_action_6d` is required in LeRobot info.json features '
-                'for XVLA training.',
-            )
-        if feature_info['abs_action_6d'].get('shape') != [10]:
-            raise ValueError(
-                'LeRobot feature `abs_action_6d` must have shape [10].',
-            )
-        if 'video_path' not in self.info:
-            raise KeyError('LeRobot info.json must define `video_path`.')
-
-        self.episodes_meta = _load_jsonl(meta_root / 'episodes.jsonl')
-        self.tasks_meta = _load_jsonl(meta_root / 'tasks.jsonl')
-        stats_path = meta_root / 'episodes_stats.jsonl'
-        self.stats = _load_jsonl(stats_path) if stats_path.exists() else []
-
-        selected_episodes = self.episodes_meta
-        if episode_indices is not None:
-            episode_set = set(episode_indices)
-            selected_episodes = [
-                episode for episode in selected_episodes
-                if int(episode['episode_index']) in episode_set
-            ]
-        if max_episodes is not None:
-            selected_episodes = selected_episodes[:max_episodes]
-        if not selected_episodes:
-            raise ValueError('No episodes selected for LiberoLeRobotEE6DDataset.')
-
-        self.records = [
-            self._load_episode_record(episode_meta)
-            for episode_meta in selected_episodes
-        ]
-        self._index = []
-        for episode_slot, record in enumerate(self.records):
-            self._index.extend(self._build_episode_index(record, episode_slot))
-        if not self._index:
-            raise ValueError(
-                'No valid training samples found in the selected episodes.',
-            )
-
-        aug = [
-            tv_transforms.Resize(
-                (image_size, image_size),
-                interpolation=InterpolationMode.BICUBIC,
-            ),
-        ]
-        if training:
-            aug.append(
-                tv_transforms.ColorJitter(
-                    brightness=0.2,
-                    contrast=0.2,
-                    saturation=0.2,
-                    hue=0.0,
-                ), )
-        aug.extend([
-            tv_transforms.ToTensor(),
-            tv_transforms.Normalize(
-                (0.485, 0.456, 0.406),
-                (0.229, 0.224, 0.225),
-            ),
-        ])
-        self.image_aug = tv_transforms.Compose(aug)
-        self.transforms = [build_transform_from_cfg(t) for t in transforms]
-
-    def __len__(self) -> int:
-        return len(self._index)
-
-    def __getitem__(self, index: int, dataset_statistics=None) -> Dict:
-        from PIL import Image
-
-        del dataset_statistics
-
-        episode_slot, step_idx = self._index[index]
-        record = self.records[episode_slot]
-        cur = float(record.timestamps[step_idx])
-        query = np.linspace(
-            cur,
-            min(cur + self.future_window_seconds, float(record.timestamps[-1])),
-            self.num_actions + 1,
-            dtype=np.float32,
-        )
-        traj_seq = self._interp_traj(record.timestamps, record.traj_20d,
-                                     query)
-
-        image_idx = min(step_idx + self.image_frame_offset,
-                        len(record.timestamps) - 1)
-        image_timestamp = float(record.timestamps[image_idx])
-
-        images = []
-        img_masks = []
-        for video_key in self.image_keys[:self.num_views]:
-            frame = self._decode_video_frame(
-                self._video_path(record.episode_chunk, record.episode_index,
-                                 video_key),
-                image_timestamp,
-                self.frame_tolerance_s,
-            )
-            pil_img = Image.fromarray(frame).convert('RGB')
-            images.append(self.image_aug(pil_img).numpy())
-            img_masks.append(True)
-
-        if images:
-            padding_image = np.zeros_like(images[0], dtype=np.float32)
-        else:
-            padding_image = np.zeros(
-                (3, self.image_size, self.image_size),
-                dtype=np.float32,
-            )
-        while len(images) < self.num_views:
-            images.append(padding_image.copy())
-            img_masks.append(False)
-
-        data = {
-            'states': traj_seq[0].copy(),
-            'images': np.stack(images, axis=0),
-            'img_masks': np.asarray(img_masks, dtype=bool),
-            'actions': traj_seq[1:].copy(),
-            'action_masks': np.ones((self.num_actions,), dtype=np.float32),
-            'task_description': record.task_description,
-            'embodiment_ids': np.array(self.embodiment_id),
-            'stats': {},
-            'info': self.info,
-            'timestamp': cur,
-            'prompt': '',
-        }
-
-        for transform in self.transforms:
-            data = transform(data)
-
-        return data
-
-    def _load_episode_record(self, episode_meta: Dict) -> _EpisodeRecord:
-        episode_index = int(episode_meta['episode_index'])
-        episode_chunk = episode_index // int(self.info['chunks_size'])
-        parquet_path = self.data_root / self.info['data_path'].format(
-            episode_chunk=episode_chunk,
-            episode_index=episode_index,
-        )
-        if not parquet_path.exists():
-            raise FileNotFoundError(
-                f'Parquet file for episode {episode_index} not found: '
-                f'{parquet_path}',
-            )
-
-        columns = _load_parquet_columns(parquet_path,
-                                        ['timestamp', 'abs_action_6d'])
-        timestamps = np.asarray(columns['timestamp'], dtype=np.float32)
-        if timestamps.ndim != 1:
-            timestamps = timestamps.reshape(-1)
-        if timestamps.shape[0] < 2:
-            raise ValueError(
-                f'Episode {episode_index} must have at least 2 timestamps.',
-            )
-        if np.any(np.diff(timestamps) <= 0):
-            raise ValueError(
-                f'Episode {episode_index} timestamps must be strictly '
-                'increasing for interpolation.',
-            )
-
-        abs_action_6d = np.asarray(columns['abs_action_6d'], dtype=np.float32)
-        if abs_action_6d.ndim != 2 or abs_action_6d.shape[1] != 10:
-            raise ValueError(
-                f'Episode {episode_index} has invalid `abs_action_6d` shape '
-                f'{abs_action_6d.shape}; expected [T, 10].',
-            )
-        if abs_action_6d.shape[0] != timestamps.shape[0]:
-            raise ValueError(
-                f'Length mismatch in episode {episode_index}: '
-                f'{abs_action_6d.shape[0]} actions vs {timestamps.shape[0]} '
-                'timestamps.',
-            )
-
-        traj_20d = np.zeros((abs_action_6d.shape[0], 20), dtype=np.float32)
-        traj_20d[:, :9] = abs_action_6d[:, :9]
-        traj_20d[:, 9:10] = (abs_action_6d[:, 9:10] > 0.0).astype(np.float32)
-
-        tasks = episode_meta.get('tasks', [])
-        if not tasks:
-            raise ValueError(
-                f'Episode {episode_index} must contain at least one task '
-                'description in episodes.jsonl.',
-            )
-
-        return _EpisodeRecord(
-            episode_index=episode_index,
-            episode_chunk=episode_chunk,
-            task_description=str(tasks[0]),
-            timestamps=timestamps,
-            traj_20d=traj_20d,
-        )
-
-    def _build_episode_index(self, record: _EpisodeRecord,
-                             episode_slot: int) -> List[tuple[int, int]]:
-        timestamps = record.timestamps
-        traj = record.traj_20d
-        max_start = len(timestamps) - 1
-        if self.drop_incomplete_future:
-            valid_steps = np.where(
-                timestamps + self.future_window_seconds <=
-                timestamps[-1] + 1e-6)[0]
-        else:
-            valid_steps = np.arange(max_start, dtype=np.int64)
-
-        sample_index = []
-        for idx in valid_steps.tolist():
-            if idx + 1 >= len(traj):
-                continue
-            if idx + self.image_frame_offset >= len(timestamps):
-                continue
-            if np.abs(traj[idx + 1] - traj[idx]).max() < self.static_threshold:
-                continue
-            sample_index.append((episode_slot, idx))
-        return sample_index
-
-    def _video_path(self, episode_chunk: int, episode_index: int,
-                    video_key: str) -> Path:
-        return self.data_root / self.info['video_path'].format(
-            episode_chunk=episode_chunk,
-            video_key=video_key,
-            episode_index=episode_index,
-        )
-
-    @staticmethod
-    def _interp_traj(timestamps: np.ndarray, traj: np.ndarray,
-                     query: np.ndarray) -> np.ndarray:
-        out = np.empty((len(query), traj.shape[1]), dtype=np.float32)
-        for dim in range(traj.shape[1]):
-            out[:, dim] = np.interp(
-                query,
-                timestamps,
-                traj[:, dim],
-                left=float(traj[0, dim]),
-                right=float(traj[-1, dim]),
-            )
-        return out
-
-    @staticmethod
-    def _decode_video_frame(video_path: Path,
-                            timestamp: float,
-                            tolerance_s: float,
-                            backend: str = 'pyav') -> np.ndarray:
-        import torchvision
-
-        if not video_path.exists():
-            raise FileNotFoundError(f'Video file not found: {video_path}')
-
-        keyframes_only = False
-        torchvision.set_video_backend(backend)
-        if backend == 'pyav':
-            keyframes_only = True
-
-        reader = torchvision.io.VideoReader(str(video_path), 'video')
-        reader.seek(float(timestamp), keyframes_only=keyframes_only)
-
-        loaded_frames = []
-        loaded_ts = []
-        for frame in reader:
-            loaded_frames.append(frame['data'])
-            loaded_ts.append(float(frame['pts']))
-            if frame['pts'] >= timestamp:
-                break
-
-        if backend == 'pyav':
-            reader.container.close()
-
-        if not loaded_frames:
-            raise RuntimeError(
-                f'Failed to decode any frame from {video_path} near '
-                f'{timestamp:.4f}s.',
-            )
-
-        loaded_ts_arr = np.asarray(loaded_ts, dtype=np.float32)
-        nearest_idx = int(np.argmin(np.abs(loaded_ts_arr - timestamp)))
-        nearest_ts = float(loaded_ts_arr[nearest_idx])
-        if abs(nearest_ts - timestamp) > tolerance_s:
-            raise RuntimeError(
-                f'Closest frame in {video_path} is too far from query '
-                f'({nearest_ts:.4f}s vs {timestamp:.4f}s, '
-                f'tol={tolerance_s}).',
-            )
-
-        frame = loaded_frames[nearest_idx].permute(1, 2, 0).cpu().numpy()
-        return np.ascontiguousarray(frame)
 
 
 @DATASETS.register_module()
@@ -643,14 +300,14 @@ class LiberoParquetEvalDataset:
                  norm_stats: Any,
                  task_suite_name: str,
                  transforms: List[Dict],
-                 norm_stats_key: str,
+                 norm_stats_key: str = None,
                  num_padding_imgs: int = 0,
                  allow_private_stats_fallback: bool = False) -> None:
 
         # Build image/token transforms (parquet-style sequential list)
         self.transforms = [build_transform_from_cfg(t) for t in transforms]
         self.task_suite_name = task_suite_name
-        self.norm_stats_key = norm_stats_key
+        self.norm_stats_key = norm_stats_key or task_suite_name + '_no_noops'
         self.num_padding_imgs = num_padding_imgs
         self.allow_private_stats_fallback = allow_private_stats_fallback
         if isinstance(norm_stats, str):

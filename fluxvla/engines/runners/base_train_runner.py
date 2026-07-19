@@ -55,8 +55,6 @@ class BaseTrainRunner(ABC):
             based on epochs. Defaults to 10000.
         max_keep_ckpts (int, optional): Maximum number of checkpoints to keep.
             Defaults to 2.
-        save_full_model (bool, optional): Whether to save the full model.
-            Defaults to True.
         lr_scheduler (Dict): Learning rate scheduler policy configuration.
         betas (tuple, optional): AdamW beta values. Defaults to (0.9, 0.999).
         enable_gradient_checkpointing (bool, optional): Enable gradient
@@ -83,7 +81,6 @@ class BaseTrainRunner(ABC):
                  save_epoch_interval: int = 1,
                  save_iter_interval: int = 10000,
                  max_keep_ckpts: int = 2,
-                 save_full_model: bool = True,
                  lr_scheduler: Dict = None,
                  betas: tuple = (0.9, 0.999),
                  enable_gradient_checkpointing: bool = True,
@@ -113,7 +110,6 @@ class BaseTrainRunner(ABC):
 
         self.vla = build_vla_from_cfg(cfg.model)
         self.all_module_keys = self.vla.all_module_keys
-        self.trainable_module_keys = list()
         if self.vla.llm_backbone is not None:
             self.llm_transformer_layer_cls = self.vla.llm_backbone.transformer_layer_cls  # noqa: E501
         elif (self.vla.vlm_backbone is not None
@@ -131,7 +127,6 @@ class BaseTrainRunner(ABC):
         self.save_iter_interval = save_iter_interval
         self.save_epoch_interval = save_epoch_interval
         self.max_keep_ckpts = max_keep_ckpts
-        self.save_full_model = save_full_model
         self.lr_scheduler_cfg = lr_scheduler
         self.betas = tuple(float(b) for b in betas)
         self.enable_gradient_checkpointing = enable_gradient_checkpointing
@@ -243,6 +238,44 @@ class BaseTrainRunner(ABC):
         if callable(shutdown_fn):
             shutdown_fn()
 
+    def cleanup(self) -> None:
+        """Release training resources before launching evaluation."""
+        self._shutdown_dataloader(self._active_dataloader)
+        self._active_dataloader = None
+
+        if self.optimizer is not None:
+            try:
+                self.optimizer.zero_grad(set_to_none=True)
+            except TypeError:
+                self.optimizer.zero_grad()
+
+        if self.vla is not None:
+            try:
+                self.vla.zero_grad(set_to_none=True)
+            except TypeError:
+                self.vla.zero_grad()
+
+        self.optimizer = None
+        self.lr_scheduler = None
+        self.collator = None
+        self.tokenizer = None
+        self.vla = None
+        self._loss_accumulator.clear()
+
+        if hasattr(self, 'recent_losses'):
+            self.recent_losses.clear()
+
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            ipc_collect = getattr(torch.cuda, 'ipc_collect', None)
+            if callable(ipc_collect):
+                try:
+                    ipc_collect()
+                except RuntimeError:
+                    pass
+
     @abstractmethod
     def save_checkpoint(
         self,
@@ -250,7 +283,6 @@ class BaseTrainRunner(ABC):
         global_step: int,
         epoch: int,
         train_loss: Optional[float] = None,
-        only_trainable: bool = True,
     ) -> None:
         """Save checkpoint including model, optimizer, and scheduler states.
 
@@ -735,12 +767,8 @@ class BaseTrainRunner(ABC):
         else:
             avg_loss = loss_value
 
-        self.save_checkpoint(
-            self.metric.run_dir,
-            self.metric.global_step,
-            self.current_epoch,
-            avg_loss,
-            only_trainable=not self.save_full_model)
+        self.save_checkpoint(self.metric.run_dir, self.metric.global_step,
+                             self.current_epoch, avg_loss)
         dist.barrier()
 
     def _get_checkpoint_path(self) -> str:

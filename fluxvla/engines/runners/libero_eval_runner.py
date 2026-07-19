@@ -237,7 +237,6 @@ class LiberoEvalRunner:
                 f'Action un-norm key {unnorm_key} '
                 'not found in VLA norm_stats!')
         for id in range(num_local_episodes):
-            episode_done = None
             if id >= len(local_episodes):
                 step_tensor = torch.zeros(
                     1, device=torch.cuda.current_device())
@@ -282,7 +281,7 @@ class LiberoEvalRunner:
                 elif self.task_suite_name == 'libero_goal':
                     max_steps = 300  # longest training demo has 270 steps
                 elif self.task_suite_name == 'libero_10':
-                    max_steps = 520  # longest training demo has 505 steps
+                    max_steps = 900  # longest training demo has 505 steps
                 elif self.task_suite_name == 'libero_90':
                     max_steps = 400  # longest training demo has 373 steps
 
@@ -315,6 +314,11 @@ class LiberoEvalRunner:
                             dtype=self.mixed_precision_dtype,
                             enabled=self.enable_mixed_precision_training):
                         with torch.no_grad():
+                            build_eval_kwargs = getattr(
+                                self.vla, 'build_eval_predict_action_kwargs',
+                                None)
+                            if callable(build_eval_kwargs):
+                                batch.update(build_eval_kwargs(batch, env=env))
                             actions = self.vla.predict_action(**batch)
                     if len(actions.shape) == 3:
                         actions = actions[
@@ -332,6 +336,11 @@ class LiberoEvalRunner:
                         action_denormed = self.denormalize_action(inputs)
                         obs, reward, done, info = env.step(
                             action_denormed.tolist())
+                        after_eval_env_step = getattr(self.vla,
+                                                      'after_eval_env_step',
+                                                      None)
+                        if callable(after_eval_env_step):
+                            after_eval_env_step(action)
                         obs['task_description'] = task_description
                         batch, replay_img = self.dataset(obs)
                         replay_images.append(replay_img)
@@ -342,7 +351,6 @@ class LiberoEvalRunner:
                     if done:
                         break
                 total_episodes += 1
-                episode_done = done
                 step_tensor = torch.ones(1, device=torch.cuda.current_device())
                 # Save a replay video of the episode
                 save_rollout_video(
@@ -367,8 +375,7 @@ class LiberoEvalRunner:
             global_successes = total_successes.clone()
             dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
             dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
-            if isinstance(episode_done, torch.Tensor):
-                episode_done = episode_done.item()
+            done = done.item() if isinstance(done, torch.Tensor) else done
             if rank == 0:
                 # Log current results
                 overwatch.info(
@@ -377,8 +384,7 @@ class LiberoEvalRunner:
                 success_text = (f'# successes: {int(global_successes[0])} '
                                 f'({success_rate:.1f}%)')  # noqa: E231
                 overwatch.info(success_text)
-                if episode_done is not None:
-                    log_file.write(f'Success: {episode_done}\n')
+                log_file.write(f'Success: {done}\n')
                 log_file.write(
                     f'# episodes completed so far: {global_episodes[0]}\n')
                 success_log = (f'# successes: {global_successes[0]} '

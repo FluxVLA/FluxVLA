@@ -44,10 +44,16 @@ class ProcessPrompts():
                  with_state: bool = False,
                  ignore_index: int = -100):
         from fluxvla.engines import build_tokenizer_from_cfg
+        tokenizer = dict(tokenizer)
         if model_path is not None:
             tokenizer['model_path'] = os.path.join(model_path, 'tokenizer')
         self.tokenizer = build_tokenizer_from_cfg(tokenizer)
         self.max_len = max_len
+        self.pad_token_id = getattr(self.tokenizer, 'pad_token_id', None)
+        if self.pad_token_id is None:
+            self.pad_token_id = getattr(self.tokenizer, 'eos_token_id', 0)
+        if self.pad_token_id is None:
+            self.pad_token_id = 0
         self.with_labels = with_labels
         self.with_state = with_state
         self.ignore_index = ignore_index
@@ -75,9 +81,9 @@ class ProcessPrompts():
         tokens_len = len(tokens)
         if self.max_len is not None:
             if tokens_len < self.max_len:
-                padding = [False] * (self.max_len - tokens_len)
-                tokens = tokens + padding
-                token_mask = token_mask + padding
+                pad_len = self.max_len - tokens_len
+                tokens = tokens + [self.pad_token_id] * pad_len
+                token_mask = token_mask + [False] * pad_len
             else:
                 tokens = tokens[:self.max_len]
                 token_mask = token_mask[:self.max_len]
