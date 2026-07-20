@@ -275,14 +275,6 @@ class LiberoEvalRunner(BaseEvalRunner):
         repeats = math.ceil(num_trials / len(initial_states))
         return list(initial_states) * repeats
 
-    def _make_native_libero_env(self, task):
-        """Create the native N1.7 LIBERO Gymnasium env."""
-        import gymnasium as gym
-        from fluxvla.envs.libero_gymnasium_env import register_libero_envs
-
-        register_libero_envs()
-        return gym.make(f'libero_sim/{task.name}')
-
     @staticmethod
     def _build_run_id(task_suite_name: str,
                       model_family: str,
@@ -344,8 +336,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 if img_keys:
                     break
         if not img_keys:
-            img_keys = (['video.image', 'video.wrist_image']
-                        if self._native_n17_eval else ['agentview_image'])
+            img_keys = ['agentview_image']
 
         img_keys = list(dict.fromkeys(img_keys))
         if self.save_multi_view_rollout_videos:
@@ -358,32 +349,20 @@ class LiberoEvalRunner(BaseEvalRunner):
         view_names = {
             'agentview_image': 'image',
             'robot0_eye_in_hand_image': 'wrist_image',
-            'video.image': 'image',
-            'video.wrist_image': 'wrist_image',
         }
         return view_names.get(img_key, img_key)
 
     @staticmethod
     def _resolve_replay_image(obs: Dict, img_key: str):
-        """Resolve replay image keys across raw LIBERO and native N1.7 obs."""
+        """Resolve replay image keys from raw LIBERO observations."""
         if img_key in obs:
             return obs[img_key], img_key
-        aliases = {
-            'agentview_image': 'video.image',
-            'robot0_eye_in_hand_image': 'video.wrist_image',
-            'video.image': 'agentview_image',
-            'video.wrist_image': 'robot0_eye_in_hand_image',
-        }
-        alias = aliases.get(img_key)
-        if alias is not None and alias in obs:
-            return obs[alias], alias
         raise KeyError(img_key)
 
     @staticmethod
     def _format_replay_image(img, img_key: str):
         """Return replay image in display orientation."""
-        if img_key.startswith('video.'):
-            return img.copy()
+        del img_key
         return img[::-1, ::-1].copy()
 
     def _get_replay_image(self, obs: Dict, replay_img=None):
@@ -443,8 +422,6 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.set_common_eval_attrs(cfg, seed, ckpt_path, model_family,
                                    mixed_precision_dtype,
                                    enable_mixed_precision_training)
-        self._native_n17_eval = model_family in ('groot_n17_native',
-                                                 'groot_n17')
         if (model_build_device is not None
                 and str(model_build_device).startswith('cuda')
                 and torch.cuda.is_available()):
@@ -453,35 +430,9 @@ class LiberoEvalRunner(BaseEvalRunner):
             cfg,
             model_build_device=model_build_device,
             model_build_dtype=model_build_dtype)
-        model_path = (
-            model_cfg.get('model_path', None) if isinstance(model_cfg, dict)
-            else getattr(model_cfg, 'model_path', None))
-        if self.ckpt_path is None:
-            self.ckpt_path = model_path
         self.vla = build_vla_from_cfg(model_cfg).eval()
         # Load checkpoint weights if ckpt_path is provided
-        if self._native_n17_eval:
-            self.vla.from_pretrained()
-            if ckpt_path is not None and Path(ckpt_path).is_file():
-                if ckpt_path.endswith('.safetensors'):
-                    state_dict = load_file(ckpt_path, device='cpu')
-                else:
-                    checkpoint = torch.load(ckpt_path, map_location='cpu')
-                    state_dict = checkpoint.get('model', checkpoint)
-                from fluxvla.engines.utils.checkpoint_utils import \
-                    handle_shared_tensors
-                state_dict = handle_shared_tensors(state_dict,
-                                                   self.vla.state_dict(),
-                                                   overwatch)
-                load_result = self.vla.load_state_dict(state_dict,
-                                                       strict=True)
-                overwatch.info(
-                    f'Loaded native N1.7 eval checkpoint: {ckpt_path}; '
-                    f'missing={len(load_result.missing_keys)}, '
-                    f'unexpected={len(load_result.unexpected_keys)}')
-                del state_dict
-                gc.collect()
-        elif ckpt_path is not None:
+        if ckpt_path is not None:
             assert Path.exists(Path(ckpt_path)), \
                 f'Checkpoint path {ckpt_path} does not exist!'
 
@@ -519,25 +470,24 @@ class LiberoEvalRunner(BaseEvalRunner):
             del state_dict
             gc.collect()
         self.norm_stats_key = norm_stats_key or f'{task_suite_name}_no_noops'
-        if self._native_n17_eval:
-            data_stat_path = None
-            self.dataset = build_dataset_from_cfg(dataset)
-            self.denormalize_action = None
-        else:
+        requires_norm_stats = denormalize_action.pop(
+            'requires_norm_stats', True)
+        data_stat_path = None
+        if requires_norm_stats:
             data_stat_path = (
                 dataset_stats_path if dataset_stats_path is not None else
                 self.default_stats_path(self.ckpt_path))
             assert os.path.exists(data_stat_path), \
                 f'Dataset statistics file not found at {data_stat_path}!'
-            # Load dataset and denormalization action
             denormalize_action['norm_stats'] = data_stat_path
-            dataset['task_suite_name'] = task_suite_name
-            dataset['norm_stats_key'] = self.norm_stats_key
-            dataset['norm_stats'] = data_stat_path
+        # Load dataset and denormalization action
+        dataset['task_suite_name'] = task_suite_name
+        dataset['norm_stats_key'] = self.norm_stats_key
+        dataset['norm_stats'] = data_stat_path
+        if ckpt_path is not None:
             self._inject_checkpoint_tokenizer(dataset, ckpt_path)
-            self.dataset = build_dataset_from_cfg(dataset)
-            self.denormalize_action = build_transform_from_cfg(
-                denormalize_action)
+        self.dataset = build_dataset_from_cfg(dataset)
+        self.denormalize_action = build_transform_from_cfg(denormalize_action)
         self.eval_chunk_size = eval_chunk_size
         self.model_family = model_family
         self.task_suite_name = task_suite_name
@@ -572,7 +522,7 @@ class LiberoEvalRunner(BaseEvalRunner):
             with open(data_stat_path, 'r') as f:
                 norm_stats = json.load(f)
             self.update_model_norm_stats(norm_stats)
-        elif not self._native_n17_eval:
+        elif requires_norm_stats:
             overwatch.warning(
                 'WARNING: No local dataset_statistics.json file found for current checkpoint.\n'  # noqa: E501
                 'You can ignore this if you are loading the base VLA (i.e. not fine-tuned) checkpoint.'  # noqa: E501
@@ -712,9 +662,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                                         device=cuda_dev)
         # Wall-clock start time of the first trial each rank runs per task.
         task_start_times = [float('inf')] * num_tasks
-        max_steps = (
-            720 if self._native_n17_eval and self.max_steps is None else
-            self._get_max_steps(self.task_suite_name, self.max_steps))
+        max_steps = self._get_max_steps(self.task_suite_name, self.max_steps)
         rank_episode_count = 0
         rank_success_count = 0
         current_task_id = None
@@ -733,40 +681,28 @@ class LiberoEvalRunner(BaseEvalRunner):
                 log_file.write(
                     f'Evaluating Task {task_id}, Trial {trial_id}\n')
 
-                if (self._native_n17_eval or env is None
-                        or task_id != current_task_id):
+                if env is None or task_id != current_task_id:
                     if env is not None:
                         env.close()
                     task = task_suite.get_task(task_id)
-                    if self._native_n17_eval:
-                        env = self._make_native_libero_env(task)
-                        initial_states = None
-                        task_description = task.language
-                    else:
-                        initial_states = self._repeat_initial_states(
-                            task_suite.get_task_init_states(task_id),
-                            self.num_trials_per_task)
-                        env, task_description = get_libero_env(
-                            task, resolution=256)
+                    initial_states = self._repeat_initial_states(
+                        task_suite.get_task_init_states(task_id),
+                        self.num_trials_per_task)
+                    env, task_description = get_libero_env(task, resolution=256)
                     current_task_id = task_id
                     overwatch.info(f'\nTask: {task_description}')
                     log_file.write(f'\nTask: {task_description}\n')
 
                 # Reset environment
-                if self._native_n17_eval:
-                    obs, info = env.reset(seed=self.seed + local_id)
-                else:
-                    env.reset()
-                    # Set initial states
-                    obs = env.set_init_state(initial_states[trial_id])
+                env.reset()
+                # Set initial states
+                obs = env.set_init_state(initial_states[trial_id])
                 is_new_episode = True
 
                 # Setup
                 t = 0
                 replay_images = []
                 next_batch = None
-                success = False
-                truncated = False
 
                 overwatch.info(f'Starting episode {trial_id+1}...')
 
@@ -775,14 +711,13 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_start_times[task_id] = min(task_start_times[task_id],
                                                 episode_start)
                 done = False
-                wait_steps = 0 if self._native_n17_eval else self.num_steps_wait
+                wait_steps = self.num_steps_wait
                 while t < max_steps + wait_steps:
                     # IMPORTANT: Do nothing for the first
                     # few timesteps
                     # because the simulator drops objects
                     # and we need to wait for them to fall
-                    if (not self._native_n17_eval
-                            and t < self.num_steps_wait):
+                    if t < self.num_steps_wait:
                         obs, reward, done, info = env.step(
                             get_libero_dummy_action())
                         t += 1
@@ -799,57 +734,38 @@ class LiberoEvalRunner(BaseEvalRunner):
                         batch = next_batch
                         next_batch = None
                     is_new_episode = False
-                    if self._native_n17_eval:
-                        actions = self.vla.predict_n17_action_dicts(
-                            batch['n17_observation'],
-                            task=batch.get('n17_task'),
-                            chunk_size=self.eval_chunk_size,
-                        )
+                    batch['unnorm_key'] = unnorm_key
+                    predict_kwargs = dict(batch)
+                    if self.num_inference_steps is not None:
+                        predict_kwargs['num_inference_steps'] = \
+                            self.num_inference_steps
+                    if self.inference_seed is not None:
+                        predict_kwargs['seed'] = self.inference_seed
+                    with torch.autocast(
+                            'cuda',
+                            dtype=self.mixed_precision_dtype,
+                            enabled=self.enable_mixed_precision_training):
+                        with torch.no_grad():
+                            actions = self.vla.predict_action(**predict_kwargs)
+                    if len(actions.shape) == 3:
+                        actions = actions[
+                            0, :self.eval_chunk_size, :].float().cpu().numpy()
                     else:
-                        batch['unnorm_key'] = unnorm_key
-                        predict_kwargs = dict(batch)
-                        if self.num_inference_steps is not None:
-                            predict_kwargs['num_inference_steps'] = \
-                                self.num_inference_steps
-                        if self.inference_seed is not None:
-                            predict_kwargs['seed'] = self.inference_seed
-                        with torch.autocast(
-                                'cuda',
-                                dtype=self.mixed_precision_dtype,
-                                enabled=self.enable_mixed_precision_training):
-                            with torch.no_grad():
-                                actions = self.vla.predict_action(
-                                    **predict_kwargs)
-                        if len(actions.shape) == 3:
-                            actions = actions[
-                                0, :self.eval_chunk_size, :].float().cpu(
-                                ).numpy()
-                        else:
-                            assert len(actions.shape) == 2, \
-                                f'Unexpected action shape: {actions.shape}'
-                            actions = actions[0, None, :].float().cpu().numpy()
+                        assert len(actions.shape) == 2, \
+                            f'Unexpected action shape: {actions.shape}'
+                        actions = actions[0, None, :].float().cpu().numpy()
                     for action in actions:
-                        if self._native_n17_eval:
-                            obs, reward, env_done, truncated, info = env.step(
-                                action)
-                            t += 1
-                            success = success or bool(
-                                info.get('success', False))
-                            done = bool(env_done or truncated or success
-                                        or t >= max_steps + wait_steps)
-                        else:
-                            inputs = dict(
-                                action=action,
-                                task_suite_name=self.task_suite_name,
-                                norm_stats_key=self.norm_stats_key,
-                            )
-                            action_denormed = self.denormalize_action(inputs)
-                            obs, reward, done, info = env.step(
-                                action_denormed.tolist())
-                            if done:
-                                total_successes += 1
-                                rank_success_count += 1
+                        inputs = dict(
+                            action=action,
+                            task_suite_name=self.task_suite_name,
+                            norm_stats_key=self.norm_stats_key,
+                        )
+                        action_denormed = self.denormalize_action(inputs)
+                        obs, reward, done, info = env.step(
+                            action_denormed.tolist())
                         if done:
+                            total_successes += 1
+                            rank_success_count += 1
                             if self._should_collect_replay_images():
                                 replay_images.append(
                                     self._get_replay_image(obs))
@@ -868,16 +784,12 @@ class LiberoEvalRunner(BaseEvalRunner):
                                 replay_images.append(
                                     self._get_replay_image(obs))
                             next_batch = None
-                        if not self._native_n17_eval:
-                            t += 1
+                        t += 1
                     if done:
                         break
                 total_episodes += 1
                 rank_episode_count += 1
-                episode_success = success if self._native_n17_eval else done
-                if self._native_n17_eval and episode_success:
-                    total_successes += 1
-                    rank_success_count += 1
+                episode_success = done
                 episode_duration = time.time() - episode_start
                 task_successes[task_id] += float(bool(episode_success))
                 task_episodes[task_id] += 1.0
@@ -945,9 +857,6 @@ class LiberoEvalRunner(BaseEvalRunner):
                                f'({rank_success_rate:.1f}%)\n')
                 log_file.write(success_log)
                 log_file.flush()
-                if self._native_n17_eval and env is not None:
-                    env.close()
-                    env = None
         finally:
             if env is not None:
                 env.close()

@@ -18,4 +18,4 @@ from .padded_action_prediction_collator import \
     PaddedCollatorForActionPrediction  # noqa: F401, F403
 from .padded_language_modeling_collator import \
     PaddedCollatorForLanguageModeling  # noqa: F401, F403
-from .groot_n17_native_collator import GrootN17NativeCollator  # noqa: F401, F403
+from fluxvla.processors import GrootN17DataCollator  # noqa: F401, F403

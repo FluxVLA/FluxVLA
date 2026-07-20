@@ -463,19 +463,23 @@ class LiberoParquetEvalDataset:
     """
 
     def __init__(self,
-                 norm_stats: Any,
-                 task_suite_name: str,
-                 transforms: List[Dict],
-                 norm_stats_key: str,
+                 norm_stats: Any = None,
+                 task_suite_name: str = None,
+                 transforms: List[Dict] = None,
+                 norm_stats_key: str = None,
                  num_padding_imgs: int = 0,
                  img_buffer_len: int = 1,
-                 extra_tensor_keys: Optional[List[str]] = None) -> None:
+                 extra_tensor_keys: Optional[List[str]] = None,
+                 extra_batch_keys: Optional[List[str]] = None) -> None:
 
         # Build image/token transforms (parquet-style sequential list)
-        self.transforms = [build_transform_from_cfg(t) for t in transforms]
+        self.transforms = [
+            build_transform_from_cfg(t) for t in (transforms or [])
+        ]
         self.task_suite_name = task_suite_name
         self.norm_stats_key = norm_stats_key
         self.num_padding_imgs = num_padding_imgs
+        self.extra_batch_keys = list(extra_batch_keys or [])
         assert img_buffer_len >= 1, 'img_buffer_len must be >= 1'
         self.img_buffer_len = img_buffer_len
         self.extra_tensor_keys = extra_tensor_keys or []
@@ -554,37 +558,41 @@ class LiberoParquetEvalDataset:
             data = t(data)
         replay_img = data.get('replay_img', None)
 
-        assert 'lang_tokens' in data and 'lang_masks' in data, \
-            'Prompt transform must provide lang_tokens and lang_masks'
-        tokens = torch.tensor(data['lang_tokens'])
-        token_mask = data['lang_masks'].tolist() if hasattr(
-            data['lang_masks'], 'tolist') else list(data['lang_masks'])
+        batch: Dict[str, Any] = {}
+        missing_prompt = 'lang_tokens' not in data or 'lang_masks' not in data
+        if missing_prompt and not self.extra_batch_keys:
+            raise AssertionError(
+                'Prompt transform must provide lang_tokens and lang_masks')
+        if 'lang_tokens' in data and 'lang_masks' in data:
+            tokens = torch.tensor(data['lang_tokens'])
+            token_mask = data['lang_masks'].tolist() if hasattr(
+                data['lang_masks'], 'tolist') else list(data['lang_masks'])
 
-        # Proprio
-        img_masks = data.get('img_masks', None)
-        pixel_values = data['pixel_values']
-        if img_masks is None:
-            # Fallback: all True masks based on pixel_values shape
-            num_imgs = pixel_values.shape[0] // 3
-            img_masks = [True] * num_imgs
-        else:
-            img_masks = list(img_masks)
-        # Add padding images with zero values and False masks
-        if self.num_padding_imgs > 0:
-            padding_img = pixel_values.new_zeros(3, pixel_values.shape[-2],
-                                                 pixel_values.shape[-1])
-            padding_imgs = padding_img.repeat(self.num_padding_imgs, 1, 1)
-            pixel_values = torch.cat([pixel_values, padding_imgs], dim=0)
-            img_masks.extend([False] * self.num_padding_imgs)
-        if self.img_buffer_len > 1:
-            pixel_values, img_masks = self._update_img_buffer(
-                pixel_values, img_masks)
-        batch: Dict[str, Any] = dict(
-            images=pixel_values.cuda().unsqueeze(0),
-            img_masks=torch.tensor([img_masks]).cuda(),
-            lang_tokens=tokens.unsqueeze(0).cuda(),
-            lang_masks=torch.tensor(token_mask).unsqueeze(0).cuda(),
-        )
+            # Proprio
+            img_masks = data.get('img_masks', None)
+            pixel_values = data['pixel_values']
+            if img_masks is None:
+                # Fallback: all True masks based on pixel_values shape
+                num_imgs = pixel_values.shape[0] // 3
+                img_masks = [True] * num_imgs
+            else:
+                img_masks = list(img_masks)
+            # Add padding images with zero values and False masks
+            if self.num_padding_imgs > 0:
+                padding_img = pixel_values.new_zeros(3, pixel_values.shape[-2],
+                                                     pixel_values.shape[-1])
+                padding_imgs = padding_img.repeat(self.num_padding_imgs, 1, 1)
+                pixel_values = torch.cat([pixel_values, padding_imgs], dim=0)
+                img_masks.extend([False] * self.num_padding_imgs)
+            if self.img_buffer_len > 1:
+                pixel_values, img_masks = self._update_img_buffer(
+                    pixel_values, img_masks)
+            batch.update(
+                images=pixel_values.cuda().unsqueeze(0),
+                img_masks=torch.tensor([img_masks]).cuda(),
+                lang_tokens=tokens.unsqueeze(0).cuda(),
+                lang_masks=torch.tensor(token_mask).unsqueeze(0).cuda(),
+            )
 
         if 'states' in data:
             batch['states'] = torch.from_numpy(
@@ -597,6 +605,9 @@ class LiberoParquetEvalDataset:
         if data.get('image_grid_thw', None) is not None:
             batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
 
+        for key in self.extra_batch_keys:
+            if key in data:
+                batch[key] = data[key]
         batch['reset_history'] = is_new_episode
 
         return batch, replay_img
@@ -724,49 +735,3 @@ class PrivateInferenceDataset:
                 2 * (normalized_states - state_low) /
                 (state_high - state_low + 1e-8) - 1, -1, 1), normalized_states)
         return states
-
-
-@DATASETS.register_module()
-class LiberoN17EvalDataset:
-    """LIBERO eval adapter for native GR00T N1.7.
-
-    Keeps the official LIBERO Gymnasium wrapper observation keys unchanged and
-    passes them to ``GrootN17VLA.predict_n17_action_dicts`` through the native
-    processor path.
-    """
-
-    def __init__(self, replay_key: str = 'video.image', **kwargs) -> None:
-        del kwargs
-        self.replay_key = replay_key
-        self.last_debug: Dict[str, Any] = {}
-
-    def __call__(self, inputs: Dict[str, Any]) -> tuple:
-        task = inputs.get('annotation.human.action.task_description',
-                          inputs.get('task_description', ''))
-        observation = {
-            'video.image': np.asarray(inputs['video.image'],
-                                      dtype=np.uint8).copy(),
-            'video.wrist_image': np.asarray(inputs['video.wrist_image'],
-                                            dtype=np.uint8).copy(),
-            'annotation.human.action.task_description': task,
-            'task_description': task,
-        }
-        for key in ('x', 'y', 'z', 'roll', 'pitch', 'yaw', 'gripper'):
-            obs_key = f'state.{key}'
-            if obs_key not in inputs:
-                raise KeyError(f'Missing LIBERO N1.7 observation key '
-                               f'{obs_key!r}. Available: {list(inputs.keys())}')
-            observation[obs_key] = np.asarray(
-                inputs[obs_key], dtype=np.float32).copy()
-
-        replay_img = np.asarray(inputs.get(self.replay_key,
-                                           inputs['video.image'])).copy()
-        self.last_debug = {
-            'task_description': task,
-            'text': task,
-            'prompt': task,
-        }
-        return {
-            'n17_observation': observation,
-            'n17_task': task,
-        }, replay_img
