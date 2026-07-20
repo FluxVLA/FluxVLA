@@ -36,8 +36,9 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 | FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
 | FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
 | FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
+| FluxVLA(X-VLA)              |       [97.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)        |       [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)        |      [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)       |     [87.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)      |     95.10      |
 
-*Linked scores point to the corresponding checkpoints.*
+*Linked scores point to the corresponding checkpoints. FluxVLA(X-VLA) is reported from the final 4-suite checkpoint trained on the shared XVLA LIBERO LeRobot data with `abs_action_6d` actions.*
 
 #### RoboCasa GR1
 
@@ -494,6 +495,8 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 Replace `libero_10_no_noops_lerobotv2.1` with the corresponding folder name of the dataset you want to download.
 
+For XVLA LIBERO configs, place or symlink the shared LIBERO LeRobot suite folders under `./datasets/libero_xvla_lerobot`, for example `./datasets/libero_xvla_lerobot/libero_10_no_noops_lerobot`. These configs use the `abs_action_6d` field during loading.
+
 For RoboCasa GR00T training with the released 30-demo subset, download the
 dataset under `./datasets`:
 
@@ -661,14 +664,18 @@ For ARM and SARM workflows, you typically need a CLIP checkpoint for training / 
 <details>
 <summary><b>VLA models</b></summary>
 
-| Model       | Size | Download link                                                                              |
-| ----------- | ---- | ------------------------------------------------------------------------------------------ |
-| GR00T N1.5  | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                   |
-| OpenVLA     | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                               |
-| PI0_base    | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)    |
-| PI05_base   | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)   |
-| PI05_libero | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero) |
-| SmolVLA     | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                             |
+| Model        | Size     | Download link                                                                                   |
+| ------------ | -------- | ----------------------------------------------------------------------------------------------- |
+| GR00T N1.5   | 3B       | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                        |
+| OpenVLA      | 7B       | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                    |
+| PI0_base     | 3B       | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)         |
+| PI05_base    | 3B       | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)        |
+| PI05_libero  | 3B       | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)      |
+| SmolVLA      | 450M     | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                  |
+| X-VLA-PT     | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Pt-fluxvla) |
+| X-VLA-Libero | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Libero)     |
+
+> **XVLA note**: For FluxVLA XVLA training configs, place the converted `X-VLA-PT` checkpoint under `./checkpoints/X-VLA-Pt-fluxvla`. This is the X-VLA pretraining checkpoint converted to FluxVLA-compatible weights and tokenizer layout for fine-tuning. The official `X-VLA-Libero` checkpoint is already LIBERO-finetuned and uses the official eval image convention; use `configs/xvla/xvla_libero_4suite_official_ckpt_eval.py`, which rotates only `agentview_image` and leaves the wrist view unchanged.
 
 </details>
 

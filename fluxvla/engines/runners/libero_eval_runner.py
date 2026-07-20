@@ -721,6 +721,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                             self.num_inference_steps
                     if self.inference_seed is not None:
                         predict_kwargs['seed'] = self.inference_seed
+                    build_eval_kwargs = getattr(
+                        self.vla, 'build_eval_predict_action_kwargs', None)
+                    if callable(build_eval_kwargs):
+                        predict_kwargs.update(
+                            build_eval_kwargs(batch, env=env))
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,
@@ -743,6 +748,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                         action_denormed = self.denormalize_action(inputs)
                         obs, reward, done, info = env.step(
                             action_denormed.tolist())
+                        after_eval_env_step = getattr(self.vla,
+                                                      'after_eval_env_step',
+                                                      None)
+                        if callable(after_eval_env_step):
+                            after_eval_env_step(action)
                         if done:
                             total_successes += 1
                             rank_success_count += 1

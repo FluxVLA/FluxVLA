@@ -151,7 +151,7 @@ def flash_attention(
             window_size=window_size,
             deterministic=deterministic).unflatten(0, (b, lq))
     else:
-        raise ValueError(f"Invalid version: {version}")
+        raise ValueError(f'Invalid version: {version}')
 
     # output
     return x.type(out_dtype)
@@ -302,7 +302,7 @@ class AttentionModule(torch.nn.Module):
             self.attn_func = _flash_attn_impl
 
         else:
-            raise ValueError(f"Invalid backend: {backend}")
+            raise ValueError(f'Invalid backend: {backend}')
 
     def forward(
         self,

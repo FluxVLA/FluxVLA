@@ -36,8 +36,9 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 | FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
 | FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
 | FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
+| FluxVLA(X-VLA)              |       [97.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)        |       [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)        |      [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)       |     [87.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/xvla_libero_4suite_full_finetune_bs128)      |     95.10      |
 
-*リンク付きのスコアから対応するチェックポイントにアクセスできます。*
+*リンク付きのスコアから対応するチェックポイントにアクセスできます。FluxVLA(X-VLA) は、共有 XVLA LIBERO LeRobot データと `abs_action_6d` action フィールドで学習した最終 4-suite checkpoint の結果です。*
 
 #### RoboCasa GR1
 
@@ -451,6 +452,8 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 
 `libero_10_no_noops_lerobotv2.1` を、ダウンロードしたいデータセットに対応するフォルダ名に置き換えてください。
 
+XVLA LIBERO 設定では、共有 LIBERO LeRobot suite フォルダを `./datasets/libero_xvla_lerobot` 配下に配置または symlink してください。例: `./datasets/libero_xvla_lerobot/libero_10_no_noops_lerobot`。これらの設定は読み込み時に `abs_action_6d` フィールドを使用します。
+
 公開済みの 30 デモのサブセットで RoboCasa GR00T を学習する場合は、データセットを `./datasets` にダウンロードします：
 
 ```bash
@@ -611,13 +614,17 @@ ARM と SARM のワークフローでは、通常は学習 / 推論用の CLIP �
 <details>
 <summary><b>VLA モデル</b></summary>
 
-| モデル      | サイズ | ダウンロードリンク                                                                         |
-| ----------- | ------ | ------------------------------------------------------------------------------------------ |
-| GR00T N1.5  | 3B     | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                   |
-| OpenVLA     | 7B     | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                               |
-| PI0_base    | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)    |
-| PI05_base   | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)   |
-| PI05_libero | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero) |
+| モデル       | サイズ   | ダウンロードリンク                                                                              |
+| ------------ | -------- | ----------------------------------------------------------------------------------------------- |
+| GR00T N1.5   | 3B       | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                        |
+| OpenVLA      | 7B       | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                    |
+| PI0_base     | 3B       | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)         |
+| PI05_base    | 3B       | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)        |
+| PI05_libero  | 3B       | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)      |
+| X-VLA-PT     | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Pt-fluxvla) |
+| X-VLA-Libero | 1B-class | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/X-VLA-Libero)     |
+
+> **XVLA 注記**: FluxVLA の XVLA 学習設定では、変換済みの `X-VLA-PT` checkpoint を `./checkpoints/X-VLA-Pt-fluxvla` に配置してください。これは X-VLA 事前学習 checkpoint を FluxVLA 互換の重みと tokenizer layout に変換したもので、fine-tuning 用です。公式 `X-VLA-Libero` checkpoint はすでに LIBERO で fine-tune 済みで、公式評価の画像規約を使います。対応する設定は `configs/xvla/xvla_libero_4suite_official_ckpt_eval.py` で、`agentview_image` のみを回転し、wrist view は回転しません。
 
 </details>
 
