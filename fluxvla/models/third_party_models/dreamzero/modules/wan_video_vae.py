@@ -212,7 +212,7 @@ def patchify(x, patch_size):
             q=patch_size,
             r=patch_size)
     else:
-        raise ValueError(f"Invalid input shape: {x.shape}")
+        raise ValueError(f'Invalid input shape: {x.shape}')
     return x
 
 

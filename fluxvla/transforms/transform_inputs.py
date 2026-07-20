@@ -15,7 +15,7 @@
 import logging
 import os
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import av
 import numpy as np
@@ -370,7 +370,9 @@ class ProcessLiberoEvalInputs:
                  resize_size: int = None,
                  resize_backend: str = 'numpy',
                  jpeg_roundtrip: bool = False,
-                 embodiment_id: int = None) -> None:
+                 embodiment_id: int = None,
+                 num_padding_imgs: int = 0,
+                 rotate_180_keys: Optional[List[str]] = None) -> None:
         self.img_keys = img_keys
         self.center_crop = center_crop
         self.use_pil = use_pil
@@ -384,6 +386,12 @@ class ProcessLiberoEvalInputs:
         self.resize_backend = resize_backend
         self.jpeg_roundtrip = jpeg_roundtrip
         self.embodiment_id = embodiment_id
+        self.num_padding_imgs = num_padding_imgs
+        self.rotate_180_keys = (None if rotate_180_keys is None else
+                                set(rotate_180_keys))
+
+    def _should_rotate_180(self, img_key: str) -> bool:
+        return self.rotate_180_keys is None or img_key in self.rotate_180_keys
 
     def __call__(self, inputs: Dict) -> Dict:
         # Load raw images
@@ -393,7 +401,10 @@ class ProcessLiberoEvalInputs:
             if img_key not in inputs:
                 raise KeyError(f'Missing image key: {img_key!r}')
             img = np.asarray(inputs[img_key])
-            img = img[::-1, ::-1].copy()
+            if self._should_rotate_180(img_key):
+                img = img[::-1, ::-1].copy()
+            else:
+                img = img.copy()
             if self.resize_size is not None:
                 if isinstance(self.resize_size, int):
                     height, width = self.resize_size, self.resize_size
@@ -421,9 +432,19 @@ class ProcessLiberoEvalInputs:
 
                 images.append(image)
                 img_masks.append(True)
+            if self.num_padding_imgs > 0 and len(images) > 0:
+                padding_arr = np.zeros_like(np.asarray(images[0]))
+                for _ in range(self.num_padding_imgs):
+                    images.append(Image.fromarray(padding_arr).convert('RGB'))
+                    img_masks.append(False)
         else:
             images = imgs
             img_masks = [True] * len(imgs)
+            if self.num_padding_imgs > 0 and len(images) > 0:
+                padding_img = np.zeros_like(images[0])
+                for _ in range(self.num_padding_imgs):
+                    images.append(padding_img)
+                    img_masks.append(False)
         inputs['pixel_values'] = images
         inputs['img_masks'] = img_masks
         inputs['replay_img'] = replay_img

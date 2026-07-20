@@ -49,3 +49,61 @@ class ProcessLiberoActions:
         data['actions'] = actions
 
         return data
+
+
+@TRANSFORMS.register_module()
+class XVLAEE6DTo20D:
+    """Convert X-VLA EE6D state/action arrays to the canonical 20D layout."""
+
+    def __init__(self,
+                 state_key: str = 'states',
+                 action_key: str = 'actions',
+                 target_dim: int = 20,
+                 binarize_gripper: bool = True,
+                 gripper_threshold: float = 0.0) -> None:
+        if target_dim != 20:
+            raise ValueError(
+                f'{self.__class__.__name__} currently supports only '
+                f'target_dim=20, got {target_dim}.')
+        self.state_key = state_key
+        self.action_key = action_key
+        self.target_dim = target_dim
+        self.binarize_gripper = binarize_gripper
+        self.gripper_threshold = gripper_threshold
+
+    def _convert(self, value: np.ndarray, key: str) -> np.ndarray:
+        arr = np.asarray(value, dtype=np.float32)
+        if arr.shape[-1] == self.target_dim:
+            out = arr.copy()
+            if self.binarize_gripper:
+                out[...,
+                    9:10] = (out[..., 9:10] > self.gripper_threshold).astype(
+                        np.float32)
+                out[...,
+                    19:20] = (out[..., 19:20] > self.gripper_threshold).astype(
+                        np.float32)
+            return out
+
+        if arr.shape[-1] != 10:
+            raise ValueError(
+                f'{self.__class__.__name__} expects {key} last dimension '
+                f'to be 10 or {self.target_dim}, got {arr.shape}.')
+
+        out_shape = arr.shape[:-1] + (self.target_dim, )
+        out = np.zeros(out_shape, dtype=np.float32)
+        out[..., :9] = arr[..., :9]
+        if self.binarize_gripper:
+            out[..., 9:10] = (arr[..., 9:10] > self.gripper_threshold).astype(
+                np.float32)
+        else:
+            out[..., 9:10] = arr[..., 9:10]
+        return out
+
+    def __call__(self, data: Dict) -> Dict:
+        if self.state_key in data:
+            data[self.state_key] = self._convert(data[self.state_key],
+                                                 self.state_key)
+        if self.action_key in data:
+            data[self.action_key] = self._convert(data[self.action_key],
+                                                  self.action_key)
+        return data

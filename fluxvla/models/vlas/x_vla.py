@@ -41,6 +41,8 @@ class X_VLA(BaseVLA):
     dedicated VLA class.
     """
 
+    _EVAL_CLOSED_LOOP_STATE_DIM = 9
+
     def __init__(self,
                  vlm_backbone: Dict,
                  vla_head: Dict,
@@ -55,6 +57,9 @@ class X_VLA(BaseVLA):
                  strict_mapping: bool = False,
                  *args,
                  **kwargs):
+        self.eval_closed_loop_state = bool(
+            kwargs.pop('eval_closed_loop_state', False))
+        self.eval_tracked_state = None
         del args, kwargs
         super().__init__(
             vision_backbone=None,
@@ -99,6 +104,154 @@ class X_VLA(BaseVLA):
             lang_masks=lang_masks,
         )
 
+    def _should_use_eval_closed_loop_state(self) -> bool:
+        return bool(self.eval_closed_loop_state and not self.training)
+
+    def _reset_eval_closed_loop_state(self) -> None:
+        self.eval_tracked_state = None
+
+    @staticmethod
+    def _rotmat_to_rot6d(rotmat) -> torch.Tensor:
+        rotmat = torch.as_tensor(rotmat, dtype=torch.float32)
+        return rotmat[:3, :2].transpose(0, 1).reshape(-1)
+
+    def _build_eval_closed_loop_init_state(
+        self,
+        env,
+        state_dim: int,
+    ) -> torch.Tensor:
+        controller = env.env.robots[0].controller
+        ee_pos = torch.as_tensor(controller.ee_pos, dtype=torch.float32)
+        ee_rot6d = self._rotmat_to_rot6d(controller.ee_ori_mat)
+        arm_state = torch.cat(
+            [ee_pos, ee_rot6d,
+             torch.zeros(1, dtype=torch.float32)],
+            dim=0,
+        )
+        state = torch.zeros(state_dim, dtype=torch.float32)
+        prefix_dim = min(state_dim, int(arm_state.shape[0]))
+        if prefix_dim > 0:
+            state[:prefix_dim] = arm_state[:prefix_dim]
+        return state
+
+    def _initialize_eval_closed_loop_state(
+        self,
+        states: torch.Tensor,
+        closed_loop_init_state: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        tracked_state = torch.zeros_like(states).detach()
+        if tracked_state.ndim != 2:
+            raise ValueError(
+                'XVLA eval closed-loop state expects 2D states tensor '
+                f'[B, D], got shape {tuple(tracked_state.shape)}')
+        source_state = states
+        if closed_loop_init_state is not None:
+            if closed_loop_init_state.ndim != 2:
+                raise ValueError(
+                    'XVLA eval closed-loop init state expects 2D tensor '
+                    f'[B, D], got shape {tuple(closed_loop_init_state.shape)}')
+            source_state = closed_loop_init_state.to(
+                device=states.device, dtype=states.dtype)
+        prefix_dim = min(
+            self._EVAL_CLOSED_LOOP_STATE_DIM,
+            tracked_state.shape[-1],
+            source_state.shape[-1],
+        )
+        if prefix_dim > 0:
+            tracked_state[:, :prefix_dim] = (
+                source_state[:, :prefix_dim].detach())
+        self.eval_tracked_state = tracked_state
+        return tracked_state
+
+    def _prepare_eval_closed_loop_states(
+        self,
+        states: torch.Tensor,
+        reset_history: bool,
+        closed_loop_init_state: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        if not self._should_use_eval_closed_loop_state():
+            return states
+        if reset_history:
+            self._reset_eval_closed_loop_state()
+        tracked_state = self.eval_tracked_state
+        if tracked_state is None:
+            tracked_state = self._initialize_eval_closed_loop_state(
+                states,
+                closed_loop_init_state=closed_loop_init_state,
+            )
+        return tracked_state.to(device=states.device, dtype=states.dtype)
+
+    def _update_eval_closed_loop_state_from_action(self, action) -> None:
+        if not self._should_use_eval_closed_loop_state():
+            return
+        tracked_state = self.eval_tracked_state
+        if tracked_state is None:
+            return
+        action_tensor = torch.as_tensor(
+            action,
+            dtype=tracked_state.dtype,
+            device=tracked_state.device,
+        )
+        if action_tensor.ndim == 1:
+            action_tensor = action_tensor.unsqueeze(0)
+        elif action_tensor.ndim == 2:
+            if action_tensor.shape[0] != tracked_state.shape[0]:
+                action_tensor = action_tensor[-1:]
+        else:
+            raise ValueError(
+                'Unexpected XVLA executed action shape for closed-loop '
+                f'state update: {tuple(action_tensor.shape)}')
+        prefix_dim = min(
+            self._EVAL_CLOSED_LOOP_STATE_DIM,
+            tracked_state.shape[-1],
+            action_tensor.shape[-1],
+        )
+        if prefix_dim <= 0:
+            return
+        updated = tracked_state.clone()
+        updated[:, :prefix_dim] = action_tensor[:, :prefix_dim].to(
+            dtype=updated.dtype, device=updated.device)
+        self.eval_tracked_state = updated.detach()
+
+    def build_eval_predict_action_kwargs(
+        self,
+        batch: Dict[str, torch.Tensor],
+        env=None,
+    ) -> Dict[str, torch.Tensor]:
+        if not self._should_use_eval_closed_loop_state():
+            return {}
+        if env is None or not bool(batch.get('reset_history', False)):
+            return {}
+        if 'states' not in batch:
+            return {}
+        closed_loop_init_state = self._build_eval_closed_loop_init_state(
+            env,
+            int(batch['states'].shape[-1]),
+        ).to(
+            device=batch['states'].device,
+            dtype=batch['states'].dtype,
+        ).unsqueeze(0)
+        return dict(closed_loop_init_state=closed_loop_init_state)
+
+    def after_eval_env_step(self, action) -> None:
+        self._update_eval_closed_loop_state_from_action(action)
+
+    def train(self, mode: bool = True):
+        mode = bool(mode)
+        if self.training != mode:
+            self._reset_eval_closed_loop_state()
+        return super().train(mode)
+
+    def _apply(self, fn):
+        result = super()._apply(fn)
+        self._reset_eval_closed_loop_state()
+        return result
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        result = super().load_state_dict(state_dict, strict=strict)
+        self._reset_eval_closed_loop_state()
+        return result
+
     def forward(
         self,
         lang_tokens: Optional[torch.LongTensor] = None,
@@ -139,6 +292,13 @@ class X_VLA(BaseVLA):
         embodiment_ids: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
+        reset_history = bool(kwargs.pop('reset_history', False))
+        closed_loop_init_state = kwargs.pop('closed_loop_init_state', None)
+        states = self._prepare_eval_closed_loop_states(
+            states,
+            reset_history=reset_history,
+            closed_loop_init_state=closed_loop_init_state,
+        )
         last_hidden_state, fused_attention_mask, aux_visual_inputs = \
             self._forward_backbone(
                 images=images,

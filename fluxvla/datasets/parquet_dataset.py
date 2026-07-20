@@ -41,6 +41,7 @@ class ParquetDataset(Dataset):
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
                  frame_sample_stride: int = 1,
+                 image_frame_offset: int = 0,
                  train_episode_fraction: float = 1.0,
                  repeat_to_full_length: bool = False,
                  expose_index: bool = False,
@@ -78,6 +79,8 @@ class ParquetDataset(Dataset):
                 Increase this when the sampled frames should span a longer
                 temporal window:
                 ``(frame_window_size - 1) * frame_sample_stride`` rows.
+            image_frame_offset (int): Row offset for the first decoded frame.
+                Defaults to 0 to preserve current-frame behavior.
             train_episode_fraction (float): Fraction of episodes to sample
                 from each data root, preserving original episode order.
                 Defaults to 1.0.
@@ -96,6 +99,8 @@ class ParquetDataset(Dataset):
         super().__init__()
         if not 0 < train_episode_fraction <= 1:
             raise ValueError('train_episode_fraction must be in (0, 1].')
+        if image_frame_offset < 0:
+            raise ValueError('image_frame_offset must be non-negative.')
         self.action_window_size = action_window_size
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
@@ -170,6 +175,7 @@ class ParquetDataset(Dataset):
         self.window_start_idx = window_start_idx
         self.frame_window_size = frame_window_size
         self.frame_sample_stride = frame_sample_stride
+        self.image_frame_offset = image_frame_offset
         self.expose_index = expose_index
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
@@ -292,6 +298,9 @@ class ParquetDataset(Dataset):
         if not self._same_episode_and_dataset(first_action_index, dataset_idx,
                                               data):
             return True
+        image_index = index + self.image_frame_offset
+        if not self._same_episode_and_dataset(image_index, dataset_idx, data):
+            return True
         return self._get_task_name(dataset_idx,
                                    first_action_index) in ('empty', 'static')
 
@@ -345,24 +354,28 @@ class ParquetDataset(Dataset):
                     actions.append(data[self.action_key])
                 action_masks.append(0)
             window_idx += 1
-        # Collect forward-looking frame timestamps for video models
-        if self.frame_window_size > 1:
-            frame_timestamps = [data['timestamp']]
-            frame_masks = [1]
-            for fi in range(1, self.frame_window_size):
-                future_idx = index + fi * self.frame_sample_stride
+        # Collect offset-aware frame timestamps for video models.
+        if self.image_frame_offset > 0 or self.frame_window_size > 1:
+            frame_timestamps = []
+            frame_masks = []
+            last_timestamp = data['timestamp']
+            for fi in range(self.frame_window_size):
+                future_idx = (
+                    index + self.image_frame_offset +
+                    fi * self.frame_sample_stride)
                 if (future_idx < len(self.dataset)
                         and self.dataset[future_idx]['episode_index']
                         == data['episode_index'] and
                         self._get_dataset_index(future_idx) == dataset_idx):
-                    frame_timestamps.append(
-                        self.dataset[future_idx]['timestamp'])
+                    last_timestamp = self.dataset[future_idx]['timestamp']
+                    frame_timestamps.append(last_timestamp)
                     frame_masks.append(1)
                 else:
-                    frame_timestamps.append(frame_timestamps[-1])
+                    frame_timestamps.append(last_timestamp)
                     frame_masks.append(0)
             data['frame_timestamps'] = frame_timestamps
-            data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
+            if self.frame_window_size > 1:
+                data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
 
         data['info'] = self.info[dataset_idx]
         data['stats'] = dataset_statistics[self.statistic_name]
@@ -403,15 +416,17 @@ class LiberoParquetEvalDataset:
                  norm_stats: Any,
                  task_suite_name: str,
                  transforms: List[Dict],
-                 norm_stats_key: str,
+                 norm_stats_key: str = None,
                  num_padding_imgs: int = 0,
-                 img_buffer_len: int = 1) -> None:
+                 img_buffer_len: int = 1,
+                 allow_private_stats_fallback: bool = False) -> None:
 
         # Build image/token transforms (parquet-style sequential list)
         self.transforms = [build_transform_from_cfg(t) for t in transforms]
         self.task_suite_name = task_suite_name
-        self.norm_stats_key = norm_stats_key
+        self.norm_stats_key = norm_stats_key or f'{task_suite_name}_no_noops'
         self.num_padding_imgs = num_padding_imgs
+        self.allow_private_stats_fallback = allow_private_stats_fallback
         assert img_buffer_len >= 1, 'img_buffer_len must be >= 1'
         self.img_buffer_len = img_buffer_len
         self.img_buffer = None
@@ -481,7 +496,19 @@ class LiberoParquetEvalDataset:
         if is_new_episode:
             self._reset_img_buffer()
         if self.norm_stats is not None:
-            norm_stats = self.norm_stats[self.norm_stats_key]
+            if self.norm_stats_key in self.norm_stats:
+                norm_stats = self.norm_stats[self.norm_stats_key]
+            else:
+                suite_stats_key = f'{self.task_suite_name}_no_noops'
+                if suite_stats_key in self.norm_stats:
+                    norm_stats = self.norm_stats[suite_stats_key]
+                elif (self.allow_private_stats_fallback
+                      and 'private' in self.norm_stats):
+                    norm_stats = self.norm_stats['private']
+                else:
+                    raise KeyError(
+                        f"Normalization stats key '{self.norm_stats_key}' "
+                        f"or fallback key '{suite_stats_key}' not found.")
         else:
             norm_stats = None
         data['norm_stats'] = norm_stats
