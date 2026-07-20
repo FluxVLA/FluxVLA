@@ -31,6 +31,7 @@ import torch
 import torch.nn as nn
 
 from fluxvla.engines import VLAS, initialize_overwatch
+from .llava_vla import LlavaVLA
 
 
 overwatch = initialize_overwatch(__name__)
@@ -137,12 +138,14 @@ N17_BUILTIN_MODALITY_CONFIGS = {
 
 
 @VLAS.register_module()
-class GrootN17VLA(nn.Module):
+class GrootN17VLA(LlavaVLA):
     """Native FluxVLA shell for GR00T N1.7.
 
     The class intentionally avoids importing official Isaac-GR00T at module
     import time. This keeps FluxVLA's existing LIBERO/RoboCasa paths importable
-    while we port N1.7 layer by layer.
+    while we port N1.7 layer by layer. It inherits FluxVLA's LlavaVLA base
+    interface but overrides runtime assembly, forward, and prediction with the
+    native N1.7 processor/backbone/action-head contract.
     """
 
     def __init__(
@@ -166,7 +169,7 @@ class GrootN17VLA(nn.Module):
         apply_sincos_state_encoding: Optional[bool] = None,
         **kwargs,
     ) -> None:
-        super().__init__()
+        super().__init__(vla_head=None, norm_stats=norm_stats)
         self.model_path = model_path
         self.processor_path = processor_path
         self.embodiment_tag = embodiment_tag
@@ -2121,106 +2124,6 @@ class GrootN17VLA(nn.Module):
         return torch.from_numpy(flat_action[None, ...]).to(
             device=self._device_anchor.device, dtype=torch.float32)
 
-    def predict_n17_action_dicts(
-        self,
-        observation: Dict[str, Any],
-        task: Optional[str] = None,
-        chunk_size: Optional[int] = None,
-        dtype: str = 'bfloat16',
-    ) -> list:
-        """Run N1.7 inference and return env-ready ``action.*`` dict steps."""
-        if self.assembly_runtime == 'native':
-            self._ensure_native_runtime()
-            if (self.processor is None or self.n17_backbone is None
-                    or self.n17_action_head is None):
-                raise RuntimeError('Failed to load native N1.7 runtime.')
-        else:
-            self._ensure_official_runtime()
-            if self.processor is None or self.n17_model is None:
-                raise RuntimeError('Failed to load official N1.7 runtime.')
-
-        target_device = self._device_anchor.device
-        if target_device.type == 'cpu' and torch.cuda.is_available():
-            target_device = torch.device('cuda')
-        target_dtype = getattr(torch, dtype)
-        if self.assembly_runtime == 'native':
-            self.n17_backbone.to(device=target_device, dtype=target_dtype)
-            self.n17_action_head.to(device=target_device, dtype=target_dtype)
-            self.n17_backbone.eval()
-            self.n17_action_head.eval()
-        else:
-            self.n17_model.to(device=target_device, dtype=target_dtype)
-            self.n17_model.eval()
-
-        task_text = task or observation.get('task') or observation.get(
-            'task_description', 'pick up the object')
-        batched = self.build_batched_observation(observation, task=task_text)
-        raw_state = {
-            key: value[0]
-            for key, value in batched['state'].items()
-        }
-        if self.assembly_runtime == 'native':
-            embodiment = self.active_embodiment_key
-            vla_step = SimpleNamespace(
-                images={
-                    key: value[0]
-                    for key, value in batched['video'].items()
-                },
-                states=raw_state,
-                actions={},
-                text=next(iter(batched['language'].values()))[0][0],
-                embodiment=embodiment,
-            )
-            messages = [{'type': 'episode_step', 'content': vla_step}]
-        else:
-            data_types = importlib.import_module('gr00t.data.types')
-            embodiment_tags = importlib.import_module(
-                'gr00t.data.embodiment_tags')
-            MessageType = getattr(data_types, 'MessageType')
-            VLAStepData = getattr(data_types, 'VLAStepData')
-            EmbodimentTag = getattr(embodiment_tags, 'EmbodimentTag')
-            embodiment = EmbodimentTag.resolve(self.embodiment_tag)
-            vla_step = VLAStepData(
-                images={
-                    key: value[0]
-                    for key, value in batched['video'].items()
-                },
-                states=raw_state,
-                actions={},
-                text=next(iter(batched['language'].values()))[0][0],
-                embodiment=embodiment,
-            )
-            messages = [{
-                'type': MessageType.EPISODE_STEP.value,
-                'content': vla_step,
-            }]
-        processed = self.processor(messages)
-        collated = self.processor.collator([processed])
-        collated = self._recursive_to_dtype(collated, target_dtype)
-        with torch.inference_mode():
-            if self.assembly_runtime == 'native':
-                model_pred = self.native_get_action(collated['inputs'])
-            else:
-                model_pred = self.n17_model.get_action(**collated)
-        normalized_action = model_pred['action_pred'].float().cpu().numpy()
-        batched_states = {
-            key: value[None, ...]
-            for key, value in raw_state.items()
-        }
-        decoded = self.processor.decode_action(normalized_action, embodiment,
-                                               batched_states)
-        n_steps = min(value.shape[1] for value in decoded.values())
-        if chunk_size is not None:
-            n_steps = min(n_steps, int(chunk_size))
-        action_steps = []
-        for step_idx in range(n_steps):
-            action_steps.append({
-                f'action.{key}':
-                np.asarray(value[0, step_idx], dtype=np.float32)
-                for key, value in decoded.items()
-            })
-        return action_steps
-
     def freeze_backbones(self) -> None:
         """Freeze native N1.7 backbone modules when they are loaded."""
         if self.n17_backbone is not None:
@@ -2253,6 +2156,11 @@ class GrootN17VLA(nn.Module):
             return False
 
         return _no_wrap_policy
+
+    def load_state_dict(self, state_dict, strict: bool = True):
+        if self.assembly_runtime == 'native':
+            self._ensure_native_runtime()
+        return super().load_state_dict(state_dict, strict=strict)
 
     def forward(self, *args, **kwargs):
         if args:

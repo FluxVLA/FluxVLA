@@ -119,7 +119,7 @@ class DenormalizeLiberoAction:
     """
 
     def __init__(self,
-                 norm_stats: str,
+                 norm_stats: str = None,
                  action_dim: int = None,
                  norm_type: str = 'mean_std',
                  strict: bool = False,
@@ -154,12 +154,12 @@ class DenormalizeLiberoAction:
             data (Dict): The data to be denormalized, which should
                 contain keys that match the keys in `norm_stats`.
         """
+        action = data.get('action', None)
+        assert action is not None, \
+            f'Action is not found in the data: {data.keys()}'
         if self.norm_stats is not None and self.denorm_action:
             norm_stats_key = data.get('norm_stats_key')
             norm_stats = self.norm_stats[norm_stats_key]
-            action = data.get('action', None)
-            assert action is not None, \
-                f'Action is not found in the data: {data.keys()}'
             if self.norm_type == 'quantile':
                 action = self._denormalize_quantile(action,
                                                     norm_stats['action'])

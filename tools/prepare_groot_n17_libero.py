@@ -11,7 +11,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Sequence
 
 
 os.environ.setdefault("NUMBA_CACHE_DIR", "/tmp/numba_cache")
@@ -24,6 +24,34 @@ SUITES = {
     "libero_object": "libero_object_no_noops_lerobotv2.1",
     "libero_spatial": "libero_spatial_no_noops_lerobotv2.1",
 }
+
+LIBERO_METADATA_PATTERNS = (
+    "{suite}/config.json",
+    "{suite}/processor_config.json",
+    "{suite}/statistics.json",
+    "{suite}/embodiment_id.json",
+)
+
+WEIGHT_EXCLUDE_PATTERNS = (
+    "*.safetensors",
+    "*.bin",
+    "*.pt",
+    "*.pth",
+    "*.ckpt",
+    "*.onnx",
+    "*.msgpack",
+    "*.h5",
+    "*.tflite",
+    "**/*.safetensors",
+    "**/*.bin",
+    "**/*.pt",
+    "**/*.pth",
+    "**/*.ckpt",
+    "**/*.onnx",
+    "**/*.msgpack",
+    "**/*.h5",
+    "**/*.tflite",
+)
 
 
 @dataclass(frozen=True)
@@ -94,19 +122,24 @@ def _download_model(repo_id: str, local_dir: Path, dry_run: bool) -> None:
 
 
 def _download_repo_subdir(repo_id: str,
-                          include: str,
+                          include: str | Sequence[str],
                           local_dir: Path,
                           repo_type: str | None,
-                          dry_run: bool) -> None:
+                          dry_run: bool,
+                          exclude: str | Sequence[str] | None = None) -> None:
     cmd = [
         "huggingface-cli",
         "download",
         repo_id,
-        "--include",
-        include,
-        "--local-dir",
-        str(local_dir),
     ]
+    includes = [include] if isinstance(include, str) else list(include)
+    for pattern in includes:
+        cmd.extend(["--include", pattern])
+    if exclude is not None:
+        excludes = [exclude] if isinstance(exclude, str) else list(exclude)
+        for pattern in excludes:
+            cmd.extend(["--exclude", pattern])
+    cmd.extend(["--local-dir", str(local_dir)])
     if repo_type is not None:
         cmd.extend(["--repo-type", repo_type])
     _run(cmd, dry_run=dry_run)
@@ -126,11 +159,21 @@ def _download_assets(args, suites: list[str]) -> None:
                     ckpt_dir / "nvidia" / "Cosmos-Reason2-2B",
                     args.dry_run)
     for suite in suites:
+        if args.download_libero_weights:
+            libero_include = f"{suite}/*"
+            libero_exclude = None
+        else:
+            libero_include = [
+                pattern.format(suite=suite)
+                for pattern in LIBERO_METADATA_PATTERNS
+            ]
+            libero_exclude = WEIGHT_EXCLUDE_PATTERNS
         _download_repo_subdir("nvidia/GR00T-N1.7-LIBERO",
-                              f"{suite}/*",
+                              libero_include,
                               ckpt_dir / "GR00T-N1.7-LIBERO",
                               None,
-                              args.dry_run)
+                              args.dry_run,
+                              exclude=libero_exclude)
         dataset_name = SUITES[suite]
         _download_repo_subdir("limxdynamics/FluxVLAData",
                               f"{dataset_name}/*",
@@ -223,6 +266,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--download",
                         action="store_true",
                         help="Download missing public HF assets first.")
+    parser.add_argument(
+        "--download-libero-weights",
+        action="store_true",
+        help=("Download full GR00T-N1.7-LIBERO suite checkpoints. By default "
+              "only small processor/statistics metadata is downloaded."))
     parser.add_argument("--dry-run",
                         action="store_true",
                         help="Print download commands without running them.")
