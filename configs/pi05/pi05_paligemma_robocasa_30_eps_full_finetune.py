@@ -422,7 +422,10 @@ eval = dict(
         _robocasa_task_env('PosttrainPnPNovelFromTray'
                            'ToTieredshelfSplitA'),
     ],
-    eval_chunk_size=16,  # 对齐训练 horizon / GR00T RoboCasa
+    # Keep the 16-step prediction horizon, but replan halfway through it.
+    # At 20 Hz this reduces open-loop execution from 0.8 s to 0.4 s and is a
+    # single-variable evaluation of the already best-performing checkpoint.
+    eval_chunk_size=8,
     max_episode_steps=720,  # 单 episode 最大步数 (与 starVLA 默认一致)
     num_trials_per_task=20,  # 每任务 20 次，总 24×20=480 episode
     seed=7,  # 与 GR00T RoboCasa eval 保持同一批初始状态

@@ -56,9 +56,11 @@ model = dict(
     freeze_llm_backbone=False,
     freeze_projector=False,
     use_lora=True,
-    lora_rank=64,
-    lora_alpha=32,
-    lora_dropout=0.05,
+    # Keep the known-good 87a24a0 adapter recipe. Increasing adapter
+    # capacity and adding dropout regressed all evaluated LIBERO suites.
+    lora_rank=32,
+    lora_alpha=16,
+    lora_dropout=0.0,
     lora_target_modules='all-linear',
     name_mapping={
         'llm_backbone.llm': 'language_model',
@@ -189,7 +191,7 @@ train_dataloader = dict(
                 dict(
                     type='AugImage',
                     rotation_range=0.0,
-                    crop_scale=(0.85, 1.0),
+                    crop_scale=(0.9, 0.9),
                     crop_ratio=(1.0, 1.0),
                     prob=1.0,
                     brightness_delta=0.2,
@@ -220,9 +222,9 @@ train_dataloader = dict(
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=None,
-    max_steps=120000,
+    max_steps=60000,
     optimizer=dict(lr=5e-4, type='AdamW', weight_decay=None),
-    max_grad_norm=1.0,
+    max_grad_norm=None,
     save_iter_interval=5000,
     max_keep_ckpts=3,
     sampler=None,
@@ -239,10 +241,7 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
-    lr_scheduler=dict(
-        type='linear-warmup+cosine-decay',
-        warmup_ratio=0.03,
-    ),
+    lr_scheduler=dict(type='constant'),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
