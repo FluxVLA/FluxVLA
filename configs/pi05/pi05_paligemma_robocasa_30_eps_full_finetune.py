@@ -137,9 +137,8 @@ model = dict(
     # FluxVLA-trained checkpoints already use native parameter names, so the
     # external PI0.5 name mapping must be disabled for strict loading.
     pretrained_name_or_path=(
-        './work_dirs/'
-        'pi05_paligemma_robocasa_full_data_full_finetune_fd0eb5470_bs256/'
-        'checkpoints/step-100000-epoch-04-loss=0.0110.safetensors'),
+        'work_dirs/pi05_paligemma_robocasa_full_data_full_finetune_'
+        '21aa5e82a_bs256/checkpoints/latest-checkpoint.safetensors'),
     name_mapping=None,
     strict_mapping=True,
     # --- 需要转 bf16 的模块 (节省显存) ---
