@@ -128,10 +128,14 @@ model = dict(
         use_cache=True,
         vocab_size=257152),
     # --- 训练设置 ---
-    # PI0.5 injects the normalized 29D proprio state through discrete prompt
-    # tokens, so the language backbone remains trainable during adaptation.
-    freeze_llm_backbone=False,
-    freeze_vision_backbone=False,
+    # The initialization below has already full-finetuned PaliGemma on the
+    # same RoboCasa domain.  Re-training the feature backbones on only 30
+    # episodes per task gave nearly identical flow loss but worse closed-loop
+    # generalization, so keep the pretrained representation fixed and adapt
+    # only the policy expert / action projections.
+    freeze_llm_backbone=True,
+    freeze_vision_backbone=True,
+    freeze_projector=True,
     # Continue from the final model in the requested full-data work directory.
     # config.json is experiment metadata rather than a loadable checkpoint.
     # FluxVLA-trained checkpoints already use native parameter names, so the
@@ -309,19 +313,18 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',  # Fully Sharded Data Parallel
     max_epochs=None,
-    # Align the small-dataset fine-tuning budget with OpenPI custom recipes;
-    # the previous 67,872-step run overfit the flow loss without improving
-    # closed-loop behavior.
-    max_steps=30000,
-    # PI0.5 RoboCasa 需要 full-finetune 语言主干来学习离散 state prompt；
-    # 使用和现有 PI0.5 full-finetune 配置一致的 warmup+cosine recipe。
-    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
+    # The 30k-step run had already plateaued by step 20k (0.0084 vs 0.0082),
+    # while checkpoint screening found no closed-loop gain after that point.
+    # Finish cosine decay at 20k and use a lower peak LR to avoid overwriting
+    # the stronger full-data initialization.
+    max_steps=20000,
+    optimizer=dict(lr=3e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,  # 梯度裁剪
     # --- checkpoint 保存策略 ---
     # 之前未设置, 走默认 max_keep_ckpts=2, 导致早期表现更好的 ckpt 被删除,
     # 无法回收。这里按 epoch + step 双触发保存, 并多保留几个以便按 eval 选最优。
     save_epoch_interval=1,
-    save_iter_interval=5000,
+    save_iter_interval=2500,
     max_keep_ckpts=8,
     # --- 加速路径（对齐 mentor 149ad50 commit） ---
     # no-shard: DDP-风格的参数放置，每卡持有整份权重，关闭 500+ 子模块 FSDP wrap，
@@ -421,10 +424,8 @@ eval = dict(
         _robocasa_task_env('PosttrainPnPNovelFromTray'
                            'ToTieredshelfSplitA'),
     ],
-    # Keep the 16-step prediction horizon, but replan halfway through it.
-    # At 20 Hz this reduces open-loop execution from 0.8 s to 0.4 s and is a
-    # single-variable evaluation of the already best-performing checkpoint.
-    eval_chunk_size=8,
+    # Match the 16-step training horizon and the historical best evaluation.
+    eval_chunk_size=16,
     max_episode_steps=720,  # 单 episode 最大步数 (与 starVLA 默认一致)
     num_trials_per_task=20,  # 每任务 20 次，总 24×20=480 episode
     seed=7,  # 与 GR00T RoboCasa eval 保持同一批初始状态
