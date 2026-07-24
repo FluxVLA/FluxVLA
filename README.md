@@ -661,14 +661,23 @@ For ARM and SARM workflows, you typically need a CLIP checkpoint for training / 
 <details>
 <summary><b>VLA models</b></summary>
 
-| Model       | Size | Download link                                                                              |
-| ----------- | ---- | ------------------------------------------------------------------------------------------ |
-| GR00T N1.5  | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                   |
-| OpenVLA     | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                               |
-| PI0_base    | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)    |
-| PI05_base   | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)   |
-| PI05_libero | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero) |
-| SmolVLA     | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                             |
+| Model                   | Size | Download link                                                                                                                                  |
+| ----------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| GR00T N1.5              | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                                       |
+| OpenVLA                 | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                                   |
+| PI0_base                | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                                        |
+| PI05_base               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                                       |
+| PI05_libero             | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                                     |
+| PI05 RoboCasa full-data | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_21aa5e82a_bs256) |
+| SmolVLA                 | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                                 |
+
+Download the PI0.5 RoboCasa full-data checkpoint while preserving the path expected by the config:
+
+```bash
+hf download limxdynamics/FluxVLAEngine \
+  --include "pi05_paligemma_robocasa_full_data_full_finetune_21aa5e82a_bs256/*" \
+  --local-dir ./checkpoints
+```
 
 </details>
 
