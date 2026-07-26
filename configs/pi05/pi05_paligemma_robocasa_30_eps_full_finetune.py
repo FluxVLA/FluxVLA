@@ -133,7 +133,7 @@ model = dict(
     # external PI0.5 name mapping must be disabled for strict loading.
     pretrained_name_or_path=(
         './checkpoints/pi05_paligemma_robocasa_full_data_full_finetune_'
-        '21aa5e82a_bs256/checkpoints/'
+        'bs256/checkpoints/'
         'step-100000-epoch-04-loss=0.0110.safetensors'),
     name_mapping=None,
     strict_mapping=True,
