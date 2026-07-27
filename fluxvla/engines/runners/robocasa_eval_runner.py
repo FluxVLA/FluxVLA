@@ -88,6 +88,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
         rollout_video_key: Observation image key used for rollout videos.
         action_order: Action split order. Defaults to ``n15`` for GR00T and
             ``fluxvla`` otherwise.
+        action_chunk_ensemble_weight: Weight assigned to the unexecuted tail
+            of the previous action chunk when it overlaps the newly predicted
+            chunk. Zero disables temporal ensembling.
         norm_stats_path: Optional explicit dataset statistics path.
         grouped_norm_stats: Whether to load one statistics file per group.
         norm_stats_group_names: Per-task group names for grouped statistics.
@@ -123,6 +126,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                      'video.ego_view_pad_res256_freq20'),
                  norm_stats_path: Optional[str] = None,
                  action_order: Optional[str] = None,
+                 action_chunk_ensemble_weight: float = 0.0,
                  grouped_norm_stats: bool = False,
                  norm_stats_group_names: Optional[List[str]] = None,
                  deterministic_env: bool = True,
@@ -292,6 +296,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     f'{transform_names}')
 
         self.eval_chunk_size = eval_chunk_size
+        if not 0.0 <= action_chunk_ensemble_weight <= 1.0:
+            raise ValueError('action_chunk_ensemble_weight must be in '
+                             f'[0, 1], got {action_chunk_ensemble_weight}')
+        self.action_chunk_ensemble_weight = float(action_chunk_ensemble_weight)
         self.model_family = model_family
         if action_order is None:
             action_order = 'n15' if model_family == 'groot' else 'fluxvla'
@@ -374,6 +382,34 @@ class RobocasaEvalRunner(BaseEvalRunner):
     def _action_seed(self, local_id: int, step: int) -> int:
         return self._normalize_seed(self.seed + 1_000_003 * (local_id + 1) +
                                     step)
+
+    @staticmethod
+    def _ensemble_action_chunks(current: np.ndarray,
+                                previous: Optional[np.ndarray],
+                                previous_executed: int,
+                                previous_weight: float) -> np.ndarray:
+        """Blend predictions for timesteps covered by two action chunks.
+
+        Replanning before the full horizon has elapsed produces overlapping
+        predictions. Flow matching samples a fresh noise tensor for every
+        policy call, so directly discarding the old tail can introduce a jump
+        exactly at a grasp or placement contact. Blend only the overlapping
+        prefix; leave the newly extended tail unchanged.
+        """
+        if previous is None or previous_weight <= 0.0:
+            return current
+
+        previous_executed = max(0, int(previous_executed))
+        remaining = previous[previous_executed:]
+        overlap = min(len(current), len(remaining))
+        if overlap == 0:
+            return current
+
+        blended = current.copy()
+        blended[:overlap] = (
+            previous_weight * remaining[:overlap] +
+            (1.0 - previous_weight) * current[:overlap])
+        return blended
 
     @staticmethod
     def _seed_python_numpy_torch(seed: int) -> None:
@@ -691,6 +727,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     self.model_family,
                     'action_order':
                     self.action_order,
+                    'action_chunk_ensemble_weight':
+                    self.action_chunk_ensemble_weight,
                     'task_ids':
                     self._resolve_task_ids(len(self.task_list), self.task_ids),
                     'group_stats':
@@ -729,7 +767,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
         overwatch.info(f'Robocasa Eval: {len(task_ids)}/{num_tasks} tasks, '
                        f'{self.num_trials_per_task} trials each')
         overwatch.info(f'Model family: {self.model_family}, '
-                       f'chunk_size: {self.eval_chunk_size}')
+                       f'chunk_size: {self.eval_chunk_size}, '
+                       f'action_chunk_ensemble_weight: '
+                       f'{self.action_chunk_ensemble_weight}')
         overwatch.info(f'Task ids: {task_ids}, '
                        f'shard_strategy: {self.eval_shard_strategy}')
         overwatch.info(f'Deterministic env: {self.deterministic_env}, '
@@ -836,6 +876,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 # Evaluation loop.
                 success = False
                 replay_images = []
+                previous_action_chunk = None
+                previous_actions_executed = 0
                 if self.save_video:
                     frame = self._get_rollout_frame(obs)
                     if frame is not None:
@@ -878,12 +920,17 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         with torch.no_grad():
                             actions = self.vla.predict_action(**batch)
 
-                    # actions shape: (1, chunk_size, max_action_dim)
+                    # actions shape: (1, horizon, max_action_dim)
                     if len(actions.shape) == 3:
-                        actions = actions[
-                            0, :self.eval_chunk_size, :].cpu().numpy()
+                        predicted_actions = actions[0].cpu().numpy()
                     else:
-                        actions = actions[0, None, :].cpu().numpy()
+                        predicted_actions = actions[0, None, :].cpu().numpy()
+
+                    predicted_actions = self._ensemble_action_chunks(
+                        predicted_actions, previous_action_chunk,
+                        previous_actions_executed,
+                        self.action_chunk_ensemble_weight)
+                    actions = predicted_actions[:self.eval_chunk_size]
 
                     if t == 0:
                         action_min = format(actions.min(), '.6g')
@@ -899,6 +946,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                        f'mean={action_mean}\n')
 
                     # Execute one action chunk.
+                    actions_executed = 0
                     for action in actions:
                         # Denormalize from [-1, 1] to raw joint positions.
                         denorm_input = dict(
@@ -925,6 +973,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         # Step the environment.
                         obs, reward, terminated, truncated, info = \
                             env.step(action_dict)
+                        actions_executed += 1
 
                         # Collect rendered frames for rollout videos.
                         if self.save_video:
@@ -938,6 +987,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
                             break
                         if terminated or truncated:
                             break
+
+                    previous_action_chunk = predicted_actions
+                    previous_actions_executed = actions_executed
 
                     if success or terminated or truncated:
                         break

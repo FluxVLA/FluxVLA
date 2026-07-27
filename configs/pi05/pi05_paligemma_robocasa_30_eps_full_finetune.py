@@ -118,14 +118,13 @@ model = dict(
         use_adarms=True,
         use_cache=True,
         vocab_size=257152),
-    # The initialization below has already full-finetuned PaliGemma on the
-    # same RoboCasa domain.  Re-training the feature backbones on only 30
-    # episodes per task gave nearly identical flow loss but worse closed-loop
-    # generalization, so keep the pretrained representation fixed and adapt
-    # only the policy expert / action projections.
-    freeze_llm_backbone=True,
-    freeze_vision_backbone=True,
-    freeze_projector=True,
+    # Keep this recipe a genuine full fine-tune. The frozen-backbone variant
+    # reduced the 24-task closed-loop score despite reaching a similar flow
+    # loss, because the loss does not measure visual-language adaptation or
+    # compounding rollout error.
+    freeze_llm_backbone=False,
+    freeze_vision_backbone=False,
+    freeze_projector=False,
     # Continue from the released full-data RoboCasa model. Download it with
     # the command documented in README.md so this local path is preserved.
     # config.json is experiment metadata rather than a loadable checkpoint.
@@ -283,16 +282,15 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=None,
-    # The 30k-step run had already plateaued by step 20k (0.0084 vs 0.0082),
-    # while checkpoint screening found no closed-loop gain after that point.
-    # Finish cosine decay at 20k and use a lower peak LR to avoid overwriting
-    # the stronger full-data initialization.
-    max_steps=20000,
-    optimizer=dict(lr=3e-5, type='AdamW', weight_decay=0.0),
+    # Match the two historical full-finetune runs that reached 28.8--29.2%
+    # closed-loop success. A lower flow loss alone is not a reliable rollout
+    # selection signal, so retain their 30k-step / 5e-5 adaptation schedule.
+    max_steps=30000,
+    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,
     # Keep enough periodic checkpoints for closed-loop model selection.
     save_epoch_interval=1,
-    save_iter_interval=2500,
+    save_iter_interval=5000,
     max_keep_ckpts=8,
     # Use DDP-style replicated parameters with bf16 master weights to avoid
     # wrapping hundreds of small FSDP submodules.
@@ -342,7 +340,7 @@ runner = dict(
 #       latest-checkpoint.safetensors
 #
 # Optional override:
-#   --cfg-options eval.num_trials_per_task=20 eval.seed=7
+#   --cfg-options eval.num_trials_per_task=50 eval.seed=7
 #
 # unnorm_key must match the training statistic_name.
 eval = dict(
@@ -389,11 +387,13 @@ eval = dict(
         _robocasa_task_env('PosttrainPnPNovelFromTray'
                            'ToTieredshelfSplitA'),
     ],
-    total_tasks=24,
-    # Match the 16-step training horizon and the historical best evaluation.
-    eval_chunk_size=16,
+    # Replan halfway through the 16-step horizon and blend the overlapping
+    # predictions. This retains feedback while preventing fresh flow noise
+    # from breaking grasp/place contacts at chunk boundaries.
+    eval_chunk_size=8,
+    action_chunk_ensemble_weight=0.5,
     max_episode_steps=720,
-    num_trials_per_task=20,  # 480 episodes across 24 tasks.
+    num_trials_per_task=50,  # 1,200 episodes across 24 tasks.
     seed=7,  # Match the GR00T RoboCasa evaluation initial states.
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='fluxvla',

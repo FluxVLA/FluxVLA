@@ -364,7 +364,7 @@ runner = dict(
 #       step-100000-epoch-04-loss=0.0110.safetensors
 #
 # Optional override:
-#   --cfg-options eval.num_trials_per_task=20 eval.seed=7
+#   --cfg-options eval.num_trials_per_task=50 eval.seed=7
 #
 # unnorm_key must match the training statistic_name.
 eval = dict(
@@ -414,10 +414,13 @@ eval = dict(
     total_tasks=24,
     # Keep the 16-step prediction horizon, but replan halfway through it.
     # At 20 Hz this reduces open-loop execution from 0.8 s to 0.4 s without
-    # changing the positive 100k-step training recipe.
+    # changing the positive 100k-step training recipe. Blend the overlapping
+    # half with the previous chunk to avoid fresh flow noise causing contact-
+    # breaking jumps at every replan boundary.
     eval_chunk_size=8,
+    action_chunk_ensemble_weight=0.5,
     max_episode_steps=720,
-    num_trials_per_task=20,  # 480 episodes across 24 tasks.
+    num_trials_per_task=50,  # 1,200 episodes across 24 tasks.
     seed=7,  # Match the GR00T RoboCasa evaluation initial states.
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='fluxvla',
