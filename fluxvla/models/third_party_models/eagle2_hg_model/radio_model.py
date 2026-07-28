@@ -43,20 +43,12 @@ from transformers.utils import ModelOutput
 try:  # v1
     from flash_attn.flash_attn_interface import \
         flash_attn_unpadded_qkvpacked_func
-    from flash_attn.bert_padding import pad_input, unpad_input
-    _FLASH_ATTN_AVAILABLE = True
-except ImportError:
-    try:  # v2
-        from flash_attn.flash_attn_interface import (
-            flash_attn_varlen_qkvpacked_func as flash_attn_unpadded_qkvpacked_func,
-        )
-        from flash_attn.bert_padding import pad_input, unpad_input
-        _FLASH_ATTN_AVAILABLE = True
-    except ImportError:
-        flash_attn_unpadded_qkvpacked_func = None
-        pad_input = None
-        unpad_input = None
-        _FLASH_ATTN_AVAILABLE = False
+except (ImportError, OSError):  # v2 / prebuilt wheel ABI fallback
+    from flash_attn.flash_attn_interface import (
+        flash_attn_varlen_qkvpacked_func as flash_attn_unpadded_qkvpacked_func,
+    )
+
+from flash_attn.bert_padding import pad_input, unpad_input
 
 
 class FlashAttention(nn.Module):
@@ -179,20 +171,14 @@ def _flash_attn(self, x: torch.Tensor) -> torch.Tensor:
     return x
 
 
-def _flash_attn_forward(self, x: torch.Tensor) -> torch.Tensor:
+def forward(self, x: torch.Tensor) -> torch.Tensor:
     if x.dtype != torch.bfloat16:
         x = x.to(torch.bfloat16)
     result = self._flash_attn(x)
     return result
 
 
-def _should_use_flash_attn(config: PretrainedConfig) -> bool:
-    attn_implementation = (getattr(config, '_attn_implementation', None)
-                           or 'flash_attention_2')
-    return attn_implementation == 'flash_attention_2'
-
-
-def replace_vit_attn_with_flash_attn(model: nn.Module):
+def replace_vit_attn_with_flash_attn():
     cuda_major, cuda_minor = torch.cuda.get_device_capability()
     if cuda_major < 8:
         warnings.warn(
@@ -200,11 +186,13 @@ def replace_vit_attn_with_flash_attn(model: nn.Module):
             'ref: https://github.com/HazyResearch/flash-attention/issues/190#issuecomment-1523359593'  # noqa: E501
         )
 
-    for module in model.modules():
-        if isinstance(module, Attention):
-            module.forward = MethodType(_flash_attn_forward, module)
-            module.inner_attn = FlashAttention(attention_dropout=0.0)
-            module._flash_attn = MethodType(_flash_attn, module)
+    Attention.forward = forward
+    Attention.inner_attn = FlashAttention(attention_dropout=0.0)
+    Attention._flash_attn = _flash_attn
+
+
+replace_vit_attn_with_flash_attn()
+####
 
 input_dim_t = Union[int, Tuple[int, int]]
 
@@ -934,9 +922,6 @@ class RADIOModel(PreTrainedModel):
         self.config = config
 
         model = create_model_from_args(args)
-        if (_FLASH_ATTN_AVAILABLE and torch.cuda.is_available()
-                and _should_use_flash_attn(config)):
-            replace_vit_attn_with_flash_attn(model)
 
         self.radio_model = RADIOModelBase(
             model,

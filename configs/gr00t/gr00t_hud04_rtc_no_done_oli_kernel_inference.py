@@ -11,21 +11,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""HUD04 kernel inference through OliInferenceRunner and OliOperator.
-
-The existing Teleop02 WBT config remains available.  This variant selects a
-prompt ID and an execution count from the integrated terminal, then executes
-one model action chunk per requested execution.
-"""
+"""HUD04 kernel inference through OliInferenceRunner and OliOperator."""
 
 from copy import deepcopy as _deepcopy
 from pathlib import Path as _Path
 
 _base_globals = {}
 _base_candidates = [
-    _Path('configs/gr00t/gr00t_hud04_rtc_no_done_rtc_kernel_inference.py'),
+    _Path('configs/gr00t/gr00t_hud04_rtc_no_done_oli_full_finetune.py'),
     _Path('/workspace/FluxVLA/configs/gr00t/'
-          'gr00t_hud04_rtc_no_done_rtc_kernel_inference.py'),
+          'gr00t_hud04_rtc_no_done_oli_full_finetune.py'),
 ]
 _base_path = next(path for path in _base_candidates if path.exists())
 exec(compile(_base_path.read_text(), str(_base_path), 'exec'), _base_globals)
@@ -35,6 +30,23 @@ train_dataloader = _deepcopy(_base_globals['train_dataloader'])
 runner = _deepcopy(_base_globals['runner'])
 inference_model = _deepcopy(_base_globals['inference_model'])
 inference = _deepcopy(_base_globals['inference'])
+
+inference_model['vlm_backbone']['type'] = 'EagleInferenceBackbone'
+inference_model['vla_head']['type'] = 'FlowMatchingInferenceHead'
+inference_model['vla_head']['max_input_seq_len'] = 580
+inference_model['vla_head']['diffusion_model_cfg'] = dict(
+    attention_head_dim=48,
+    cross_attention_dim=2048,
+    dropout=0.2,
+    final_dropout=True,
+    interleave_self_attention=True,
+    norm_type='ada_norm',
+    num_attention_heads=32,
+    num_layers=16,
+    output_dim=1024,
+    positional_embeddings=None,
+)
+inference_model['vla_head']['num_inference_timesteps'] = 2
 
 # Remove controls owned by the legacy Teleop02 RTC runner.  The accelerated
 # inference head is retained, while execution is intentionally synchronous and

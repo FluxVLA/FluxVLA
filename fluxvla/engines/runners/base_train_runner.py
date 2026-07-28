@@ -92,7 +92,6 @@ class BaseTrainRunner(ABC):
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None):
         from ..utils.builder import (build_collator_from_cfg,
-                                     build_evaluator_from_cfg,
                                      build_metric_from_cfg, build_vla_from_cfg)
 
         grad_accumulation_steps = int(grad_accumulation_steps)

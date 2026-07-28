@@ -174,25 +174,18 @@ runner = dict(
     change_key_name=False)
 
 inference = dict(
-    type='Teleop02WbtRTCInferenceRunner',
+    type='OliInferenceRunner',
     seed=7,
-    use_done_state_machine=False,
-    async_execution=True,
-    async_remaining_actions_threshold=6,
     execute_horizon=16,
-    target_hz=50,
-    interpolation_method='cubic',
-    rtc_config=dict(
-        enabled=True,
-        method='prefix',
-        prefix_len=4,
-    ),
+    publish_rate=30,
     task_descriptions={
         '0':
         'Lift up the red basket with right arm, put all the objects on the white table into the red basket with left arm, place the red basket on the table.',  # noqa: E501
     },
     interactive=False,
     mixed_precision_dtype='bf16',
+    camera_names=['head', 'left_wrist'],
+    apply_jpeg_compression=True,
     dataset=dict(
         type='PrivateInferenceDataset',
         embodiment_id=0,
@@ -221,12 +214,13 @@ inference = dict(
     denormalize_action=dict(
         type='DenormalizePrivateAction', action_dim=42, **WBT_DENORM_KW),
     operator=dict(
-        type='Teleop02WbtOperator',
+        type='OliOperator',
+        control_backend='mros',
         head_rgb_topic='/head/color/image_raw/compressed',
         left_wrist_rgb_topic='/left_wrist_camera/color/image_raw/compressed',
         joint_state_topic='/joint/state',
         finger_state_topic='/brainco1/hand/state',
         finger_cmd_topic='/brainco1/hand/cmd',
         teleop_wbt_topic='/teleop_cmd_WBT',
-        cmd_vel_topic='/sdk_cmd_vel_vla',
+        finger_force_levels=(2.0, 2.0),
     ))

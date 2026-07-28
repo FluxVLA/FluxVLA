@@ -13,7 +13,6 @@
 # limitations under the License.
 
 import argparse
-import time
 
 from mmengine import Config, DictAction
 
@@ -31,6 +30,8 @@ from fluxvla.models.heads.flow_matching_head import \
 from fluxvla.models.heads.flow_matching_inference_head import \
     FlowMatchingInferenceHead  # noqa: F401
 from fluxvla.models.vlas.llava_vla import LlavaVLA  # noqa: F401
+from fluxvla.engines.utils.torch_utils import \
+    configure_inference_attention_defaults
 
 
 def parse_args():
@@ -61,27 +62,15 @@ def inference(args, cfg):
 
 
 if __name__ == '__main__':
-    startup_t0 = time.perf_counter()
+    configure_inference_attention_defaults()
     args = parse_args()
-    stage_t0 = time.perf_counter()
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
     if args.ckpt_path is not None:
         cfg.inference.ckpt_path = args.ckpt_path
     cfg.inference.cfg = cfg
-    stage_t0 = time.perf_counter()
     inference_runner = build_runner_from_cfg(cfg.inference)
-    print(
-        f'[Startup] build_runner_from_cfg: {time.perf_counter() - stage_t0:.1f}s',
-        flush=True)
-    stage_t0 = time.perf_counter()
     inference_runner.run_setup()
-    print(
-        f'[Startup] run_setup_ros: {time.perf_counter() - stage_t0:.1f}s',
-        flush=True)
-    print(
-        f'[Startup] total_before_interactive_loop: {time.perf_counter() - startup_t0:.1f}s',
-        flush=True)
 
     inference_runner.run()

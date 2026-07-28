@@ -21,14 +21,6 @@ from rich.console import Console
 from rich.table import Table
 
 
-def _safe_print_log(*args, **kwargs):
-    try:
-        from mmengine.logging import print_log
-        print_log(*args, **kwargs)
-    except Exception:
-        pass
-
-
 class Registry:
     """A registry to map strings to classes or functions.
 
@@ -167,6 +159,7 @@ class Registry:
             >>>     pass
             >>> # The scope of ``ResNet`` will be ``mmdet``.
         """
+        from mmengine.logging import print_log
 
         # `sys._getframe` returns the frame object that many calls below the
         # top of the stack. The call stack for `infer_scope` can be listed as
@@ -183,7 +176,7 @@ class Registry:
             # use "mmengine" to handle some cases which can not infer the scope
             # like initializing Registry in interactive mode
             scope = 'mmengine'
-            _safe_print_log(
+            print_log(
                 'set scope as "mmengine" when scope can not be inferred. You '
                 'can silence this warning by passing a "scope" argument to '
                 'Registry like `Registry(name, scope="toy")`',
@@ -285,6 +278,7 @@ class Registry:
             >>> DefaultScope.get_current_instance().scope_name
             custom
         """  # noqa: E501
+        from mmengine.logging import print_log
 
         # Switch to the given scope temporarily. If the corresponding registry
         # can be found in root registry, return the registry under the scope,
@@ -299,7 +293,7 @@ class Registry:
                     import_module(f'{scope_name}.registry')
                 except (ImportError, AttributeError, ModuleNotFoundError):
                     if scope in MODULE2PACKAGE:
-                        _safe_print_log(
+                        print_log(
                             f'{scope} is not installed and its '
                             'modules will not be registered. If you '
                             'want to use modules defined in '
@@ -308,7 +302,7 @@ class Registry:
                             logger='current',
                             level=logging.WARNING)
                     else:
-                        _safe_print_log(
+                        print_log(
                             f'Failed to import `{scope}.registry` '
                             f'make sure the registry.py exists in `{scope}` '
                             'package.',
@@ -319,7 +313,7 @@ class Registry:
                 if registry is None:
                     # if `default_scope` can not be found, fallback to argument
                     # `registry`
-                    _safe_print_log(
+                    print_log(
                         f'Failed to search registry with scope "{scope_name}" '
                         f'in the "{root.name}" registry tree. '
                         f'As a workaround, the current "{self.name}" registry '
@@ -347,10 +341,11 @@ class Registry:
         """Import modules from the pre-defined locations in self._location."""
         if not self._imported:
             # Avoid circular import
+            from mmengine.logging import print_log
 
             # avoid BC breaking
             if len(self._locations) == 0 and self.scope in MODULE2PACKAGE:
-                _safe_print_log(
+                print_log(
                     f'The "{self.name}" registry in {self.scope} did not '
                     'set import location. Fallback to call '
                     f'`{self.scope}.utils.register_all_modules` '
@@ -361,7 +356,7 @@ class Registry:
                     module = import_module(f'{self.scope}.utils')
                 except (ImportError, AttributeError, ModuleNotFoundError):
                     if self.scope in MODULE2PACKAGE:
-                        _safe_print_log(
+                        print_log(
                             f'{self.scope} is not installed and its '
                             'modules will not be registered. If you '
                             'want to use modules defined in '
@@ -370,7 +365,7 @@ class Registry:
                             logger='current',
                             level=logging.WARNING)
                     else:
-                        _safe_print_log(
+                        print_log(
                             f'Failed to import {self.scope} and register '
                             'its modules, please make sure you '
                             'have registered the module manually.',
@@ -385,7 +380,7 @@ class Registry:
 
             for loc in self._locations:
                 import_module(loc)
-                _safe_print_log(
+                print_log(
                     f"Modules of {self.scope}'s {self.name} registry have "
                     f'been automatically imported from {loc}',
                     logger='current',
@@ -446,6 +441,7 @@ class Registry:
             >>> mobilenet_cls = DETECTORS.get('cls.MobileNet')
         """
         # Avoid circular import
+        from mmengine.logging import print_log
 
         if not isinstance(key, str):
             raise TypeError(
@@ -478,13 +474,13 @@ class Registry:
             # import the registry to add the nodes into the registry tree
             try:
                 import_module(f'{scope}.registry')
-                _safe_print_log(
+                print_log(
                     f'Registry node of {scope} has been automatically '
                     'imported.',
                     logger='current',
                     level=logging.DEBUG)
             except (ImportError, AttributeError, ModuleNotFoundError):
-                _safe_print_log(
+                print_log(
                     f'Cannot auto import {scope}.registry, please check '
                     f'whether the package "{scope}" is installed correctly '
                     'or import the registry manually.',
@@ -521,7 +517,7 @@ class Registry:
             # For some rare cases (e.g. obj_cls is a partial function), obj_cls
             # doesn't have `__name__`. Use default value to prevent error
             cls_name = getattr(obj_cls, '__name__', str(obj_cls))
-            _safe_print_log(
+            print_log(
                 f'Get class `{cls_name}` from "{registry_name}"'
                 f' registry in "{scope_name}"',
                 logger='current',
