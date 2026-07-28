@@ -284,6 +284,8 @@ themis = dict(
         max_episode_steps=520,
         execute_horizon=10,
         stop_on_success=True,
+        parallel_workers=1,
+        simulator_gpu_ids=None,
         work_dir='work_dirs/fluxthemis',
     ),
     ros_server=dict(
@@ -291,6 +293,11 @@ themis = dict(
         dataset_section='eval',
         evaluation_reporting=dict(result_output_dir='work_dirs/fluxthemis', ),
         device='cuda:0',
+        workers=dict(
+            startup_timeout_s=900.0,
+            request_timeout_s=120.0,
+            lease_timeout_s=900.0,
+        ),
         mixed_precision_dtype='bf16',
         enable_mixed_precision=True,
         model_outputs_environment_actions=False,

@@ -321,10 +321,11 @@ class FluxVLAROSServer:
     """Expose policy inference and optional evaluation reporting over ROS 1."""
 
     def __init__(self,
-                 policy: FluxVLAROSPolicy,
+                 policy: Any,
                  transport: Mapping[str, Any],
                  evaluation_reporter: Any = None,
-                 node_name: str = 'fluxvla_inference_server') -> None:
+                 node_name: str = 'fluxvla_inference_server',
+                 executor_threads: int | None = None) -> None:
         if not isinstance(transport, Mapping):
             raise TypeError('themis.transport must be a mapping')
         self.policy = policy
@@ -349,6 +350,13 @@ class FluxVLAROSServer:
                 'themis.transport.report_service_name and an evaluation '
                 'reporter must be configured together')
         self.node_name = self._nonempty_string(node_name, 'node_name')
+        if (executor_threads is not None
+                and (isinstance(executor_threads, bool)
+                     or not isinstance(executor_threads, int))):
+            raise TypeError('executor_threads must be an integer or None')
+        if executor_threads is not None and executor_threads < 2:
+            raise ValueError('executor_threads must be at least 2')
+        self.executor_threads = executor_threads
         self.evaluation_reporter = evaluation_reporter
 
         self._rospy = None
@@ -403,6 +411,12 @@ class FluxVLAROSServer:
         self._service = rospy.Service(self.service_name, service_type,
                                       self.handle_request)
         rospy.loginfo(f'FluxVLA ROS inference ready on {self.service_name}')
+        worker_count = getattr(self.policy, 'worker_count', 1)
+        if worker_count > 1:
+            devices = ', '.join(getattr(self.policy, 'worker_devices', ()))
+            rospy.loginfo(
+                f'FluxVLA inference pool: {worker_count} episode-affine '
+                f'replicas on {devices}')
         if self.report_service_name is not None:
             self._report_service = rospy.Service(
                 self.report_service_name,
@@ -439,17 +453,27 @@ class FluxVLAROSServer:
         response.request_id = request_id
         response.header.stamp = self._rospy.Time.now()
         try:
-            with self._request_lock:
-                observation, episode_id, seed, unnorm_key = \
-                    self._decode_request(request)
-                is_new_episode = (
-                    bool(request.reset) or episode_id != self._last_episode_id
-                    or seed != self._last_seed)
-                observation['is_new_episode'] = is_new_episode
+            observation, episode_id, seed, unnorm_key = \
+                self._decode_request(request)
+            if getattr(self.policy, 'supports_episode_affinity', False):
                 actions, inference_time_s = self.policy.predict(
-                    observation, unnorm_key=unnorm_key, seed=seed)
-                self._last_episode_id = episode_id
-                self._last_seed = seed
+                    observation,
+                    unnorm_key=unnorm_key,
+                    seed=seed,
+                    episode_id=episode_id,
+                    reset=bool(request.reset),
+                )
+            else:
+                with self._request_lock:
+                    is_new_episode = (
+                        bool(request.reset)
+                        or episode_id != self._last_episode_id
+                        or seed != self._last_seed)
+                    observation['is_new_episode'] = is_new_episode
+                    actions, inference_time_s = self.policy.predict(
+                        observation, unnorm_key=unnorm_key, seed=seed)
+                    self._last_episode_id = episode_id
+                    self._last_seed = seed
 
             response.ok = True
             response.error = ''
@@ -489,6 +513,8 @@ class FluxVLAROSServer:
         try:
             with self._report_lock:
                 event = self._decode_report_request(request)
+                self._validate_parallel_capacity(event)
+                affinity_episode_id = self._affinity_release_target(event)
                 result = self.evaluation_reporter.process_event(
                     event_type=event['event_type'],
                     request_id=event['request_id'],
@@ -496,10 +522,16 @@ class FluxVLAROSServer:
                     sequence=event['sequence'],
                     payload=event['payload'],
                 )
-            if not isinstance(result, Mapping):
-                raise TypeError(
-                    'Evaluation reporter process_event() must return a '
-                    'mapping')
+                if not isinstance(result, Mapping):
+                    raise TypeError(
+                        'Evaluation reporter process_event() must return a '
+                        'mapping')
+                if bool(result.get('accepted', False)):
+                    if affinity_episode_id is not None:
+                        self.policy.release_episode(affinity_episode_id)
+                    elif (event['event_type'] == 'run_end' and getattr(
+                            self.policy, 'supports_episode_affinity', False)):
+                        self.policy.release_all()
             response.accepted = bool(result.get('accepted', False))
             response.error = str(result.get('error') or '')
             response.run_dir = str(result.get('run_dir') or '')
@@ -518,6 +550,50 @@ class FluxVLAROSServer:
                        f'{request_id or "<missing>"} rejected: '
                        f'{response.error}')
         return response
+
+    def close(self) -> None:
+        """Release inference workers owned by this server."""
+        close = getattr(self.policy, 'close', None)
+        if callable(close):
+            close()
+
+    def _affinity_release_target(self, event: Mapping[str, Any]) -> str | None:
+        if not getattr(self.policy, 'supports_episode_affinity', False):
+            return None
+        if event.get('event_type') != 'episode_end':
+            return None
+        payload = event.get('payload')
+        if not isinstance(payload, Mapping):
+            raise TypeError('episode_end payload must be a mapping')
+        episode_id = payload.get('episode_id')
+        return self._nonempty_string(
+            episode_id,
+            'episode_end payload.episode_id',
+        )
+
+    def _validate_parallel_capacity(self, event: Mapping[str, Any]) -> None:
+        if (event.get('event_type') != 'run_start' or
+                not getattr(self.policy, 'supports_episode_affinity', False)):
+            return
+        payload = event.get('payload')
+        if not isinstance(payload, Mapping):
+            raise TypeError('run_start payload must be a mapping')
+        requested = payload.get('parallel_workers', 1)
+        if isinstance(requested,
+                      bool) or not isinstance(requested, (int, np.integer)):
+            raise TypeError(
+                'run_start payload.parallel_workers must be an integer')
+        requested = int(requested)
+        if requested < 1:
+            raise ValueError(
+                'run_start payload.parallel_workers must be positive')
+        available = int(getattr(self.policy, 'worker_count', 1))
+        if requested > available:
+            raise ValueError(
+                f'FluxThemis requested {requested} parallel simulator '
+                f'workers, but FluxVLA has only {available} episode-affine '
+                'inference replicas. Start FluxVLA with at least '
+                f'--num-workers {requested}, or reduce FluxThemis --workers.')
 
     def _decode_report_request(self, request: Any) -> dict[str, Any]:
         request_id = self._nonempty_string(
@@ -649,19 +725,12 @@ class FluxVLAROSServer:
         return value
 
 
-def build_ros_server_from_config(
+def build_ros_policy_from_config(
         cfg: Any,
         ckpt_path: str | None = None,
         device: str | None = None,
-        service_name: str | None = None,
-        node_name: str | None = None,
-        ros_version: int | str | None = None,
-        config_path: str | os.PathLike | None = None) -> FluxVLAROSServer:
-    """Build a ROS 1 or ROS 2 server from one FluxVLA configuration.
-
-    ``ros_version`` overrides ``themis.ros_server.ros_version``.  ROS 1 stays
-    the default so existing launch commands and configurations are unchanged.
-    """
+        service_name: str | None = None) -> FluxVLAROSPolicy:
+    """Build one complete policy replica from an authoritative config."""
     themis_cfg = _require_mapping(
         _config_get(cfg, 'themis', _MISSING), 'config.themis')
     transport = dict(
@@ -670,10 +739,6 @@ def build_ros_server_from_config(
     server_cfg = dict(
         _require_mapping(
             themis_cfg.get('ros_server', _MISSING), 'themis.ros_server'))
-    configured_ros_version = server_cfg.get('ros_version', 1)
-    requested_ros_version = (
-        configured_ros_version if ros_version is None else ros_version)
-    resolved_ros_version = _resolve_ros_version(requested_ros_version)
     if service_name is not None:
         transport['service_name'] = service_name
 
@@ -687,7 +752,6 @@ def build_ros_server_from_config(
         _require_mapping(
             section_cfg.get('dataset', _MISSING),
             f'config.{section_name}.dataset'))
-
     resolved_ckpt = _resolve_checkpoint_path(
         ckpt_path or server_cfg.get('ckpt_path')
         or section_cfg.get('ckpt_path'))
@@ -742,7 +806,7 @@ def build_ros_server_from_config(
 
     resolved_device = device or server_cfg.get('device', 'cuda:0')
     dtype_name = server_cfg.get('mixed_precision_dtype', 'bf16')
-    policy = FluxVLAROSPolicy(
+    return FluxVLAROSPolicy(
         vla=vla,
         dataset=dataset,
         denormalize_action=denormalize_action,
@@ -754,6 +818,68 @@ def build_ros_server_from_config(
         denormalize_context=denormalize_context,
         denormalize_per_action=server_cfg.get('denormalize_per_action', False),
     )
+
+
+def build_ros_server_from_config(
+        cfg: Any,
+        ckpt_path: str | None = None,
+        device: str | None = None,
+        worker_devices: Sequence[str] | None = None,
+        num_workers: int | None = None,
+        service_name: str | None = None,
+        node_name: str | None = None,
+        ros_version: int | str | None = None,
+        config_path: str | os.PathLike | None = None) -> FluxVLAROSServer:
+    """Build a ROS 1 or ROS 2 server from one FluxVLA configuration.
+
+    ``ros_version`` overrides ``themis.ros_server.ros_version``.  ROS 1 stays
+    the default so existing launch commands and configurations are unchanged.
+    """
+    themis_cfg = _require_mapping(
+        _config_get(cfg, 'themis', _MISSING), 'config.themis')
+    transport = dict(
+        _require_mapping(
+            themis_cfg.get('transport', _MISSING), 'themis.transport'))
+    server_cfg = dict(
+        _require_mapping(
+            themis_cfg.get('ros_server', _MISSING), 'themis.ros_server'))
+    configured_ros_version = server_cfg.get('ros_version', 1)
+    requested_ros_version = (
+        configured_ros_version if ros_version is None else ros_version)
+    resolved_ros_version = _resolve_ros_version(requested_ros_version)
+    if service_name is not None:
+        transport['service_name'] = service_name
+
+    section_name = server_cfg.get('dataset_section')
+    if section_name not in {'eval', 'inference'}:
+        raise ValueError('themis.ros_server.dataset_section must be `eval` or '
+                         '`inference`')
+    section_cfg = _require_mapping(
+        _config_get(cfg, section_name, _MISSING), f'config.{section_name}')
+    resolved_ckpt = _resolve_checkpoint_path(
+        ckpt_path or server_cfg.get('ckpt_path')
+        or section_cfg.get('ckpt_path'))
+    stats_path = _resolve_statistics_path(
+        server_cfg.get('norm_stats_path'), resolved_ckpt)
+    model_outputs_environment_actions = server_cfg.get(
+        'model_outputs_environment_actions', False)
+    if not model_outputs_environment_actions and stats_path is None:
+        raise FileNotFoundError(
+            'dataset_statistics.json is required to prove the ROS action '
+            'unit contract')
+    resolved_devices = _resolve_inference_devices(
+        server_cfg=server_cfg,
+        device=device,
+        worker_devices=worker_devices,
+        num_workers=num_workers,
+    )
+    resolved_device = resolved_devices[0]
+    if (len(resolved_devices) > 1
+            and transport.get('report_service_name') is None):
+        raise ValueError(
+            'Multi-worker ROS inference requires '
+            'themis.transport.report_service_name so episode affinity can be '
+            'released after acknowledged episode_end events')
     evaluation_reporter = None
     if transport.get('report_service_name') is not None:
         reporting_cfg = _require_mapping(
@@ -802,17 +928,127 @@ def build_ros_server_from_config(
             logger=None,
             feishu=reporting_cfg.get('feishu'),
         )
-    server_type = FluxVLAROSServer
-    if resolved_ros_version == 2:
-        from .ros2_server import FluxVLAROS2Server
-        server_type = FluxVLAROS2Server
-    return server_type(
-        policy=policy,
-        transport=transport,
-        evaluation_reporter=evaluation_reporter,
-        node_name=node_name
-        or server_cfg.get('node_name', 'fluxvla_inference_server'),
+
+    workers_cfg = dict(
+        _require_mapping(
+            server_cfg.get('workers', {}),
+            'themis.ros_server.workers',
+        ))
+    if len(resolved_devices) == 1:
+        direct_policy = build_ros_policy_from_config(
+            cfg,
+            ckpt_path=str(resolved_ckpt),
+            device=resolved_device,
+            service_name=transport.get('service_name'),
+        )
+        if transport.get('report_service_name') is None:
+            policy = direct_policy
+        else:
+            # Reporting supplies the durable episode_end signal.  Use the
+            # same affinity contract for one replica so concurrent simulator
+            # clients cannot interleave stateful policy history.
+            from .ros_worker_pool import EpisodeAffinityPolicyPool
+            policy = EpisodeAffinityPolicyPool(
+                backends=[direct_policy],
+                lease_timeout_s=workers_cfg.get('lease_timeout_s', 900.0),
+            )
+    else:
+        from .ros_worker_pool import spawn_ros_policy_pool
+        policy = spawn_ros_policy_pool(
+            cfg=cfg,
+            ckpt_path=str(resolved_ckpt),
+            devices=resolved_devices,
+            service_name=transport.get('service_name'),
+            startup_timeout_s=workers_cfg.get('startup_timeout_s', 900.0),
+            request_timeout_s=workers_cfg.get('request_timeout_s', 120.0),
+            lease_timeout_s=workers_cfg.get('lease_timeout_s', 900.0),
+        )
+    try:
+        server_type = FluxVLAROSServer
+        if resolved_ros_version == 2:
+            from .ros2_server import FluxVLAROS2Server
+            server_type = FluxVLAROS2Server
+        return server_type(
+            policy=policy,
+            transport=transport,
+            evaluation_reporter=evaluation_reporter,
+            node_name=node_name
+            or server_cfg.get('node_name', 'fluxvla_inference_server'),
+            executor_threads=server_cfg.get('executor_threads'),
+        )
+    except BaseException:
+        close = getattr(policy, 'close', None)
+        if callable(close):
+            close()
+        raise
+
+
+def _resolve_inference_devices(server_cfg: Mapping[str,
+                                                   Any], device: str | None,
+                               worker_devices: Sequence[str] | None,
+                               num_workers: int | None) -> tuple[str, ...]:
+    """Resolve CLI/config worker devices while preserving legacy defaults."""
+    workers_cfg = _require_mapping(
+        server_cfg.get('workers', {}),
+        'themis.ros_server.workers',
     )
+    if worker_devices is not None and num_workers is not None:
+        raise ValueError(
+            'worker_devices and num_workers are mutually exclusive')
+
+    values: Any
+    if worker_devices is not None:
+        values = worker_devices
+    elif num_workers is not None:
+        count = _positive_worker_count(num_workers, 'num_workers')
+        if count == 1:
+            values = [device or server_cfg.get('device', 'cuda:0')]
+        else:
+            if device is not None:
+                raise ValueError(
+                    '--device cannot be combined with --num-workers greater '
+                    'than one; use --devices for explicit placement')
+            values = [f'cuda:{index}' for index in range(count)]
+    elif device is not None:
+        values = [device]
+    elif workers_cfg.get('devices') is not None:
+        values = workers_cfg['devices']
+    elif workers_cfg.get('num_workers') is not None:
+        count = _positive_worker_count(
+            workers_cfg['num_workers'],
+            'themis.ros_server.workers.num_workers',
+        )
+        values = [f'cuda:{index}' for index in range(count)]
+    else:
+        values = [server_cfg.get('device', 'cuda:0')]
+
+    if isinstance(values, (str, bytes)) or not isinstance(values, Sequence):
+        raise TypeError('inference worker devices must be a sequence')
+    if not values:
+        raise ValueError('inference worker devices cannot be empty')
+    normalized = []
+    for index, value in enumerate(values):
+        if not isinstance(value, str) or not value.strip():
+            raise TypeError(
+                f'inference worker device {index} must be a non-empty string')
+        value = value.strip()
+        try:
+            torch.device(value)
+        except (RuntimeError, TypeError) as exc:
+            raise ValueError(
+                f'Invalid inference worker device {value!r}') from exc
+        normalized.append(value)
+    if len(normalized) != len(set(normalized)):
+        raise ValueError('inference worker devices cannot contain duplicates')
+    return tuple(normalized)
+
+
+def _positive_worker_count(value: Any, name: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise TypeError(f'{name} must be an integer')
+    if value <= 0:
+        raise ValueError(f'{name} must be positive')
+    return value
 
 
 def _resolve_ros_version(value: Any) -> int:

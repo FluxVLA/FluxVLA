@@ -66,7 +66,7 @@ class _RunState:
     tasks_by_id: dict[str, _TaskManifestEntry]
     tasks_by_index: dict[int, _TaskManifestEntry]
     next_sequence: int = 2
-    current_episode: Optional[dict] = None
+    active_episodes: dict[tuple[int, int], dict] = field(default_factory=dict)
     episodes: list[dict] = field(default_factory=list)
     completed_keys: set[tuple[int, int]] = field(default_factory=set)
 
@@ -306,9 +306,9 @@ class FluxVLAROSEvaluationReporter:
                 raise EvaluationEventError(
                     f'run_start sequence must be 1, got {sequence}')
             state = self._start_run(run_session_id, payload)
-            self._active = state
             self._append_event(state, version, event_type, request_id,
                                sequence, payload)
+            self._active = state
             response = self._response(state, status='running')
         else:
             state = self._active
@@ -321,21 +321,31 @@ class FluxVLAROSEvaluationReporter:
             if sequence != state.next_sequence:
                 raise EvaluationEventError(
                     f'expected sequence {state.next_sequence}, got {sequence}')
-            if event_type == 'episode_start':
-                self._episode_start(state, payload)
-                status = 'running'
-            elif event_type == 'episode_end':
-                self._episode_end(state, payload)
-                status = 'running'
-            else:
-                status = self._run_end(state, payload)
-                # Local finalization is intentionally completed before the
-                # run_end event is committed. All local writes are idempotent,
-                # so a transient filesystem failure can safely retry the same
-                # request and sequence without duplicating a Feishu row.
-                summary_path = self._write_summary_artifacts(state)
-            self._append_event(state, version, event_type, request_id,
-                               sequence, payload)
+            snapshot = self._snapshot_mutable_state(state)
+            try:
+                if event_type == 'episode_start':
+                    self._episode_start(state, payload)
+                    status = 'running'
+                elif event_type == 'episode_end':
+                    self._episode_end(state, payload)
+                    status = 'running'
+                else:
+                    status = self._run_end(state, payload)
+                    # Local finalization is intentionally completed before
+                    # the run_end event is committed. All local writes are
+                    # idempotent, so a transient filesystem failure can safely
+                    # retry the same request and sequence without duplicating
+                    # a Feishu row.
+                    summary_path = self._write_summary_artifacts(state)
+                self._append_event(state, version, event_type, request_id,
+                                   sequence, payload)
+            except Exception:
+                # Event handlers update in-memory progress before the durable
+                # journal append. Restore it when either an artifact write or
+                # the journal commit fails, so the same request/sequence can
+                # be retried without observing a half-accepted episode.
+                self._restore_mutable_state(state, snapshot)
+                raise
             state.next_sequence += 1
             response = self._response(state, status=status)
             if event_type == 'run_end':
@@ -350,6 +360,22 @@ class FluxVLAROSEvaluationReporter:
         self._requests[request_id] = _CachedRequest(
             fingerprint=fingerprint, response=copy.deepcopy(response))
         return response
+
+    @staticmethod
+    def _snapshot_mutable_state(state: _RunState) -> tuple[dict, int, set]:
+        return (
+            copy.deepcopy(state.active_episodes),
+            len(state.episodes),
+            set(state.completed_keys),
+        )
+
+    @staticmethod
+    def _restore_mutable_state(state: _RunState, snapshot: tuple[dict, int,
+                                                                 set]) -> None:
+        active_episodes, episode_count, completed_keys = snapshot
+        state.active_episodes = active_episodes
+        del state.episodes[episode_count:]
+        state.completed_keys = completed_keys
 
     def _start_run(self, session_id: str, payload: dict) -> _RunState:
         schema_version = payload.get('schema_version')
@@ -460,8 +486,6 @@ class FluxVLAROSEvaluationReporter:
         return state
 
     def _episode_start(self, state: _RunState, payload: dict) -> None:
-        if state.current_episode is not None:
-            raise EvaluationEventError('an episode is already active')
         task, episode_index, seed, description = self._episode_identity(
             state, payload)
         started_at, started_epoch = _require_datetime(
@@ -469,7 +493,17 @@ class FluxVLAROSEvaluationReporter:
         key = (task.task_index, episode_index)
         if key in state.completed_keys:
             raise EvaluationEventError(f'episode {key} already completed')
-        state.current_episode = {
+        if key in state.active_episodes:
+            raise EvaluationEventError(f'episode {key} is already active')
+        episode_id = payload.get('episode_id')
+        if episode_id is not None:
+            episode_id = _require_string(episode_id, 'payload.episode_id')
+            if any(
+                    active.get('episode_id') == episode_id
+                    for active in state.active_episodes.values()):
+                raise EvaluationEventError(
+                    f'episode_id {episode_id!r} is already active')
+        current = {
             'task_id': task.task_id,
             'task_index': task.task_index,
             'description': description,
@@ -478,6 +512,9 @@ class FluxVLAROSEvaluationReporter:
             'started_at': started_at,
             'started_epoch': started_epoch,
         }
+        if episode_id is not None:
+            current['episode_id'] = episode_id
+        state.active_episodes[key] = current
         self._append_log(
             state,
             f'Evaluating Task {task.task_index}, Trial {episode_index}\n'
@@ -488,12 +525,24 @@ class FluxVLAROSEvaluationReporter:
         self._log(f'Starting episode {episode_index + 1}...')
 
     def _episode_end(self, state: _RunState, payload: dict) -> None:
-        current = state.current_episode
-        if current is None:
-            raise EvaluationEventError(
-                'episode_end has no matching episode_start')
         task, episode_index, seed, description = self._episode_identity(
             state, payload)
+        episode_key = (task.task_index, episode_index)
+        current = state.active_episodes.get(episode_key)
+        if current is None:
+            raise EvaluationEventError(
+                f'episode_end has no matching episode_start for '
+                f'episode {episode_key}')
+        episode_id = payload.get('episode_id')
+        current_episode_id = current.get('episode_id')
+        if current_episode_id is not None:
+            episode_id = _require_string(episode_id, 'payload.episode_id')
+            if episode_id != current_episode_id:
+                raise EvaluationEventError(
+                    'episode_end episode_id does not match episode_start')
+        elif episode_id is not None:
+            episode_id = _require_string(episode_id, 'payload.episode_id')
+            current['episode_id'] = episode_id
         for key, value in (
             ('task_index', task.task_index),
             ('episode_index', episode_index),
@@ -544,8 +593,8 @@ class FluxVLAROSEvaluationReporter:
             'prediction_metadata': prediction_metadata,
         }
         state.episodes.append(result)
-        state.completed_keys.add((task.task_index, episode_index))
-        state.current_episode = None
+        state.completed_keys.add(episode_key)
+        del state.active_episodes[episode_key]
         successes = sum(bool(item['success']) for item in state.episodes)
         success_rate = successes / len(state.episodes) * 100
         _write_json_atomic(state.run_dir / 'rank_progress' / 'rank0.json', {
@@ -594,9 +643,10 @@ class FluxVLAROSEvaluationReporter:
         if status not in {'finished', 'failed', 'interrupted'}:
             raise EvaluationEventError(
                 'payload.status must be finished, failed, or interrupted')
-        if status == 'finished' and state.current_episode is not None:
+        if status == 'finished' and state.active_episodes:
             raise EvaluationEventError(
-                'finished run still has an active episode')
+                'finished run still has active episodes: '
+                f'{sorted(state.active_episodes)}')
         full_suite = _require_bool(
             payload.get('full_suite'), 'payload.full_suite')
         completed = _require_int(
@@ -614,7 +664,7 @@ class FluxVLAROSEvaluationReporter:
             raise EvaluationEventError('run_end full_suite changed during run')
         if 'error' in payload:
             json.dumps(payload['error'], ensure_ascii=False)
-        state.current_episode = None
+        state.active_episodes.clear()
         self._append_log(
             state, f'Run status: {status}\n'
             f'# episodes completed: {completed}\n'
@@ -928,11 +978,24 @@ class FluxVLAROSEvaluationReporter:
             'recorded_at': datetime.now().astimezone().isoformat(),
             'payload': payload,
         }
-        with (state.run_dir / 'events.jsonl').open(
-                'a', encoding='utf-8') as stream:
-            stream.write(json.dumps(record, ensure_ascii=False) + '\n')
-            stream.flush()
-            os.fsync(stream.fileno())
+        journal_path = state.run_dir / 'events.jsonl'
+        journal_existed = journal_path.exists()
+        original_size = journal_path.stat().st_size if journal_existed else 0
+        try:
+            with journal_path.open('a', encoding='utf-8') as stream:
+                stream.write(json.dumps(record, ensure_ascii=False) + '\n')
+                stream.flush()
+                os.fsync(stream.fileno())
+        except Exception:
+            try:
+                if journal_existed:
+                    os.truncate(journal_path, original_size)
+                else:
+                    journal_path.unlink(missing_ok=True)
+            except OSError as rollback_error:
+                self._log('[ros-eval] failed to roll back journal append: '
+                          f'{rollback_error}')
+            raise
 
     @staticmethod
     def _append_log(state: _RunState, message: str) -> None:

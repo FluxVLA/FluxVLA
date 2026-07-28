@@ -24,9 +24,14 @@ def __getattr__(name):
     _ros_server = {
         'FluxVLAROSPolicy',
         'FluxVLAROSServer',
+        'build_ros_policy_from_config',
         'build_ros_server_from_config',
     }
     _ros2_server = {'FluxVLAROS2Server'}
+    _ros_worker_pool = {
+        'EpisodeAffinityPolicyPool',
+        'spawn_ros_policy_pool',
+    }
     _evaluation_reporter = {
         'EvaluationEventError',
         'FluxVLAROSEvaluationReporter',
@@ -44,6 +49,9 @@ def __getattr__(name):
     if name in _ros2_server:
         from . import ros2_server
         return getattr(ros2_server, name)
+    if name in _ros_worker_pool:
+        from . import ros_worker_pool
+        return getattr(ros_worker_pool, name)
     if name in _evaluation_reporter:
         from . import evaluation_reporter
         return getattr(evaluation_reporter, name)
@@ -58,11 +66,13 @@ __all__ = [
     'FluxVLAROSEvaluationReporter',
     'FluxVLAROS2Server',
     'FluxVLAROSServer',
+    'EpisodeAffinityPolicyPool',
     'MsgSerializer',
     'ObsSerializer',
     'ObsSerializerProto',
     'PolicyServer',
     'create_server',
+    'build_ros_policy_from_config',
     'build_ros_server_from_config',
     'decode_predict_request',
     'decode_predict_response',
@@ -70,4 +80,5 @@ __all__ = [
     'encode_predict_request',
     'encode_predict_response',
     'serialize_actions',
+    'spawn_ros_policy_pool',
 ]

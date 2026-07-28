@@ -58,7 +58,7 @@ class FluxVLAROS2Server(FluxVLAROSServer):
         self._owns_rclpy_context = False
 
     def run(self) -> None:
-        """Import ROS 2, advertise the service, and block in ``rclpy.spin``."""
+        """Advertise services on a multithreaded ROS 2 executor."""
         try:
             rclpy = importlib.import_module('rclpy')
             cv_bridge = importlib.import_module('cv_bridge')
@@ -87,10 +87,24 @@ class FluxVLAROS2Server(FluxVLAROSServer):
                     'service is unavailable. Rebuild and source the '
                     'FluxThemis ROS 2 interface workspace.') from exc
 
+        try:
+            callback_groups = importlib.import_module('rclpy.callback_groups')
+            executors = importlib.import_module('rclpy.executors')
+            reentrant_group_type = getattr(callback_groups,
+                                           'ReentrantCallbackGroup')
+            exclusive_group_type = getattr(callback_groups,
+                                           'MutuallyExclusiveCallbackGroup')
+            executor_type = getattr(executors, 'MultiThreadedExecutor')
+        except (ImportError, AttributeError) as exc:
+            raise ImportError(
+                'FluxVLA multi-worker ROS 2 serving requires '
+                'rclpy.callback_groups and rclpy.executors.') from exc
+
         owns_context = not rclpy.ok()
         node = None
         service = None
         report_service = None
+        executor = None
         if owns_context:
             rclpy.init(args=None)
         try:
@@ -105,23 +119,46 @@ class FluxVLAROS2Server(FluxVLAROSServer):
                 response_type,
                 report_response_type=report_response_type,
             )
-            service = node.create_service(service_type, self.service_name,
-                                          self._handle_ros2_request)
+            prediction_group = reentrant_group_type()
+            report_group = exclusive_group_type()
+            service = node.create_service(
+                service_type,
+                self.service_name,
+                self._handle_ros2_request,
+                callback_group=prediction_group,
+            )
             self._service = service
             node.get_logger().info(
                 f'FluxVLA ROS 2 inference ready on {self.service_name}')
+            worker_count = int(getattr(self.policy, 'worker_count', 1))
+            if worker_count > 1:
+                devices = ', '.join(getattr(self.policy, 'worker_devices', ()))
+                node.get_logger().info(
+                    f'FluxVLA inference pool: {worker_count} '
+                    f'episode-affine replicas on {devices}')
             if self.report_service_name is not None:
                 report_service = node.create_service(
                     report_service_type,
                     self.report_service_name,
                     self._handle_ros2_report_request,
+                    callback_group=report_group,
                 )
                 self._report_service = report_service
                 node.get_logger().info(
                     'FluxVLA ROS 2 evaluation reporting ready on '
                     f'{self.report_service_name}')
-            rclpy.spin(node)
+            executor_threads = (
+                self.executor_threads if self.executor_threads is not None else
+                max(32, worker_count + 1))
+            executor = executor_type(num_threads=executor_threads)
+            executor.add_node(node)
+            executor.spin()
         finally:
+            if executor is not None:
+                try:
+                    executor.remove_node(node)
+                finally:
+                    executor.shutdown(timeout_sec=5.0)
             if node is not None:
                 if report_service is not None:
                     node.destroy_service(report_service)
