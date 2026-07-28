@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""ROS inference service used by FluxThemis.
+"""ROS inference and evaluation-report services used by FluxThemis.
 
 ROS imports are intentionally delayed until :meth:`FluxVLAROSServer.run` so
 normal FluxVLA training and evaluation do not require a sourced ROS workspace.
@@ -57,13 +57,13 @@ class _RawImageBridge:
                 f'{type(message).__name__}')
         if desired_encoding not in self._SUPPORTED_ENCODINGS:
             raise ValueError(
-                f'Unsupported desired image encoding {desired_encoding!r}; '
+                f'Unsupported desired image encoding {desired_encoding!r}: '
                 'expected rgb8 or bgr8')
 
         encoding = getattr(message, 'encoding', None)
         if encoding not in self._SUPPORTED_ENCODINGS:
             raise ValueError(
-                f'Unsupported ROS image encoding {encoding!r}; expected '
+                f'Unsupported ROS image encoding {encoding!r}: expected '
                 'rgb8 or bgr8')
         if encoding != desired_encoding:
             raise ValueError(
@@ -86,7 +86,7 @@ class _RawImageBridge:
         expected_size = height * step
         if len(payload) != expected_size:
             raise ValueError(
-                f'ROS image data has {len(payload)} bytes; expected exactly '
+                f'ROS image data has {len(payload)} bytes, expected exactly '
                 f'{expected_size} for height={height} and step={step}')
 
         rows = np.frombuffer(payload, dtype=np.uint8).reshape(height, step)
@@ -318,11 +318,12 @@ class FluxVLAROSPolicy:
 
 
 class FluxVLAROSServer:
-    """Lazy-ROS wrapper exposing :class:`FluxVLAROSPolicy` as a service."""
+    """Expose policy inference and optional evaluation reporting over ROS 1."""
 
     def __init__(self,
                  policy: FluxVLAROSPolicy,
                  transport: Mapping[str, Any],
+                 evaluation_reporter: Any = None,
                  node_name: str = 'fluxvla_inference_server') -> None:
         if not isinstance(transport, Mapping):
             raise TypeError('themis.transport must be a mapping')
@@ -337,13 +338,27 @@ class FluxVLAROSServer:
         self.image_encoding = self._nonempty_string(
             transport.get('image_encoding', 'rgb8'),
             'themis.transport.image_encoding')
+        configured_report_service = transport.get('report_service_name')
+        self.report_service_name = None
+        if configured_report_service is not None:
+            self.report_service_name = self._nonempty_string(
+                configured_report_service,
+                'themis.transport.report_service_name')
+        if (self.report_service_name is None) != (evaluation_reporter is None):
+            raise ValueError(
+                'themis.transport.report_service_name and an evaluation '
+                'reporter must be configured together')
         self.node_name = self._nonempty_string(node_name, 'node_name')
+        self.evaluation_reporter = evaluation_reporter
 
         self._rospy = None
         self._bridge = None
         self._response_type = None
+        self._report_response_type = None
         self._service = None
+        self._report_service = None
         self._request_lock = threading.RLock()
+        self._report_lock = threading.RLock()
         self._last_episode_id: str | None = None
         self._last_seed: int | None = None
 
@@ -363,18 +378,56 @@ class FluxVLAROSServer:
                 'Source the ROS 1 workspace before launching the server.') \
                 from exc
 
+        report_service_type = None
+        report_response_type = None
+        if self.report_service_name is not None:
+            try:
+                report_service_type = getattr(service_module,
+                                              'ReportEvaluation')
+                report_response_type = getattr(service_module,
+                                               'ReportEvaluationResponse')
+            except AttributeError as exc:
+                raise ImportError(
+                    'FluxVLA evaluation reporting is configured, but the '
+                    'generated fluxthemis_msgs/ReportEvaluation ROS 1 service '
+                    'is unavailable. Rebuild and source the FluxThemis ROS 1 '
+                    'interface workspace.') from exc
+
         rospy.init_node(self.node_name, anonymous=False)
-        self._bind_ros(rospy, bridge, response_type)
+        self._bind_ros(
+            rospy,
+            bridge,
+            response_type,
+            report_response_type=report_response_type,
+        )
         self._service = rospy.Service(self.service_name, service_type,
                                       self.handle_request)
         rospy.loginfo(f'FluxVLA ROS inference ready on {self.service_name}')
+        if self.report_service_name is not None:
+            self._report_service = rospy.Service(
+                self.report_service_name,
+                report_service_type,
+                self.handle_report_request,
+            )
+            rospy.loginfo('FluxVLA evaluation reporting ready on '
+                          f'{self.report_service_name}')
         rospy.spin()
 
-    def _bind_ros(self, rospy: Any, bridge: Any, response_type: Any) -> None:
+    def _bind_ros(self,
+                  rospy: Any,
+                  bridge: Any,
+                  response_type: Any,
+                  report_response_type: Any = None) -> None:
         """Bind generated ROS types for dependency-free tests."""
         self._rospy = rospy
         self._bridge = bridge
         self._response_type = response_type
+        self._report_response_type = report_response_type
+        if self.evaluation_reporter is not None:
+            set_logger = getattr(self.evaluation_reporter, 'set_logger', None)
+            loginfo = getattr(rospy, 'loginfo', None)
+            if callable(set_logger) and callable(loginfo):
+                set_logger(loginfo)
 
     def handle_request(self, request: Any, response: Any = None) -> Any:
         if (self._rospy is None or self._bridge is None
@@ -418,6 +471,84 @@ class FluxVLAROSServer:
                 logerr(f'FluxVLA ROS request {request_id or "<missing>"} '
                        f'failed: {response.error}')
         return response
+
+    def handle_report_request(self, request: Any, response: Any = None) -> Any:
+        """Validate and persist one environment-side evaluation event."""
+        if (self._rospy is None or self._report_response_type is None
+                or self.evaluation_reporter is None):
+            raise RuntimeError(
+                'FluxVLAROSServer evaluation reporting was not started')
+        if response is None:
+            response = self._report_response_type()
+        request_id = str(getattr(request, 'request_id', ''))
+        response.request_id = request_id
+        response.header.stamp = self._rospy.Time.now()
+        response.accepted = False
+        response.error = ''
+        response.run_dir = ''
+        try:
+            with self._report_lock:
+                event = self._decode_report_request(request)
+                result = self.evaluation_reporter.process_event(
+                    event_type=event['event_type'],
+                    request_id=event['request_id'],
+                    run_session_id=event['run_id'],
+                    sequence=event['sequence'],
+                    payload=event['payload'],
+                )
+            if not isinstance(result, Mapping):
+                raise TypeError(
+                    'Evaluation reporter process_event() must return a '
+                    'mapping')
+            response.accepted = bool(result.get('accepted', False))
+            response.error = str(result.get('error') or '')
+            response.run_dir = str(result.get('run_dir') or '')
+            if not response.accepted and not response.error:
+                response.error = 'Evaluation reporter rejected the event'
+        # ROS callbacks must always return a response.
+        except Exception as exc:
+            response.accepted = False
+            response.error = f'{type(exc).__name__}: {exc}'
+            response.run_dir = ''
+
+        if not response.accepted:
+            logerr = getattr(self._rospy, 'logerr', None)
+            if callable(logerr):
+                logerr('FluxVLA evaluation report '
+                       f'{request_id or "<missing>"} rejected: '
+                       f'{response.error}')
+        return response
+
+    def _decode_report_request(self, request: Any) -> dict[str, Any]:
+        request_id = self._nonempty_string(
+            getattr(request, 'request_id', ''), 'request.request_id')
+        run_id = self._nonempty_string(
+            getattr(request, 'run_id', ''), 'request.run_id')
+        event_type = self._nonempty_string(
+            getattr(request, 'event_type', ''), 'request.event_type')
+        sequence = getattr(request, 'sequence', None)
+        if (isinstance(sequence, bool)
+                or not isinstance(sequence, (int, np.integer))):
+            raise TypeError('request.sequence must be an integer')
+        sequence = int(sequence)
+        if sequence < 0:
+            raise ValueError('request.sequence must be non-negative')
+        payload_json = self._nonempty_string(
+            getattr(request, 'payload_json', ''), 'request.payload_json')
+        try:
+            payload = json.loads(payload_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError('request.payload_json must contain valid JSON') \
+                from exc
+        if not isinstance(payload, Mapping):
+            raise TypeError('request.payload_json must encode a JSON object')
+        return {
+            'request_id': request_id,
+            'run_id': run_id,
+            'sequence': sequence,
+            'event_type': event_type,
+            'payload': dict(payload),
+        }
 
     def _decode_request(self,
                         request: Any) -> tuple[dict[str, Any], str, int, str]:
@@ -524,7 +655,8 @@ def build_ros_server_from_config(
         device: str | None = None,
         service_name: str | None = None,
         node_name: str | None = None,
-        ros_version: int | str | None = None) -> FluxVLAROSServer:
+        ros_version: int | str | None = None,
+        config_path: str | os.PathLike | None = None) -> FluxVLAROSServer:
     """Build a ROS 1 or ROS 2 server from one FluxVLA configuration.
 
     ``ros_version`` overrides ``themis.ros_server.ros_version``.  ROS 1 stays
@@ -622,6 +754,54 @@ def build_ros_server_from_config(
         denormalize_context=denormalize_context,
         denormalize_per_action=server_cfg.get('denormalize_per_action', False),
     )
+    evaluation_reporter = None
+    if transport.get('report_service_name') is not None:
+        reporting_cfg = _require_mapping(
+            server_cfg.get('evaluation_reporting', {}),
+            'themis.ros_server.evaluation_reporting',
+        )
+        resolved_config_path = _resolve_report_config_path(cfg, config_path)
+        result_root = _resolve_report_result_root(
+            reporting_cfg.get('result_output_dir'),
+            resolved_config_path,
+        )
+        reporter_eval_source = _config_get(cfg, 'eval', section_cfg)
+        reporter_eval_config = copy.deepcopy(
+            dict(
+                _require_mapping(reporter_eval_source,
+                                 'config.eval metadata')))
+        runner_cfg = themis_cfg.get('runner')
+        if isinstance(runner_cfg, Mapping):
+            if 'task_ids' in runner_cfg:
+                reporter_eval_config.setdefault('task_ids',
+                                                runner_cfg['task_ids'])
+            if 'episodes_per_task' in runner_cfg:
+                reporter_eval_config.setdefault(
+                    'num_trials_per_task', runner_cfg['episodes_per_task'])
+            if 'run_name' in runner_cfg:
+                reporter_eval_config.setdefault('run_name',
+                                                runner_cfg['run_name'])
+        reporter_eval_config.setdefault('dataset_section', section_name)
+        reporter_eval_config.setdefault('service_name',
+                                        transport.get('service_name'))
+        if 'result_gpu_id' not in reporter_eval_config:
+            configured_gpu_id = reporting_cfg.get('result_gpu_id')
+            if configured_gpu_id is None:
+                report_device = torch.device(resolved_device)
+                configured_gpu_id = (
+                    report_device.index if report_device.type == 'cuda'
+                    and report_device.index is not None else 0)
+            reporter_eval_config['result_gpu_id'] = configured_gpu_id
+
+        from .evaluation_reporter import FluxVLAROSEvaluationReporter
+        evaluation_reporter = FluxVLAROSEvaluationReporter(
+            result_root=result_root,
+            config_path=resolved_config_path,
+            ckpt_path=resolved_ckpt,
+            eval_config=reporter_eval_config,
+            logger=None,
+            feishu=reporting_cfg.get('feishu'),
+        )
     server_type = FluxVLAROSServer
     if resolved_ros_version == 2:
         from .ros2_server import FluxVLAROS2Server
@@ -629,6 +809,7 @@ def build_ros_server_from_config(
     return server_type(
         policy=policy,
         transport=transport,
+        evaluation_reporter=evaluation_reporter,
         node_name=node_name
         or server_cfg.get('node_name', 'fluxvla_inference_server'),
     )
@@ -646,6 +827,62 @@ def _resolve_ros_version(value: Any) -> int:
     if value == 2 or value == '2':
         return 2
     raise ValueError('ROS version must be 1 or 2')
+
+
+def _resolve_report_config_path(
+        cfg: Any, explicit_path: str | os.PathLike | None) -> Path:
+    value = explicit_path
+    if value is None:
+        value = getattr(cfg, 'filename', None)
+    if not isinstance(value, (str, os.PathLike)) or not str(value):
+        raise ValueError(
+            'Evaluation reporting requires the authoritative FluxVLA config '
+            'path')
+    path = Path(value).expanduser().resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f'FluxVLA config not found: {path}')
+    return path
+
+
+def _resolve_report_result_root(value: Any, config_path: Path) -> Path:
+    fluxvla_root = _find_fluxvla_root(config_path)
+    work_dirs_root = (fluxvla_root / 'work_dirs').resolve()
+    if value is None:
+        candidate = work_dirs_root / 'fluxthemis'
+    else:
+        if not isinstance(value, (str, os.PathLike)) or not str(value).strip():
+            raise TypeError(
+                'themis.ros_server.evaluation_reporting.result_output_dir '
+                'must be a non-empty path')
+        requested = Path(value).expanduser()
+        if requested.is_absolute():
+            candidate = requested
+        elif requested.parts and requested.parts[0] == 'work_dirs':
+            candidate = fluxvla_root / requested
+        else:
+            candidate = work_dirs_root / requested
+    resolved = candidate.resolve()
+    try:
+        resolved.relative_to(work_dirs_root)
+    except ValueError as exc:
+        raise ValueError(
+            'Evaluation reporting artifacts must stay inside FluxVLA '
+            f'work_dirs: {work_dirs_root}') from exc
+    return resolved
+
+
+def _find_fluxvla_root(config_path: Path) -> Path:
+    for candidate in config_path.parent.parents:
+        if ((candidate / 'fluxvla' / '__init__.py').is_file()
+                and (candidate / 'configs').is_dir()):
+            try:
+                config_path.relative_to((candidate / 'configs').resolve())
+            except ValueError:
+                continue
+            return candidate.resolve()
+    raise ValueError(
+        'Evaluation reporting config must be located under a FluxVLA '
+        f'configs directory: {config_path}')
 
 
 def _resolve_checkpoint_path(value: Any) -> Path:

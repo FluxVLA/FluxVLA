@@ -57,6 +57,7 @@ def main() -> int:
         service_name=args.service_name,
         node_name=args.node_name,
         ros_version=args.ros_version,
+        config_path=args.config,
     )
     try:
         server.run()

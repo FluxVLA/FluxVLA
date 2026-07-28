@@ -27,6 +27,10 @@ def __getattr__(name):
         'build_ros_server_from_config',
     }
     _ros2_server = {'FluxVLAROS2Server'}
+    _evaluation_reporter = {
+        'EvaluationEventError',
+        'FluxVLAROSEvaluationReporter',
+    }
 
     if name in _public:
         from . import serializers
@@ -40,13 +44,18 @@ def __getattr__(name):
     if name in _ros2_server:
         from . import ros2_server
         return getattr(ros2_server, name)
+    if name in _evaluation_reporter:
+        from . import evaluation_reporter
+        return getattr(evaluation_reporter, name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
 __all__ = [
     'FORMAT_MSGPACK',
     'FORMAT_PROTOBUF',
+    'EvaluationEventError',
     'FluxVLAROSPolicy',
+    'FluxVLAROSEvaluationReporter',
     'FluxVLAROS2Server',
     'FluxVLAROSServer',
     'MsgSerializer',

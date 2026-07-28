@@ -12,11 +12,70 @@ This feature works with:
 - `scripts/train.py --eval-after-train`
 - `scripts/train.sh ... --eval-after-train`
 - `tools/summarize_libero_eval_results.py`
+- `scripts/ros_inference_server.py` with FluxThemis `ReportEvaluation`
+
+## FluxThemis ROS Evaluation Reporting
+
+An integrated ROS evaluation can make FluxVLA the authoritative result owner
+without changing the usual two-terminal launch commands. Configure the shared
+target model file as follows:
+
+```python
+themis = dict(
+    transport=dict(
+        service_name='/fluxvla/predict_action',
+        report_service_name='/fluxvla/report_evaluation',
+        # observation and transport fields ...
+    ),
+    ros_server=dict(
+        evaluation_reporting=dict(
+            result_output_dir='work_dirs/fluxthemis',
+            # Optional direct overrides; otherwise use the environment below.
+            feishu=dict(),
+        ),
+        # inference fields ...
+    ),
+    # runner ...
+)
+```
+
+`report_service_name` enables the acknowledged lifecycle channel. Omitting it
+keeps the PredictAction-only server compatible with older/local clients.
+`result_output_dir` defaults to `work_dirs/fluxthemis`, resolves relative to the
+FluxVLA repository, and must remain inside its `work_dirs` tree.
+
+For every accepted run, the server writes FluxVLA's native layout:
+
+```text
+<result_output_dir>/eval_runs/<checkpoint_stem>/
+  EVAL-<suite>-<model_family>-YYYY_MM_DD-HH_MM_SS[-<run_name>]/
+```
+
+The directory contains `events.jsonl`, `rank0.txt`, and
+`rank_progress/rank0.json` during rollout. At `run_end`, it also contains the
+suite's `<suite>/task<task_index>_results.json` and
+`task_status/<suite>_task<task_index>.status` files plus `failed_tasks.txt`,
+`summary.txt`, `summary.csv`, `summary.json`, and `task_success_rates.csv`.
+`[ros-eval]` and `[eval-progress]` messages, the final directory, and Feishu
+report/skip reasons appear in the FluxVLA server terminal.
+
+The `evaluation_reporting.feishu` mapping accepts `sheet_url`, `app_id`,
+`app_secret`, and `timeout`. Missing values use `FEISHU_SHEET_URL`,
+`FEISHU_APP_ID`, and `FEISHU_APP_SECRET` from the server process. `timeout`
+defaults to 10 seconds for this ROS path. Prefer the environment variables for
+credentials so secrets stay out of configuration snapshots and event journals.
+
+ROS-triggered upload is intentionally full-suite-only. The terminal `run_end`
+must be `finished`, no task filter may be present, the numeric task set must
+match the authoritative suite manifest, and every task must have exactly the
+configured number of completed trials. Smoke, filtered, partial, interrupted,
+and failed runs keep their native files but do not append a spreadsheet row.
 
 ## What Gets Written
 
-The reporter writes one row per completed evaluation summary. It does not
-deduplicate rows, so running the same command twice appends two rows.
+For an evaluation that passes the applicable reporting gate, the reporter writes
+one row per completed summary. It does not deduplicate rows, so running the same
+command twice appends two rows.
 
 LIBERO uses this header:
 

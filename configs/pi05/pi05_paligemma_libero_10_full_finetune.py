@@ -255,6 +255,7 @@ eval = dict(
 themis = dict(
     transport=dict(
         service_name='/fluxvla/predict_action',
+        report_service_name='/fluxvla/report_evaluation',
         timeout_s=30.0,
         image_keys=['agentview_image', 'robot0_eye_in_hand_image'],
         state_keys=[
@@ -288,6 +289,7 @@ themis = dict(
     ros_server=dict(
         ros_version=1,
         dataset_section='eval',
+        evaluation_reporting=dict(result_output_dir='work_dirs/fluxthemis', ),
         device='cuda:0',
         mixed_precision_dtype='bf16',
         enable_mixed_precision=True,
