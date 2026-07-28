@@ -276,7 +276,10 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
                  denorm_action: bool = True,
                  normalize_gripper_action: bool = True,
                  invert_gripper_action: bool = True,
-                 action_norm_mask: List[bool] = None):
+                 action_norm_mask: List[bool] = None,
+                 statistic_name: str = 'private',
+                 discrete_action_dims: List[int] = None,
+                 discrete_norm_type: str = 'min_max'):
         if isinstance(norm_stats, str):
             with open(norm_stats, 'r', encoding='utf-8') as f:
                 self.norm_stats = json.load(f)
@@ -287,6 +290,10 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
         self.strict = strict
         self.denorm_action = denorm_action
         self.action_norm_mask = action_norm_mask
+        self.statistic_name = statistic_name
+        self.discrete_action_dims = (
+            list(discrete_action_dims) if discrete_action_dims else None)
+        self.discrete_norm_type = discrete_norm_type
 
     def __call__(self, data: Dict) -> Dict:
         """Denormalize the data using the provided statistics.
@@ -301,19 +308,44 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
                 contain keys that match the keys in `norm_stats`.
         """
         if self.norm_stats is not None and self.denorm_action:
-            norm_stats = self.norm_stats['private']
+            norm_stats = self.norm_stats[self.statistic_name]
             action = data.get('action', None)[0]
             assert action is not None, \
                 f'Action is not found in the data: {data.keys()}'
-            if self.norm_type == 'quantile':
-                action = self._denormalize_quantile(action,
-                                                    norm_stats['action'])
-            elif self.norm_type == 'min_max':
-                action = self._denormalize_min_max(action,
-                                                   norm_stats['action'])
-            else:  # norm_type == 'mean_std'
-                action = self._denormalize(action, norm_stats['action'])
+            stats = norm_stats['action']
+            cont = self._denormalize_by_type(action, stats, self.norm_type,
+                                             self.action_norm_mask)
+            if self.discrete_action_dims:
+                feat_dim = cont.shape[-1]
+                assert all(
+                    0 <= d < feat_dim for d in self.discrete_action_dims), (
+                        f'discrete_action_dims {self.discrete_action_dims} '
+                        f'out of range for action width {feat_dim}')
+                disc_mask = np.zeros(feat_dim, dtype=bool)
+                disc_mask[list(self.discrete_action_dims)] = True
+                disc = self._denormalize_by_type(action, stats,
+                                                 self.discrete_norm_type,
+                                                 disc_mask.tolist())
+                action = np.where(disc_mask, disc, cont)
+            else:
+                action = cont
         return action
+
+    def _denormalize_by_type(self,
+                             action: np.ndarray,
+                             stats: Dict,
+                             norm_type: str,
+                             mask: List[bool] = None) -> np.ndarray:
+        saved = self.action_norm_mask
+        self.action_norm_mask = mask
+        try:
+            if norm_type == 'quantile':
+                return self._denormalize_quantile(action, stats)
+            if norm_type == 'min_max':
+                return self._denormalize_min_max(action, stats)
+            return self._denormalize(action, stats)
+        finally:
+            self.action_norm_mask = saved
 
 
 @TRANSFORMS.register_module()
@@ -359,6 +391,9 @@ class NormalizeStatesAndActions:
                  clip_norm: bool = False,
                  normalization_epsilon: float = 1e-6,
                  normalize_states: bool = True,
+                 discrete_action_dims: List[int] = None,
+                 discrete_state_dims: List[int] = None,
+                 discrete_norm_type: str = 'min_max',
                  *args,
                  **kwargs):
         self.state_key = state_key
@@ -378,6 +413,11 @@ class NormalizeStatesAndActions:
             self.action_norm_mask = action_norm_mask
         else:
             self.action_norm_mask = None
+        self.discrete_action_dims = (
+            list(discrete_action_dims) if discrete_action_dims else None)
+        self.discrete_state_dims = (
+            list(discrete_state_dims) if discrete_state_dims else None)
+        self.discrete_norm_type = discrete_norm_type
 
     def __call__(self, data: Dict) -> Dict:
         states = np.asarray(data['states'], dtype=np.float32)
@@ -394,17 +434,22 @@ class NormalizeStatesAndActions:
 
         if needs_state_stats:
             state_stats = data['stats'][self.state_key]
-            states = self._normalize_by_type(states, state_stats,
-                                             self.state_norm_type)
+            states = self._normalize_mixed(
+                states,
+                state_stats,
+                self.state_norm_type,
+                discrete_dims=self.discrete_state_dims)
         data['states'] = states
 
         if actions is not None:
-            action_stats = None
             if needs_action_stats:
                 action_stats = data['stats'][self.action_key]
-            actions = self._normalize_by_type(actions, action_stats,
-                                              self.action_norm_type,
-                                              self.action_norm_mask)
+                actions = self._normalize_mixed(
+                    actions,
+                    action_stats,
+                    self.action_norm_type,
+                    discrete_dims=self.discrete_action_dims,
+                    base_mask=self.action_norm_mask)
             data['actions'] = actions
         if self.state_dim is not None:
             data['states'] = self._pad_or_truncate_last_dim(
@@ -423,6 +468,29 @@ class NormalizeStatesAndActions:
         padded = np.full(padded_shape, self.pad_value, dtype=values.dtype)
         padded[..., :current_dim] = values
         return padded
+
+    def _normalize_mixed(self,
+                         x,
+                         stats: Dict,
+                         norm_type: str,
+                         discrete_dims: List[int] = None,
+                         base_mask: List[bool] = None):
+        cont = self._normalize_by_type(x, stats, norm_type, base_mask)
+        if not discrete_dims:
+            return cont
+        feat_dim = x.shape[-1]
+        assert all(0 <= d < feat_dim for d in discrete_dims), (
+            f'discrete_dims {discrete_dims} out of range for feat_dim '
+            f'{feat_dim}')
+        disc_mask = np.zeros(feat_dim, dtype=bool)
+        disc_mask[list(discrete_dims)] = True
+        if base_mask is not None:
+            disc_mask = disc_mask & np.asarray(base_mask, dtype=bool)
+            if not disc_mask.any():
+                return cont
+        disc = self._normalize_by_type(x, stats, self.discrete_norm_type,
+                                       disc_mask)
+        return np.where(disc_mask, disc, cont)
 
     def _normalize_by_type(self,
                            x,

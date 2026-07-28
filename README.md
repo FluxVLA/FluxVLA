@@ -57,6 +57,10 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 **\[2026/06/30\]** 🔥 Single-arm and dual-arm Franka real-robot inference is now supported, including joint/eepose control configs and a deployment guide. See [docs/franka.md](docs/franka.md).
 
+**\[2026/06/30\]** 🔥 FluxVLA deployment on NVIDIA Jetson Orin is now supported, with model acceleration optimizations for efficient edge inference. See [docs/orin_flashing.md](docs/orin_flashing.md) for initial flashing and [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md) to start the FluxVLA Docker setup.
+
+**\[2026/06/25\]** 🔥 GR00T-RTC-accelerated inference is now supported, achieving 45 Hz on an RTX 5090.
+
 **\[2026/06/22\]** 🔥 A minimal Oli humanoid whole-body (loco-manipulation) real-robot inference path (operator + runner + example config) is now available. See [docs/oli_whole_body.md](docs/oli_whole_body.md).
 
 **\[2026/06/17\]** 🔥 ARM reward modeling with RA-BC/AW-BC reweighting is now supported. See [docs/arm.md](docs/arm.md) for setup and usage.
@@ -310,6 +314,26 @@ pip install --no-build-isolation -e .
 > **Note**: `requirements.txt` now composes `requirements-base.txt`,
 > `requirements-sim.txt`, and `requirements-real.txt`. It does not install
 > PyTorch; install CUDA PyTorch first or use `scripts/install_env.sh`.
+
+</details>
+
+<details>
+<summary><b>Jetson Orin Docker configuration</b></summary>
+
+For Jetson Orin setup, see [docs/orin_flashing.md](docs/orin_flashing.md) for initial flashing and JetPack setup, and [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md) for the validated FluxVLA Docker runtime workflow.
+
+Common Orin image targets are layered as follows:
+
+- `fluxvla:orin-base`: minimal runtime baseline with Jetson L4T, PyTorch, Triton, and FluxVLA dependencies.
+- `fluxvla:orin-fa`: `orin-base` plus SM87 FlashAttention for attention-heavy inference.
+- `fluxvla:orin-ros`: `orin-base` plus ROS Noetic runtime and Python bindings for robot integration.
+- `fluxvla:orin-ros-fa`: ROS and FlashAttention combined for real-robot ROS nodes with high-performance inference.
+
+Build selection, ROS image, FlashAttention, and mirror options are documented in [docker/README_DOCKER_ORIN.md](docker/README_DOCKER_ORIN.md). If `ports.ubuntu.com` or PyPI is unstable while building on Orin, enable the bundled mirror option:
+
+```bash
+FLUXVLA_USE_CN_MIRRORS=1 docker/build_docker.sh
+```
 
 </details>
 

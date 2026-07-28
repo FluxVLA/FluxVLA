@@ -12,17 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Callable, Dict
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributed.fsdp.wrap import _module_wrap_policy
 from torch.distributions import Beta
 
 from fluxvla.engines import HEADS
 from fluxvla.engines.losses import reduce_action_bc_loss
+from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
 from fluxvla.models.blocks import SelfAttentionTransformer
 from fluxvla.models.blocks.cross_attention_dit import DiT
 
@@ -286,6 +285,12 @@ class FlowMatchingHead(nn.Module):
             states.unsqueeze(1), embodiment_ids)
         noise = torch.randn(
             actions.shape, device=actions.device, dtype=actions.dtype)
+        # Padding action dims [ori_action_dim:action_dim] are zeros in the
+        # dataset. Keep their noise at zero too, otherwise the action encoder
+        # attends over pure padding noise while the loss only supervises valid
+        # leading dims.
+        if self.ori_action_dim is not None:
+            noise[..., self.ori_action_dim:] = 0
         t_scalar = self.sample_time(
             actions.shape[0], device=actions.device, dtype=actions.dtype)
         T = actions.shape[1]
@@ -414,6 +419,8 @@ class FlowMatchingHead(nn.Module):
                                   device=device)
             v = denoise(actions, t_global)
             actions = actions + dt * v
+            if self.ori_action_dim is not None:
+                actions[..., self.ori_action_dim:] = 0
         return actions
 
     def _predict_action_prefix_rtc(self, actions, denoise, batch_size, device,
@@ -433,8 +440,12 @@ class FlowMatchingHead(nn.Module):
             t_enc[:, :prefix_len] = self.num_timestep_buckets
             v = denoise(actions, t_global, t_enc)
             actions = actions + dt * v
+            if self.ori_action_dim is not None:
+                actions[..., self.ori_action_dim:] = 0
 
         actions[:, :prefix_len] = prev_actions[:, :prefix_len]
+        if self.ori_action_dim is not None:
+            actions[..., self.ori_action_dim:] = 0
         return actions
 
     def _predict_action_guidance_rtc(self, actions, denoise, batch_size,
@@ -467,6 +478,8 @@ class FlowMatchingHead(nn.Module):
                 max_gw,
                 use_vjp=use_vjp)
             actions = actions + dt * v
+            if self.ori_action_dim is not None:
+                actions[..., self.ori_action_dim:] = 0
         return actions
 
     def predict_action(self,
@@ -488,6 +501,8 @@ class FlowMatchingHead(nn.Module):
             dtype=input_features.dtype,
             device=input_features.device,
         )
+        if self.ori_action_dim is not None:
+            actions[..., self.ori_action_dim:] = 0
         dt = 1.0 / self.num_inference_timesteps
 
         if (prev_actions is not None and self.ori_action_dim is not None
@@ -537,13 +552,10 @@ class FlowMatchingHead(nn.Module):
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
-        return (self.noise_s - sample) / self.noise_s
+        return ((self.noise_s - sample) / self.noise_s).clamp_(0.0, 1.0)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """
         Returns a function used to determine which modules to wrap with FSDP.
         """
-        return partial(
-            _module_wrap_policy,
-            module_classes=set([SelfAttentionTransformer, DiT]),
-        )
+        return module_wrap_policy({SelfAttentionTransformer, DiT})

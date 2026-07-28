@@ -13,7 +13,14 @@
 # limitations under the License.
 
 import torch
-from torch.distributed.fsdp import StateDictType
+
+try:
+    from torch.distributed.fsdp import StateDictType
+except ModuleNotFoundError as exc:
+    StateDictType = None
+    _FSDP_IMPORT_ERROR = exc
+else:
+    _FSDP_IMPORT_ERROR = None
 
 
 def str_to_dtype(s: str):
@@ -33,11 +40,14 @@ def str_to_dtype(s: str):
     s = s.lower()
     if s in mapping:
         return mapping[s]
-    else:
-        raise ValueError(f'Unsupported dtype string: {s}')
+    raise ValueError(f'Unsupported dtype string: {s}')
 
 
 def state_dict_type_map(s: str):
+    if StateDictType is None:
+        raise RuntimeError(
+            'FSDP state-dict types are unavailable in this torch build'
+        ) from _FSDP_IMPORT_ERROR
     if s == 'full_state_dict':
         return StateDictType.FULL_STATE_DICT
     if s == 'local_state_dict':

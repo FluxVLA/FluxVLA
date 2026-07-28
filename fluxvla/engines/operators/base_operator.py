@@ -48,9 +48,10 @@ class BaseOperator:
         self._init_base_runtime()
 
     def _init_base_runtime(self):
-        from cv_bridge import CvBridge
-
-        self.bridge = CvBridge()
+        # ``cv_bridge`` is only required by ROS operators that consume raw
+        # sensor_msgs/Image messages.  Keep it lazy so BaseOperator can also
+        # back operators using compressed images or non-ROS middleware.
+        self.bridge = None
         self.cam_info_dict = {}
         self._lock = threading.Lock()
         self._frames = deque(maxlen=self.synced_frame_queue_size)
@@ -189,6 +190,9 @@ class BaseOperator:
         return formatted
 
     def _to_cv_image(self, msg):
+        if self.bridge is None:
+            from cv_bridge import CvBridge
+            self.bridge = CvBridge()
         return self.bridge.imgmsg_to_cv2(msg, 'passthrough')
 
     def _to_optional_cv_image(self, msg):

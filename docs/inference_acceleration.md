@@ -300,10 +300,11 @@ Notes:
 
 ### On RTX 5090 Device (Inference Frequency)
 
-| Model | Baseline (Hz) | Accelerated (Hz) | Speedup |
-| ----- | ------------- | ---------------- | ------- |
-| GR00T | 14.7          | 42.6             | 2.90x   |
-| PI0.5 | 4.52          | 31.6             | 6.99x   |
+| Model     | Baseline (Hz) | Accelerated (Hz) | Speedup |
+| --------- | ------------- | ---------------- | ------- |
+| GR00T     | 14.7          | 42.6             | 2.90x   |
+| GR00T-rtc | 15            | 47.6             | 3.17x   |
+| PI0.5     | 4.52          | 31.6             | 6.99x   |
 
 ### On RTX 4090 Device (Inference Frequency)
 

@@ -12,12 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Callable, Optional, Sequence, Type, Union
 
 import torch
 from torch import nn
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.activations import ACT2FN
 from transformers.cache_utils import Cache, DynamicCache
 from transformers.generation import GenerationMixin
@@ -42,6 +40,7 @@ except ImportError:
     from transformers.utils import LossKwargs as TransformersKwargs
 
 from fluxvla.engines import LLM_BACKBONES
+from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
 
 logger = logging.get_logger(__name__)
 
@@ -1044,11 +1043,8 @@ class ConditionGemmaModel(GemmaPreTrainedModel):
         """
         Returns a function used to determine which modules to wrap with FSDP.
         """
-        transformer_block_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={self.transformer_layer_cls, nn.Parameter},
-        )
-        return transformer_block_policy
+        return transformer_wrap_policy(
+            {self.transformer_layer_cls, nn.Parameter})
 
 
 # Alias for compatibility

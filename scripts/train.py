@@ -245,17 +245,7 @@ def _relaunch_eval_in_fresh_process(args, eval_ckpt_path, relaunch_spec):
     os.execvpe(sys.executable, eval_argv, _get_clean_eval_relaunch_env())
 
 
-def _close_dataset(dataset):
-    if dataset is None:
-        return
-    for method_name in ('cleanup', 'close'):
-        method = getattr(dataset, method_name, None)
-        if callable(method):
-            method()
-            break
-
-
-def _release_training_resources(runner, dataset, eval_dataset=None):
+def _release_training_resources(runner, dataset):
     """Release training state before building evaluation objects."""
     overwatch.info('Cleaning up training resources before evaluation.')
     _sync_distributed()
@@ -263,47 +253,21 @@ def _release_training_resources(runner, dataset, eval_dataset=None):
     if runner is not None and hasattr(runner, 'cleanup'):
         runner.cleanup()
 
-    _close_dataset(dataset)
-    if eval_dataset is not dataset:
-        _close_dataset(eval_dataset)
+    if dataset is not None:
+        for method_name in ('cleanup', 'close'):
+            method = getattr(dataset, method_name, None)
+            if callable(method):
+                method()
+                break
 
     runner = None
     dataset = None
-    eval_dataset = None
     # Two rounds of gc to break any residual reference cycles between the
     # runner, FSDP handles, optimizer state and the config object.
     _clear_cuda_memory()
 
     _sync_distributed()
-    return runner, dataset, eval_dataset
-
-
-def _get_optional_training_eval_dataset_cfg(cfg):
-    """Return an optional in-training eval dataset config.
-
-    The preferred FluxVLA-style entry is ``val_dataloader.dataset``. The
-    shorter ``eval_dataset`` form is also accepted for jobs that only need the
-    dataset object used by the lightweight training eval hook.
-    """
-    if hasattr(cfg, 'val_dataloader') and cfg.val_dataloader is not None:
-        val_dataloader = cfg.val_dataloader
-        if 'dataset' not in val_dataloader:
-            raise KeyError('`val_dataloader` must contain a `dataset` field.')
-        return val_dataloader.dataset, 'val_dataloader.dataset'
-
-    if hasattr(cfg, 'eval_dataset') and cfg.eval_dataset is not None:
-        return cfg.eval_dataset, 'eval_dataset'
-
-    return None, None
-
-
-def _build_optional_training_eval_dataset(cfg):
-    dataset_cfg, source = _get_optional_training_eval_dataset_cfg(cfg)
-    if dataset_cfg is None:
-        return None
-    if overwatch.is_rank_zero():
-        overwatch.info(f'Building training eval dataset from `{source}`.')
-    return build_dataset_from_cfg(dataset_cfg)
+    return runner, dataset
 
 
 def _resolve_eval_ckpt_path(ckpt_path):
@@ -346,8 +310,6 @@ def _get_nested_value(obj, path):
 
 def _resolve_train_seed(cfg):
     """Resolve an explicit training seed from existing config fields."""
-    # Dataset-level seeds control dataset sampling order and may already exist
-    # in older configs; do not promote them to global training seeds.
     for path in (
         ('runner', 'seed'),
         ('train_dataloader', 'seed'),
@@ -383,7 +345,6 @@ def train(args, cfg):
 
     os.makedirs(args.work_dir, exist_ok=True)
     dataset = build_dataset_from_cfg(cfg.train_dataloader.dataset)
-    eval_dataset = _build_optional_training_eval_dataset(cfg)
     if overwatch.is_rank_zero() and hasattr(dataset, 'dataset_statistics'):
         save_dataset_statistics(dataset.dataset_statistics, args.work_dir)
     elif overwatch.is_rank_zero() and hasattr(dataset,
@@ -412,14 +373,13 @@ def train(args, cfg):
         if overwatch.is_rank_zero():
             overwatch.info('Training RNG reset after model setup; '
                            f'rank-local base seed is {rank_seed}.')
-    ckpt_path = runner.run(dataset, eval_dataset=eval_dataset)
+    ckpt_path = runner.run(dataset)
     if args.eval_after_train:
         if not hasattr(cfg, 'eval'):
             overwatch.warning(
                 'No evaluation configuration found. Skipping evaluation.')
             return
-        runner, dataset, eval_dataset = _release_training_resources(
-            runner, dataset, eval_dataset)
+        runner, dataset = _release_training_resources(runner, dataset)
         overwatch.info('Evaluation after training is enabled.')
         eval_ckpt_path = _resolve_eval_ckpt_path(ckpt_path)
         relaunch_spec = _get_eval_relaunch_spec()

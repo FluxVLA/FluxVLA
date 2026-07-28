@@ -23,6 +23,18 @@ from mmengine.utils import ManagerMixin
 from fluxvla.engines.utils.registry import Registry
 
 
+def _print_build_log(message: str) -> None:
+    from mmengine.logging import print_log
+
+    try:
+        print_log(message, logger='current', level=logging.DEBUG)
+    except AttributeError as exc:
+        if ("module 'torch.distributed' has no attribute 'ReduceOp'"
+                not in str(exc)):
+            raise
+        logging.getLogger(__name__).debug(message)
+
+
 def build_from_cfg(
         cfg: Union[dict, ConfigDict, Config],
         registry: Registry,
@@ -69,9 +81,6 @@ def build_from_cfg(
     Returns:
         object: The constructed object.
     """
-    # Avoid circular import
-    from mmengine.logging import print_log
-
     if not isinstance(cfg, (dict, ConfigDict, Config)):
         raise TypeError(
             f'cfg should be a dict, ConfigDict or Config, but got {type(cfg)}')
@@ -131,18 +140,14 @@ def build_from_cfg(
 
         if (inspect.isclass(obj_cls) or inspect.isfunction(obj_cls)
                 or inspect.ismethod(obj_cls)):
-            print_log(
+            _print_build_log(
                 f"An '{obj_cls.__name__}' instance is built from "  # type: ignore # noqa: E501
                 'registry, and its implementation can be found in '
-                f'{obj_cls.__module__}',  # type: ignore
-                logger='current',
-                level=logging.DEBUG)
+                f'{obj_cls.__module__}')  # type: ignore
         else:
-            print_log(
+            _print_build_log(
                 'An instance is built from registry, and its constructor '
-                f'is {obj_cls}',
-                logger='current',
-                level=logging.DEBUG)
+                f'is {obj_cls}')
         return obj
 
 

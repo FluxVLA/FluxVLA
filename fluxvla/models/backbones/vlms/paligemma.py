@@ -13,18 +13,17 @@
 # limitations under the License.
 
 import math
-from functools import partial
 from typing import Callable, Dict, List, Optional, Type
 
 import torch
 import torch.nn as nn
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.gemma.modeling_gemma import (GemmaAttention,
                                                       GemmaDecoderLayer,
                                                       GemmaMLP, GemmaRMSNorm)
 
 from fluxvla.engines import VLM_BACKBONES
+from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
 from .hf_vlm import VLMBackbone
 
 
@@ -146,8 +145,5 @@ class PaliGemma(VLMBackbone):
         Returns:
             Callable: Wrapping policy function.
         """
-        transformer_block_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={GemmaAttention, GemmaMLP, GemmaRMSNorm},
-        )
-        return transformer_block_policy
+        return transformer_wrap_policy(
+            {GemmaAttention, GemmaMLP, GemmaRMSNorm})

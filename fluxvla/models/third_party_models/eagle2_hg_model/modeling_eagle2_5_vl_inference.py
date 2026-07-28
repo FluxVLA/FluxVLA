@@ -891,6 +891,8 @@ class Eagle2_5_VLInferenceForConditionalGeneration(Eagle2_5_VLPreTrainedModel,
                 dtype=torch.bool))
         padding_mask = attention_mask[:, None, None, :].bool()
         combined = causal_mask[None, None, :, :] & padding_mask
+        fully_masked_rows = ~combined.any(dim=-1, keepdim=True)
+        combined = combined | fully_masked_rows
         self.buffers['attention_mask'].copy_(
             torch.where(combined, 0.0, float('-inf')).to(torch.bfloat16))
 

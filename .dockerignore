@@ -1,0 +1,47 @@
+# Git
+.git
+.gitignore
+.github
+
+# Python
+__pycache__
+*.py[cod]
+*.class
+*.so
+.Python
+*.egg-info
+dist
+build
+.pytest_cache
+
+# Jupyter
+.ipynb_checkpoints
+
+# IDEs
+.vscode
+.idea
+*.swp
+*.swo
+
+# Data and models (mount these as volumes)
+/checkpoints/*
+/datasets/*
+/work_dirs/*
+
+# Logs
+*.log
+
+# Temporary files
+*.tmp
+.DS_Store
+
+# Flash attention source (if cloned)
+flash-attention
+
+# Conda/pip cache
+.conda
+.cache
+
+# Keep package source
+!fluxvla/datasets/
+!fluxvla/datasets/**

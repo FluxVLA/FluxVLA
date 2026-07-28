@@ -18,5 +18,6 @@ from .fluxbisim_aloha_operator import AlohaOperatorSim  # noqa: F401, F403
 from .franka_dual_operator import FrankaDualOperator  # noqa: F401, F403
 from .franka_operator import FrankaOperator  # noqa: F401, F403
 from .oli_operator import OliOperator  # noqa: F401, F403
+from .teleop02_wbt_operator import Teleop02WbtOperator  # noqa: F401, F403
 from .tron2_operator import Tron2Operator  # noqa: F401, F403
 from .ur_operator import UROperator  # noqa: F401, F403

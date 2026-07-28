@@ -1,0 +1,333 @@
+FROM nvcr.io/nvidia/l4t-jetpack:r36.4.0 AS base
+
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+ARG UBUNTU_PORTS_MIRROR=
+ARG PIP_INDEX_URL=
+ARG PIP_TRUSTED_HOST=
+
+LABEL org.opencontainers.image.title="FluxVLA Orin Base" \
+      org.opencontainers.image.description="FluxVLA base image for NVIDIA Jetson AGX Orin (JetPack r36.4 / CUDA 12.6)" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.base.name="nvcr.io/nvidia/l4t-jetpack:r36.4.0" \
+      org.opencontainers.image.vendor="Limx Dynamics"
+
+ENV FLUXVLA_VERSION=${VERSION} \
+    FLUXVLA_GIT_SHA=${GIT_SHA} \
+    FLUXVLA_BUILD_DATE=${BUILD_DATE}
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    CUDA_HOME=/usr/local/cuda \
+    MUJOCO_GL=egl \
+    NVIDIA_DRIVER_CAPABILITIES=all \
+    TORCH_CUDA_ARCH_LIST=8.7 \
+    FORCE_CUDA=1 \
+    PIP_NO_CACHE_DIR=1
+ENV PATH=${CUDA_HOME}/bin:${PATH}
+ENV LD_LIBRARY_PATH=${CUDA_HOME}/lib64:${LD_LIBRARY_PATH}
+
+WORKDIR /workspace
+
+RUN printf 'Acquire::Retries "5";\n' > /etc/apt/apt.conf.d/80-fluxvla-retries && \
+    if [ -n "${UBUNTU_PORTS_MIRROR}" ]; then \
+      sed -i "s|http://ports.ubuntu.com/ubuntu-ports|${UBUNTU_PORTS_MIRROR}|g" /etc/apt/sources.list && \
+      sed -i "s|https://ports.ubuntu.com/ubuntu-ports|${UBUNTU_PORTS_MIRROR}|g" /etc/apt/sources.list; \
+    fi && \
+    if [ -n "${PIP_INDEX_URL}" ]; then \
+      printf '[global]\nindex-url = %s\n' "${PIP_INDEX_URL}" > /etc/pip.conf && \
+      if [ -n "${PIP_TRUSTED_HOST}" ]; then \
+        printf 'trusted-host = %s\n' "${PIP_TRUSTED_HOST}" >> /etc/pip.conf; \
+      fi; \
+    fi
+
+RUN apt-get clean && rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb && \
+    apt-get update && \
+    apt-get install -y --no-install-recommends \
+      python3-pip python3-dev git wget curl vim ca-certificates \
+      build-essential cmake ninja-build pkg-config \
+      libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-dev \
+      libglib2.0-0 libsm6 libxext6 libxrender-dev libgomp1 \
+      libjpeg-dev zlib1g-dev libopenblas-dev libopenmpi-dev openmpi-bin && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+
+RUN python3 -m pip install --upgrade pip setuptools wheel && \
+    pip3 install psutil ninja packaging einops==0.4.1
+
+RUN wget -q https://developer.download.nvidia.com/compute/cusparselt/redist/libcusparse_lt/linux-sbsa/libcusparse_lt-linux-sbsa-0.5.2.1-archive.tar.xz -O /tmp/cusparselt.tar.xz && \
+    mkdir -p /tmp/cusparselt && \
+    tar -xf /tmp/cusparselt.tar.xz -C /tmp/cusparselt --strip-components=1 && \
+    cp -a /tmp/cusparselt/include/* /usr/local/cuda/include/ && \
+    cp -a /tmp/cusparselt/lib/* /usr/local/cuda/lib64/ && \
+    rm -rf /tmp/cusparselt /tmp/cusparselt.tar.xz && \
+    ldconfig && \
+    pip3 install numpy==1.26.4 && \
+    pip3 install https://developer.download.nvidia.com/compute/redist/jp/v61/pytorch/torch-2.5.0a0+872d972e41.nv24.08.17622132-cp310-cp310-linux_aarch64.whl && \
+    wget -q --tries=5 --waitretry=5 https://codeload.github.com/pytorch/vision/tar.gz/refs/tags/v0.20.0 -O /tmp/vision.tar.gz && \
+    mkdir -p /tmp/vision && \
+    tar -xzf /tmp/vision.tar.gz -C /tmp/vision --strip-components=1 && \
+    cd /tmp/vision && \
+    BUILD_VERSION=0.20.0 python3 -m pip install --no-build-isolation --no-deps . && \
+    cd /workspace && rm -rf /tmp/vision /tmp/vision.tar.gz
+
+COPY docker/orin/requirements_orin_notorch.txt docker/orin/constraints_orin.txt /workspace/
+COPY vendor/dlimp /workspace/vendor/dlimp
+RUN pip3 install triton==3.5.1 && \
+    pip3 install --no-deps -e /workspace/vendor/dlimp && \
+    pip3 install --no-deps -r /workspace/requirements_orin_notorch.txt && \
+    pip3 install -c /workspace/constraints_orin.txt \
+      absl-py addict aiohttp array-record attrs certifi charset-normalizer click contourpy cycler decorator dill etils filelock fonttools fsspec gast gitpython google-api-core google-auth google-auth-oauthlib google-cloud-core google-cloud-storage google-cloud-storage-control google-crc32c google-pasta google-resumable-media googleapis-common-protos grpcio gym-notices h5py hf-xet huggingface-hub idna importlib-metadata jmespath keras kiwisolver markdown matplotlib-inline mergedeep ml-dtypes multiprocess oauthlib omegaconf openexr opt-einsum pandas pillow platformdirs protobuf pyarrow pydantic pyparsing python-dateutil pyyaml pyyaml-include regex requests requests-oauthlib rich s3transfer safetensors scipy six tensorboard tensorflow-cpu-aws tensorflow-datasets tensorflow-estimator tensorflow-io-gcs-filesystem tensorflow-metadata termcolor tokenizers toml tqdm typing-extensions typing-inspect trimesh urllib3 wrapt xxhash yapf
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg python3-av && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*.deb
+
+COPY . /workspace/FluxVLA
+
+WORKDIR /workspace/FluxVLA
+RUN pip3 install --no-build-isolation --no-deps .
+
+WORKDIR /workspace
+RUN python3 - <<'PY'
+import importlib
+mods = [
+    'torch', 'torchvision', 'numpy', 'triton', 'transformers', 'accelerate', 'datasets',
+    'diffusers', 'mmengine', 'peft', 'timm', 'fluxvla',
+    'fluxvla.transforms.utils',
+    'fluxvla.transforms.transform_inputs',
+  'fluxvla.datasets.rlds_dataset',
+  'fluxvla.datasets.utils.droid_utils',
+  'fluxvla.ops.cuda.gemma_rotary_embedding.gemma_rotary_embedding',
+  'fluxvla.ops.cuda.rotary_pos_embedding.rotary_pos_embedding',
+  'fluxvla.ops.cuda.matmul_bias.matmul_bias',
+]
+for name in mods:
+    mod = importlib.import_module(name)
+    print(f'{name}: {getattr(mod, "__version__", "ok")}')
+PY
+
+CMD ["/bin/bash"]
+
+FROM base AS fa
+
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+ARG FLASH_ATTN_MAX_JOBS=1
+ARG FLASH_ATTN_WHEEL=
+
+LABEL org.opencontainers.image.title="FluxVLA Orin FlashAttention" \
+      org.opencontainers.image.description="FluxVLA image with flash-attn 2.5.5 SM87 for NVIDIA Jetson AGX Orin" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.base.name="fluxvla:orin-base" \
+      org.opencontainers.image.vendor="Limx Dynamics"
+
+ENV FLASH_ATTENTION_FORCE_BUILD=TRUE
+
+COPY docker/.wheelhouse/ /tmp/wheelhouse/
+
+RUN if [ -z "${FLASH_ATTN_WHEEL}" ] || [ ! -f "/tmp/wheelhouse/${FLASH_ATTN_WHEEL}" ]; then \
+      wget -q --tries=5 --waitretry=5 \
+        https://codeload.github.com/Dao-AILab/flash-attention/tar.gz/refs/tags/v2.5.5 \
+        -O /tmp/flash-attention.tar.gz && \
+      mkdir -p /tmp/flash-attention && \
+      tar -xzf /tmp/flash-attention.tar.gz -C /tmp/flash-attention --strip-components=1 && \
+      rm -rf /tmp/flash-attention/csrc/cutlass && \
+      mkdir -p /tmp/flash-attention/csrc/cutlass && \
+      wget -q --tries=5 --waitretry=5 \
+        https://codeload.github.com/NVIDIA/cutlass/tar.gz/bbe579a9e3beb6ea6626d9227ec32d0dae119a49 \
+        -O /tmp/cutlass.tar.gz && \
+      tar -xzf /tmp/cutlass.tar.gz -C /tmp/flash-attention/csrc/cutlass --strip-components=1 && \
+      rm -f /tmp/flash-attention.tar.gz /tmp/cutlass.tar.gz; \
+    fi
+
+RUN if [ -z "${FLASH_ATTN_WHEEL}" ] || [ ! -f "/tmp/wheelhouse/${FLASH_ATTN_WHEEL}" ]; then \
+      cd /tmp/flash-attention && \
+      python3 -c "from pathlib import Path; setup_py = Path('setup.py'); s = setup_py.read_text(); old = '''    cc_flag.append(\"-gencode\")\n    cc_flag.append(\"arch=compute_80,code=sm_80\")\n    if CUDA_HOME is not None:\n        if bare_metal_version >= Version(\"11.8\"):\n            cc_flag.append(\"-gencode\")\n            cc_flag.append(\"arch=compute_90,code=sm_90\")\n'''; new = '''    cc_flag.append(\"-gencode\")\n    cc_flag.append(\"arch=compute_87,code=sm_87\")\n'''; assert old in s, 'flash-attn 2.5.5 setup.py arch block not found'; setup_py.write_text(s.replace(old, new))"; \
+  fi
+
+RUN if [ -n "${FLASH_ATTN_WHEEL}" ] && [ -f "/tmp/wheelhouse/${FLASH_ATTN_WHEEL}" ]; then \
+      pip3 install "/tmp/wheelhouse/${FLASH_ATTN_WHEEL}"; \
+    else \
+      cd /tmp/flash-attention && \
+      MAX_JOBS="${FLASH_ATTN_MAX_JOBS}" pip3 install --no-build-isolation .; \
+    fi
+
+RUN rm -rf /tmp/flash-attention /tmp/wheelhouse
+
+RUN python3 - <<'PY'
+import flash_attn
+from flash_attn.flash_attn_interface import flash_attn_func, flash_attn_varlen_func
+import flash_attn_2_cuda
+
+print('flash_attn:', flash_attn.__version__)
+print('flash_attn_func:', flash_attn_func is not None)
+print('flash_attn_varlen_func:', flash_attn_varlen_func is not None)
+print('flash_attn_2_cuda:', flash_attn_2_cuda.__name__)
+PY
+
+CMD ["/bin/bash"]
+
+FROM base AS ros
+
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="FluxVLA Orin ROS" \
+      org.opencontainers.image.description="FluxVLA image with ROS Noetic for NVIDIA Jetson AGX Orin" \
+      org.opencontainers.image.version="${VERSION}" \
+      org.opencontainers.image.revision="${GIT_SHA}" \
+      org.opencontainers.image.created="${BUILD_DATE}" \
+      org.opencontainers.image.base.name="fluxvla:orin-base" \
+      org.opencontainers.image.vendor="Limx Dynamics" \
+      com.limxdynamics.fluxvla.ros.enabled="1"
+
+ENV FLUXVLA_INSTALL_ROS=1
+
+COPY docker/orin/patch_rosconsole.py /tmp/patch_rosconsole.py
+
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends \
+      libboost-all-dev libconsole-bridge-dev libpoco-dev libtinyxml2-dev \
+      liblz4-dev libbz2-dev uuid-dev liblog4cxx-dev \
+      libopencv-dev python3-opencv python3-empy python3-yaml python3-numpy \
+      python3-defusedxml python3-netifaces liborocos-kdl-dev \
+      liburdfdom-dev liburdfdom-headers-dev && \
+    pip3 install rosdep rosinstall_generator vcstool catkin_pkg rospkg empy==3.3.4 pycryptodomex python-gnupg && \
+    mkdir -p /opt/rosdistro && \
+    for attempt in 1 2 3 4 5; do \
+      curl -fsSL --retry 5 --retry-delay 2 --connect-timeout 20 \
+        https://codeload.github.com/ros/rosdistro/tar.gz/master \
+        -o /tmp/rosdistro.tar.gz && break; \
+      if [ "$attempt" = "5" ]; then exit 1; fi; \
+      echo "rosdistro download failed, retrying (${attempt}/5)"; \
+    done && \
+    tar -xzf /tmp/rosdistro.tar.gz -C /opt/rosdistro --strip-components=1 && \
+    export ROSDISTRO_INDEX_URL=file:///opt/rosdistro/index-v4.yaml && \
+    mkdir -p /etc/ros/rosdep/sources.list.d && \
+    { \
+      echo 'yaml file:///opt/rosdistro/rosdep/base.yaml'; \
+      echo 'yaml file:///opt/rosdistro/rosdep/python.yaml'; \
+      echo 'yaml file:///opt/rosdistro/rosdep/ruby.yaml'; \
+    } > /etc/ros/rosdep/sources.list.d/20-default.list && \
+    for attempt in 1 2 3 4 5; do \
+      rosdep update --rosdistro noetic --include-eol-distros && break; \
+      if [ "$attempt" = "5" ]; then exit 1; fi; \
+      echo "rosdep update failed, retrying (${attempt}/5)"; \
+    done && \
+    mkdir -p /opt/ros_noetic_ws/src && \
+    cd /opt/ros_noetic_ws && \
+    for attempt in 1 2 3 4 5; do \
+      rosinstall_generator ros_comm common_msgs vision_opencv \
+        --rosdistro noetic --deps --tar > noetic-fluxvla.rosinstall.tmp && \
+        mv noetic-fluxvla.rosinstall.tmp noetic-fluxvla.rosinstall && break; \
+      rm -f noetic-fluxvla.rosinstall.tmp; \
+      if [ "$attempt" = "5" ]; then exit 1; fi; \
+      echo "rosinstall_generator failed, retrying (${attempt}/5)"; \
+    done && \
+    python3 -c "import re; from pathlib import Path; path = Path('noetic-fluxvla.rosinstall'); s = path.read_text(); s = re.sub(r'https://github\.com/([^/]+)/([^/]+)/archive/(.+?)\.tar\.gz', r'https://codeload.github.com/\1/\2/tar.gz/\3', s); path.write_text(s)" && \
+    rm -rf src && mkdir -p src && \
+    for attempt in 1 2 3 4 5; do \
+      vcs import --workers 1 --retry 5 --skip-existing --input noetic-fluxvla.rosinstall src && break; \
+      if [ "$attempt" = "5" ]; then exit 1; fi; \
+      echo "vcs import failed, retrying (${attempt}/5)"; \
+    done && \
+    python3 /tmp/patch_rosconsole.py && \
+    apt-get update && \
+    rosdep install --from-paths src --ignore-packages-from-source \
+      --rosdistro noetic --os=ubuntu:jammy --skip-keys "catkin_pkg python3-catkin-pkg-modules python3-rosdep-modules" -y && \
+    ./src/catkin/bin/catkin_make_isolated --install \
+      --install-space /opt/ros/noetic \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DPYTHON_EXECUTABLE=/usr/bin/python3 && \
+    rm -rf /opt/ros_noetic_ws/build_isolated \
+         /opt/ros_noetic_ws/devel_isolated \
+         /root/.ros/rosdep/sources.cache \
+         /var/lib/apt/lists/* \
+         /var/cache/apt/archives/*.deb && \
+    rm -f /tmp/patch_rosconsole.py
+
+RUN . /opt/ros/noetic/setup.sh && \
+  python3 - <<'PY'
+import importlib
+mods = [
+  'rospy', 'cv_bridge', 'sensor_msgs.msg', 'geometry_msgs.msg',
+  'nav_msgs.msg', 'std_msgs.msg', 'rosbag', 'Cryptodome.Cipher', 'gnupg',
+]
+for name in mods:
+  mod = importlib.import_module(name)
+  print(f'{name}: {getattr(mod, "__version__", "ok")}')
+PY
+
+COPY docker/orin/ros_entrypoint.sh /ros_entrypoint.sh
+RUN chmod +x /ros_entrypoint.sh
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["/bin/bash"]
+
+FROM ros AS ros_layer
+FROM fa AS ros-fa
+
+ARG VERSION=dev
+ARG GIT_SHA=unknown
+ARG BUILD_DATE=unknown
+
+LABEL org.opencontainers.image.title="FluxVLA Orin ROS + FlashAttention" \
+    org.opencontainers.image.description="FluxVLA image with ROS Noetic and flash-attn 2.5.5 SM87 for NVIDIA Jetson AGX Orin" \
+    org.opencontainers.image.version="${VERSION}" \
+    org.opencontainers.image.revision="${GIT_SHA}" \
+    org.opencontainers.image.created="${BUILD_DATE}" \
+    org.opencontainers.image.base.name="fluxvla:orin-fa" \
+    org.opencontainers.image.vendor="Limx Dynamics" \
+    com.limxdynamics.fluxvla.ros.enabled="1"
+
+ENV FLUXVLA_INSTALL_ROS=1
+
+COPY --from=ros_layer /opt/ros/noetic /opt/ros/noetic
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/catkin_pkg /usr/local/lib/python3.10/dist-packages/catkin_pkg
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/catkin_pkg_modules-* /usr/local/lib/python3.10/dist-packages/
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/rospkg /usr/local/lib/python3.10/dist-packages/rospkg
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/rospkg-* /usr/local/lib/python3.10/dist-packages/
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/rosdistro /usr/local/lib/python3.10/dist-packages/rosdistro
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/rosdistro-* /usr/local/lib/python3.10/dist-packages/
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/docutils /usr/local/lib/python3.10/dist-packages/docutils
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/docutils-* /usr/local/lib/python3.10/dist-packages/
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/distro /usr/local/lib/python3.10/dist-packages/distro
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/distro-* /usr/local/lib/python3.10/dist-packages/
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/gnupg.py /usr/local/lib/python3.10/dist-packages/gnupg.py
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/python_gnupg-* /usr/local/lib/python3.10/dist-packages/
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/Cryptodome /usr/local/lib/python3.10/dist-packages/Cryptodome
+COPY --from=ros_layer /usr/local/lib/python3.10/dist-packages/pycryptodomex-* /usr/local/lib/python3.10/dist-packages/
+
+RUN apt-get update && \
+  DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    libboost-python1.74.0 \
+    libboost-regex1.74.0 && \
+  rm -rf /var/lib/apt/lists/*
+
+RUN . /opt/ros/noetic/setup.sh && \
+  python3 - <<'PY'
+import importlib
+mods = [
+  'flash_attn', 'flash_attn.flash_attn_interface', 'flash_attn_2_cuda',
+  'rospy', 'cv_bridge', 'sensor_msgs.msg', 'geometry_msgs.msg',
+  'nav_msgs.msg', 'std_msgs.msg', 'rosbag', 'Cryptodome.Cipher', 'gnupg',
+]
+for name in mods:
+  mod = importlib.import_module(name)
+  print(f'{name}: {getattr(mod, "__version__", "ok")}')
+from cv_bridge.boost.cv_bridge_boost import getCvType
+print(f'cv_bridge boost rgb8: {getCvType("rgb8")}')
+PY
+
+COPY docker/orin/ros_entrypoint.sh /ros_entrypoint.sh
+RUN chmod +x /ros_entrypoint.sh
+
+ENTRYPOINT ["/ros_entrypoint.sh"]
+CMD ["/bin/bash"]

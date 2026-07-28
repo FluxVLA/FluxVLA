@@ -12,17 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Callable, Dict, Type
 
 import torch
 import torch.nn as nn
-from torch.distributed.fsdp.wrap import (_or_policy,
-                                         transformer_auto_wrap_policy)
 from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
 from transformers.models.smolvlm.modeling_smolvlm import SmolVLMModel
 
 from fluxvla.engines import VLM_BACKBONES
+from fluxvla.engines.utils.fsdp_wrap import or_policy, transformer_wrap_policy
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 
 overwatch = initialize_overwatch(__name__)
@@ -175,19 +173,10 @@ class SmolVLMBackbone(nn.Module):
         from transformers.models.smolvlm.modeling_smolvlm import \
             SmolVLMEncoderLayer
 
-        llm_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={LlamaDecoderLayer},
-        )
-        vision_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={SmolVLMEncoderLayer},
-        )
+        llm_policy = transformer_wrap_policy({LlamaDecoderLayer})
+        vision_policy = transformer_wrap_policy({SmolVLMEncoderLayer})
 
         def match_linear(module, *args, **kwargs):
             return isinstance(module, (nn.Linear, nn.LayerNorm, LlamaRMSNorm))
 
-        return partial(
-            _or_policy,
-            policies=[llm_policy, vision_policy, match_linear],
-        )
+        return or_policy([llm_policy, vision_policy, match_linear])

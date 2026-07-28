@@ -23,8 +23,22 @@ from .fluxbisim_aloha_inference_runner import \
 from .fluxbisim_base_inference_runner import \
     BaseInferenceRunnerSim  # noqa: F401, F403
 from .franka_inference_runner import FrankaInferenceRunner  # noqa: F401, F403
-from .fsdp_train_runner import FSDPTrainRunner  # noqa: F401, F403
+
+try:
+    from .fsdp_train_runner import FSDPTrainRunner  # noqa: F401, F403
+except ModuleNotFoundError as exc:
+    missing_module = getattr(exc, 'name', '') or ''
+    if not (missing_module.startswith('torch.distributed')
+            or missing_module.startswith('torch._C._distributed_c10d')):
+        raise
+
 from .oli_inference_runner import OliInferenceRunner  # noqa: F401, F403
+from .teleop02_wbt_inference_runner import \
+    Teleop02WbtInferenceRunner  # noqa: F401, F403
+from .teleop02_wbt_rtc_inference_runner import \
+    Teleop02WbtRTCInferenceRunner  # noqa: F401, F403
+from .oli_rtc_inference_runner import \
+    OliRTCInferenceRunner  # noqa: F401, F403
 from .tron2_inference_runner import Tron2InferenceRunner  # noqa: F401, F403
 from .tron2_rtc_inference_runner import \
     Tron2RTCInferenceRunner  # noqa: F401, F403

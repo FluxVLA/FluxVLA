@@ -22,14 +22,13 @@
 # Notes: Refactored from X-VLA's monolithic model into FluxVLA's backbone /
 # head / wrapper split while preserving the external XVLA data flow.
 
-from functools import partial
 from typing import Callable, Dict, List, Optional
 
 import torch
-from torch.distributed.fsdp.wrap import _or_policy
 from transformers import PretrainedConfig
 
 from fluxvla.engines import VLAS
+from fluxvla.engines.utils.fsdp_wrap import or_policy
 from .base_vla import BaseVLA
 
 
@@ -167,7 +166,7 @@ class X_VLA(BaseVLA):
             wrapping_policies.append(self.vla_head.get_fsdp_wrapping_policy())
         if not wrapping_policies:
             raise ValueError('X_VLA could not build any FSDP wrapping policy.')
-        return partial(_or_policy, policies=wrapping_policies)
+        return or_policy(wrapping_policies)
 
     def get_lr_param_group_strategy(self, learning_rate: float, lr_coef: float,
                                     weight_decay: Optional[float],

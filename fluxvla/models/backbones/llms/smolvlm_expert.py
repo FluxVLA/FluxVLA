@@ -12,17 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Callable
 
 import torch
 import torch.nn as nn
-from torch.distributed.fsdp.wrap import (_or_policy,
-                                         transformer_auto_wrap_policy)
 from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaModel
 
 from fluxvla.engines import LLM_BACKBONES
+from fluxvla.engines.utils.fsdp_wrap import or_policy, transformer_wrap_policy
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 
 overwatch = initialize_overwatch(__name__)
@@ -173,15 +171,9 @@ class SmolVLMExpert(nn.Module):
         from transformers.models.llama.modeling_llama import (
             LlamaDecoderLayer, LlamaRMSNorm)
 
-        transformer_block_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={LlamaDecoderLayer},
-        )
+        transformer_block_policy = transformer_wrap_policy({LlamaDecoderLayer})
 
         def match_linear(module, *args, **kwargs):
             return isinstance(module, (nn.Linear, nn.LayerNorm, LlamaRMSNorm))
 
-        return partial(
-            _or_policy,
-            policies=[transformer_block_policy, match_linear],
-        )
+        return or_policy([transformer_block_policy, match_linear])

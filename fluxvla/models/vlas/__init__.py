@@ -12,20 +12,25 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .arm_reward_model import ARMRewardModel  # noqa: F401, F403
+from fluxvla.engines.utils.optional_imports import import_optional_symbols
+
 from .llava_vla import LlavaVLA  # noqa: F401, F403
 from .open_vla import OpenVLA  # noqa: F401, F403
-from .pi0_flowmatching import PI0FlowMatching  # noqa: F401, F403
-from .pi05_flowmatching import PI05FlowMatching  # noqa: F401, F403
-from .pi05_flowmatching_inference import \
-    PI05FlowMatchingInference  # noqa: F401, F403
-from .pi05_flowmatching_inference_rtc import \
-    PI05FlowMatchingRTCInference  # noqa: F401, F403
-from .sarm_reward_model import SARMRewardModel  # noqa: F401, F403
-from .smolvla_flowmatching import SmolVLAFlowMatching  # noqa: F401, F403
-from .x_vla import X_VLA  # noqa: F401, F403
 
-try:
-    from .dreamzero_vla import DreamZeroVLA  # noqa: F401
-except ImportError:
-    pass
+import_optional_symbols(
+    __name__,
+    globals(),
+    {
+        'arm_reward_model': ['ARMRewardModel'],
+        'pi0_flowmatching': ['PI0FlowMatching'],
+        'pi05_flowmatching': ['PI05FlowMatching'],
+        'pi05_flowmatching_inference': ['PI05FlowMatchingInference'],
+        'pi05_flowmatching_inference_rtc': [
+            'PI05FlowMatchingRTCInference'
+        ],
+        'sarm_reward_model': ['SARMRewardModel'],
+        'smolvla_flowmatching': ['SmolVLAFlowMatching'],
+        'x_vla': ['X_VLA'],
+        'dreamzero_vla': ['DreamZeroVLA'],
+    },
+)

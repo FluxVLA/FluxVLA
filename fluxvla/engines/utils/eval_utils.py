@@ -24,7 +24,7 @@ import imageio
 import numpy as np
 import torch
 from mmengine.utils import digit_version
-from PIL import Image, ImageDraw
+from PIL import Image
 
 from .image_ops import (crop_and_resize_numpy, jpeg_roundtrip_numpy,
                         resize_hwc_lanczos3_numpy)
@@ -390,9 +390,7 @@ def save_rollout_video(rollout_images,
                        success,
                        task_description,
                        work_dir,
-                       log_file=None,
-                       rollout_dir=None,
-                       save_multi_view=False):
+                       log_file=None):
     """Saves a video of the rollout images to a file.
 
     Args:
@@ -404,50 +402,20 @@ def save_rollout_video(rollout_images,
         work_dir (str): Directory where the video will be saved.
         log_file (file object, optional): File to log the save path.
             Defaults to None.
-        rollout_dir (str, optional): Exact directory where the video will be
-            saved. When ``None``, videos are saved under
-            ``work_dir/rollouts/<date>``.
-        save_multi_view (bool, optional): Whether dict frames should be tiled
-            side by side for multi-view replay videos. Defaults to ``False``;
-            when disabled, only the first view in each dict frame is
-            saved.
 
     Returns:
         str: The path to the saved video file.
     """
     date = time.strftime('%Y_%m_%d')
     date_time = time.strftime('%Y_%m_%d-%H_%M_%S')
-    if rollout_dir is None:
-        rollout_dir = os.path.join(work_dir, 'rollouts', date)
+    rollout_dir = os.path.join(work_dir, 'rollouts', date)
     os.makedirs(rollout_dir, exist_ok=True)
     processed_task_description = task_description.lower().replace(
         ' ', '_').replace('\n', '_').replace('.', '_')[:50]
     mp4_path = f'{rollout_dir}/{date_time}--episode={idx}--success={success}--task={processed_task_description}.mp4'  # noqa: E501
     video_writer = imageio.get_writer(mp4_path, fps=30)
     for img in rollout_images:
-        if isinstance(img, dict):
-            if save_multi_view:
-                images = []
-                for key, value in img.items():
-                    value_array = (
-                        np.array(value) if isinstance(value, Image.Image) else
-                        np.array(value, copy=True))
-                    pil_img = Image.fromarray(value_array)
-                    draw = ImageDraw.Draw(pil_img)
-                    draw.text((10, 10), str(key), fill=(255, 255, 255))
-                    images.append(np.array(pil_img))
-                frame = np.concatenate(images, axis=1)
-            else:
-                img = next(iter(img.values()))
-                if isinstance(img, Image.Image):
-                    frame = np.array(img.convert('RGB'))
-                else:
-                    frame = np.array(img)
-        elif isinstance(img, Image.Image):
-            frame = np.array(img.convert('RGB'))
-        else:
-            frame = np.array(img)
-        video_writer.append_data(frame)
+        video_writer.append_data(img)
     video_writer.close()
     if log_file is not None:
         log_file.write(f'Saved rollout MP4 at path {mp4_path}\n')

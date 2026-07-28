@@ -13,16 +13,15 @@
 # limitations under the License.
 
 import copy
-from functools import partial
 from typing import Callable, Dict, Optional, cast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributed.fsdp.wrap import _module_wrap_policy
 
 from fluxvla.datasets.utils.sarm_utils import pad_state_to_max_dim
 from fluxvla.engines import VLAS
+from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
 from fluxvla.models.backbones.llms.arm import ARMBackbone
 from .base_vla import BaseVLA
 
@@ -380,5 +379,4 @@ class ARMRewardModel(BaseVLA):
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return the FSDP auto-wrap policy for ARM transformer layers."""
-        return partial(
-            _module_wrap_policy, module_classes={nn.TransformerEncoderLayer})
+        return module_wrap_policy({nn.TransformerEncoderLayer})

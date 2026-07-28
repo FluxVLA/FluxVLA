@@ -12,12 +12,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-from functools import partial
 from typing import Callable, Dict, List, Optional, Type
 
 import torch
 from torch import nn
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers import AutoConfig
 from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3.modeling_qwen3 import (Qwen3Attention,
@@ -25,10 +23,10 @@ from transformers.models.qwen3.modeling_qwen3 import (Qwen3Attention,
                                                       Qwen3MLP)
 
 from fluxvla.engines import VLM_BACKBONES, str_to_dtype
+from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
 from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl import \
     Eagle2_5_VLForConditionalGeneration  # noqa: E501
-from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl_inference import \
-    Eagle2_5_VLInferenceForConditionalGeneration  # noqa: E501
+
 from .hf_vlm import apply_attn_implementation_to_config
 
 
@@ -69,8 +67,7 @@ class EagleBackbone(nn.Module):
         elif hasattr(config, 'num_hidden_layers'):
             config.num_hidden_layers = select_layer
 
-        # Ensure the attention implementation is set before model creation.
-        # This must be done BEFORE model creation
+        # Apply FlashAttention 2 consistently to all nested configs.
         apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
@@ -227,11 +224,7 @@ class EagleBackbone(nn.Module):
         Returns:
             Callable: Wrapping policy function.
         """
-        transformer_block_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={Qwen3Attention, Qwen3MLP},
-        )
-        return transformer_block_policy
+        return transformer_wrap_policy({Qwen3Attention, Qwen3MLP})
 
 
 @VLM_BACKBONES.register_module()
@@ -277,8 +270,7 @@ class EagleInferenceBackbone(nn.Module):
         elif hasattr(config, 'num_hidden_layers'):
             config.num_hidden_layers = select_layer
 
-        # Ensure the attention implementation is set before model creation.
-        # This must be done BEFORE model creation
+        # Apply FlashAttention 2 consistently to all nested configs.
         apply_attn_implementation_to_config(config, 'flash_attention_2')
 
         # Use torch_dtype parameter to initialize directly with the target
@@ -286,6 +278,13 @@ class EagleInferenceBackbone(nn.Module):
         target_dtype = str_to_dtype(dtype) if dtype is not None else None
 
         # Initialize model and convert to target dtype
+        try:
+            from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl_inference import \
+                Eagle2_5_VLInferenceForConditionalGeneration  # noqa: E501
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                'Eagle inference backbone requires optional triton dependency'
+            ) from exc
         self.vlm = Eagle2_5_VLInferenceForConditionalGeneration(config=config)
         if target_dtype is not None:
             self.vlm = self.vlm.to(target_dtype)

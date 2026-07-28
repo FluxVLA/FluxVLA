@@ -589,6 +589,33 @@ class PrivateInferenceDataset:
         self.max_len = max_len
         self.use_quantiles = use_quantiles
         self.embodiment_id = embodiment_id
+        self._img_masks_cuda = None
+        self._embodiment_ids_cuda = None
+        self._lang_cuda_cache = {}
+
+    def _get_img_masks_cuda(self):
+        if self._img_masks_cuda is None:
+            self._img_masks_cuda = torch.ones(
+                1, len(self.img_keys), dtype=torch.bool, device='cuda')
+        return self._img_masks_cuda
+
+    def _get_embodiment_ids_cuda(self):
+        if self._embodiment_ids_cuda is None:
+            self._embodiment_ids_cuda = torch.tensor(
+                [self.embodiment_id], dtype=torch.int32, device='cuda')
+        return self._embodiment_ids_cuda
+
+    def _get_lang_cuda(self, tokens: np.ndarray, masks: np.ndarray):
+        cache_key = (tokens.tobytes(), masks.tobytes(), tokens.shape,
+                     masks.shape)
+        cached = self._lang_cuda_cache.get(cache_key)
+        if cached is None:
+            cached = (
+                torch.from_numpy(tokens).unsqueeze(0).cuda(),
+                torch.from_numpy(masks).unsqueeze(0).cuda(),
+            )
+            self._lang_cuda_cache[cache_key] = cached
+        return cached
 
     def __call__(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """Process the observation for evaluation."""
@@ -607,20 +634,19 @@ class PrivateInferenceDataset:
         for transform in self.transforms:
             inputs = transform(inputs)
 
+        lang_tokens, lang_masks = self._get_lang_cuda(
+            np.ascontiguousarray(inputs['lang_tokens']),
+            np.ascontiguousarray(inputs['lang_masks']))
         batch = dict(
             images=torch.from_numpy(
                 inputs['images']).unsqueeze(0).cuda(),  # noqa: E501
-            img_masks=torch.tensor([[True for _ in range(len(self.img_keys))]
-                                    ]).cuda(),  # noqa: E501
-            lang_tokens=torch.from_numpy(
-                inputs['lang_tokens']).unsqueeze(0).cuda(),
-            lang_masks=torch.from_numpy(
-                inputs['lang_masks']).unsqueeze(0).cuda(),
+            img_masks=self._get_img_masks_cuda(),
+            lang_tokens=lang_tokens,
+            lang_masks=lang_masks,
             states=torch.from_numpy(
                 inputs['states']).float().cuda().unsqueeze(0))
         if self.embodiment_id is not None:
-            batch['embodiment_ids'] = torch.from_numpy(
-                np.array(self.embodiment_id)).int().cuda().unsqueeze(0)
+            batch['embodiment_ids'] = self._get_embodiment_ids_cuda()
         return batch
 
     def _normalize(self, normalized_states: np.ndarray, stats: Dict):

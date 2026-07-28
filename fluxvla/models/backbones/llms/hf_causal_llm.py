@@ -12,16 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers import AutoConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from fluxvla.engines import LLM_BACKBONES
+from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 from .configs import LLM_BACKBONE_CONFIGS
 
@@ -71,7 +70,7 @@ class HFCausalLLMBackbone(nn.Module):
         # more explicit about LLM-specific details
         if not self.inference_mode:
             overwatch.info(
-                f'Loading [bold]{llm_family}[/] LLM from [underline]{llm_path}[/]',  # noqa: E501
+                f'Loading [bold]{llm_family}[/] LLM from [underline]`{llm_path}`[/]',  # noqa: E501
                 ctx_level=1)
             if llm_config is None:
                 llm_config = llm_cfg.from_pretrained(
@@ -98,7 +97,7 @@ class HFCausalLLMBackbone(nn.Module):
         # no need to load base weights!
         else:
             overwatch.info(
-                f'Building empty [bold]{llm_family}[/] LLM from [underline]{llm_path}[/]',  # noqa: E501
+                f'Building empty [bold]{llm_family}[/] LLM from [underline]`{llm_path}`[/]',  # noqa: E501
                 ctx_level=1)
             llm_config = AutoConfig.from_pretrained(
                 llm_path, token=hf_token, trust_remote_code=trust_remote_code)
@@ -116,12 +115,8 @@ class HFCausalLLMBackbone(nn.Module):
         self.config = self.llm.config
 
     def get_fsdp_wrapping_policy(self) -> Callable:
-        """Return a `transformer_auto_wrap_policy` where we wrap each instance of `self.transformer_layer_cls`"""  # noqa: E501
-        transformer_block_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={self.transformer_layer_cls})
-
-        return transformer_block_policy
+        """Return an FSDP policy wrapping transformer layer instances."""
+        return transformer_wrap_policy({self.transformer_layer_cls})
 
     def enable_gradient_checkpointing(self) -> None:
         """Dispatch to underlying LLM instance's `gradient_checkpointing_enable`; defined for all `PretrainedModel`."""  # noqa: E501

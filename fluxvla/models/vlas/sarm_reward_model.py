@@ -13,19 +13,18 @@
 # limitations under the License.
 
 import copy
-from functools import partial
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, cast
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributed.fsdp.wrap import _module_wrap_policy
 
 from fluxvla.datasets.utils.sarm_utils import (load_temporal_proportions,
                                                normalize_stage_tau,
                                                pad_state_to_max_dim)
 from fluxvla.engines import VLAS, initialize_overwatch
+from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
 from fluxvla.models.backbones.llms.sarm import SARMBackbone
 from .base_vla import BaseVLA
 
@@ -489,5 +488,4 @@ class SARMRewardModel(BaseVLA):
         Returns:
             Callable: Policy wrapping ``nn.TransformerEncoderLayer`` modules.
         """
-        return partial(
-            _module_wrap_policy, module_classes={nn.TransformerEncoderLayer})
+        return module_wrap_policy({nn.TransformerEncoderLayer})

@@ -12,18 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Callable, Dict, List, Optional, Type
 
 import torch
 import torch.nn as nn
-from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import \
     Qwen2_5_VLDecoderLayer
 
 from fluxvla.engines import VLM_BACKBONES
-from .hf_vlm import VLMBackbone
+from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from .hf_vlm import VLMBackbone, validate_attn_implementation
 
 
 @VLM_BACKBONES.register_module()
@@ -46,16 +45,15 @@ class QWen2_5VL(VLMBackbone):
     def __init__(self,
                  vlm_backbone_id: str,
                  vlm_config: Dict = None,
-                 vlm_path: Optional[str] = None) -> None:
-        attn_impl = 'flash_attention_2'
+                 vlm_path: Optional[str] = None,
+                 attn_implementation: str = 'flash_attention_2') -> None:
+        attn_implementation = validate_attn_implementation(
+            attn_implementation)
         super().__init__(
             vlm_backbone_id,
             vlm_config,
             vlm_path=vlm_path,
-            attn_implementation=attn_impl)
-
-        if hasattr(self.vlm.config, 'attn_implementation'):
-            self.vlm.config.attn_implementation = attn_impl
+            attn_implementation=attn_implementation)
 
         if hasattr(self.vlm.config, 'use_memory_efficient_attention'):
             self.vlm.config.use_memory_efficient_attention = True
@@ -121,8 +119,4 @@ class QWen2_5VL(VLMBackbone):
         Returns:
             Callable: Wrapping policy function.
         """
-        transformer_block_policy = partial(
-            transformer_auto_wrap_policy,
-            transformer_layer_cls={Qwen2_5_VLDecoderLayer},
-        )
-        return transformer_block_policy
+        return transformer_wrap_policy({Qwen2_5_VLDecoderLayer})

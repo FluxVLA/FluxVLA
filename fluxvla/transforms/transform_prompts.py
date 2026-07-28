@@ -244,6 +244,7 @@ class ProcessPromptsWithImage:
         # If tokenizer has no pad_token, use eos as pad (common trick)
         if self.tokenizer.pad_token_id is None and self.use_eos_as_pad:
             self.tokenizer.pad_token = self.tokenizer.eos_token
+        self._prompt_cache = {}
 
     # === Build GR00T-style text string ===
     def _build_text(self, task_desc: str,
@@ -297,49 +298,63 @@ class ProcessPromptsWithImage:
         # (1) resolve per-image token counts
         per_img = [int(self.fixed_img_tokens)] * self.num_images
 
-        # (2) build GR00T-style text
-        text = self._build_text(inputs['task_description'], per_img)
+        task_desc = str(inputs['task_description'])
+        cache_key = (task_desc, tuple(per_img))
+        cached = self._prompt_cache.get(cache_key)
+        if cached is None:
+            # (2) build GR00T-style text
+            text = self._build_text(task_desc, per_img)
 
-        # (3) tokenize
-        encoded = self.tokenizer(text, add_special_tokens=True)
-        tokens = encoded.input_ids
-        mask = [1] * len(tokens)
-        labels = list(tokens)
+            # (3) tokenize
+            encoded = self.tokenizer(text, add_special_tokens=True)
+            tokens = encoded.input_ids
+            mask = [1] * len(tokens)
+            labels = list(tokens)
 
-        # (4) pad/truncate
-        if self.max_len is not None and self.pad_to_max_len:
-            L = len(tokens)
-            pad_id = self.tokenizer.pad_token_id if \
-                self.tokenizer.pad_token_id is not None \
-                else self.tokenizer.eos_token_id
-            if L < self.max_len:
-                pad_len = self.max_len - L
-                if self.padding_side == 'left':
-                    tokens = [pad_id] * pad_len + tokens
-                    mask = [0] * pad_len + mask
-                    if self.with_labels:
-                        labels = [-100] * pad_len + labels
+            # (4) pad/truncate
+            if self.max_len is not None and self.pad_to_max_len:
+                L = len(tokens)
+                pad_id = self.tokenizer.pad_token_id if \
+                    self.tokenizer.pad_token_id is not None \
+                    else self.tokenizer.eos_token_id
+                if L < self.max_len:
+                    pad_len = self.max_len - L
+                    if self.padding_side == 'left':
+                        tokens = [pad_id] * pad_len + tokens
+                        mask = [0] * pad_len + mask
+                        if self.with_labels:
+                            labels = [-100] * pad_len + labels
+                    else:
+                        tokens = tokens + [pad_id] * pad_len
+                        mask = mask + [0] * pad_len
+                        if self.with_labels:
+                            labels = labels + [-100] * pad_len
                 else:
-                    tokens = tokens + [pad_id] * pad_len
-                    mask = mask + [0] * pad_len
-                    if self.with_labels:
-                        labels = labels + [-100] * pad_len
-            else:
-                if self.padding_side == 'left':
-                    tokens = tokens[-self.max_len:]
-                    mask = mask[-self.max_len:]
-                    if self.with_labels:
-                        labels = labels[-self.max_len:]
-                else:
-                    tokens = tokens[:self.max_len]
-                    mask = mask[:self.max_len]
-                    if self.with_labels:
-                        labels = labels[:self.max_len]
+                    if self.padding_side == 'left':
+                        tokens = tokens[-self.max_len:]
+                        mask = mask[-self.max_len:]
+                        if self.with_labels:
+                            labels = labels[-self.max_len:]
+                    else:
+                        tokens = tokens[:self.max_len]
+                        mask = mask[:self.max_len]
+                        if self.with_labels:
+                            labels = labels[:self.max_len]
 
-        inputs['lang_tokens'] = np.asarray(tokens, dtype=np.int64)
-        inputs['lang_masks'] = np.asarray(mask, dtype=np.int32)
+            cached = (
+                np.asarray(tokens, dtype=np.int64),
+                np.asarray(mask, dtype=np.int32),
+                np.asarray(labels, dtype=np.int64)
+                if self.with_labels else None,
+                text,
+            )
+            self._prompt_cache[cache_key] = cached
+
+        tokens_arr, mask_arr, labels_arr, text = cached
+        inputs['lang_tokens'] = tokens_arr.copy()
+        inputs['lang_masks'] = mask_arr.copy()
         if self.with_labels:
-            inputs['labels'] = np.asarray(labels, dtype=np.int64)
+            inputs['labels'] = labels_arr.copy()
         if self.return_text:
             inputs['text'] = text
         return inputs

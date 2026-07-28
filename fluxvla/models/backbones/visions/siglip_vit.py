@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from functools import partial
 from typing import Callable, Dict, Tuple
 
 import torch
 from timm.models.vision_transformer import Block, VisionTransformer
-from torch.distributed.fsdp.wrap import (_module_wrap_policy, _or_policy,
-                                         transformer_auto_wrap_policy)
 
 from fluxvla.engines import VISION_BACKBONES
+from fluxvla.engines.utils.fsdp_wrap import (module_wrap_policy, or_policy,
+                                             transformer_wrap_policy)
 from .base_vision import VisionBackbone
 from .configs import VISION_BACKBONE_CONFIGS
 
@@ -59,12 +58,9 @@ class SigLIPViTBackbone(VisionBackbone):
         Returns:
             Callable: A composite policy for FSDP module wrapping.
         """
-        vit_wrap_policy = partial(
-            _module_wrap_policy, module_classes={VisionTransformer})
-        transformer_block_policy = partial(
-            transformer_auto_wrap_policy, transformer_layer_cls={Block})
-        return partial(
-            _or_policy, policies=[vit_wrap_policy, transformer_block_policy])
+        vit_wrap_policy = module_wrap_policy({VisionTransformer})
+        transformer_block_policy = transformer_wrap_policy({Block})
+        return or_policy([vit_wrap_policy, transformer_block_policy])
 
     @property
     def default_image_resolution(self) -> Tuple[int, int, int]:

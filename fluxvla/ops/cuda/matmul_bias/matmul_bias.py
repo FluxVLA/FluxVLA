@@ -11,9 +11,11 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from importlib import import_module
+
 import torch
 
-from . import matmul_bias_ext
+matmul_bias_ext = import_module('.matmul_bias_ext', __package__)
 
 
 def matmul_bias_cuda(inp: torch.Tensor,

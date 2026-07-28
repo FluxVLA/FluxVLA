@@ -17,6 +17,7 @@ from typing import Callable, Dict, List, Optional
 import torch
 
 from fluxvla.engines import VLAS, initialize_overwatch
+from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
 from .base_vla import BaseVLA
 
 overwatch = initialize_overwatch(__name__)
@@ -370,10 +371,7 @@ class DreamZeroVLA(BaseVLA):
     # BaseVLA abstract method implementations
     # ------------------------------------------------------------------
     def get_fsdp_wrapping_policy(self) -> Callable:
-        from functools import partial
         from importlib import import_module
-
-        from torch.distributed.fsdp.wrap import _module_wrap_policy
 
         # DiT blocks (trainable)
         _chunk = import_module(
@@ -393,14 +391,11 @@ class DreamZeroVLA(BaseVLA):
             'wan_video_image_encoder')
         CLIPAttentionBlock = _img_enc.AttentionBlock
 
-        return partial(
-            _module_wrap_policy,
-            module_classes={
-                CausalWanAttentionBlock,
-                T5SelfAttention,
-                CLIPAttentionBlock,
-            },
-        )
+        return module_wrap_policy({
+            CausalWanAttentionBlock,
+            T5SelfAttention,
+            CLIPAttentionBlock,
+        })
 
     @property
     def config(self):
