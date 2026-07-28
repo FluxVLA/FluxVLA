@@ -21,6 +21,12 @@ def __getattr__(name):
         'encode_predict_response',
     }
     _server = {'PolicyServer', 'create_server', 'serialize_actions'}
+    _ros_server = {
+        'FluxVLAROSPolicy',
+        'FluxVLAROSServer',
+        'build_ros_server_from_config',
+    }
+    _ros2_server = {'FluxVLAROS2Server'}
 
     if name in _public:
         from . import serializers
@@ -28,17 +34,27 @@ def __getattr__(name):
     if name in _server:
         from . import zmq_server
         return getattr(zmq_server, name)
+    if name in _ros_server:
+        from . import ros_server
+        return getattr(ros_server, name)
+    if name in _ros2_server:
+        from . import ros2_server
+        return getattr(ros2_server, name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
 __all__ = [
     'FORMAT_MSGPACK',
     'FORMAT_PROTOBUF',
+    'FluxVLAROSPolicy',
+    'FluxVLAROS2Server',
+    'FluxVLAROSServer',
     'MsgSerializer',
     'ObsSerializer',
     'ObsSerializerProto',
     'PolicyServer',
     'create_server',
+    'build_ros_server_from_config',
     'decode_predict_request',
     'decode_predict_response',
     'detect_format',

@@ -251,3 +251,48 @@ eval = dict(
         action_dim=7,
     ),
 )
+
+themis = dict(
+    transport=dict(
+        service_name='/fluxvla/predict_action',
+        timeout_s=30.0,
+        image_keys=['agentview_image', 'robot0_eye_in_hand_image'],
+        state_keys=[
+            'robot0_eef_pos',
+            'robot0_eef_quat',
+            'robot0_gripper_qpos',
+        ],
+        unnorm_key='libero_10_no_noops',
+        image_encoding='rgb8',
+    ),
+    runner=dict(
+        type='EvalRunner',
+        environment=dict(
+            type='LiberoEnvironment',
+            task_suite_name='libero_10',
+            task_order_index=0,
+            resolution=256,
+            controller='OSC_POSE',
+            simulator_seed=0,
+            num_steps_wait=10,
+        ),
+        model_client=dict(type='FluxVLAROSModelClient'),
+        evaluator=dict(type='SuccessRateEvaluator'),
+        seed=7,
+        episodes_per_task=50,
+        max_episode_steps=520,
+        execute_horizon=10,
+        stop_on_success=True,
+        work_dir='work_dirs/fluxthemis',
+    ),
+    ros_server=dict(
+        ros_version=1,
+        dataset_section='eval',
+        device='cuda:0',
+        mixed_precision_dtype='bf16',
+        enable_mixed_precision=True,
+        model_outputs_environment_actions=False,
+        forward_seed=False,
+        denormalize_context={},
+    ),
+)
