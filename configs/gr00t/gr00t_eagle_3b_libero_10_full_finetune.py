@@ -82,7 +82,7 @@ train_dataloader = dict(
         datasets=dict(
             type='ParquetDataset',
             data_root_path=  # noqa: E251
-            'datasets/libero_10_lerobotv2.1',  # noqa: E501
+            'datasets/libero_10_no_noops_lerobotv2.1',  # noqa: E501
             transforms=[
                 dict(
                     type='ProcessParquetInputs',
