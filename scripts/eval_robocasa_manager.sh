@@ -19,6 +19,7 @@
 #   NUM_GPUS=8
 #   MAX_TASKS_PER_GPU=1
 #   NUM_TRIALS_PER_TASK=50
+#   PYTHONHASHSEED=7
 #   MAX_EPISODE_STEPS=720
 #   SAVE_VIDEO=False
 #   OUTPUT_DIR=work_dirs/robocasa_eval_manager/my_run
@@ -96,6 +97,7 @@ CFG_EVAL_RUNNER_PREFIX=""
 CFG_NUM_GPUS=""
 CFG_MAX_TASKS_PER_GPU=""
 CFG_NUM_TRIALS_PER_TASK=""
+CFG_EVAL_SEED=""
 CFG_MASTER_PORT_BASE=""
 CFG_MONITOR_INTERVAL=""
 CFG_STATUS_INTERVAL=""
@@ -161,6 +163,7 @@ fields = {
     'CFG_MAX_TASKS_PER_GPU': ('eval.manager.max_tasks_per_gpu', ),
     'CFG_NUM_TRIALS_PER_TASK': (
         'eval.runner.num_trials_per_task', 'eval.num_trials_per_task'),
+    'CFG_EVAL_SEED': ('eval.runner.seed', 'eval.seed'),
     'CFG_MASTER_PORT_BASE': ('eval.manager.master_port_base', ),
     'CFG_MONITOR_INTERVAL': ('eval.manager.monitor_interval', ),
     'CFG_STATUS_INTERVAL': ('eval.manager.status_interval', ),
@@ -193,6 +196,7 @@ while IFS=$'\t' read -r key value; do
     CFG_NUM_GPUS) CFG_NUM_GPUS="${value}" ;;
     CFG_MAX_TASKS_PER_GPU) CFG_MAX_TASKS_PER_GPU="${value}" ;;
     CFG_NUM_TRIALS_PER_TASK) CFG_NUM_TRIALS_PER_TASK="${value}" ;;
+    CFG_EVAL_SEED) CFG_EVAL_SEED="${value}" ;;
     CFG_MASTER_PORT_BASE) CFG_MASTER_PORT_BASE="${value}" ;;
     CFG_MONITOR_INTERVAL) CFG_MONITOR_INTERVAL="${value}" ;;
     CFG_STATUS_INTERVAL) CFG_STATUS_INTERVAL="${value}" ;;
@@ -209,6 +213,7 @@ while IFS=$'\t' read -r key value; do
 done <<< "${CFG_VALUES}"
 
 EVAL_RUNNER_PREFIX="${CFG_EVAL_RUNNER_PREFIX:-eval}"
+WORKER_PYTHONHASHSEED="${PYTHONHASHSEED:-${CFG_EVAL_SEED:-7}}"
 
 if [[ -n "${OUTPUT_DIR}" ]]; then
   OUTPUT_DIR_SOURCE="env"
@@ -544,6 +549,7 @@ launch_task() {
     build_worker_cfg_options "${task_id}" "${gpu}" "${suffix}"
 
     OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" \
+      PYTHONHASHSEED="${WORKER_PYTHONHASHSEED}" \
       CUDA_VISIBLE_DEVICES="${gpu}" \
       NPROC_PER_NODE=1 \
       WORLD_SIZE=1 \

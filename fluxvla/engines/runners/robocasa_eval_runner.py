@@ -74,6 +74,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
         eval_chunk_size: Number of predicted actions executed per step.
         max_episode_steps: Maximum number of environment steps per episode.
         num_trials_per_task: Number of trials for each task.
+        episode_seed_stride: Optional fixed number of trial slots per task
+            used only for environment/action seeds. Set this to the formal
+            protocol trial count so reduced gates reuse its exact scenes.
         task_ids: Optional task id filter. Used by manager workers to run
             one or a few RoboCasa tasks.
         eval_shard_strategy: Episode assignment strategy. ``task`` keeps all
@@ -115,6 +118,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  eval_chunk_size: int = 10,
                  max_episode_steps: int = 720,
                  num_trials_per_task: int = 50,
+                 episode_seed_stride: Optional[int] = None,
                  task_ids=None,
                  eval_shard_strategy: str = 'episode',
                  mixed_precision_dtype: str = 'bf16',
@@ -313,6 +317,15 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.task_list = task_list
         self.max_episode_steps = max_episode_steps
         self.num_trials_per_task = num_trials_per_task
+        if episode_seed_stride is None:
+            episode_seed_stride = num_trials_per_task
+        if int(episode_seed_stride) != episode_seed_stride or \
+                episode_seed_stride < num_trials_per_task:
+            raise ValueError(
+                'episode_seed_stride must be an integer greater than or '
+                'equal to num_trials_per_task, got '
+                f'{episode_seed_stride} for {num_trials_per_task} trials')
+        self.episode_seed_stride = int(episode_seed_stride)
         self.task_ids = task_ids
         self.eval_shard_strategy = eval_shard_strategy
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
@@ -378,6 +391,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
     def _episode_seed(self, local_id: int) -> int:
         return self._normalize_seed(self.seed + local_id)
+
+    def _episode_seed_id(self, task_id: int, trial_id: int) -> int:
+        """Return a protocol-stable episode id for deterministic seeding."""
+        return task_id * self.episode_seed_stride + trial_id
 
     def _action_seed(self, local_id: int, step: int) -> int:
         return self._normalize_seed(self.seed + 1_000_003 * (local_id + 1) +
@@ -729,6 +746,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     self.action_order,
                     'action_chunk_ensemble_weight':
                     self.action_chunk_ensemble_weight,
+                    'episode_seed_stride':
+                    self.episode_seed_stride,
                     'task_ids':
                     self._resolve_task_ids(len(self.task_list), self.task_ids),
                     'group_stats':
@@ -842,7 +861,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     f'Task {task_id} ({env_name}), Trial {trial_id}\n')
 
                 # Create RoboCasa environment.
-                episode_seed = self._episode_seed(local_id)
+                seed_id = self._episode_seed_id(task_id, trial_id)
+                episode_seed = self._episode_seed(seed_id)
                 if self.deterministic_env:
                     self._seed_python_numpy_torch(episode_seed)
                     env = gym.make(env_name, seed=episode_seed)
@@ -912,7 +932,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
                     # Model inference.
                     if self.deterministic_action_sampling:
-                        self._seed_torch(self._action_seed(local_id, t))
+                        self._seed_torch(self._action_seed(seed_id, t))
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,

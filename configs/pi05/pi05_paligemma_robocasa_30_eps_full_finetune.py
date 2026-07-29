@@ -394,6 +394,9 @@ eval = dict(
     action_chunk_ensemble_weight=0.5,
     max_episode_steps=720,
     num_trials_per_task=50,  # 1,200 episodes across 24 tasks.
+    # Reduced gates must reuse the formal 50-trial protocol's exact scenes:
+    # task t, trial i always uses seed + 50 * t + i.
+    episode_seed_stride=50,
     seed=7,  # Match the GR00T RoboCasa evaluation initial states.
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='fluxvla',
