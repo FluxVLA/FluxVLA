@@ -142,6 +142,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg)
 
+        # CPython reads this value before imports. Capture it before
+        # ``set_seed_everywhere`` writes an ineffective late value.
+        self.python_hash_seed_at_init = os.environ.get('PYTHONHASHSEED')
         self.device_id = overwatch.local_rank()
 
         # Build model.
@@ -442,6 +445,12 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
     def run_setup(self):
         """Initialize CUDA placement and model state."""
+        if self.python_hash_seed_at_init != str(self.seed):
+            overwatch.warning(
+                'Reproducible RoboCasa construction requires '
+                'PYTHONHASHSEED to be set before Python starts; expected '
+                f'{self.seed}, got {self.python_hash_seed_at_init!r}. Use '
+                'scripts/eval_robocasa_manager.sh or export it explicitly.')
         set_seed_everywhere(self.seed)
         torch.cuda.set_device(self.device_id)
         self.vla.eval()
@@ -748,6 +757,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     self.action_chunk_ensemble_weight,
                     'episode_seed_stride':
                     self.episode_seed_stride,
+                    'python_hash_seed_at_init':
+                    self.python_hash_seed_at_init,
                     'task_ids':
                     self._resolve_task_ids(len(self.task_list), self.task_ids),
                     'group_stats':
@@ -822,7 +833,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
         log_filepath = os.path.join(self.run_dir, f'rank{rank}.txt')
         log_file = open(log_filepath, 'w', encoding='utf-8', buffering=1)
         log_file.write(f'Rank {rank}/{world_size}, seed={self.seed}\n')
-        log_file.write(f'PYTHONHASHSEED={os.environ.get("PYTHONHASHSEED")}\n')
+        log_file.write('PYTHONHASHSEED at runner init='
+                       f'{self.python_hash_seed_at_init}\n')
         log_file.write(f'Deterministic env: {self.deterministic_env}, '
                        f'deterministic action sampling: '
                        f'{self.deterministic_action_sampling}\n')
