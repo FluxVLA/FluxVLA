@@ -51,9 +51,21 @@
 
 ### `fluxvla/engines/utils/name_map.py`
 
-保留。
+保持分支原实现，本轮不再调整。
 
-改动作用：把 `torch.distributed.fsdp.StateDictType` 改成可选导入。这样普通推理导入 `fluxvla.engines.utils` 时，不会因为 Orin/瘦身 torch 缺 FSDP 而在 import 阶段失败。只有真正调用 `state_dict_type_map()` 时才会报清晰错误。
+现有实现使用可选导入：缺少 FSDP 时允许 `name_map.py` 被导入，只有调用 `state_dict_type_map()` 才报清晰错误。
+
+### `fluxvla/engines/runners/fsdp_train_runner.py`
+
+恢复分支原实现，本轮不再增加 lazy import。
+
+FSDP runner 的导入兼容继续由当前 package optional-import 逻辑承担。
+
+### `fluxvla/engines/utils/fsdp_wrap.py`
+
+保持分支原实现。
+
+这个 helper 继续集中封装模型的 FSDP wrapping policy，避免每个模型文件直接依赖 `torch.distributed.fsdp.wrap`。本轮撤回了对该 helper 的进一步 lazy-import 重构，以减少评估范围。
 
 ### `fluxvla/models/backbones/vlms/configs.py`
 
@@ -96,6 +108,18 @@
 - `configure_inference_attention_defaults()`
 
 原因：时间 profile 是临时调试输出；`--cfg-options` 和 registry 显式导入对真实推理配置覆盖与注册稳定性有用。
+
+### Operator lazy import
+
+保留。
+
+当前 operator 的真实机器人依赖按 backend 延迟导入：
+
+- `OliOperator._init_ros()` 内部导入 `rospy` / ROS message。
+- `OliOperator._init_mros()` 内部导入 `mros` / MROS message。
+- `OliOperator._init_websocket()` 内部导入 `websocket`。
+
+效果：普通 `import fluxvla.engines.operators` 不会立即要求 ROS、MROS 或 WebSocket 运行环境；只有实例化 `OliOperator` 并选择对应 backend 时才要求这些依赖存在。
 
 ### PI0.5 / GR00T 测试脚本
 
@@ -140,6 +164,23 @@
 保留根目录 `.dockerignore`。
 
 原因：Docker build context 是仓库根目录，`.dockerignore` 必须位于 context 根目录才会生效，不能移动到 `docker/orin/` 后继续起作用。
+
+### CUDA extension 编译
+
+已加入 Orin 镜像构建阶段。
+
+`docker/Dockerfile.orin` 在复制源码后显式执行：
+
+```bash
+FORCE_CUDA=1 MAX_JOBS="${FLUXVLA_EXT_MAX_JOBS}" \
+  python3 setup.py build_ext --inplace
+```
+
+随后再执行 `pip3 install --no-build-isolation --no-deps .`。
+
+原因：`gemma_rotary_embedding_ext`、`rotary_pos_embedding_ext`、`matmul_bias_ext` 必须匹配当前 Orin 镜像内的 PyTorch/CUDA ABI。仅调整 Python import 写法无法解决 `.so` 缺失或 ABI 不匹配问题。
+
+`docker/build_docker.sh` 增加 `FLUXVLA_EXT_MAX_JOBS`，默认 `2`，用于控制扩展编译并行度。
 
 ### 未主动处理项
 

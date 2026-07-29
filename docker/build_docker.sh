@@ -32,6 +32,7 @@ Environment:
   FLUXVLA_PIP_INDEX_URL=URL
   FLUXVLA_PIP_TRUSTED_HOST=HOST
   FLUXVLA_FLASH_ATTN_MAX_JOBS=N
+    FLUXVLA_EXT_MAX_JOBS=N
   FLUXVLA_WHEEL_DIR=/mnt/nvme/fluxvla-wheels
   FLUXVLA_BASE_IMAGE=fluxvla:orin-base
   FLUXVLA_FLASH_ATTN_WHEEL=flash_attn-*.whl
@@ -192,6 +193,7 @@ build_image() {
         --build-arg "UBUNTU_PORTS_MIRROR=${UBUNTU_PORTS_MIRROR}" \
         --build-arg "PIP_INDEX_URL=${PIP_INDEX_URL}" \
         --build-arg "PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}" \
+        --build-arg "FLUXVLA_EXT_MAX_JOBS=${FLUXVLA_EXT_MAX_JOBS:-2}" \
         "${tag_args[@]}" \
         "$@" \
         "${REPO_ROOT}"

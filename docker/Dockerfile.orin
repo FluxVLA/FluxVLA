@@ -6,6 +6,7 @@ ARG BUILD_DATE=unknown
 ARG UBUNTU_PORTS_MIRROR=
 ARG PIP_INDEX_URL=
 ARG PIP_TRUSTED_HOST=
+ARG FLUXVLA_EXT_MAX_JOBS=2
 
 LABEL org.opencontainers.image.title="FluxVLA Orin Base" \
       org.opencontainers.image.description="FluxVLA base image for NVIDIA Jetson AGX Orin (JetPack r36.4 / CUDA 12.6)" \
@@ -88,7 +89,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY . /workspace/FluxVLA
 
 WORKDIR /workspace/FluxVLA
-RUN pip3 install --no-build-isolation --no-deps .
+RUN FORCE_CUDA=1 MAX_JOBS="${FLUXVLA_EXT_MAX_JOBS}" \
+      python3 setup.py build_ext --inplace && \
+    pip3 install --no-build-isolation --no-deps .
 
 WORKDIR /workspace
 RUN python3 - <<'PY'
