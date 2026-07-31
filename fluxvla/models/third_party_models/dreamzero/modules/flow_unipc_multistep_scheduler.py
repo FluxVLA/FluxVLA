@@ -101,7 +101,7 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
                 self.register_to_config(solver_type='bh2')
             else:
                 raise NotImplementedError(
-                    f"{solver_type} is not implemented for {self.__class__}")
+                    f'{solver_type} is not implemented for {self.__class__}')
 
         self.predict_x0 = predict_x0
         # setable values
@@ -276,7 +276,7 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
                 x0_pred = sample - sigma_t * model_output
             else:
                 raise ValueError(
-                    f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`,"
+                    f'prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`,'
                     ' `v_prediction` or `flow_prediction` for the UniPCMultistepScheduler.'
                 )
 
@@ -290,7 +290,7 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
                 epsilon = sample - (1 - sigma_t) * model_output
             else:
                 raise ValueError(
-                    f"prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`,"
+                    f'prediction_type given as {self.config.prediction_type} must be one of `epsilon`, `sample`,'
                     ' `v_prediction` or `flow_prediction` for the UniPCMultistepScheduler.'
                 )
 

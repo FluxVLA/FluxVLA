@@ -470,20 +470,20 @@ class CausalWanSelfAttention(nn.Module):
             print('\n' + '=' * 80)
             print('ATTENTION MASK VISUALIZATION')
             print('=' * 80)
-            print(f"Total length: {total_len}")
+            print(f'Total length: {total_len}')
             print(
-                f"First image: [{first_image_start}:{first_image_end}] (len={first_image_len})"
+                f'First image: [{first_image_start}:{first_image_end}] (len={first_image_len})'
             )
             print(
-                f"Image blocks: [{image_blocks_start}:{image_blocks_end}] (len={image_blocks_len}, num_blocks={num_image_blocks})"
+                f'Image blocks: [{image_blocks_start}:{image_blocks_end}] (len={image_blocks_len}, num_blocks={num_image_blocks})'
             )
             print(
-                f"Action tokens: [{action_start}:{action_end}] (len={action_len}, num_blocks={num_action_blocks})"
+                f'Action tokens: [{action_start}:{action_end}] (len={action_len}, num_blocks={num_action_blocks})'
             )
             print(
-                f"State tokens: [{state_start}:{state_end}] (len={state_len}, num_blocks={num_state_blocks})"
+                f'State tokens: [{state_start}:{state_end}] (len={state_len}, num_blocks={num_state_blocks})'
             )
-            print(f"Local attention size: {self.local_attn_size}")
+            print(f'Local attention size: {self.local_attn_size}')
             print('-' * 80)
 
             # Print a downsampled version of the mask if it's too large
@@ -494,11 +494,11 @@ class CausalWanSelfAttention(nn.Module):
                 for i in range(total_len):
                     row = ''.join(
                         ['1' if mask[i, j] else '.' for j in range(total_len)])
-                    print(f"{i:4d}: {row}")
+                    print(f'{i:4d}: {row}')
             else:
                 # Print downsampled version for large sequences
                 downsample = max(1, total_len // 100)
-                print(f"Attention mask (downsampled by {downsample}x):")
+                print(f'Attention mask (downsampled by {downsample}x):')
                 print(
                     'Rows=Query tokens, Cols=Key tokens (1=can attend, .=cannot attend)'
                 )
@@ -507,7 +507,7 @@ class CausalWanSelfAttention(nn.Module):
                         '1' if mask[i, j] else '.'
                         for j in range(0, total_len, downsample)
                     ])
-                    print(f"{i:4d}: {row}")
+                    print(f'{i:4d}: {row}')
 
             # Save mask as image
             try:
@@ -520,9 +520,9 @@ class CausalWanSelfAttention(nn.Module):
                         mask_np, (1000, 1000), interpolation=cv2.INTER_NEAREST)
                 mask_img = (mask_np * 255).astype(np.uint8)
                 cv2.imwrite('attention_mask_blockwise_flash.png', mask_img)
-                print(f"\nMask saved to: attention_mask_blockwise_flash.png")
+                print(f'\nMask saved to: attention_mask_blockwise_flash.png')
             except Exception as e:
-                print(f"Could not save mask image: {e}")
+                print(f'Could not save mask image: {e}')
 
             print('=' * 80 + '\n')
 
@@ -1610,9 +1610,9 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         # Verify the relationship: num_image_blocks = num_action_blocks + 1 = num_state_blocks + 1
         assert num_image_blocks == num_action_blocks, \
-            f"image_blocks mismatch: {num_image_blocks} != {num_action_blocks}"
+            f'image_blocks mismatch: {num_image_blocks} != {num_action_blocks}'
         assert num_image_blocks == num_state_blocks, \
-            f"image_blocks mismatch: {num_image_blocks} != {num_state_blocks}"
+            f'image_blocks mismatch: {num_image_blocks} != {num_state_blocks}'
 
         # Token ranges
         first_image_len = frame_seqlen  # First image (conditioning)
@@ -1736,19 +1736,19 @@ class CausalWanModel(ModelMixin, ConfigMixin):
             device=device)
 
         if not dist.is_initialized() or dist.get_rank() == 0:
-            print(f"Created blockwise causal attention mask:")
-            print(f"  first_image_tokens={first_image_len} (conditioning)")
+            print(f'Created blockwise causal attention mask:')
+            print(f'  first_image_tokens={first_image_len} (conditioning)')
             print(
-                f"  num_image_blocks={num_image_blocks} (blocks of {num_frame_per_block * frame_seqlen})"
+                f'  num_image_blocks={num_image_blocks} (blocks of {num_frame_per_block * frame_seqlen})'
             )
             print(
-                f"  num_action_blocks={num_action_blocks} (blocks of {num_action_per_block})"
+                f'  num_action_blocks={num_action_blocks} (blocks of {num_action_per_block})'
             )
             print(
-                f"  num_state_blocks={num_state_blocks} (blocks of {num_state_per_block})"
+                f'  num_state_blocks={num_state_blocks} (blocks of {num_state_per_block})'
             )
             print(
-                f"  total_length={total_length}, padded_length={padded_length}"
+                f'  total_length={total_length}, padded_length={padded_length}'
             )
             print(block_mask)
 
@@ -1933,7 +1933,7 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         if not dist.is_initialized() or dist.get_rank() == 0:
             print(
-                f" cache a block wise causal mask with block size of {num_frame_per_block} frames"
+                f' cache a block wise causal mask with block size of {num_frame_per_block} frames'
             )
             print(block_mask)
 

@@ -74,6 +74,9 @@ class LiberoEvalRunner(BaseEvalRunner):
         num_steps_wait (int): Number of steps to wait before
             starting evaluation.
             Default is 10.
+        controller_use_delta (bool, optional): Override LIBERO controller
+            delta-action mode after the initial settle steps. ``None`` leaves
+            the environment default unchanged.
         num_inference_steps (int): Number of denoising/inference steps passed
             to ``predict_action``. When ``None`` (default) the model's own
             default is used, preserving prior behavior.
@@ -352,6 +355,13 @@ class LiberoEvalRunner(BaseEvalRunner):
         }
         return view_names.get(img_key, img_key)
 
+    @staticmethod
+    def _apply_controller_use_delta(env, controller_use_delta) -> None:
+        if controller_use_delta is None:
+            return
+        for robot in env.env.robots:
+            robot.controller.use_delta = bool(controller_use_delta)
+
     def _get_replay_image(self, obs: Dict, replay_img=None):
         """Extract replay frame, falling back to dataset-produced frame."""
         img_keys = self._get_replay_img_keys()
@@ -386,6 +396,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  num_trials_per_task: int = 50,
                  task_ids=None,
                  num_steps_wait: int = 10,
+                 controller_use_delta: bool = None,
                  num_inference_steps: int = None,
                  max_steps: int = None,
                  inference_seed: int = None,
@@ -477,6 +488,7 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.num_trials_per_task = num_trials_per_task
         self.task_ids = task_ids
         self.num_steps_wait = num_steps_wait
+        self.controller_use_delta = controller_use_delta
         self.num_inference_steps = num_inference_steps
         self.max_steps = max_steps
         self.inference_seed = inference_seed
@@ -558,6 +570,9 @@ class LiberoEvalRunner(BaseEvalRunner):
         overwatch.info(f'Using model family: {self.model_family}')
         overwatch.info(f'Using resize size: {self.resize_size}')
         overwatch.info(f'Using evaluation chunk size: {self.eval_chunk_size}')
+        if self.controller_use_delta is not None:
+            overwatch.info(
+                f'Using controller_use_delta={self.controller_use_delta}')
         overwatch.info(
             f'Using eval shard strategy: {self.eval_shard_strategy}')
         if self.model_build_device is not None:
@@ -684,6 +699,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 t = 0
                 replay_images = []
                 next_batch = None
+                controller_delta_applied = False
 
                 overwatch.info(f'Starting episode {trial_id+1}...')
 
@@ -702,6 +718,10 @@ class LiberoEvalRunner(BaseEvalRunner):
                             get_libero_dummy_action())
                         t += 1
                         continue
+                    if not controller_delta_applied:
+                        self._apply_controller_use_delta(
+                            env, self.controller_use_delta)
+                        controller_delta_applied = True
                     if next_batch is None:
                         obs['task_description'] = task_description
                         obs['is_new_episode'] = is_new_episode
@@ -721,6 +741,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                             self.num_inference_steps
                     if self.inference_seed is not None:
                         predict_kwargs['seed'] = self.inference_seed
+                    build_eval_kwargs = getattr(
+                        self.vla, 'build_eval_predict_action_kwargs', None)
+                    if callable(build_eval_kwargs):
+                        predict_kwargs.update(
+                            build_eval_kwargs(batch, env=env))
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,
@@ -743,6 +768,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                         action_denormed = self.denormalize_action(inputs)
                         obs, reward, done, info = env.step(
                             action_denormed.tolist())
+                        after_eval_env_step = getattr(self.vla,
+                                                      'after_eval_env_step',
+                                                      None)
+                        if callable(after_eval_env_step):
+                            after_eval_env_step(action)
                         if done:
                             total_successes += 1
                             rank_success_count += 1
