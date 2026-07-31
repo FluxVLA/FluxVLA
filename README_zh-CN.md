@@ -172,7 +172,7 @@ git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
 python -m pip install "numpy==1.26.4" "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0 "Wand==0.7.2" "scikit-image==0.25.2"
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
-python -m pip install --no-deps -e "git+https://github.com/hqr-robotic/LIBERO-plus.git@223cb493e7046698545a0b71bf539d2abfc211f4#egg=libero-plus"
+python -m pip install --no-deps -e "git+https://github.com/hqr-robotic/LIBERO-plus.git@d7c160eca38bf268d5965aef6d4c6dca12d5537c#egg=libero-plus"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 python scripts/download_libero_plus_assets.py
 python -m pip install --no-build-isolation -e .
