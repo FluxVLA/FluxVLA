@@ -216,6 +216,7 @@ class PureOverwatch:
             name (str): Logger name.
         """
         self.logger = ContextAdapter(logging.getLogger(name), extra={})
+        self.distributed_state = None
 
         self.debug = self.logger.debug
         self.info = self.logger.info
@@ -300,6 +301,11 @@ class PureOverwatch:
         return 0
 
     @staticmethod
+    def local_rank() -> int:
+        """Return the only local rank in non-distributed mode."""
+        return 0
+
+    @staticmethod
     def world_size() -> int:
         """
         Returns 1 in non-distributed mode.
@@ -323,4 +329,4 @@ def initialize_overwatch(
         on `WORLD_SIZE` env.
     """
     return DistributedOverwatch(name) if int(os.environ.get(
-        'WORLD_SIZE', -1)) != -1 else PureOverwatch(name)
+        'WORLD_SIZE', 1)) > 1 else PureOverwatch(name)

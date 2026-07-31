@@ -696,17 +696,7 @@ launch_task() {
     OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}" \
       FLUXVLA_ALLOW_LIBERO_TASK_SHARDING=1 \
       CUDA_VISIBLE_DEVICES="${gpu}" \
-      NPROC_PER_NODE=1 \
-      WORLD_SIZE=1 \
-      RANK=0 \
-      MASTER_ADDR="${MASTER_ADDR:-localhost}" \
-      MASTER_PORT="${port}" \
-      torchrun \
-        --nproc-per-node=1 \
-        --nnodes=1 \
-        --node_rank=0 \
-        --master_addr="${MASTER_ADDR:-localhost}" \
-        --master_port="${port}" \
+      python \
         "scripts/eval.py" \
         --config "${CONFIG}" \
         --ckpt-path "${ckpt_abs}" \

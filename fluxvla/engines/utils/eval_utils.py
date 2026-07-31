@@ -179,12 +179,18 @@ def check_robosuite_runtime(context='simulation'):
     return robosuite
 
 
-def get_libero_env(task, resolution=256, controller='OSC_POSE'):
+def get_libero_env(task,
+                   resolution=256,
+                   controller='OSC_POSE',
+                   max_initialization_attempts=20):
     """Initializes a Libero environment for a given task.
 
     Args:
         task: The task object containing the problem folder and BDDL file.
         resolution (int): The resolution for the camera images.
+        controller (str): Robosuite controller configuration name.
+        max_initialization_attempts (int): Maximum retries when randomized
+            object placement fails during environment construction.
 
     Returns:
         env: The initialized Libero environment.
@@ -194,6 +200,8 @@ def get_libero_env(task, resolution=256, controller='OSC_POSE'):
     try:
         libero_module = import_module('libero.libero')
         libero_envs = import_module('libero.libero.envs')
+        randomization_error = import_module(
+            'robosuite.utils.errors').RandomizationError
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             'LIBERO is required for simulation evaluation. Install it with '
@@ -210,7 +218,15 @@ def get_libero_env(task, resolution=256, controller='OSC_POSE'):
         'camera_widths': resolution,
         'controller': controller,
     }
-    env = libero_envs.OffScreenRenderEnv(**env_args)
+    if max_initialization_attempts < 1:
+        raise ValueError('max_initialization_attempts must be at least 1.')
+    for attempt in range(1, max_initialization_attempts + 1):
+        try:
+            env = libero_envs.OffScreenRenderEnv(**env_args)
+            break
+        except randomization_error:
+            if attempt == max_initialization_attempts:
+                raise
     env.seed(
         0
     )  # IMPORTANT: seed seems to affect object positions even when using fixed initial state  # noqa: E501
