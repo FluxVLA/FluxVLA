@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import math
-from typing import Dict, Optional
+from typing import Dict, Iterable, Optional
 
 from torch.optim import AdamW
 
@@ -160,6 +160,9 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
                  lr_coef: float = 1.0,
                  use_cosine_decay: bool = False,
                  min_lr_ratio: float = 0.1,
+                 group_lr_scales: Optional[Dict[str, float]] = None,
+                 freeze_group_names: Optional[Iterable[str]] = None,
+                 log_group_name: Optional[str] = None,
                  **kwargs) -> None:
         super().__init__(**kwargs)
         self.freeze_steps = freeze_steps
@@ -167,6 +170,82 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
         self.lr_coef = lr_coef
         self.use_cosine_decay = use_cosine_decay
         self.min_lr_ratio = min_lr_ratio
+        self.group_lr_scales = dict(group_lr_scales or {})
+        self.freeze_group_names = self._normalize_group_names(
+            freeze_group_names)
+        self.log_group_name = log_group_name
+
+    @staticmethod
+    def _normalize_group_names(
+        group_names: Optional[Iterable[str]],
+    ) -> Optional[tuple[str, ...]]:
+        if group_names is None:
+            return None
+        if isinstance(group_names, str):
+            return (group_names, )
+        return tuple(group_names)
+
+    def _resolve_group_lr_scale(self, group: Dict,
+                                learning_rate: float) -> float:
+        name = group.get('name')
+        if name in self.group_lr_scales:
+            return float(self.group_lr_scales[name])
+        if 'lr_scale' in group and group['lr_scale'] is not None:
+            return float(group['lr_scale'])
+        if learning_rate == 0.0:
+            return 0.0
+        group_lr = group.get('lr')
+        if group_lr is None:
+            return 0.0
+        return float(group_lr / learning_rate)
+
+    def _resolve_freeze_group_names(self, param_groups) -> set[str]:
+        if self.freeze_group_names is not None:
+            return set(self.freeze_group_names)
+        freeze_group_names = set()
+        for group in param_groups:
+            name = group.get('name')
+            if not name:
+                continue
+            scale = group.get('lr_scale')
+            if scale is None or scale <= 0.0:
+                continue
+            if group.get('lr', 0.0) == 0.0:
+                freeze_group_names.add(name)
+        return freeze_group_names
+
+    def _resolve_log_group_name(self, param_groups) -> Optional[str]:
+        if self.log_group_name is not None:
+            return self.log_group_name
+        best_name = None
+        best_scale = float('-inf')
+        for group in param_groups:
+            name = group.get('name')
+            if not name:
+                continue
+            scale = group.get('lr_scale')
+            if scale is None:
+                scale = self.group_lr_scales.get(name)
+            if scale is None:
+                continue
+            scale = float(scale)
+            if scale > best_scale:
+                best_scale = scale
+                best_name = name
+        if best_name is not None:
+            return best_name
+        for group in param_groups:
+            name = group.get('name')
+            if name:
+                return name
+        return None
+
+    @staticmethod
+    def _get_group_lr(param_groups, group_name: str) -> Optional[float]:
+        for group in param_groups:
+            if group.get('name') == group_name:
+                return group.get('lr')
+        return None
 
     def build_param_groups(self, runner, weight_decay=None):
         strategy = getattr(runner.vla, 'get_lr_param_group_strategy', None)
@@ -178,6 +257,34 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
                 canonicalize_param_name=self._canonicalize_param_name,
             )
             if param_groups is not None:
+                names = []
+                for group in param_groups:
+                    name = group.get('name')
+                    if not name:
+                        continue
+                    names.append(name)
+                    group['lr_scale'] = self._resolve_group_lr_scale(
+                        group, runner.learning_rate)
+                if self.group_lr_scales:
+                    missing_scales = sorted(
+                        set(self.group_lr_scales).difference(names))
+                    if missing_scales:
+                        raise ValueError(
+                            'Groupwise LR schedule received scale(s) for '
+                            f'unknown group(s): {missing_scales}')
+                if self.freeze_group_names is not None:
+                    missing_freeze = sorted(
+                        set(self.freeze_group_names).difference(names))
+                    if missing_freeze:
+                        raise ValueError(
+                            'Groupwise LR schedule received freeze group '
+                            f'name(s) that are not present: {missing_freeze}')
+                if (self.log_group_name is not None
+                        and self.log_group_name not in names):
+                    raise ValueError(
+                        'Groupwise LR schedule received log_group_name '
+                        f"'{self.log_group_name}', but that group is not "
+                        'present.')
                 return param_groups
         raise ValueError(
             'Groupwise LR schedule requires the model to implement '
@@ -226,23 +333,25 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
 
     def prepare_step(self, runner) -> None:
         lr = runner.learning_rate
-        base = {
-            'vlm': lr * self.lr_coef,
-            'transformer_core': lr,
-            'soft_prompts': lr * self.lr_coef,
-            'action_heads': lr,
-        }
         step = runner.metric.global_step
+        freeze_group_names = self._resolve_freeze_group_names(
+            runner.optimizer.param_groups)
+        scale = self._groupwise_lr_scale(runner, step)
         for group in runner.optimizer.param_groups:
             name = group.get('name', '')
-            if name not in base:
+            if not name:
                 continue
-            if step < self.freeze_steps:
-                group['lr'] = 0.0 if name in (
-                    'vlm', 'transformer_core') else base[name]
+            group_scale = group.get('lr_scale')
+            if group_scale is None:
+                group_scale = self.group_lr_scales.get(name)
+            if group_scale is None:
+                group_scale = 0.0 if lr == 0.0 else group['lr'] / lr
+            group_scale = float(group_scale)
+            base_lr = lr * group_scale
+            if step < self.freeze_steps and name in freeze_group_names:
+                group['lr'] = 0.0
             else:
-                group['lr'] = base[name] * self._groupwise_lr_scale(
-                    runner, step)
+                group['lr'] = base_lr * scale
 
     def step(self, runner) -> None:
         pass
@@ -252,13 +361,20 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
             return self.scheduler.get_last_lr()
         if self.optimizer is None:
             return []
-        for group in self.optimizer.param_groups:
-            if group.get('name') == 'action_heads':
-                return [group['lr']]
+        group_name = self._resolve_log_group_name(self.optimizer.param_groups)
+        if group_name is not None:
+            group_lr = self._get_group_lr(self.optimizer.param_groups,
+                                         group_name)
+            if group_lr is not None:
+                return [group_lr]
         return [self.optimizer.param_groups[0]['lr']]
 
     def get_log_lr(self, runner):
-        for group in runner.optimizer.param_groups:
-            if group.get('name') == 'action_heads':
-                return group['lr']
+        group_name = self._resolve_log_group_name(
+            runner.optimizer.param_groups)
+        if group_name is not None:
+            group_lr = self._get_group_lr(runner.optimizer.param_groups,
+                                         group_name)
+            if group_lr is not None:
+                return group_lr
         return runner.optimizer.param_groups[0]['lr']
