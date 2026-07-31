@@ -14,6 +14,7 @@
 
 import csv
 import gc
+import importlib
 import json
 import math
 import os
@@ -39,11 +40,13 @@ LIBERO_TASK_SHARDING_ALLOWED_ENV = 'FLUXVLA_ALLOW_LIBERO_TASK_SHARDING'
 
 
 def _get_libero_benchmark():
+    package = os.environ.get('FLUXVLA_LIBERO_PACKAGE', 'libero')
     try:
-        from libero.libero import benchmark
+        benchmark = importlib.import_module(f'{package}.libero.benchmark')
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            'LIBERO is required for simulation evaluation. Install it with '
+            f'{package} is required for simulation evaluation. '
+            'Install it with '
             '`bash scripts/install_env.sh sim-only` or '
             '`bash scripts/install_env.sh full`.') from exc
     return benchmark

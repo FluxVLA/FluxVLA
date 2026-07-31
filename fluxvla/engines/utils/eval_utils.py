@@ -197,14 +197,16 @@ def get_libero_env(task,
         task_description (str): The language description of the task.
     """
     check_robosuite_runtime('LIBERO simulation evaluation')
+    package = os.environ.get('FLUXVLA_LIBERO_PACKAGE', 'libero')
     try:
-        libero_module = import_module('libero.libero')
-        libero_envs = import_module('libero.libero.envs')
+        libero_module = import_module(f'{package}.libero')
+        libero_envs = import_module(f'{package}.libero.envs')
         randomization_error = import_module(
             'robosuite.utils.errors').RandomizationError
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
-            'LIBERO is required for simulation evaluation. Install it with '
+            f'{package} is required for simulation evaluation. '
+            'Install it with '
             '`bash scripts/install_env.sh sim-only` or '
             '`bash scripts/install_env.sh full`.') from exc
 

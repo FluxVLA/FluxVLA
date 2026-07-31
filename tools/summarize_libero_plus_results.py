@@ -74,6 +74,19 @@ def _load_feishu_reporter():
     return module.maybe_report_summary_to_feishu
 
 
+def _find_task_classification() -> str:
+    spec = importlib.util.find_spec('libero_plus.libero')
+    if spec is not None and spec.origin is not None:
+        path = (
+            Path(spec.origin).resolve().parent / 'benchmark' /
+            'task_classification.json')
+        if path.is_file():
+            return str(path)
+    raise SystemExit(
+        'Cannot find LIBERO-Plus task_classification.json. Install '
+        'requirements-sim.txt or pass --task-classification.')
+
+
 def _deduplicate_paths(paths: Iterable[Path]) -> List[str]:
     result = []
     seen = set()
@@ -426,8 +439,8 @@ def parse_args() -> argparse.Namespace:
         'summarize_libero_eval_results.py. Repeatable.')
     parser.add_argument(
         '--task-classification',
-        required=True,
-        help='Path to LIBERO-Plus task_classification.json.')
+        help='Path to LIBERO-Plus task_classification.json. Defaults to the '
+        'file provided by the installed libero-plus package.')
     parser.add_argument(
         '--output-dir',
         required=True,
@@ -470,6 +483,8 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     run_dirs = _collect_run_dirs(args)
+    if args.task_classification is None:
+        args.task_classification = _find_task_classification()
     task_map, expected_counts = _load_classification(args.task_classification)
     standard_summarizer = _load_standard_summarizer()
     summary = standard_summarizer.summarize(run_dirs, reject_duplicates=True)

@@ -109,10 +109,17 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>If the installer has issues: check modes and CUDA profile selection</b></summary>
 
-`sim-only` installs simulation / LIBERO / RoboCasa runtime dependencies plus
-the pinned RoboCasa source checkouts under `./src`, `real-only` installs
-real-robot and remote-inference dependencies, and `full` installs both. Pass
+`sim-only` installs simulation / LIBERO / LIBERO-Plus / RoboCasa runtime
+dependencies plus the pinned RoboCasa source checkouts under `./src`;
+`real-only` installs real-robot and remote-inference dependencies, and `full`
+installs both. `requirements-sim.txt` installs standard LIBERO as the `libero`
+distribution / Python namespace and the compatible LIBERO-Plus fork as the
+separate `libero-plus` distribution / `libero_plus` namespace. Both coexist in
+the same environment; existing evaluation commands select `libero`, while
+`scripts/eval_libero_plus_manager.sh` selects `libero_plus`. Pass
 `--skip-robocasa` if you do not need the RoboCasa checkouts.
+The installer also downloads and validates the LIBERO-Plus benchmark assets by
+default. Use `--skip-libero-plus-assets` to defer that 6.4 GB download.
 RoboCasa simulator assets are downloaded by default whenever the installer
 installs the RoboCasa source checkouts (`sim-only`, `full`, or `real-only --with-robocasa`). The installer calls `scripts/download_robocasa_assets.py`
 and uses `FLUXVLA_ROBOCASA_ASSET_ENDPOINT` (default: `HF_ENDPOINT`, then
@@ -201,9 +208,11 @@ Use `--skip-pull` if you already updated the checkout yourself, and
 ```bash
 git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
-python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install "numpy==1.26.4" "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0 "Wand==0.7.2" "scikit-image==0.25.2"
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
+python -m pip install --no-deps -e "git+https://github.com/hqr-robotic/LIBERO-plus.git@223cb493e7046698545a0b71bf539d2abfc211f4#egg=libero-plus"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
+python scripts/download_libero_plus_assets.py
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -314,6 +323,12 @@ pip install --no-build-isolation -e .
 > **Note**: `requirements.txt` now composes `requirements-base.txt`,
 > `requirements-sim.txt`, and `requirements-real.txt`. It does not install
 > PyTorch; install CUDA PyTorch first or use `scripts/install_env.sh`.
+
+> **LIBERO-Plus**: `requirements-sim.txt` installs both `libero` and the pinned
+> `libero-plus` fork, plus `Wand` / `scikit-image`, in the current FluxVLA
+> environment. Their Python namespaces are `libero` and `libero_plus`, so they
+> do not overwrite each other. Do not install the upstream LIBERO-Plus
+> `requirements.txt`, because its older pins would replace the FluxVLA stack.
 
 </details>
 
@@ -527,6 +542,51 @@ huggingface-cli download limxdynamics/FluxVLAData \
 
 For full-data RoboCasa GR1 training, replace the include pattern with
 `robocasa_lerobot_V2.1/*`.
+
+</details>
+
+<details>
+<summary><b>LIBERO-Plus benchmark assets</b></summary>
+
+`scripts/install_env.sh sim-only` and `scripts/install_env.sh full` install the
+pinned `libero-plus` editable distribution and download the official 6.4 GB
+`assets.zip` by default. The downloader locates the installed checkout,
+verifies the archive checksum, extracts the nested assets, validates the
+required objects/scenes/textures, and writes a `.libero/config.yaml` beside the
+checkout. The Plus manager selects that config automatically; standard LIBERO
+commands continue using their normal `~/.libero/config.yaml`.
+
+For a manual installation, install the ImageMagick/Wand system libraries first:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  libexpat1 libfontconfig1-dev libpython3-stdlib libmagickwand-dev unzip
+```
+
+If installation used `--skip-libero-plus-assets`, download the assets later:
+
+```bash
+python scripts/download_libero_plus_assets.py
+```
+
+To use an existing checkout or cache:
+
+```bash
+python scripts/download_libero_plus_assets.py \
+  --libero-plus-root /path/to/LIBERO-plus \
+  --cache-dir /path/to/cache
+```
+
+Validate the installed assets without downloading:
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+```
+
+The resulting `libero_plus/libero/assets` directory contains
+`articulated_objects/`, `new_objects/`, `scenes/`, `textures/`,
+`serving_region.xml`, and the remaining official benchmark assets.
 
 </details>
 
@@ -800,7 +860,9 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 <summary><b>Evaluation and inference capabilities</b></summary>
 
 - Supports multi-GPU evaluating libero on devices without ray tracing.
-- Supports uploading LIBERO and RoboCasa evaluation summaries to Feishu Sheets; see [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md).
+- Supports persistent, resumable LIBERO-Plus evaluation and strict aggregation
+  across all 10,030 robustness tasks.
+- Supports uploading LIBERO, LIBERO-Plus, and RoboCasa evaluation summaries to Feishu Sheets; see [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md).
 - Supports remote inference infrastructure with ZMQ-based server/client architecture, enabling GPU-offloaded inference for resource-constrained edge devices. See [Remote Inference Serving](docs/remote_inference_serving.md).
 - Supports [RTC (Real-Time Chunking)](docs/rtc.md) to improve cross-chunk trajectory continuity.
 - Supports accelerated inference for GR00T and PI0.5; see [Inference Acceleration](docs/inference_acceleration.md), including Triton fused kernels, CUDA Graph capture, and CUDA custom operators.
@@ -881,6 +943,73 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 sampling seeds during evaluation. `PYTHONHASHSEED` is independent and must be
 set before Python starts; using the same value is recommended when reproducing
 reported RoboCasa results.
+
+</details>
+
+<details>
+<summary><b>LIBERO-Plus robustness evaluation</b></summary>
+
+LIBERO-Plus adds 10,030 robustness tasks across camera viewpoint, robot initial
+state, language, light, background, sensor noise, and object layout
+perturbations. `requirements-sim.txt` installs both the standard `libero`
+namespace and the independent `libero_plus` namespace in the same FluxVLA
+environment. Confirm that the assets are ready, then run one suite per manager
+invocation:
+
+|                  | Standard LIBERO                                      | LIBERO-Plus                           |
+| ---------------- | ---------------------------------------------------- | ------------------------------------- |
+| pip distribution | `libero`                                             | `libero-plus`                         |
+| Python namespace | `libero`                                             | `libero_plus`                         |
+| task count       | 40 across four suites                                | 10,030 across four suites             |
+| trials per task  | config value, normally 50                            | exactly 1                             |
+| entry point      | `scripts/eval.py` / `scripts/eval_libero_manager.sh` | `scripts/eval_libero_plus_manager.sh` |
+| extra runtime    | none                                                 | `Wand`, `scikit-image`, ImageMagick   |
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+
+export OUTPUT_DIR=work_dirs/libero_plus_pi05
+export CUDA_VISIBLE_DEVICES=0,1
+export WORKERS_PER_GPU=1
+export RESUME=1
+export WANDB_MODE=disabled
+
+CONFIG=configs/pi05/pi05_paligemma_libero_spatial_full_finetune.py \
+CKPT=/path/to/pi05-libero-spatial-checkpoint.safetensors \
+SUITE=libero_spatial \
+bash scripts/eval_libero_plus_manager.sh
+```
+
+Repeat with the matching config and checkpoint for `libero_object`,
+`libero_goal`, and `libero_10`, using the same `OUTPUT_DIR`. The manager forces
+the official one-trial-per-task protocol, keeps atomic per-worker checkpoints,
+and resumes completed tasks when rerun with `RESUME=1`. Set `TASK_IDS=0,1,2`
+for a smoke test; omit it for all tasks in the selected suite. Set `DRY_RUN=1`
+to validate task assignment without loading the model.
+
+Worker results and logs are stored under
+`$OUTPUT_DIR/<suite>/{worker_results,worker_logs,worker_status,worker_tasks}`.
+If a run is interrupted, launch the same config, checkpoint, suite, and output
+directory again with `RESUME=1`; completed task IDs are not evaluated again.
+
+After all four suites finish, generate the strict leaderboard summary:
+
+```bash
+python tools/summarize_libero_plus_results.py \
+  --run-root "$OUTPUT_DIR" \
+  --output-dir "$OUTPUT_DIR" \
+  --title PI0.5
+```
+
+The summarizer discovers `task_classification.json` from the installed package
+and rejects duplicate task results, unknown task IDs, missing official tasks,
+or anything other than one trial per task. It writes the standard LIBERO
+summary files plus `libero_plus_summary.{csv,json,txt}`,
+`libero_plus_by_suite.csv`, and `libero_plus_missing_tasks.csv`. The leaderboard
+columns are `Camera/Robot/Language/Light/Background/Noise/Layout/Total`;
+`Total` is micro-averaged over all task trials. Official comparison requires
+all 10,030 tasks. Use `--allow-incomplete` only for smoke tests and progress
+inspection; partial summaries are marked and are not uploaded to Feishu.
 
 </details>
 

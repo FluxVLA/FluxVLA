@@ -37,6 +37,8 @@ HYDRA_CORE_VERSION="${HYDRA_CORE_VERSION:-1.2.0}"
 ROBOMIMIC_VERSION="${ROBOMIMIC_VERSION:-0.2.0}"
 LIBERO_REF="${LIBERO_REF:-058fda1ddebe92918af091cb6816759ca6d003f0}"
 LIBERO_SPEC="${LIBERO_SPEC:-libero @ git+https://github.com/yinchimaoliang/LIBERO.git@${LIBERO_REF}}"
+LIBERO_PLUS_REF="${LIBERO_PLUS_REF:-223cb493e7046698545a0b71bf539d2abfc211f4}"
+LIBERO_PLUS_SPEC="${LIBERO_PLUS_SPEC:-git+https://github.com/hqr-robotic/LIBERO-plus.git@${LIBERO_PLUS_REF}#egg=libero-plus}"
 ROBOSUITE_REF="${ROBOSUITE_REF:-e293cc32ff3c48957a4ebcad09952432b0dc9049}"
 ROBOSUITE_SPEC="${ROBOSUITE_SPEC:-robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@${ROBOSUITE_REF}}"
 PIP_INDEX_URLS="${PIP_INDEX_URLS:-}"
@@ -58,6 +60,8 @@ Environment variables:
                   when available, otherwise python.
   PIP_INDEX_URLS  Optional space-separated pip indexes retried in order.
   GIT_PULL_ARGS   Arguments passed to git pull. Default: --ff-only.
+  LIBERO_PLUS_REF, LIBERO_PLUS_SPEC
+                  LIBERO-Plus pinned revision and package specification.
 
 This updater intentionally does not reinstall PyTorch or FlashAttention.
 EOF
@@ -129,15 +133,27 @@ pip_install --upgrade \
   "datasets==${DATASETS_VERSION}"
 
 pip_install \
+  "numpy==1.26.4" \
   "mujoco==${MUJOCO_VERSION}" \
   gymnasium \
   lxml \
   "bddl==${BDDL_VERSION}" \
   "hydra-core==${HYDRA_CORE_VERSION}" \
-  "robomimic==${ROBOMIMIC_VERSION}"
+  "robomimic==${ROBOMIMIC_VERSION}" \
+  "scikit-image==0.25.2" \
+  "Wand==0.7.2"
 
 pip_install --force-reinstall --no-deps "${LIBERO_SPEC}"
+pip_install --force-reinstall --no-deps -e "${LIBERO_PLUS_SPEC}"
 pip_install --force-reinstall --no-deps "${ROBOSUITE_SPEC}"
+
+if [[ "${DRY_RUN}" -eq 1 ]]; then
+  echo "+ ${PYTHON_BIN} ${PROJECT_ROOT}/scripts/download_libero_plus_assets.py --validate-only"
+elif ! "${PYTHON_BIN}" "${PROJECT_ROOT}/scripts/download_libero_plus_assets.py" \
+    --validate-only; then
+  echo "LIBERO-Plus assets are not ready. Run:" >&2
+  echo "  ${PYTHON_BIN} scripts/download_libero_plus_assets.py" >&2
+fi
 
 if [[ "${SKIP_PROJECT}" -eq 0 ]]; then
   pip_install --no-build-isolation -e "${PROJECT_ROOT}"

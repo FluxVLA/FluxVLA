@@ -106,7 +106,7 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>インストーラで問題がある場合：モードと CUDA profile の選択を確認</b></summary>
 
-`sim-only` はシミュレーション / LIBERO / RoboCasa ランタイム依存関係と、固定された RoboCasa ソース checkout を `./src` 配下にインストールします。`real-only` は実機とリモート推論の依存関係をインストールし、`full` は両方をインストールします。RoboCasa checkout が不要な場合は `--skip-robocasa` を指定してください。
+`sim-only` は simulation / LIBERO / LIBERO-Plus / RoboCasa 関連依存関係と固定 RoboCasa source checkout を `./src` にインストールします。`requirements-sim.txt` は標準 LIBERO を distribution / Python namespace `libero` として、互換 LIBERO-Plus を独立した distribution `libero-plus` / namespace `libero_plus` としてインストールします。両方は同じ Conda 環境で共存し、通常の評価は `libero`、`scripts/eval_libero_plus_manager.sh` は `libero_plus` を使います。`real-only` は実機と remote inference の依存関係を、`full` は両方をインストールします。RoboCasa checkout が不要な場合は `--skip-robocasa` を使ってください。installer は LIBERO-Plus の 6.4 GB benchmark asset もデフォルトで download / validate します。後で取得する場合は `--skip-libero-plus-assets` を指定してください。
 
 インストーラが RoboCasa ソース checkout をインストールする場合（`sim-only`、`full`、または `real-only --with-robocasa`）、RoboCasa シミュレーションアセットもデフォルトでダウンロードします。内部では `scripts/download_robocasa_assets.py` を呼び出し、`FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（デフォルトは `HF_ENDPOINT`、次に `https://hf-mirror.com`）を使用します。アセットだけをスキップする場合は `--skip-robocasa-assets`、ソース checkout とアセットの両方をスキップする場合は `--skip-robocasa` を使ってください。
 
@@ -170,9 +170,11 @@ bash scripts/update_env.sh
 ```bash
 git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
-python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install "numpy==1.26.4" "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0 "Wand==0.7.2" "scikit-image==0.25.2"
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
+python -m pip install --no-deps -e "git+https://github.com/hqr-robotic/LIBERO-plus.git@223cb493e7046698545a0b71bf539d2abfc211f4#egg=libero-plus"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
+python scripts/download_libero_plus_assets.py
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -267,6 +269,11 @@ pip install --no-build-isolation -e .
 ```
 
 > **補足**：現在の `requirements.txt` は `requirements-base.txt`、`requirements-sim.txt`、`requirements-real.txt` を組み合わせる構成で、PyTorch はインストールしません。先に CUDA PyTorch をインストールするか、`scripts/install_env.sh` を使ってください。
+
+> **LIBERO-Plus**：`requirements-sim.txt` は現在の FluxVLA 環境に `libero`、
+> 固定した `libero-plus`、`Wand` / `scikit-image` を同時にインストールします。
+> Python namespace は `libero` と `libero_plus` なので上書きしません。古い依存を
+> 固定する upstream の LIBERO-Plus `requirements.txt` はインストールしないでください。
 
 </details>
 
@@ -476,6 +483,50 @@ huggingface-cli download limxdynamics/FluxVLAData \
 ```
 
 全量の RoboCasa GR1 データで学習する場合は、include パターンを `robocasa_lerobot_V2.1/*` に置き換えてください。
+
+</details>
+
+<details>
+<summary><b>LIBERO-Plus benchmark asset</b></summary>
+
+`scripts/install_env.sh sim-only` と `scripts/install_env.sh full` は固定した
+`libero-plus` editable distribution をインストールし、official 6.4 GB
+`assets.zip` をデフォルトで download します。downloader は installed checkout
+を自動検出し、SHA-256、nested asset、object / scene / texture を検証して、
+checkout の横に `.libero/config.yaml` を書き込みます。Plus manager はこの config
+を自動選択し、標準 LIBERO command は通常の `~/.libero/config.yaml` を使います。
+
+one-click installer を使わない場合は、先に ImageMagick/Wand system library を
+インストールします：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  libexpat1 libfontconfig1-dev libpython3-stdlib libmagickwand-dev unzip
+```
+
+`--skip-libero-plus-assets` を指定した場合は後から実行します：
+
+```bash
+python scripts/download_libero_plus_assets.py
+```
+
+既存 checkout や cache を使う場合：
+
+```bash
+python scripts/download_libero_plus_assets.py \
+  --libero-plus-root /path/to/LIBERO-plus \
+  --cache-dir /path/to/cache
+```
+
+download せず installed asset だけ検証する場合：
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+```
+
+最終的な `libero_plus/libero/assets` には `articulated_objects/`、`new_objects/`、
+`scenes/`、`textures/`、`serving_region.xml` などが含まれます。
 
 </details>
 
@@ -732,7 +783,8 @@ VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM 
 <summary><b>評価と推論の能力</b></summary>
 
 - マルチ GPU によるレイトレーシング非対応デバイスでの libero 評価をサポートします。
-- LIBERO と RoboCasa の評価サマリーを Feishu Sheets に自動アップロードできます。詳細は [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md) を参照してください。
+- persistent / resumable な LIBERO-Plus 評価と、全 10,030 robustness task の strict aggregation をサポートします。
+- LIBERO、LIBERO-Plus、RoboCasa の評価サマリーを Feishu Sheets に自動アップロードできます。詳細は [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md) を参照してください。
 - ZMQ ベースのリモート推論インフラをサポートします。サーバー/クライアントアーキテクチャにより、モデル推論を GPU サーバーにオフロードし、リソースが限られたエッジデバイスへのデプロイを可能にします。詳細は [リモート推論サービス](docs/remote_inference_serving.md) を参照してください。
 - [RTC（Real-Time Chunking）](docs/rtc.md) をサポートし、チャンク間の軌跡の連続性を向上させます。
 - GR00T と PI0.5 の推論を高速化します。詳細は [Inference Acceleration](docs/inference_acceleration.md) を参照してください。Triton の融合カーネル、CUDA Graph のキャプチャ、CUDA のカスタム演算子が含まれます。
@@ -810,6 +862,70 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 ```
 
 `eval.seed` は RoboCasa の episode seeds と、評価中の確率的な GR00T action sampling seeds を制御します。`PYTHONHASHSEED` は独立しており、Python 起動前に設定する必要があります。報告済みの RoboCasa 結果を再現する場合は、同じ値を使うことを推奨します。
+
+</details>
+
+<details>
+<summary><b>LIBERO-Plus robustness 評価</b></summary>
+
+LIBERO-Plus は camera viewpoint、robot initial state、language、light、
+background、sensor noise、object layout の 7 perturbation dimension にわたる
+10,030 task を提供します。`requirements-sim.txt` は標準 `libero` namespace と
+独立した `libero_plus` namespace を同じ FluxVLA 環境にインストールします。
+asset を確認してから manager invocation ごとに 1 suite を実行します：
+
+|                  | 標準 LIBERO                                          | LIBERO-Plus                           |
+| ---------------- | ---------------------------------------------------- | ------------------------------------- |
+| pip distribution | `libero`                                             | `libero-plus`                         |
+| Python namespace | `libero`                                             | `libero_plus`                         |
+| task 数          | 4 suite 合計 40                                      | 4 suite 合計 10,030                   |
+| trial per task   | config 値、通常 50                                   | 必ず 1                                |
+| entry point      | `scripts/eval.py` / `scripts/eval_libero_manager.sh` | `scripts/eval_libero_plus_manager.sh` |
+| 追加 runtime     | なし                                                 | `Wand`、`scikit-image`、ImageMagick   |
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+
+export OUTPUT_DIR=work_dirs/libero_plus_pi05
+export CUDA_VISIBLE_DEVICES=0,1
+export WORKERS_PER_GPU=1
+export RESUME=1
+export WANDB_MODE=disabled
+
+CONFIG=configs/pi05/pi05_paligemma_libero_spatial_full_finetune.py \
+CKPT=/path/to/pi05-libero-spatial-checkpoint.safetensors \
+SUITE=libero_spatial \
+bash scripts/eval_libero_plus_manager.sh
+```
+
+同じ `OUTPUT_DIR` を使い、対応する config と checkpoint で
+`libero_object`、`libero_goal`、`libero_10` も実行してください。manager は
+official protocol の 1 trial per task を強制し、worker ごとに結果を atomic に
+checkpoint し、`RESUME=1` で再実行すると完了済み task をスキップします。
+smoke test では `TASK_IDS=0,1,2`、assignment だけ確認する場合は `DRY_RUN=1`
+を設定します。
+
+worker result / log は
+`$OUTPUT_DIR/<suite>/{worker_results,worker_logs,worker_status,worker_tasks}` に
+保存されます。中断後は同じ config、checkpoint、suite、`OUTPUT_DIR` で再実行します。
+
+4 suite の完了後、strict leaderboard summary を生成します：
+
+```bash
+python tools/summarize_libero_plus_results.py \
+  --run-root "$OUTPUT_DIR" \
+  --output-dir "$OUTPUT_DIR" \
+  --title PI0.5
+```
+
+summarizer は installed `libero_plus` から `task_classification.json` を自動検出し、
+duplicate / unknown / missing task と 1 trial 以外の result を拒否します。標準
+LIBERO summary に加えて `libero_plus_summary.{csv,json,txt}`、
+`libero_plus_by_suite.csv`、`libero_plus_missing_tasks.csv` を生成します。列は
+`Camera/Robot/Language/Light/Background/Noise/Layout/Total` で、`Total` は全 task
+trial の micro average です。official comparison には全 10,030 task が必要です。
+`--allow-incomplete` は smoke test と進捗確認にのみ使用し、partial result は
+Feishu に upload されません。
 
 </details>
 

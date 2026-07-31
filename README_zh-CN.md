@@ -106,7 +106,7 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>如果安装脚本遇到问题：检查安装模式和 CUDA profile 选择</b></summary>
 
-`sim-only` 会安装仿真 / LIBERO / RoboCasa 运行时依赖，并把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 会安装真机和远程推理依赖；`full` 会同时安装两类依赖。如果不需要 RoboCasa checkout，可传入 `--skip-robocasa`。
+`sim-only` 安装仿真 / LIBERO / LIBERO-Plus / RoboCasa 相关依赖，并默认把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 安装真机和远程推理依赖，`full` 两者都安装。`requirements-sim.txt` 将标准 LIBERO 安装为 distribution / Python namespace `libero`，将兼容版 LIBERO-Plus 安装为独立的 distribution `libero-plus` 和 namespace `libero_plus`。二者可在同一个 Conda 环境中共存：普通评测命令使用 `libero`，`scripts/eval_libero_plus_manager.sh` 使用 `libero_plus`。如果不需要 RoboCasa checkout，可以加 `--skip-robocasa`。安装器默认还会下载并校验 LIBERO-Plus 的 6.4 GB benchmark 资产；如需延后下载，可传 `--skip-libero-plus-assets`。
 
 只要安装器安装 RoboCasa 源码 checkout（`sim-only`、`full` 或 `real-only --with-robocasa`），默认也会下载 RoboCasa 仿真资产。安装器会调用 `scripts/download_robocasa_assets.py`，并使用 `FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（默认依次取 `HF_ENDPOINT`、`https://hf-mirror.com`）。如只想跳过资产下载，可使用 `--skip-robocasa-assets`；如需同时跳过源码 checkout 和资产，可使用 `--skip-robocasa`。
 
@@ -170,9 +170,11 @@ bash scripts/update_env.sh
 ```bash
 git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
-python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install "numpy==1.26.4" "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0 "Wand==0.7.2" "scikit-image==0.25.2"
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
+python -m pip install --no-deps -e "git+https://github.com/hqr-robotic/LIBERO-plus.git@223cb493e7046698545a0b71bf539d2abfc211f4#egg=libero-plus"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
+python scripts/download_libero_plus_assets.py
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -267,6 +269,11 @@ pip install --no-build-isolation -e .
 ```
 
 > **说明**：`requirements.txt` 当前组合了 `requirements-base.txt`、`requirements-sim.txt` 和 `requirements-real.txt`，不会安装 PyTorch；请先安装 CUDA PyTorch，或直接使用 `scripts/install_env.sh`。
+
+> **LIBERO-Plus**：`requirements-sim.txt` 会在当前 FluxVLA 环境中同时安装
+> `libero`、固定版本的 `libero-plus`，以及 `Wand` / `scikit-image`。两者的
+> Python namespace 分别为 `libero` 与 `libero_plus`，不会互相覆盖。不要安装
+> LIBERO-Plus 上游的 `requirements.txt`，否则其旧版本依赖会覆盖 FluxVLA 栈。
 
 </details>
 
@@ -476,6 +483,48 @@ huggingface-cli download limxdynamics/FluxVLAData \
 ```
 
 如需使用全量 RoboCasa GR1 数据训练，将 include 模式替换为 `robocasa_lerobot_V2.1/*`。
+
+</details>
+
+<details>
+<summary><b>LIBERO-Plus benchmark 资产</b></summary>
+
+`scripts/install_env.sh sim-only` 和 `scripts/install_env.sh full` 默认会安装固定的
+`libero-plus` editable distribution，并下载官方 6.4 GB `assets.zip`。下载脚本会
+自动定位已安装 checkout、校验 SHA-256、提取嵌套资产目录、检查物体 / 场景 /
+纹理文件，并在 checkout 旁写入 `.libero/config.yaml`。Plus manager 会自动选择
+该配置，标准 LIBERO 命令仍使用原来的 `~/.libero/config.yaml`。
+
+如果不使用一键安装器，请先安装 ImageMagick/Wand 系统库：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  libexpat1 libfontconfig1-dev libpython3-stdlib libmagickwand-dev unzip
+```
+
+如果安装时传了 `--skip-libero-plus-assets`，可稍后执行：
+
+```bash
+python scripts/download_libero_plus_assets.py
+```
+
+已有 checkout 或缓存时可显式指定：
+
+```bash
+python scripts/download_libero_plus_assets.py \
+  --libero-plus-root /path/to/LIBERO-plus \
+  --cache-dir /path/to/cache
+```
+
+仅校验已安装资产、不下载：
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+```
+
+最终的 `libero_plus/libero/assets` 应包含 `articulated_objects/`、`new_objects/`、
+`scenes/`、`textures/`、`serving_region.xml` 等官方 benchmark 资产。
 
 </details>
 
@@ -732,7 +781,8 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 <summary><b>评估与推理能力</b></summary>
 
 - 支持多 GPU 在无光追设备上评估 libero。
-- 支持将 LIBERO 和 RoboCasa 评估汇总自动写入飞书电子表格。详见 [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md)。
+- 支持可持久化、可恢复的 LIBERO-Plus 评测，并对全部 10,030 个鲁棒性任务执行严格聚合。
+- 支持将 LIBERO、LIBERO-Plus 和 RoboCasa 评估汇总自动写入飞书电子表格。详见 [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md)。
 - 支持基于 ZMQ 通信框架的远程推理设施，利用 server/client 架构将模型推理负载装卸到服务器端，适用于算力受限的边缘设备部署。详见 [远程推理服务](docs/remote_inference_serving.md)。
 - 支持 [RTC (Real-Time Chunking)](docs/rtc.md)，提升跨 chunk 轨迹连续性。
 - 支持 GR00T 与 PI0.5 推理加速；详见 [Inference Acceleration](docs/inference_acceleration.md)，包含 Triton 融合核、CUDA Graph 捕获与 CUDA 自定义算子。
@@ -810,6 +860,67 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 ```
 
 `eval.seed` 控制 RoboCasa episode seeds 以及评估过程中 GR00T 随机 action sampling seeds。`PYTHONHASHSEED` 与其相互独立，必须在 Python 启动前设置；复现已报告的 RoboCasa 结果时，建议使用相同数值。
+
+</details>
+
+<details>
+<summary><b>LIBERO-Plus 鲁棒性评测</b></summary>
+
+LIBERO-Plus 在相机视角、机器人初始状态、语言、光照、背景、传感器噪声和
+物体布局七个扰动维度上提供 10,030 个任务。`requirements-sim.txt` 会在同一个
+FluxVLA 环境中安装标准 `libero` namespace 与独立的 `libero_plus` namespace。
+确认资产完整后，每次启动一个 suite：
+
+|                  | 标准 LIBERO                                          | LIBERO-Plus                           |
+| ---------------- | ---------------------------------------------------- | ------------------------------------- |
+| pip distribution | `libero`                                             | `libero-plus`                         |
+| Python namespace | `libero`                                             | `libero_plus`                         |
+| 任务数           | 四个 suite 共 40 个                                  | 四个 suite 共 10,030 个               |
+| 每任务试验次数   | 由 config 决定，通常为 50                            | 固定为 1                              |
+| 入口             | `scripts/eval.py` / `scripts/eval_libero_manager.sh` | `scripts/eval_libero_plus_manager.sh` |
+| 额外运行依赖     | 无                                                   | `Wand`、`scikit-image`、ImageMagick   |
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+
+export OUTPUT_DIR=work_dirs/libero_plus_pi05
+export CUDA_VISIBLE_DEVICES=0,1
+export WORKERS_PER_GPU=1
+export RESUME=1
+export WANDB_MODE=disabled
+
+CONFIG=configs/pi05/pi05_paligemma_libero_spatial_full_finetune.py \
+CKPT=/path/to/pi05-libero-spatial-checkpoint.safetensors \
+SUITE=libero_spatial \
+bash scripts/eval_libero_plus_manager.sh
+```
+
+使用同一个 `OUTPUT_DIR`，分别用匹配的 config 与 checkpoint 继续运行
+`libero_object`、`libero_goal` 和 `libero_10`。manager 会强制执行官方的
+每任务一次试验协议，按 worker 原子保存结果，并在 `RESUME=1` 时跳过已完成任务。
+冒烟测试可设置 `TASK_IDS=0,1,2`；完整评测时不设置。`DRY_RUN=1` 只检查任务
+分配，不加载模型。
+
+worker 结果和日志位于
+`$OUTPUT_DIR/<suite>/{worker_results,worker_logs,worker_status,worker_tasks}`。
+中断后使用相同 config、checkpoint、suite 和 `OUTPUT_DIR` 再次启动即可恢复。
+
+四个 suite 全部结束后，生成严格的 leaderboard 汇总：
+
+```bash
+python tools/summarize_libero_plus_results.py \
+  --run-root "$OUTPUT_DIR" \
+  --output-dir "$OUTPUT_DIR" \
+  --title PI0.5
+```
+
+汇总工具会从已安装的 `libero_plus` 自动读取 `task_classification.json`，并拒绝
+重复任务、未知任务、缺失任务及非单次试验结果。除标准 LIBERO 汇总外，还会
+生成 `libero_plus_summary.{csv,json,txt}`、`libero_plus_by_suite.csv` 和
+`libero_plus_missing_tasks.csv`。leaderboard 列为
+`Camera/Robot/Language/Light/Background/Noise/Layout/Total`，其中 `Total` 对全部
+task trial 做微平均。正式对比要求全部 10,030 个任务完整；
+`--allow-incomplete` 仅用于冒烟测试和进度检查，partial 结果不会上报飞书。
 
 </details>
 

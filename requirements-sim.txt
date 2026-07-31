@@ -3,8 +3,11 @@ gym==0.25.2
 gymnasium
 hydra-core==1.2.0
 -e git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0#egg=libero
+-e git+https://github.com/hqr-robotic/LIBERO-plus.git@223cb493e7046698545a0b71bf539d2abfc211f4#egg=libero-plus
 lxml
 mujoco==3.2.6
 robomimic==0.2.0
 -e git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049#egg=robosuite
+scikit-image==0.25.2
 tensorflow==2.15.0
+Wand==0.7.2

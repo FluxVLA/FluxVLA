@@ -38,6 +38,23 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
+export FLUXVLA_LIBERO_PACKAGE=libero_plus
+LIBERO_CONFIG_PATH="${LIBERO_PLUS_CONFIG_PATH:-$(python - <<'PY'
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.find_spec('libero_plus.libero')
+if spec is not None and spec.origin is not None:
+    print(Path(spec.origin).resolve().parents[2] / '.libero')
+PY
+)}"
+export LIBERO_CONFIG_PATH
+[[ -n "${LIBERO_CONFIG_PATH}" \
+    && -f "${LIBERO_CONFIG_PATH}/config.yaml" ]] || {
+  echo "[libero-plus-manager] LIBERO-Plus is not configured; run: python scripts/download_libero_plus_assets.py" >&2
+  exit 1
+}
+
 usage() {
   sed -n '2,37p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
 }
@@ -240,11 +257,21 @@ SAVE_FAILED_ROLLOUT_VIDEOS="${SAVE_FAILED_ROLLOUT_VIDEOS:-${CFG_SAVE_FAILED_ROLL
 SAVE_MULTI_VIEW_ROLLOUT_VIDEOS="${SAVE_MULTI_VIEW_ROLLOUT_VIDEOS:-${CFG_SAVE_MULTI_VIEW_ROLLOUT_VIDEOS:-False}}"
 ROLLOUT_DIR="${ROLLOUT_DIR:-${CFG_ROLLOUT_DIR}}"
 
-if [[ -z "${TASK_CLASSIFICATION}" && -n "${LIBERO_PLUS_ROOT:-}" ]]; then
-  TASK_CLASSIFICATION="${LIBERO_PLUS_ROOT}/libero/libero/benchmark/task_classification.json"
+if [[ -z "${TASK_CLASSIFICATION}" ]]; then
+  TASK_CLASSIFICATION="$(python - <<'PY'
+import importlib.util
+from pathlib import Path
+
+spec = importlib.util.find_spec('libero_plus.libero')
+if spec is not None and spec.origin is not None:
+    path = Path(spec.origin).resolve().parent / 'benchmark' / 'task_classification.json'
+    if path.is_file():
+        print(path)
+PY
+)"
 fi
 [[ -n "${TASK_CLASSIFICATION}" && -f "${TASK_CLASSIFICATION}" ]] || {
-  echo "[libero-plus-manager] set TASK_CLASSIFICATION to LIBERO-Plus task_classification.json" >&2
+  echo "[libero-plus-manager] cannot find LIBERO-Plus task_classification.json; install requirements-sim.txt or set TASK_CLASSIFICATION" >&2
   exit 1
 }
 
@@ -349,7 +376,7 @@ import json
 import os
 import sys
 
-from libero.libero import benchmark
+from libero_plus.libero import benchmark
 
 
 def parse_task_ids(raw_value, num_tasks):
