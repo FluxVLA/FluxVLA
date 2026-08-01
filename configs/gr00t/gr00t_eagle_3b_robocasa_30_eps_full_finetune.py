@@ -211,15 +211,20 @@ inference_model = dict(
 
 eval = dict(
     type='RobocasaEvalRunner',
+    benchmark='robocasa',
+    task_suite_name='robocasa',
     model_family='groot',
     task_list=[
         f'gr1_unified/{task_dir}_GR1ArmsAndWaistFourierHands_Env'
         for task_dir in _ROBOCASA_TASK_DIRS
     ],
+    total_tasks=24,
     eval_chunk_size=16,
     max_episode_steps=720,
+    num_trials_per_task=50,
     seed=7,
     unnorm_key=_STAT,
+    action_order='n15',
     dataset=dict(
         type='RobocasaEvalDataset',
         unnorm_key=_STAT,
@@ -259,4 +264,63 @@ eval = dict(
         action_dim=29,
         clip_actions=False,
         stats_order='fluxvla'),
+)
+
+themis = dict(
+    transport=dict(
+        service_name='/fluxvla/predict_action',
+        report_service_name='/fluxvla/report_evaluation',
+        timeout_s=30.0,
+        image_keys=['video.ego_view_bg_crop_pad_res256_freq20'],
+        state_keys=[
+            'state.left_arm',
+            'state.left_hand',
+            'state.right_arm',
+            'state.right_hand',
+            'state.waist',
+        ],
+        unnorm_key=_STAT,
+        image_encoding='rgb8',
+    ),
+    runner=dict(
+        type='EvalRunner',
+        environment=dict(
+            type='RoboCasaEnvironment',
+            task_list=eval['task_list'],
+            action_order=eval['action_order'],
+            deterministic_env=True,
+            prompt_key='annotation.human.coarse_action',
+            render_key='video.ego_view_pad_res256_freq20',
+        ),
+        model_client=dict(type='FluxVLAROSModelClient'),
+        evaluator=dict(type='SuccessRateEvaluator'),
+        seed=eval['seed'],
+        episodes_per_task=eval['num_trials_per_task'],
+        max_episode_steps=eval['max_episode_steps'],
+        execute_horizon=eval['eval_chunk_size'],
+        stop_on_success=True,
+        parallel_workers=1,
+        simulator_gpu_ids=None,
+        work_dir='work_dirs/fluxthemis',
+    ),
+    ros_server=dict(
+        ros_version=1,
+        dataset_section='eval',
+        evaluation_reporting=dict(
+            result_output_dir='work_dirs/fluxthemis',
+            report_kind='robocasa',
+        ),
+        device='cuda:0',
+        workers=dict(
+            startup_timeout_s=900.0,
+            request_timeout_s=120.0,
+            lease_timeout_s=900.0,
+        ),
+        mixed_precision_dtype='bf16',
+        enable_mixed_precision=True,
+        model_outputs_environment_actions=False,
+        forward_seed=False,
+        denormalize_context={},
+        denormalize_per_action=True,
+    ),
 )

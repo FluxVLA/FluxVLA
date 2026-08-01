@@ -116,7 +116,8 @@ class FluxVLAROSPolicy:
                  model_outputs_environment_actions: bool = False,
                  forward_seed: bool = False,
                  denormalize_context: Mapping[str, Any] | None = None,
-                 denormalize_per_action: bool = False) -> None:
+                 denormalize_per_action: bool = False,
+                 expected_unnorm_key: str = '') -> None:
         if not callable(dataset):
             raise TypeError('FluxVLA ROS server dataset must be callable')
         if (not model_outputs_environment_actions
@@ -142,6 +143,8 @@ class FluxVLAROSPolicy:
         if denormalize_context is not None and not isinstance(
                 denormalize_context, Mapping):
             raise TypeError('denormalize_context must be a mapping')
+        if not isinstance(expected_unnorm_key, str):
+            raise TypeError('expected_unnorm_key must be a string')
 
         self.vla = vla
         self.dataset = dataset
@@ -154,6 +157,7 @@ class FluxVLAROSPolicy:
         self.forward_seed = forward_seed
         self.denormalize_context = dict(denormalize_context or {})
         self.denormalize_per_action = denormalize_per_action
+        self.expected_unnorm_key = expected_unnorm_key
         self._lock = threading.RLock()
 
         if self.device.type == 'cuda':
@@ -166,6 +170,12 @@ class FluxVLAROSPolicy:
         """Preprocess one request and return environment-unit ``[T, A]``."""
         if not isinstance(observation, Mapping):
             raise TypeError('observation must be a mapping')
+        if (unnorm_key and self.expected_unnorm_key
+                and unnorm_key != self.expected_unnorm_key):
+            raise ValueError(
+                f'Request unnorm_key {unnorm_key!r} does not match the '
+                f'configured key {self.expected_unnorm_key!r}')
+        unnorm_key = unnorm_key or self.expected_unnorm_key
         with self._lock, self._seed_context(seed):
             result = self.dataset(dict(observation))
             batch = result[0] if isinstance(result, tuple) else result
@@ -775,7 +785,12 @@ def build_ros_policy_from_config(
         raise KeyError('FluxVLA config must define `model` or '
                        '`inference_model`')
     vla = build_vla_from_cfg(model_cfg)
-    _load_checkpoint(vla, resolved_ckpt)
+    checkpoint_model_cfg = _config_get(cfg, 'model', model_cfg)
+    _load_checkpoint(
+        vla,
+        resolved_ckpt,
+        name_mapping=_config_get(checkpoint_model_cfg, 'name_mapping'),
+    )
     if stats_path is not None:
         with stats_path.open('r', encoding='utf-8') as stream:
             vla.norm_stats = json.load(stream)
@@ -803,6 +818,8 @@ def build_ros_policy_from_config(
         denormalize_action = build_transform_from_cfg(denorm_cfg)
         _prepare_denormalize_context(denormalize_context, denorm_cfg,
                                      section_cfg, transport)
+        _validate_denormalization_stats(denormalize_action,
+                                        denormalize_context)
 
     resolved_device = device or server_cfg.get('device', 'cuda:0')
     dtype_name = server_cfg.get('mixed_precision_dtype', 'bf16')
@@ -817,6 +834,7 @@ def build_ros_policy_from_config(
         forward_seed=server_cfg.get('forward_seed', False),
         denormalize_context=denormalize_context,
         denormalize_per_action=server_cfg.get('denormalize_per_action', False),
+        expected_unnorm_key=str(transport.get('unnorm_key', '')),
     )
 
 
@@ -927,6 +945,7 @@ def build_ros_server_from_config(
             eval_config=reporter_eval_config,
             logger=None,
             feishu=reporting_cfg.get('feishu'),
+            report_kind=reporting_cfg.get('report_kind'),
         )
 
     workers_cfg = dict(
@@ -1127,7 +1146,7 @@ def _resolve_checkpoint_path(value: Any) -> Path:
             'Checkpoint path is required via --ckpt-path, '
             'themis.ros_server.ckpt_path, or the selected section.ckpt_path')
     path = Path(value).expanduser().resolve()
-    if not path.is_file():
+    if not path.exists() or not (path.is_file() or path.is_dir()):
         raise FileNotFoundError(f'Checkpoint not found: {path}')
     return path
 
@@ -1145,15 +1164,58 @@ def _resolve_statistics_path(value: Any, checkpoint_path: Path) -> Path | None:
     return path
 
 
-def _load_checkpoint(vla: Any, checkpoint_path: Path) -> None:
-    if checkpoint_path.suffix == '.safetensors':
+def _load_checkpoint(vla: Any,
+                     checkpoint_path: Path,
+                     name_mapping: Mapping[str, str] | None = None) -> None:
+    if checkpoint_path.is_dir():
         from safetensors.torch import load_file
-        checkpoint = load_file(str(checkpoint_path), device='cpu')
+        shards = sorted(checkpoint_path.glob('model-*.safetensors'))
+        if not shards:
+            raise FileNotFoundError(
+                f'No model-*.safetensors files found in {checkpoint_path}')
+        state_dict = {}
+        for shard in shards:
+            state_dict.update(load_file(str(shard), device='cpu'))
+    elif checkpoint_path.suffix == '.safetensors':
+        from safetensors.torch import load_file
+        state_dict = load_file(str(checkpoint_path), device='cpu')
     else:
         checkpoint = torch.load(checkpoint_path, map_location='cpu')
-    state_dict = (
-        checkpoint['model'] if isinstance(checkpoint, Mapping)
-        and 'model' in checkpoint else checkpoint)
+        state_dict = (
+            checkpoint['model'] if isinstance(checkpoint, Mapping)
+            and 'model' in checkpoint else checkpoint)
+
+    if name_mapping:
+        if not isinstance(name_mapping, Mapping):
+            raise TypeError('model.name_mapping must be a mapping')
+
+        def has_prefix(key: str, prefix: str) -> bool:
+            return key == prefix or key.startswith(f'{prefix}.')
+
+        native_prefixes = tuple(name_mapping)
+        source_prefixes = tuple(name_mapping.values())
+        has_native_keys = any(
+            any(has_prefix(key, prefix) for key in state_dict)
+            for prefix in native_prefixes)
+        needs_mapping = (
+            any(
+                any(has_prefix(key, prefix) for key in state_dict)
+                for prefix in source_prefixes) and not has_native_keys)
+        if needs_mapping:
+            mapped_state_dict = {}
+            for native_prefix, source_prefix in name_mapping.items():
+                if not isinstance(native_prefix, str) or not isinstance(
+                        source_prefix, str):
+                    raise TypeError(
+                        'model.name_mapping keys and values must be strings')
+                for key, value in state_dict.items():
+                    if has_prefix(key, source_prefix):
+                        mapped_key = native_prefix + key[len(source_prefix):]
+                        mapped_state_dict[mapped_key] = value
+            state_dict = mapped_state_dict
+
+    from fluxvla.engines.utils.checkpoint_utils import handle_shared_tensors
+    state_dict = handle_shared_tensors(state_dict, vla.state_dict())
     vla.load_state_dict(state_dict, strict=True)
 
 
@@ -1193,6 +1255,24 @@ def _prepare_denormalize_context(context: dict[str,
     transform_name = (
         transform_type if isinstance(transform_type, str) else getattr(
             transform_type, '__name__', str(transform_type)))
+    if 'Robocasa' in transform_name:
+        section_key = section_cfg.get('unnorm_key')
+        transport_key = transport.get('unnorm_key')
+        if section_key and transport_key and section_key != transport_key:
+            raise ValueError('RoboCasa section.unnorm_key and '
+                             'themis.transport.unnorm_key must match')
+        stats_key = transport_key or section_key
+        if not stats_key:
+            raise KeyError(
+                'RoboCasa ROS serving requires an unnorm_key in the eval '
+                'section or themis.transport')
+        configured_key = context.get('task_suite_name')
+        if configured_key and configured_key != stats_key:
+            raise ValueError(
+                'RoboCasa denormalize_context.task_suite_name must match '
+                'the configured unnorm_key')
+        context['task_suite_name'] = stats_key
+        return
     task_suite_name = section_cfg.get('task_suite_name')
     if task_suite_name:
         context.setdefault('task_suite_name', task_suite_name)
@@ -1202,6 +1282,27 @@ def _prepare_denormalize_context(context: dict[str,
             section_cfg.get('norm_stats_key')
             or (f'{task_suite_name}_no_noops'
                 if task_suite_name else transport.get('unnorm_key', '')))
+
+
+def _validate_denormalization_stats(transform: Any,
+                                    context: Mapping[str, Any]) -> None:
+    norm_stats = getattr(transform, 'norm_stats', None)
+    transform_name = type(transform).__name__
+    if 'Libero' in transform_name:
+        stats_key = context.get('norm_stats_key')
+    else:
+        stats_key = (
+            context.get('task_suite_name') or context.get('norm_stats_key'))
+    if not isinstance(norm_stats, Mapping) or not stats_key:
+        return
+    if stats_key not in norm_stats:
+        raise KeyError(
+            f'Normalization statistics key {stats_key!r} is missing; '
+            f'available keys: {list(norm_stats)}')
+    stats = norm_stats[stats_key]
+    if not isinstance(stats, Mapping) or 'action' not in stats:
+        raise KeyError(
+            f'Normalization statistics {stats_key!r} must contain action')
 
 
 def _config_get(config: Any, key: str, default: Any = None) -> Any:

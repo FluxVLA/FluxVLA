@@ -1,11 +1,11 @@
-"""Durable ROS evaluation events and native FluxVLA LIBERO artifacts.
+"""Durable ROS evaluation events and native FluxVLA evaluation artifacts.
 
 ``FluxVLAROSEvaluationReporter`` is the small adapter boundary used by ROS 1
 and ROS 2 servers.  A server passes versioned ``run_start``,
 ``episode_start``, ``episode_end`` and ``run_end`` events to
 ``process_event``.  The reporter validates ordering and idempotency, journals
-accepted events, maintains native live progress, and writes the same result
-schema as :class:`LiberoEvalRunner`.
+accepted events, maintains native live progress, and writes the native LIBERO
+or RoboCasa result schema selected by the evaluation config.
 
 The class deliberately has no ROS dependency.  Server adapters may construct
 it before ROS initialization and later replace the default Overwatch logger
@@ -43,6 +43,8 @@ LIBERO_SUITE_TASK_COUNTS = {
     'libero_10': 10,
     'libero_90': 90,
 }
+REPORT_KINDS = frozenset({'libero', 'robocasa'})
+ROBOCASA_GROUP_ORDER = ('Cabinet', 'Drawer', 'Microwave', 'Generalization')
 
 
 class EvaluationEventError(ValueError):
@@ -97,6 +99,23 @@ def _runner_eval_config(config):
              for key, value in config.items() if key != 'runner'})
         return merged
     return runner
+
+
+def _resolve_report_kind(config, explicit=None) -> str:
+    value = explicit
+    if value is None:
+        value = _cfg_get(config, 'report_kind')
+    if value is None:
+        value = _cfg_get(config, 'benchmark')
+    if value is None:
+        runner_type = str(_cfg_get(config, 'type', '')).lower()
+        value = 'robocasa' if 'robocasa' in runner_type else 'libero'
+    value = _require_string(value, 'report_kind').lower()
+    if value not in REPORT_KINDS:
+        raise EvaluationEventError(
+            f'report_kind must be one of {sorted(REPORT_KINDS)}, got '
+            f'{value!r}')
+    return value
 
 
 def _require_mapping(value, name: str) -> dict:
@@ -166,6 +185,16 @@ def _format_duration(seconds: float) -> str:
     return f'{hours:02d}h{remainder // 60:02d}m{remainder % 60:02d}s'
 
 
+def _robocasa_group_name(env_name: str) -> str:
+    if 'ToCabinet' in env_name:
+        return 'Cabinet'
+    if 'ToDrawer' in env_name:
+        return 'Drawer'
+    if 'ToMicrowave' in env_name:
+        return 'Microwave'
+    return 'Generalization'
+
+
 def _write_json_atomic(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f'{path.name}.tmp')
@@ -184,9 +213,10 @@ class FluxVLAROSEvaluationReporter:
             individual runs are placed below ``eval_runs/<checkpoint stem>``.
         config_path: Authoritative FluxVLA MMEngine config path.
         ckpt_path: Authoritative model checkpoint path.
-        eval_config: The selected FluxVLA eval runner config. At minimum it
-            must define ``task_suite_name``, ``model_family`` and
-            ``num_trials_per_task``.
+        eval_config: The selected FluxVLA eval runner config. It must define
+            ``model_family`` and ``num_trials_per_task``. LIBERO additionally
+            requires ``task_suite_name``; RoboCasa requires ``task_list``.
+        report_kind: Optional explicit ``libero`` or ``robocasa`` selector.
         logger: Optional ``Callable[[str], None]``. Defaults to Overwatch.
         feishu: Optional mapping with ``sheet_url``, ``app_id``, ``app_secret``
             and ``timeout``. Missing credentials retain the native environment
@@ -204,13 +234,16 @@ class FluxVLAROSEvaluationReporter:
                  ckpt_path,
                  eval_config,
                  logger=None,
-                 feishu=None):
+                 feishu=None,
+                 report_kind=None):
         self.result_root = Path(result_root).expanduser().resolve()
         self.config_path = str(Path(config_path).expanduser().resolve())
         self.ckpt_path = str(Path(ckpt_path).expanduser().resolve())
         self.eval_config = _runner_eval_config(eval_config)
+        self.report_kind = _resolve_report_kind(self.eval_config, report_kind)
+        suite_default = 'robocasa' if self.report_kind == 'robocasa' else None
         self.task_suite_name = _require_string(
-            _cfg_get(self.eval_config, 'task_suite_name'),
+            _cfg_get(self.eval_config, 'task_suite_name', suite_default),
             'eval_config.task_suite_name')
         self.model_family = _require_string(
             _cfg_get(self.eval_config, 'model_family'),
@@ -218,6 +251,11 @@ class FluxVLAROSEvaluationReporter:
         self.num_trials_per_task = _require_int(
             _cfg_get(self.eval_config, 'num_trials_per_task'),
             'eval_config.num_trials_per_task', 1)
+        self.action_order = _require_string(
+            _cfg_get(self.eval_config, 'action_order',
+                     'n15' if self.model_family == 'groot' else 'fluxvla'),
+            'eval_config.action_order')
+        self.task_list = self._configured_task_list()
         self.configured_task_ids = _cfg_get(self.eval_config, 'task_ids')
         self.result_gpu_id = _require_int(
             _cfg_get(self.eval_config, 'result_gpu_id', 0),
@@ -430,6 +468,13 @@ class FluxVLAROSEvaluationReporter:
             metadata = _require_mapping(
                 task.get('metadata', {}),
                 f'payload.tasks[{position}].metadata')
+            metadata_benchmark = metadata.get('benchmark')
+            if (metadata_benchmark is not None
+                    and str(metadata_benchmark).lower() != self.report_kind):
+                raise EvaluationEventError(
+                    f'task {task_id!r} metadata benchmark='
+                    f'{metadata_benchmark!r} does not match authoritative '
+                    f'report kind {self.report_kind!r}')
             for suite_key in ('task_suite_name', 'suite'):
                 metadata_suite = metadata.get(suite_key)
                 if (metadata_suite is not None
@@ -439,6 +484,12 @@ class FluxVLAROSEvaluationReporter:
                         f'{metadata_suite!r} does not match authoritative '
                         'suite '
                         f'{self.task_suite_name!r}')
+            if self.report_kind == 'robocasa':
+                self._validate_robocasa_manifest_entry(
+                    task_id=task_id,
+                    task_index=task_index,
+                    metadata=metadata,
+                )
             if task_id in tasks_by_id:
                 raise EvaluationEventError(f'duplicate task_id {task_id!r}')
             if task_index in tasks_by_index:
@@ -687,7 +738,7 @@ class FluxVLAROSEvaluationReporter:
         try:
             result = maybe_report_summary_to_feishu(
                 str(summary_path),
-                'libero',
+                self.report_kind,
                 sheet_url=self._feishu.get('sheet_url'),
                 app_id=self._feishu.get('app_id'),
                 app_secret=self._feishu.get('app_secret'),
@@ -710,6 +761,11 @@ class FluxVLAROSEvaluationReporter:
         }
 
     def _write_summary_artifacts(self, state: _RunState) -> Path:
+        if self.report_kind == 'robocasa':
+            return self._write_robocasa_summary_artifacts(state)
+        return self._write_libero_summary_artifacts(state)
+
+    def _write_libero_summary_artifacts(self, state: _RunState) -> Path:
         grouped = defaultdict(list)
         for episode in state.episodes:
             grouped[episode['task_index']].append(episode)
@@ -815,6 +871,187 @@ class FluxVLAROSEvaluationReporter:
         self._log(f'# episodes completed: {total_trials}')
         self._log(f'# successes: {total_successes} ({success_rate:.1f}%)')
         self._log(f'[ros-eval] wrote LIBERO summary artifacts to '
+                  f'{state.run_dir}')
+        return summary_path
+
+    def _write_robocasa_summary_artifacts(self, state: _RunState) -> Path:
+        grouped = defaultdict(list)
+        for episode in state.episodes:
+            grouped[episode['task_index']].append(episode)
+
+        task_result_dir = state.run_dir / 'robocasa'
+        status_dir = state.run_dir / 'task_status'
+        manager_result_dir = self.result_root / 'robocasa'
+        task_result_dir.mkdir(exist_ok=True)
+        status_dir.mkdir(exist_ok=True)
+        manager_result_dir.mkdir(parents=True, exist_ok=True)
+        group_stats = {
+            group: {
+                'total_tasks': 0,
+                'total_trials': 0,
+                'total_successes': 0,
+                'total_time': 0.0,
+                'max_time': 0.0,
+            }
+            for group in ROBOCASA_GROUP_ORDER
+        }
+        task_stats = {}
+        total_trials = 0
+        total_successes = 0
+        total_time = 0.0
+        overall_max_time = 0.0
+        incomplete_tasks = []
+
+        for task_index in sorted(state.tasks_by_index):
+            episodes = sorted(
+                grouped.get(task_index, ()),
+                key=lambda item: item['episode_index'])
+            count = len(episodes)
+            if count == 0:
+                incomplete_tasks.append(task_index)
+                continue
+            env_name = self.task_list[task_index]
+            group = _robocasa_group_name(env_name)
+            successes = sum(bool(item['success']) for item in episodes)
+            duration = sum(float(item['duration_s']) for item in episodes)
+            rate = successes / count * 100
+            stats = group_stats[group]
+            stats['total_tasks'] += 1
+            stats['total_trials'] += count
+            stats['total_successes'] += successes
+            stats['total_time'] += duration
+            stats['max_time'] = max(stats['max_time'], duration)
+            task_stats[env_name] = {
+                'task_id': task_index,
+                'group': group,
+                'total_episodes': count,
+                'successes': successes,
+                'success_rate': rate,
+                'duration': duration,
+            }
+            per_task = {
+                'task_id': task_index,
+                'env_name': env_name,
+                'group': group,
+                'successes': successes,
+                'total_episodes': count,
+                'success_rate': rate,
+                'duration': duration,
+                'gpu_id': self.result_gpu_id,
+            }
+            _write_json_atomic(
+                task_result_dir / f'task{task_index}_results.json', per_task)
+            _write_json_atomic(
+                manager_result_dir /
+                f'gpu{self.result_gpu_id}_task{task_index}_results.json',
+                per_task)
+            complete = count == state.start['episodes_per_task']
+            if not complete:
+                incomplete_tasks.append(task_index)
+            start_epoch = min(item['started_epoch'] for item in episodes)
+            task_state = 'SUCCESS' if complete else 'PARTIAL'
+            (status_dir / f'robocasa_task{task_index}.status').write_text(
+                f'{task_state}|{successes}|{count}|{int(start_epoch)}',
+                encoding='utf-8')
+            total_trials += count
+            total_successes += successes
+            total_time += duration
+            overall_max_time = max(overall_max_time, duration)
+            self._log(f'Task {task_index} ({env_name}) completed: '
+                      f'{successes}/{count} successes')
+            self._log(f'Time taken: {duration:.2f} seconds')
+
+        overall_rate = total_successes / max(total_trials, 1) * 100
+        with (state.run_dir / 'summary.csv').open(
+                'w', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(['', *ROBOCASA_GROUP_ORDER, 'all'])
+            group_rates = []
+            for group in ROBOCASA_GROUP_ORDER:
+                stats = group_stats[group]
+                if stats['total_trials']:
+                    rate = (
+                        stats['total_successes'] / stats['total_trials'] * 100)
+                    group_rates.append(f'{rate:.2f}')
+                else:
+                    group_rates.append('')
+            writer.writerow(
+                ['Success Rate (%)', *group_rates, f'{overall_rate:.2f}'])
+            writer.writerow([
+                'Episodes', *[
+                    group_stats[group]['total_trials']
+                    for group in ROBOCASA_GROUP_ORDER
+                ], total_trials
+            ])
+            writer.writerow([
+                'Successes', *[
+                    group_stats[group]['total_successes']
+                    for group in ROBOCASA_GROUP_ORDER
+                ], total_successes
+            ])
+
+        with (state.run_dir / 'task_success_rates.csv').open(
+                'w', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow(
+                ['Task', 'Group', 'Successes', 'Episodes', 'Success Rate (%)'])
+            for env_name, stats in task_stats.items():
+                writer.writerow([
+                    env_name, stats['group'], stats['successes'],
+                    stats['total_episodes'], f"{stats['success_rate']:.2f}"
+                ])
+
+        text_lines = ['=== RoboCasa Evaluation Results Summary ===']
+        for group in ROBOCASA_GROUP_ORDER:
+            stats = group_stats[group]
+            rate = (
+                stats['total_successes'] / max(stats['total_trials'], 1) *
+                100 if stats['total_trials'] else 0.0)
+            text_lines.extend([
+                '',
+                f'{group}:',
+                f"- Tasks completed: {stats['total_tasks']}",
+                f"- Total attempts: {stats['total_trials']}",
+                f"- Successful attempts: {stats['total_successes']}",
+                f'- Success rate: {rate:.2f}%',
+                f"- Total time: {_format_duration(stats['total_time'])}",
+            ])
+        text_lines.extend([
+            '',
+            'Overall statistics:',
+            f'- Success rate: {overall_rate:.2f}%',
+            f'- Total attempts: {total_trials}',
+            f'- Successful attempts: {total_successes}',
+            f'- Total time: {_format_duration(total_time)}',
+        ])
+        (state.run_dir / 'summary.txt').write_text(
+            '\n'.join(text_lines) + '\n', encoding='utf-8')
+        (state.run_dir / 'failed_tasks.txt').write_text(
+            ''.join(f'{task_index}\n' for task_index in incomplete_tasks),
+            encoding='utf-8')
+
+        summary = {
+            'run_id': state.run_id,
+            'ckpt': self.ckpt_path,
+            'config': self.config_path,
+            'model_family': self.model_family,
+            'action_order': self.action_order,
+            'task_ids': sorted(state.tasks_by_index),
+            'group_stats': group_stats,
+            'task_stats': task_stats,
+            'overall': {
+                'success_rate': overall_rate,
+                'total_episodes': total_trials,
+                'successes': total_successes,
+                'total_time': total_time,
+                'max_time': overall_max_time,
+            },
+        }
+        summary_path = state.run_dir / 'summary.json'
+        _write_json_atomic(summary_path, summary)
+        self._log(f'# episodes completed: {total_trials}')
+        self._log(f'# successes: {total_successes} ({overall_rate:.1f}%)')
+        self._log(f'[ros-eval] wrote RoboCasa summary artifacts to '
                   f'{state.run_dir}')
         return summary_path
 
@@ -945,6 +1182,8 @@ class FluxVLAROSEvaluationReporter:
         return True, 'eligible full-suite evaluation'
 
     def _expected_task_indexes(self) -> Optional[set[int]]:
+        if self.task_list is not None:
+            return set(range(len(self.task_list)))
         manifest = _cfg_get(self.eval_config, 'task_manifest')
         if manifest is not None:
             indexes = set()
@@ -966,6 +1205,48 @@ class FluxVLAROSEvaluationReporter:
             return None
         total_tasks = _require_int(total_tasks, 'eval_config.total_tasks', 1)
         return set(range(total_tasks))
+
+    def _configured_task_list(self) -> Optional[tuple[str, ...]]:
+        if self.report_kind != 'robocasa':
+            return None
+        value = _cfg_get(self.eval_config, 'task_list')
+        if (not isinstance(value, Sequence) or isinstance(value,
+                                                          (str, bytes))):
+            raise EvaluationEventError(
+                'eval_config.task_list must be a sequence for RoboCasa')
+        task_list = tuple(
+            _require_string(item, f'eval_config.task_list[{index}]')
+            for index, item in enumerate(value))
+        if not task_list:
+            raise EvaluationEventError(
+                'eval_config.task_list cannot be empty for RoboCasa')
+        if len(task_list) != len(set(task_list)):
+            raise EvaluationEventError(
+                'eval_config.task_list cannot contain duplicate env names')
+        return task_list
+
+    def _validate_robocasa_manifest_entry(self, task_id: str, task_index: int,
+                                          metadata: dict) -> None:
+        if self.task_list is None or task_index >= len(self.task_list):
+            raise EvaluationEventError(
+                f'RoboCasa task index {task_index} is outside the configured '
+                'task_list')
+        if task_id != str(task_index):
+            raise EvaluationEventError(
+                f'RoboCasa task id {task_id!r} must equal its configured '
+                f'index {task_index!r}')
+        expected_env = self.task_list[task_index]
+        actual_env = metadata.get('env_name', metadata.get('task_name'))
+        if actual_env != expected_env:
+            raise EvaluationEventError(
+                f'RoboCasa task {task_index} env_name {actual_env!r} does '
+                f'not match configured task_list entry {expected_env!r}')
+        expected_group = _robocasa_group_name(expected_env)
+        actual_group = metadata.get('group')
+        if actual_group is not None and actual_group != expected_group:
+            raise EvaluationEventError(
+                f'RoboCasa task {task_index} group {actual_group!r} does not '
+                f'match {expected_group!r}')
 
     def _append_event(self, state, version, event_type, request_id, sequence,
                       payload) -> None:
