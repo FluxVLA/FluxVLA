@@ -389,7 +389,11 @@ class BaseTrainRunner(ABC):
         if overwatch.is_rank_zero():
             overwatch.info(
                 f'Resuming training from checkpoint: {self.resume_from}')
-        checkpoint_info = torch.load(self.resume_from)
+        # Training checkpoints may have been produced from CUDA-backed state
+        # dicts. Always deserialize onto CPU so resuming does not temporarily
+        # materialize the full model and optimizer on the training device.
+        checkpoint_info = torch.load(
+            self.resume_from, map_location='cpu', weights_only=True)
 
         # Restore model state (delegated to subclasses for FSDP/DDP-specific
         # handling)

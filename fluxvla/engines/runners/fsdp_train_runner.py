@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: MIT
 # Notes: Attribution normalized; no functional change.
 
+import gc
 import math
 import os
 from collections import OrderedDict
@@ -138,6 +139,40 @@ class FSDPTrainRunner(BaseTrainRunner):
         self.fsdp_save_policy = FullStateDictConfig(
             offload_to_cpu=True, rank0_only=True)
 
+    @classmethod
+    def _move_checkpoint_tensors_to_cpu(cls, value):
+        """Recursively replace non-CPU tensors with detached CPU tensors.
+
+        The conversion mutates dictionaries and lists in place. In particular,
+        this preserves ``state_dict`` ordering and its private ``_metadata``
+        attribute while releasing references to any CUDA checkpoint clones as
+        soon as each entry has been copied.
+        """
+        if isinstance(value, torch.Tensor):
+            if value.device.type == 'cpu':
+                return value
+            return value.detach().cpu()
+        if isinstance(value, dict):
+            for key, item in value.items():
+                value[key] = cls._move_checkpoint_tensors_to_cpu(item)
+            return value
+        if isinstance(value, list):
+            for index, item in enumerate(value):
+                value[index] = cls._move_checkpoint_tensors_to_cpu(item)
+            return value
+        if isinstance(value, tuple):
+            converted = tuple(
+                cls._move_checkpoint_tensors_to_cpu(item) for item in value)
+            if hasattr(value, '_fields'):
+                return type(value)(*converted)
+            if type(value) is not tuple:
+                try:
+                    return type(value)(converted)
+                except TypeError:
+                    pass
+            return converted
+        return value
+
     def save_checkpoint(
         self,
         run_dir: Path,
@@ -173,6 +208,12 @@ class FSDPTrainRunner(BaseTrainRunner):
         with FSDP.state_dict_type(self.vla, self.fsdp_state_dict_type,
                                   self.fsdp_save_policy):
             full_vla_state_dict = self.vla.state_dict()
+            # PyTorch does not honor FullStateDictConfig.offload_to_cpu after
+            # world-size-1 FSDP is downgraded to NO_SHARD. Replace every leaf
+            # immediately so neither serialization nor the optimizer gather
+            # retains the CUDA-backed full model state.
+            full_vla_state_dict = self._move_checkpoint_tensors_to_cpu(
+                full_vla_state_dict)
 
             # Iterate through `full_vlm_state_dict` and split
             # `mkey.{full_dotted_path}` -> `mkey: {full_dotted_path}`
@@ -208,8 +249,17 @@ class FSDPTrainRunner(BaseTrainRunner):
                 dist.barrier()
                 full_optimizer_state_dict = FSDP.full_optim_state_dict(
                     self.vla, self.optimizer)
+                full_optimizer_state_dict = (
+                    self._move_checkpoint_tensors_to_cpu(
+                        full_optimizer_state_dict))
             else:
                 full_optimizer_state_dict = None
+
+            # Ensure copies are complete and return any checkpoint-only CUDA
+            # allocations to the allocator before serializing the CPU state.
+            gc.collect()
+            torch.cuda.synchronize()
+            torch.cuda.empty_cache()
 
             # Save on rank zero *only*
             if overwatch.is_rank_zero():
@@ -271,6 +321,16 @@ class FSDPTrainRunner(BaseTrainRunner):
                 os.symlink(os.path.abspath(safetensors_path), latest_sf_link)
 
                 self._cleanup_old_checkpoints(checkpoint_dir)
+
+        # Drop checkpoint-only tensor references before the next forward. This
+        # is especially important for older CUDA-tagged optimizer-state paths.
+        if overwatch.is_rank_zero():
+            del checkpoint_dict
+        del full_vla_state_dict
+        del model_state_dicts
+        del full_optimizer_state_dict
+        gc.collect()
+        torch.cuda.empty_cache()
 
     def run_setup(self, n_train_examples: int) -> None:
         self.vla.from_pretrained()
