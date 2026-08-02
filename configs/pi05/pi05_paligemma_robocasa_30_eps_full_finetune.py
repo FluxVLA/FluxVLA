@@ -197,6 +197,10 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
+        # Generate a fresh distributed permutation after every pass. The
+        # historical 30k run replayed one fixed ordering for roughly ten
+        # epochs; OpenPI reshuffles its training stream between passes.
+        reshuffle_each_epoch=True,
         # Keep state and action statistics separate. Action statistics must
         # come from the action column rather than observation.state.
         name_mappings={
@@ -286,7 +290,14 @@ runner = dict(
     # closed-loop success. A lower flow loss alone is not a reliable rollout
     # selection signal, so retain their 30k-step / 5e-5 adaptation schedule.
     max_steps=30000,
-    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
+    # Match OpenPI's AdamW momentum constants. PyTorch otherwise defaults to
+    # beta2=0.999, whereas the canonical PI0.5 recipe uses beta2=0.95.
+    optimizer=dict(
+        lr=5e-5,
+        type='AdamW',
+        betas=(0.9, 0.95),
+        weight_decay=0.0,
+    ),
     max_grad_norm=1.0,
     # Keep enough periodic checkpoints for closed-loop model selection.
     save_epoch_interval=1,
