@@ -59,6 +59,7 @@ class ParquetDataset(Dataset):
                  require_full_window: bool = False,
                  train_episode_fraction: float = 1.0,
                  repeat_to_full_length: bool = False,
+                 balance_data_roots: bool = False,
                  expose_index: bool = False,
                  expected_dataset_version: Optional[str] = None) -> None:
         """Initialize the Parquet dataset.
@@ -104,6 +105,11 @@ class ParquetDataset(Dataset):
                 episode subset so `__len__` remains the full dataset length.
                 This keeps epoch length based on full statistics while
                 sampling only the selected train episode fraction.
+            balance_data_roots (bool): If True, repeat indices from shorter
+                data roots until every root contributes the same number of
+                samples. This is useful when the downstream metric weights
+                task-specific roots equally but their trajectories have
+                different lengths. Defaults to False.
             expose_index (bool): Whether to add the concatenated dataset index
                 to each raw sample before transforms. This is useful for
                 offline sample-weight transforms such as SARM RA-BC.
@@ -115,6 +121,9 @@ class ParquetDataset(Dataset):
         super().__init__()
         if not 0 < train_episode_fraction <= 1:
             raise ValueError('train_episode_fraction must be in (0, 1].')
+        if balance_data_roots and repeat_to_full_length:
+            raise ValueError('balance_data_roots and repeat_to_full_length '
+                             'cannot both be enabled.')
         self.action_window_size = action_window_size
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
@@ -178,7 +187,7 @@ class ParquetDataset(Dataset):
         self.dataset = hf_dataset
         self.full_length = len(self.dataset)
         self.sample_indices = self._build_sample_indices(
-            train_episode_fraction)
+            train_episode_fraction, balance_data_roots)
         self.effective_length = (
             self.full_length
             if repeat_to_full_length else len(self.sample_indices))
@@ -219,12 +228,17 @@ class ParquetDataset(Dataset):
         normalized_root = dataset_root.rstrip(os.sep)
         local_dir = os.path.dirname(normalized_root) or '.'
         remote_dir = os.path.basename(normalized_root)
-        return (f'rm -rf {shlex.quote(dataset_root)}\n'
-                f'huggingface-cli download {shlex.quote(cls.HF_REPO_ID)} \\\n'
-                '  --repo-type dataset \\\n'
-                f'  --revision {shlex.quote(cls.HF_REVISION)} \\\n'
-                f'  --include {shlex.quote(remote_dir + "/*")} \\\n'
-                f'  --local-dir {shlex.quote(local_dir)}')
+        include_pattern = remote_dir + '/*'
+        indent = '  '
+        lines = [
+            f'rm -rf {shlex.quote(dataset_root)}',
+            f'huggingface-cli download {shlex.quote(cls.HF_REPO_ID)} \\',
+            indent + '--repo-type dataset \\',
+            indent + f'--revision {shlex.quote(cls.HF_REVISION)} \\',
+            indent + f'--include {shlex.quote(include_pattern)} \\',
+            indent + f'--local-dir {shlex.quote(local_dir)}',
+        ]
+        return '\n'.join(lines)
 
     def _verify_dataset_version(self, dataset_root: str,
                                 expected_dataset_version: str) -> None:
@@ -232,27 +246,30 @@ class ParquetDataset(Dataset):
         refresh_command = self._dataset_refresh_command(dataset_root)
 
         if not os.path.exists(version_path):
-            raise RuntimeError(
-                f'Dataset version file not found at {version_path}. '
-                f'Expected FluxVLA dataset version '
-                f'{expected_dataset_version}.\n\n'
-                f'Please refresh the dataset with:\n\n{refresh_command}')
+            message = (f'Dataset version file not found at {version_path}. '
+                       f'Expected FluxVLA dataset version '
+                       f'{expected_dataset_version}.')
+            raise RuntimeError(message + '\n\nPlease refresh the dataset with:'
+                               '\n\n' + refresh_command)
 
         dataset_version = self._read_dataset_version(version_path)
         if dataset_version != expected_dataset_version:
-            raise RuntimeError(
-                f'Dataset version mismatch for {dataset_root}. '
-                f'Expected FluxVLA dataset version '
-                f'{expected_dataset_version}, but found '
-                f'{dataset_version or "missing"} in {version_path}.\n\n'
-                f'Please refresh the dataset with:\n\n{refresh_command}')
+            actual_version = dataset_version or 'missing'
+            message = (f'Dataset version mismatch for {dataset_root}. '
+                       f'Expected FluxVLA dataset version '
+                       f'{expected_dataset_version}, but found '
+                       f'{actual_version} in {version_path}.')
+            raise RuntimeError(message + '\n\nPlease refresh the dataset with:'
+                               '\n\n' + refresh_command)
 
-    def _build_sample_indices(self, episode_fraction: float) -> np.ndarray:
-        if episode_fraction == 1.0:
+    def _build_sample_indices(self,
+                              episode_fraction: float,
+                              balance_data_roots: bool = False) -> np.ndarray:
+        if episode_fraction == 1.0 and not balance_data_roots:
             return np.arange(self.full_length, dtype=np.int64)
 
         episode_indices = list(self.dataset['episode_index'])
-        sample_indices = []
+        indices_by_root = []
         for start, end in zip(self.dataset_cumulative_sizes[:-1],
                               self.dataset_cumulative_sizes[1:]):
             start, end = int(start), int(end)
@@ -261,10 +278,33 @@ class ParquetDataset(Dataset):
             keep_count = int(len(ordered_episodes) * episode_fraction)
             keep_count = max(1, min(keep_count, len(ordered_episodes)))
             keep_episodes = set(ordered_episodes[:keep_count])
-            sample_indices.extend(
+            root_indices = [
                 start + offset
                 for offset, episode in enumerate(local_episode_indices)
-                if episode in keep_episodes)
+                if episode in keep_episodes
+            ]
+            indices_by_root.append(root_indices)
+
+        if balance_data_roots:
+            target_length = max(map(len, indices_by_root), default=0)
+            sample_indices = []
+            for root_indices in indices_by_root:
+                if not root_indices:
+                    continue
+                # Spread repeats over the whole root instead of always
+                # duplicating its earliest episodes. Using the longest root
+                # as the target retains every source frame while making each
+                # root equally likely after the outer dataset shuffle.
+                positions = ((np.arange(target_length) + 0.5) *
+                             len(root_indices) / target_length).astype(
+                                 np.int64)
+                root_array = np.asarray(root_indices, dtype=np.int64)
+                sample_indices.extend(root_array[positions].tolist())
+        else:
+            sample_indices = [
+                index for root_indices in indices_by_root
+                for index in root_indices
+            ]
 
         if not sample_indices:
             raise ValueError('No samples left after applying episode split.')
