@@ -160,6 +160,46 @@ def _resize_chw_with_pad(image: np.ndarray, height: int, width: int,
     return padded.transpose(2, 0, 1)
 
 
+def _bilinear_resample_constant(image: np.ndarray, map_y: np.ndarray,
+                                map_x: np.ndarray) -> np.ndarray:
+    """Sample an HWC image with bilinear interpolation and zero borders.
+
+    Unlike ``cv2.resize``, samples just outside the image blend the valid
+    edge pixel with the constant border. This matches augmax's
+    ``jax.scipy.ndimage.map_coordinates(..., mode='constant')`` geometry.
+    """
+    image = np.asarray(image)
+    if image.ndim != 3:
+        raise ValueError(f'Expected HWC image, got shape {image.shape}')
+    if map_y.shape != map_x.shape:
+        raise ValueError(
+            f'Resample maps must have equal shapes, got {map_y.shape} and '
+            f'{map_x.shape}.')
+
+    height, width = image.shape[:2]
+    y0 = np.floor(map_y).astype(np.int64)
+    x0 = np.floor(map_x).astype(np.int64)
+    y1 = y0 + 1
+    x1 = x0 + 1
+    wy = map_y - y0
+    wx = map_x - x0
+
+    output = np.zeros((*map_y.shape, image.shape[-1]), dtype=np.float32)
+    image_float = image.astype(np.float32, copy=False)
+    for sample_y, sample_x, weight in ((y0, x0, (1.0 - wy) * (1.0 - wx)),
+                                       (y0, x1, (1.0 - wy) * wx),
+                                       (y1, x0, wy * (1.0 - wx)), (y1, x1,
+                                                                   wy * wx)):
+        valid = ((sample_y >= 0) & (sample_y < height)
+                 & (sample_x >= 0) & (sample_x < width))
+        safe_y = np.clip(sample_y, 0, height - 1)
+        safe_x = np.clip(sample_x, 0, width - 1)
+        output += (
+            image_float[safe_y, safe_x] *
+            (weight * valid)[..., None].astype(np.float32))
+    return output
+
+
 @TRANSFORMS.register_module()
 class ResizeImages:
     """Resize images in the dataset to a specified
@@ -411,6 +451,311 @@ class RandomCropImages:
         images, kind, original_shape = self._as_image_list(data['images'])
         cropped = [self._crop_one(image) for image in images]
         data['images'] = self._restore_images(cropped, kind, original_shape)
+        return data
+
+
+@TRANSFORMS.register_module()
+class RandomRotateImages:
+    """Rotate every CHW/HWC image by a uniform angle without expansion.
+
+    The defaults match OpenPI's training augmentation: an angle sampled from
+    ``[-5, 5)`` degrees, bilinear interpolation around ``((W-1)/2,
+    (H-1)/2)`` and constant-zero padding.
+    """
+
+    def __init__(self, degrees: float = 5.0, *args, **kwargs):
+        if degrees < 0:
+            raise ValueError(f'degrees must be non-negative, got {degrees}')
+        self.degrees = float(degrees)
+
+    def _as_image_list(self, images):
+        if isinstance(images, list):
+            return images, 'list', None
+        arr = np.asarray(images)
+        if arr.ndim == 3:
+            original_shape = arr.shape
+            if arr.shape[0] % 3 == 0 and arr.shape[-1] != 3:
+                arr = arr.reshape(-1, 3, arr.shape[-2], arr.shape[-1])
+                return list(arr), 'array', original_shape
+            return [arr], 'array', original_shape
+        if arr.ndim == 4:
+            return list(arr), 'array', arr.shape
+        raise ValueError(
+            f'RandomRotateImages: unsupported image shape {arr.shape}')
+
+    def _restore_images(self, rotated, kind, original_shape):
+        if kind == 'list':
+            return rotated
+        arr = np.stack(rotated, axis=0)
+        if original_shape is not None and len(original_shape) == 3:
+            return arr.reshape(original_shape)
+        return arr
+
+    def _rotate_one(self, image: np.ndarray) -> np.ndarray:
+        arr = np.asarray(image)
+        channel_first = arr.ndim == 3 and arr.shape[0] == 3
+        if channel_first:
+            hwc = np.transpose(arr, (1, 2, 0))
+        elif arr.ndim == 3 and arr.shape[-1] == 3:
+            hwc = arr
+        else:
+            raise ValueError(
+                f'RandomRotateImages expects CHW or HWC image, got '
+                f'{arr.shape}')
+
+        if self.degrees == 0:
+            rotated = hwc.copy()
+        else:
+            height, width = hwc.shape[:2]
+            angle = np.random.uniform(-self.degrees, self.degrees)
+            center = ((width - 1) / 2.0, (height - 1) / 2.0)
+            matrix = cv2.getRotationMatrix2D(center, angle, 1.0)
+            rotated = cv2.warpAffine(
+                hwc,
+                matrix, (width, height),
+                flags=cv2.INTER_LINEAR,
+                borderMode=cv2.BORDER_CONSTANT,
+                borderValue=0)
+
+        if channel_first:
+            return np.transpose(rotated, (2, 0, 1)).astype(
+                arr.dtype, copy=False)
+        return rotated.astype(arr.dtype, copy=False)
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        images, kind, original_shape = self._as_image_list(data['images'])
+        rotated = [self._rotate_one(image) for image in images]
+        data['images'] = self._restore_images(rotated, kind, original_shape)
+        return data
+
+
+@TRANSFORMS.register_module()
+class OpenPIImageAugment:
+    """Apply the pinned OpenPI/augmax PI0 image augmentation policy.
+
+    This transform consumes raw uint8 images and returns concatenated CHW
+    float32 images in ``[-1, 1]``. Its operation order matches OpenPI commit
+    ``15a9616`` with augmax 0.4.1: resize-with-pad, continuous random crop,
+    resize, rotation, then one probabilistic HSV color-jitter operation.
+
+    augmax 0.4.1 accidentally computes but discards saturation adjustment.
+    ``saturation`` is retained here to document and reproduce that pinned
+    behavior, including sampling its unused random amount.
+    """
+
+    def __init__(self,
+                 height: int = 224,
+                 width: int = 224,
+                 crop_scale: float = 0.95,
+                 rotation_degrees: float = 5.0,
+                 brightness: float = 0.3,
+                 contrast: float = 0.4,
+                 saturation: float = 0.5,
+                 hue: float = 0.1,
+                 jitter_probability: float = 0.5,
+                 *args,
+                 **kwargs):
+        if height <= 0 or width <= 0:
+            raise ValueError('height and width must be positive')
+        if not 0 < crop_scale <= 1:
+            raise ValueError(f'crop_scale must be in (0, 1], got {crop_scale}')
+        if rotation_degrees < 0:
+            raise ValueError('rotation_degrees must be non-negative')
+        if not 0 <= jitter_probability <= 1:
+            raise ValueError('jitter_probability must be in [0, 1], got '
+                             f'{jitter_probability}')
+        for name, value in (('brightness', brightness), ('contrast', contrast),
+                            ('saturation', saturation), ('hue', hue)):
+            if value < 0:
+                raise ValueError(f'{name} must be non-negative, got {value}')
+
+        self.height = int(height)
+        self.width = int(width)
+        self.crop_scale = float(crop_scale)
+        self.rotation_degrees = float(rotation_degrees)
+        self.brightness = float(brightness)
+        self.contrast = float(contrast)
+        self.saturation = float(saturation)
+        self.hue = float(hue)
+        self.jitter_probability = float(jitter_probability)
+
+    @staticmethod
+    def _as_image_list(images):
+        if isinstance(images, list):
+            return images
+        arr = np.asarray(images)
+        if arr.ndim == 3:
+            if arr.shape[-1] == 3:
+                return [arr]
+            if arr.shape[0] % 3 == 0:
+                return list(arr.reshape(-1, 3, arr.shape[-2], arr.shape[-1]))
+        elif arr.ndim == 4:
+            return list(arr)
+        raise ValueError(
+            f'OpenPIImageAugment: unsupported image shape {arr.shape}')
+
+    @staticmethod
+    def _to_hwc_uint8(image):
+        arr = np.asarray(image)
+        if arr.ndim != 3:
+            raise ValueError(
+                f'OpenPIImageAugment expects a 3D image, got {arr.shape}')
+        if arr.shape[0] == 3:
+            arr = np.transpose(arr, (1, 2, 0))
+        elif arr.shape[-1] != 3:
+            raise ValueError(
+                'OpenPIImageAugment expects CHW or HWC RGB input, got '
+                f'{arr.shape}')
+        if arr.dtype != np.uint8:
+            raise ValueError(
+                'OpenPIImageAugment expects raw uint8 pixels, got '
+                f'{arr.dtype}')
+        return np.ascontiguousarray(arr)
+
+    def _resize_with_pad(self, image):
+        height, width = image.shape[:2]
+        ratio = max(width / self.width, height / self.height)
+        resized_height = int(height / ratio)
+        resized_width = int(width / ratio)
+        resized = cv2.resize(
+            image, (resized_width, resized_height),
+            interpolation=cv2.INTER_LINEAR)
+        pad_h0, remainder_h = divmod(self.height - resized_height, 2)
+        pad_h1 = pad_h0 + remainder_h
+        pad_w0, remainder_w = divmod(self.width - resized_width, 2)
+        pad_w1 = pad_w0 + remainder_w
+        return cv2.copyMakeBorder(
+            resized,
+            pad_h0,
+            pad_h1,
+            pad_w0,
+            pad_w1,
+            borderType=cv2.BORDER_CONSTANT,
+            value=0)
+
+    def _random_crop_and_resize(self, image):
+        height, width = image.shape[:2]
+        crop_height = max(1, int(height * self.crop_scale))
+        crop_width = max(1, int(width * self.crop_scale))
+        limit_y = (height - crop_height) / 2.0
+        limit_x = (width - crop_width) / 2.0
+        center_y, center_x = np.random.uniform(
+            low=np.array([-limit_y, -limit_x]),
+            high=np.array([limit_y, limit_x]))
+        start_y = limit_y + center_y
+        start_x = limit_x + center_x
+        map_x, map_y = np.meshgrid(
+            np.arange(crop_width, dtype=np.float32) + start_x,
+            np.arange(crop_height, dtype=np.float32) + start_y)
+        cropped = _bilinear_resample_constant(image, map_y, map_x)
+
+        # augmax Resize uses half-pixel centers and constant-zero sampling.
+        resize_x, resize_y = np.meshgrid(
+            ((np.arange(self.width, dtype=np.float32) + 0.5) * crop_width /
+             self.width - 0.5),
+            ((np.arange(self.height, dtype=np.float32) + 0.5) * crop_height /
+             self.height - 0.5))
+        return _bilinear_resample_constant(cropped, resize_y, resize_x)
+
+    def _rotate(self, image):
+        if self.rotation_degrees == 0:
+            return image
+        angle = np.random.uniform(-self.rotation_degrees,
+                                  self.rotation_degrees)
+        angle = np.deg2rad(angle)
+        center_y = (self.height - 1) / 2.0
+        center_x = (self.width - 1) / 2.0
+        output_x, output_y = np.meshgrid(
+            np.arange(self.width, dtype=np.float32) - center_x,
+            np.arange(self.height, dtype=np.float32) - center_y)
+        # augmax's transform is an output-to-input sampling map in (y, x).
+        map_y = (
+            np.cos(angle) * output_y + np.sin(angle) * output_x + center_y)
+        map_x = (-np.sin(angle) * output_y + np.cos(angle) * output_x +
+                 center_x)
+        return _bilinear_resample_constant(image, map_y, map_x)
+
+    @staticmethod
+    def _rgb_to_hsv(image):
+        value = np.max(image, axis=-1)
+        channel_range = value - np.min(image, axis=-1)
+        argmax = np.argmax(image, axis=-1)
+        second = np.mod(argmax + 1, 3)
+        third = np.mod(argmax + 2, 3)
+        second_value = np.take_along_axis(
+            image, second[..., None], axis=-1)[..., 0]
+        third_value = np.take_along_axis(
+            image, third[..., None], axis=-1)[..., 0]
+
+        hue = np.zeros_like(value)
+        non_gray = channel_range != 0
+        hue[non_gray] = (2 * argmax[non_gray] +
+                         (second_value[non_gray] - third_value[non_gray]) /
+                         channel_range[non_gray]) / 6.0
+        saturation = np.zeros_like(value)
+        non_black = value != 0
+        saturation[non_black] = (channel_range[non_black] / value[non_black])
+        return hue, saturation, value
+
+    @staticmethod
+    def _hsv_to_rgb(hue, saturation, value):
+        n = np.array([5.0, 3.0, 1.0], dtype=value.dtype)
+        k = np.mod(n + hue[..., None] * 6.0, 6.0)
+        factor = np.maximum(0.0, np.minimum(np.minimum(k, 4.0 - k), 1.0))
+        return (value[..., None] -
+                value[..., None] * saturation[..., None] * factor)
+
+    @staticmethod
+    def _adjust_brightness(value, amount):
+        if amount < 0:
+            return value * (1.0 + amount)
+        return value * (1.0 - amount) + amount
+
+    @staticmethod
+    def _adjust_contrast(value, amount):
+        if abs(amount) < 1e-12:
+            return value
+        slant = np.tan((amount + 1.0) * (np.pi / 4.0))
+        p1 = (slant - slant**2) / (2.0 * (1.0 - slant**2))
+        p2 = 1.0 - p1
+        adjusted = slant * (value - 0.5) + 0.5
+        adjusted = np.where(value < p1, value / slant, adjusted)
+        adjusted = np.where(value > p2, value / slant + 1.0 - 1.0 / slant,
+                            adjusted)
+        return adjusted
+
+    def _color_jitter(self, image):
+        hue, saturation, value = self._rgb_to_hsv(image)
+        brightness_amount = np.random.uniform(-self.brightness,
+                                              self.brightness)
+        contrast_amount = np.random.uniform(-self.contrast, self.contrast)
+        hue_amount = np.random.uniform(-self.hue, self.hue)
+        # Preserve augmax 0.4.1's sampling and no-op saturation bug.
+        _ = np.random.uniform(-self.saturation, self.saturation)
+
+        value = self._adjust_brightness(value, brightness_amount)
+        value = self._adjust_contrast(value, contrast_amount)
+        transformed = self._hsv_to_rgb(hue + hue_amount, saturation, value)
+        if np.random.random() < self.jitter_probability:
+            return transformed
+        return image
+
+    def _augment_one(self, image):
+        image = self._to_hwc_uint8(image)
+        image = self._resize_with_pad(image)
+        image = image.astype(np.float32) / 255.0
+        image = self._random_crop_and_resize(image)
+        image = self._rotate(image)
+        image = self._color_jitter(image)
+        image = image * 2.0 - 1.0
+        return np.transpose(image.astype(np.float32), (2, 0, 1))
+
+    def __call__(self, data: dict):
+        assert 'images' in data, "Input data must contain 'images' key"
+        images = self._as_image_list(data['images'])
+        augmented = [self._augment_one(image) for image in images]
+        data['images'] = np.concatenate(augmented, axis=0)
         return data
 
 

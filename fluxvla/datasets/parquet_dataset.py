@@ -60,6 +60,7 @@ class ParquetDataset(Dataset):
                  train_episode_fraction: float = 1.0,
                  repeat_to_full_length: bool = False,
                  expose_index: bool = False,
+                 supervise_terminal_padding: bool = False,
                  expected_dataset_version: Optional[str] = None) -> None:
         """Initialize the Parquet dataset.
 
@@ -108,6 +109,10 @@ class ParquetDataset(Dataset):
                 to each raw sample before transforms. This is useful for
                 offline sample-weight transforms such as SARM RA-BC.
                 Defaults to False.
+            supervise_terminal_padding (bool): Whether repeated final actions
+                used to pad a window past the episode boundary remain valid in
+                the loss mask. OpenPI/LeRobot supervises these repeated hold
+                actions. Defaults to False for backward compatibility.
             expected_dataset_version (str, optional): Expected FluxVLA dataset
                 content version. If omitted, no version check is performed so
                 existing local datasets remain usable.
@@ -191,6 +196,7 @@ class ParquetDataset(Dataset):
         self.frame_sample_stride = frame_sample_stride
         self.require_full_window = require_full_window
         self.expose_index = expose_index
+        self.supervise_terminal_padding = supervise_terminal_padding
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
 
@@ -370,7 +376,8 @@ class ParquetDataset(Dataset):
                     actions.append(actions[-1])
                 else:
                     actions.append(data[self.action_key])
-                action_masks.append(0)
+                action_masks.append(
+                    1 if self.supervise_terminal_padding else 0)
             window_idx += 1
         # Collect forward-looking frame timestamps for video models
         if self.frame_window_size > 1:

@@ -73,6 +73,10 @@ class PI0FlowMatching(BaseVLA):
             OpenPI; ``legacy_power_ratio`` reproduces historical FluxVLA.
         time_beta_alpha (float): Alpha parameter of the time sampler.
         time_beta_beta (float): Beta parameter of the time sampler.
+        loss_action_dim (int, optional): Number of output action dimensions
+            supervised by flow matching. When omitted, ``ori_action_dim`` is
+            retained for backward compatibility. Set it to the padded model
+            action dimension to match OpenPI.
         **kwargs: Additional keyword arguments for model configuration.
     """
 
@@ -109,6 +113,7 @@ class PI0FlowMatching(BaseVLA):
                  params_to_change_dtype: Optional[List[str]] = [],
                  max_action_dim: int = 7,
                  ori_action_dim: int = None,
+                 loss_action_dim: int = None,
                  num_steps: int = 10,
                  time_sampler: str = 'beta',
                  time_beta_alpha: float = 1.5,
@@ -172,6 +177,15 @@ class PI0FlowMatching(BaseVLA):
         self.strict_mapping = strict_mapping
         self.max_action_dim = max_action_dim
         self.ori_action_dim = ori_action_dim
+        self.loss_action_dim = (
+            ori_action_dim
+            if loss_action_dim is None else int(loss_action_dim))
+        if (self.loss_action_dim is not None
+                and not 0 < self.loss_action_dim <= self.max_action_dim):
+            raise ValueError(
+                'loss_action_dim must be in [1, max_action_dim], got '
+                f'{self.loss_action_dim} with max_action_dim='
+                f'{self.max_action_dim}.')
         self.num_steps = num_steps
         if time_sampler not in ('beta', 'legacy_power_ratio'):
             raise ValueError(
@@ -210,6 +224,22 @@ class PI0FlowMatching(BaseVLA):
             sampler=self.time_sampler)
         time = time_beta * 0.999 + 0.001
         return time.to(dtype=torch.float32, device=device)
+
+    def _select_flow_loss_dimensions(self, prediction, target):
+        """Select the action dimensions that receive denoising supervision."""
+        if self.loss_action_dim is None:
+            return prediction, target
+        if (prediction.shape[-1] < self.loss_action_dim
+                or target.shape[-1] < self.loss_action_dim):
+            raise ValueError(
+                'Flow loss tensors have fewer dimensions than configured: '
+                f'prediction={prediction.shape[-1]}, target={target.shape[-1]}, '  # noqa: E501
+                f'loss_action_dim={self.loss_action_dim}.')
+        if (prediction.shape[-1] == self.loss_action_dim
+                and target.shape[-1] == self.loss_action_dim):
+            return prediction, target
+        return (prediction[..., :self.loss_action_dim],
+                target[..., :self.loss_action_dim])
 
     def get_attention_interface(self):
         if self.attention_implementation == 'sdpa':
@@ -653,9 +683,7 @@ class PI0FlowMatching(BaseVLA):
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self.action_out_proj(suffix_out)
-        if self.ori_action_dim is not None:
-            v_t = v_t[:, :, :self.ori_action_dim]
-            u_t = u_t[:, :, :self.ori_action_dim]
+        v_t, u_t = self._select_flow_loss_dimensions(v_t, u_t)
         losses = F.mse_loss(u_t, v_t, reduction='none')
         sample_weight = kwarg.get('sample_weight')
         loss = reduce_action_bc_loss(

@@ -27,6 +27,8 @@ Example for two 8-GPU nodes sharing MASTER_ADDR and MASTER_PORT:
         --work-dir work_dirs/pi05_paligemma_robocasa_full_data_full_finetune
 """
 
+seed = 7
+
 # The PI0.5 architecture matches the LIBERO and ALOHA variants. Its internal
 # action dimension is 32; the 29 RoboCasa joints are padded with three zeros.
 model = dict(
@@ -91,6 +93,11 @@ model = dict(
     action_out_proj=dict(type='LinearProjector', in_dim=1024, out_dim=32),
     time_mlp_in=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
     time_mlp_out=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
+    # Keep the source time distribution explicit so experiment metadata does
+    # not silently change if the model default changes later.
+    time_sampler='beta',
+    time_beta_alpha=1.5,
+    time_beta_beta=1.0,
     max_action_dim=32,
     # Gemma expert conditioned on state, action, and diffusion time through
     # adaptive RMS normalization.
@@ -151,6 +158,7 @@ model = dict(
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
     ori_action_dim=29,
+    loss_action_dim=32,
 )
 
 _ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_30ep'
@@ -159,6 +167,7 @@ _OFFICIAL_GR1_STATS_PATH = ('./datasets/robocasa_gr1_24tasks_first30ep/'
                             'official_groot_gr1_dataset_statistics.json')
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
+_ROBOCASA_EVAL_CENTER_CROP_SCALE = 0.95
 
 
 def _robocasa_data_path(task_name):
@@ -276,22 +285,22 @@ train_dataloader = dict(
                         type='PretrainedTokenizer',
                         model_path='checkpoints/pi05_base',
                     )),
-                # Resize to 224 and apply the crop/color augmentations used by
-                # the RoboCasa training recipe.
-                dict(type='RandomCropImages', scale=0.95),
-                dict(type='ResizeImages', height=224, width=224),
                 dict(
-                    type='ColorJitterImages',
+                    type='OpenPIImageAugment',
+                    height=224,
+                    width=224,
+                    crop_scale=0.95,
+                    rotation_degrees=5.0,
                     brightness=0.3,
                     contrast=0.4,
                     saturation=0.5,
-                    hue=0.08),
-                # Match OpenPI PI0.5 image normalization: pixel / 255 * 2 - 1.
-                dict(type='SimpleNormalizeImages'),
+                    hue=0.1,
+                    jitter_probability=0.5),
             ],
             action_window_size=16,
             action_key='action',
             use_delta=False,
+            supervise_terminal_padding=True,
             statistic_name=_ROBOCASA_STATISTIC_NAME,
             window_start_idx=0,
         )))
@@ -307,9 +316,10 @@ runner = dict(
     grad_accumulation_steps=1,
     # Full-fine-tune the language backbone to learn the discretized state
     # prompt.
-    # OpenPI full-data PI0.5 uses a 1k-step warmup followed by a constant
-    # 5e-5 LR; decaying to zero over 50k steps materially reduced updates.
-    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
+    # The public PI0.5 full-DROID reference uses a 1k-step warmup followed by
+    # a constant 5e-5 LR. OpenPI does not publish a RoboCasa train config.
+    optimizer=dict(
+        lr=5e-5, type='AdamW', betas=(0.9, 0.95), weight_decay=1e-10),
     max_grad_norm=1.0,
     # Keep enough periodic checkpoints for closed-loop model selection.
     save_epoch_interval=1,
@@ -421,6 +431,7 @@ eval = dict(
     action_chunk_ensemble_weight=0.5,
     max_episode_steps=720,
     num_trials_per_task=50,  # 1,200 episodes across 24 tasks.
+    episode_seed_stride=50,
     seed=7,  # Match the GR00T RoboCasa evaluation initial states.
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='fluxvla',
@@ -428,14 +439,13 @@ eval = dict(
         type='RobocasaEvalDataset',
         unnorm_key=_ROBOCASA_STATISTIC_NAME,
         transforms=[
-            # Evaluation preprocessing must match training: the 0.95 center
-            # crop mirrors RandomCropImages, tanh maps pixels to [-1, 1], and
-            # the bg_crop ego-view key matches the converted training camera.
+            # Preserve the historical sheet protocol. Source-style no-crop
+            # evaluation is an explicit A/B, not a directly comparable score.
             dict(
                 type='ProcessRobocasaEvalInputs',
                 img_key='video.ego_view_bg_crop_pad_res256_freq20',
                 resize_size=224,
-                center_crop_scale=0.95,
+                center_crop_scale=_ROBOCASA_EVAL_CENTER_CROP_SCALE,
                 normalize=True,
                 value_range='tanh'),
             dict(

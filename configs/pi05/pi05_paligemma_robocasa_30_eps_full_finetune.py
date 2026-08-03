@@ -25,6 +25,10 @@ Example:
         --work-dir work_dirs/pi05_paligemma_robocasa_30_eps_full_finetune
 """
 
+# Make training ablations reproducible across model setup, flow noise, image
+# augmentation, dataloader workers, and distributed ranks.
+seed = 7
+
 # The PI0.5 architecture matches the LIBERO and ALOHA variants. Its internal
 # action dimension is 32; the 29 RoboCasa joints are padded with three zeros.
 model = dict(
@@ -150,6 +154,10 @@ model = dict(
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
     ori_action_dim=29,
+    # OpenPI pads RoboCasa actions to 32D and supervises all 32 outputs. The
+    # final three zero-action dimensions are still noisy model inputs, so
+    # leaving them unsupervised creates an avoidable train/source mismatch.
+    loss_action_dim=32,
 )
 
 _ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_30ep'
@@ -158,6 +166,10 @@ _OFFICIAL_GR1_STATS_PATH = (
     f'{_ROBOCASA_DATA_ROOT}/official_groot_gr1_dataset_statistics.json')
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
+# Keep the sheet's established 24x50 benchmark comparable. OpenPI itself
+# evaluates an uncropped resized view; test that source-style variant with
+# ``eval.dataset.transforms.0.center_crop_scale=None`` as a separate A/B.
+_ROBOCASA_EVAL_CENTER_CROP_SCALE = 0.95
 
 _ROBOCASA_TASK_DIRS = [
     'PnPBottleToCabinetClose',
@@ -199,7 +211,9 @@ def _robocasa_task_env(task_name):
 # camera, 29-dimensional joint states and absolute actions, and fixed q01/q99
 # quantile statistics shared with evaluation.
 train_dataloader = dict(
-    per_device_batch_size=4,  # Validated on two 80 GB A800 GPUs.
+    # The production run uses 16 A800 ranks, matching the public PI0.5 LIBERO
+    # reference's global batch of 256. OpenPI has no RoboCasa train config.
+    per_device_batch_size=16,
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
@@ -269,22 +283,28 @@ train_dataloader = dict(
                         type='PretrainedTokenizer',
                         model_path='checkpoints/pi05_base',
                     )),
-                # Resize to 224 and apply the crop/color augmentations used by
-                # the RoboCasa training recipe.
-                dict(type='RandomCropImages', scale=0.95),
-                dict(type='ResizeImages', height=224, width=224),
+                # Match the pinned OpenPI + augmax 0.4.1 image policy,
+                # including continuous crop offsets, +/-5 degree rotation,
+                # constant-black borders, and probabilistic HSV jitter.
                 dict(
-                    type='ColorJitterImages',
+                    type='OpenPIImageAugment',
+                    height=224,
+                    width=224,
+                    crop_scale=0.95,
+                    rotation_degrees=5.0,
                     brightness=0.3,
                     contrast=0.4,
                     saturation=0.5,
-                    hue=0.08),
-                # Match OpenPI PI0.5 image normalization: pixel / 255 * 2 - 1.
-                dict(type='SimpleNormalizeImages'),
+                    hue=0.1,
+                    jitter_probability=0.5),
             ],
             action_window_size=16,
             action_key='action',
             use_delta=False,
+            # LeRobot repeats and supervises the final action when the query
+            # horizon crosses an episode boundary. This teaches stable hold
+            # behavior after task completion.
+            supervise_terminal_padding=True,
             statistic_name=_ROBOCASA_STATISTIC_NAME,
             window_start_idx=0,
         )))
@@ -292,9 +312,9 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=None,
-    # Match the two historical full-finetune runs that reached 28.8--29.2%
-    # closed-loop success. A lower flow loss alone is not a reliable rollout
-    # selection signal, so retain their 30k-step / 5e-5 adaptation schedule.
+    # Retain the 30k horizon used by the 3ed incumbent (31.58% over 1,200
+    # episodes). A lower flow loss alone is not a reliable rollout selection
+    # signal, so checkpoints still require paired closed-loop evaluation.
     max_steps=30000,
     # Match OpenPI's AdamW momentum constants. PyTorch otherwise defaults to
     # beta2=0.999, whereas the canonical PI0.5 recipe uses beta2=0.95.
@@ -302,7 +322,7 @@ runner = dict(
         lr=5e-5,
         type='AdamW',
         betas=(0.9, 0.95),
-        weight_decay=0.0,
+        weight_decay=1e-10,
     ),
     max_grad_norm=1.0,
     # Keep enough periodic checkpoints for closed-loop model selection.
@@ -338,9 +358,13 @@ runner = dict(
         run_dir='work_dirs',
         grad_accumulation_steps=1,
         window_size=1),
+    # Use OpenPI's public 30k PI0.5 LIBERO reference: warm up for 10k steps
+    # and then hold 5e-5. OpenPI has no canonical RoboCasa recipe; this is an
+    # explicit source-alignment choice. The old 900-step cosine schedule
+    # decayed all the way to zero.
     lr_scheduler=dict(
-        type='linear-warmup+cosine-decay',
-        warmup_ratio=0.03,
+        type='linear-warmup+constant',
+        warmup_steps=10000,
     ),
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
@@ -421,14 +445,13 @@ eval = dict(
         type='RobocasaEvalDataset',
         unnorm_key=_ROBOCASA_STATISTIC_NAME,
         transforms=[
-            # Evaluation preprocessing must match training: the 0.95 center
-            # crop mirrors RandomCropImages, tanh maps pixels to [-1, 1], and
-            # the bg_crop ego-view key matches the converted training camera.
+            # Retain the historical sheet protocol here. OpenPI's no-crop
+            # evaluation must be reported as a separate preprocessing A/B.
             dict(
                 type='ProcessRobocasaEvalInputs',
                 img_key='video.ego_view_bg_crop_pad_res256_freq20',
                 resize_size=224,
-                center_crop_scale=0.95,
+                center_crop_scale=_ROBOCASA_EVAL_CENTER_CROP_SCALE,
                 normalize=True,
                 value_range='tanh'),
             dict(
