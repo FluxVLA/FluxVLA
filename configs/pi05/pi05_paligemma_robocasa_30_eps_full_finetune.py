@@ -89,6 +89,12 @@ model = dict(
     action_out_proj=dict(type='LinearProjector', in_dim=1024, out_dim=32),
     time_mlp_in=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
     time_mlp_out=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
+    # Match OpenPI exactly: t ~ Beta(1.5, 1.0), then t = 0.999*t + 0.001.
+    # The legacy FluxVLA power-ratio sampler substantially undersampled the
+    # high-noise region and can still be selected for old-run reproduction.
+    time_sampler='beta',
+    time_beta_alpha=1.5,
+    time_beta_beta=1.0,
     max_action_dim=32,
     # Gemma expert conditioned on state, action, and diffusion time through
     # adaptive RMS normalization.

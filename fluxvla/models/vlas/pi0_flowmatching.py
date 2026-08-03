@@ -69,6 +69,10 @@ class PI0FlowMatching(BaseVLA):
             of the model.
         ignore_index (int): Index to ignore in loss calculations.
         norm_stats (Dict, optional): Normalization statistics for the model.
+        time_sampler (str): Training-time flow sampler. ``beta`` matches
+            OpenPI; ``legacy_power_ratio`` reproduces historical FluxVLA.
+        time_beta_alpha (float): Alpha parameter of the time sampler.
+        time_beta_beta (float): Beta parameter of the time sampler.
         **kwargs: Additional keyword arguments for model configuration.
     """
 
@@ -106,6 +110,9 @@ class PI0FlowMatching(BaseVLA):
                  max_action_dim: int = 7,
                  ori_action_dim: int = None,
                  num_steps: int = 10,
+                 time_sampler: str = 'beta',
+                 time_beta_alpha: float = 1.5,
+                 time_beta_beta: float = 1.0,
                  rtc_training_config: Optional[Dict] = None,
                  **kwargs):
         super(PI0FlowMatching, self).__init__(
@@ -166,6 +173,16 @@ class PI0FlowMatching(BaseVLA):
         self.max_action_dim = max_action_dim
         self.ori_action_dim = ori_action_dim
         self.num_steps = num_steps
+        if time_sampler not in ('beta', 'legacy_power_ratio'):
+            raise ValueError(
+                f'Unsupported time_sampler={time_sampler!r}. Expected '
+                "'beta' or 'legacy_power_ratio'.")
+        if time_beta_alpha <= 0 or time_beta_beta <= 0:
+            raise ValueError('time_beta_alpha and time_beta_beta must be '
+                             'positive.')
+        self.time_sampler = time_sampler
+        self.time_beta_alpha = float(time_beta_alpha)
+        self.time_beta_beta = float(time_beta_beta)
         self.rtc_training_config = rtc_training_config
 
     def to_bfloat16(self):
@@ -185,7 +202,12 @@ class PI0FlowMatching(BaseVLA):
         return noise
 
     def sample_time(self, bsize, device):
-        time_beta = sample_beta(1.5, 1.0, bsize, device)
+        time_beta = sample_beta(
+            self.time_beta_alpha,
+            self.time_beta_beta,
+            bsize,
+            device,
+            sampler=self.time_sampler)
         time = time_beta * 0.999 + 0.001
         return time.to(dtype=torch.float32, device=device)
 
