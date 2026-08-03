@@ -13,9 +13,10 @@
 # limitations under the License.
 """Task-balanced repeating datasets for multi-source robot data."""
 
+import hashlib
 import math
 from functools import lru_cache
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional, Sequence, Union
 
 import numpy as np
 import torch
@@ -26,21 +27,29 @@ from .dataset_wrapper import DistributedRepeatingDataset
 
 @DATASETS.register_module()
 class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
-    """Repeat multiple sources with equal source probability.
+    """Repeat multiple sources with deterministic balanced sampling.
 
-    ``DistributedRepeatingDataset`` samples the concatenated frame stream, so
-    longer task roots are seen more often. This opt-in wrapper instead gives
-    every source the same number of virtual samples per epoch and repeats a
-    shorter source as needed. It leaves the underlying dataset and its
-    normalization statistics unchanged.
+    By default, every source contributes exactly once per source cycle, with a
+    deterministic per-epoch source order and source-local offset. Supplying
+    ``sampling_weights`` switches to the DiT4DiT-compatible deterministic
+    sampling-with-replacement rule.
 
     A source can be either an item in a dataset list or one root of a single
     multi-root :class:`ParquetDataset`. Supporting the latter avoids building
     a tokenizer and transform pipeline once per RoboCasa task.
 
     Args:
-        epoch_size: Number of virtual samples in one epoch. By default each
-            source contributes the length of the longest source.
+        datasets: Dataset configs, built datasets, or a multi-root dataset.
+        statistic_keys: Keys used by inherited statistics aggregation.
+        name_mappings: Optional statistics key mappings.
+        sampling_weights: Optional positive source weights. When set, preserve
+            deterministic weighted sampling with replacement.
+        epoch_size: Number of virtual samples in one epoch. By default this is
+            ``num_sources * max(source_lengths)`` for balanced cycling, or
+            ``max(source_length / probability)`` for weighted sampling.
+        shuffle: Whether to shuffle virtual indices before sharding.
+        reshuffle_each_epoch: Whether ``epoch`` changes after each pass.
+        seed: Base seed used by source mapping and virtual-index ordering.
     """
 
     def __init__(
@@ -48,6 +57,7 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
         datasets: Union[Dict, List[Dict]],
         statistic_keys: List[str],
         name_mappings: Optional[Dict] = None,
+        sampling_weights: Optional[Sequence[float]] = None,
         shuffle: bool = True,
         reshuffle_each_epoch: bool = True,
         seed: int = 42,
@@ -85,12 +95,19 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
             raise ValueError(
                 'Every balanced dataset source must be non-empty.')
 
-        default_epoch_size = len(self.source_lengths) * max(
-            self.source_lengths)
+        self.sampling_probabilities = self._normalize_sampling_weights(
+            sampling_weights)
+        self.source_total_len = self.total_len
         if epoch_size is None:
-            epoch_size = default_epoch_size
+            if self.sampling_probabilities is None:
+                epoch_size = len(self.source_lengths) * max(
+                    self.source_lengths)
+            else:
+                lengths = np.asarray(self.source_lengths, dtype=np.float64)
+                epoch_size = int(
+                    np.max(lengths / self.sampling_probabilities))
         if int(epoch_size) <= 0:
-            raise ValueError('epoch_size must be positive.')
+            raise ValueError('`epoch_size` must be a positive integer.')
         self.total_len = int(epoch_size)
 
     def _build_source_positions(self) -> List[np.ndarray]:
@@ -119,6 +136,28 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
             for start, end in zip(cumulative_sizes[:-1], cumulative_sizes[1:])
         ]
 
+    def _normalize_sampling_weights(
+            self, sampling_weights: Optional[Sequence[float]]):
+        if sampling_weights is None:
+            return None
+        weights = np.asarray(sampling_weights, dtype=np.float64)
+        if weights.shape != (len(self.source_lengths), ):
+            raise ValueError(
+                '`sampling_weights` must contain one value per source, got '
+                f'{weights.shape} for {len(self.source_lengths)} sources.')
+        if not np.all(np.isfinite(weights)) or np.any(weights <= 0):
+            raise ValueError(
+                '`sampling_weights` must contain finite positive values, got '
+                f'{weights.tolist()}.')
+        return weights / weights.sum()
+
+    @staticmethod
+    def _mapping_seed(epoch: int, index: int, seed: int) -> int:
+        """Return the stable seed used by weighted replacement sampling."""
+        value = repr((int(epoch), int(index), int(seed))).encode('utf-8')
+        digest = hashlib.sha256(value).hexdigest()
+        return int(digest, 16) & ((1 << 128) - 1)
+
     @lru_cache(maxsize=8)
     def _epoch_source_order_and_offsets(self, epoch: int):
         rng = np.random.default_rng(self.seed + 104729 * int(epoch))
@@ -130,6 +169,20 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
 
     def _sample_dataset_and_index(self, epoch: int, virtual_index: int):
         """Map a virtual index to a source and a source-local index."""
+        if virtual_index < 0 or virtual_index >= self.total_len:
+            raise IndexError(
+                f'Virtual index {virtual_index} is outside '
+                f'[0, {self.total_len}).')
+
+        if self.sampling_probabilities is not None:
+            rng = np.random.default_rng(
+                self._mapping_seed(epoch, virtual_index, self.seed))
+            source_index = int(
+                rng.choice(
+                    len(self.source_lengths), p=self.sampling_probabilities))
+            sample_index = int(rng.choice(self.source_lengths[source_index]))
+            return source_index, sample_index
+
         source_order, source_offsets = self._epoch_source_order_and_offsets(
             epoch)
         source_slot = int(virtual_index) % len(self.source_lengths)
@@ -154,13 +207,23 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
 
     def _ordered_virtual_indices(self, epoch: int) -> np.ndarray:
         indices = np.arange(self.total_len, dtype=np.int64)
+        if self.sampling_probabilities is not None:
+            if self.shuffle:
+                epoch_offset = epoch if self.reshuffle_each_epoch else 0
+                rng = np.random.default_rng(self.seed + epoch_offset)
+                rng.shuffle(indices)
+            return indices
         return self._affine_permutation(epoch, indices)
 
     def _shard_virtual_indices(self, epoch: int, rank: int,
                                world_size: int) -> np.ndarray:
-        # Apply a bijective affine permutation after sharding the source
-        # positions. This is equivalent to sharding a global permutation but
-        # avoids materializing the full epoch in every dataloader worker.
+        if world_size <= 0:
+            raise ValueError('`world_size` must be positive.')
+        if rank < 0 or rank >= world_size:
+            raise ValueError(
+                f'`rank` must be in [0, {world_size}), got {rank}.')
+        if self.sampling_probabilities is not None:
+            return self._ordered_virtual_indices(epoch)[rank::world_size]
         positions = np.arange(rank, self.total_len, world_size, dtype=np.int64)
         return self._affine_permutation(epoch, positions)
 
@@ -173,6 +236,12 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
                                        self.dataset_statistics)
         return self.dataset.__getitem__(source_position,
                                         self.dataset_statistics)
+
+    def set_epoch(self, epoch: int) -> None:
+        """Set the next epoch used for deterministic sample mapping."""
+        if int(epoch) < 0:
+            raise ValueError('`epoch` must be non-negative.')
+        self._epoch = int(epoch)
 
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
@@ -191,3 +260,6 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
                 source_index, sample_index = self._sample_dataset_and_index(
                     epoch, int(virtual_index))
                 yield self._get_balanced_item(source_index, sample_index)
+
+
+__all__ = ['DistributedBalancedRepeatingDataset']

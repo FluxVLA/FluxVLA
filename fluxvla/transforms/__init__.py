@@ -13,6 +13,7 @@
 # limitations under the License.
 
 from .attach_rabc_weight import AttachRABCWeight  # noqa: F401, F403
+from .dit4dit import PrepareDiT4DiTInputs  # noqa: F401, F403
 from .fast_tokenizer import FASTTokenizer  # noqa: F401, F403
 from .normalize import *  # noqa: F401, F403
 from .prompters import *  # noqa: F401, F403

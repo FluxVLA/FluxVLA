@@ -22,6 +22,130 @@ _cosmos_tokenizer = dict(
 )
 _official_dit4dit_ckpt = (
     _ckpt_root + '/dit4dit-model/dit4dit_libero/final_model/pytorch_model.pt')
+_official_dataset_statistics = dict(
+    franka=dict(
+        action=dict(
+            mean=[
+                0.07237596483901143,
+                0.08987006871029735,
+                -0.10144743137061596,
+                -0.00045383188989944756,
+                0.006273590726777911,
+                -0.003878799732774496,
+                0.524486355483532,
+            ],
+            std=[
+                0.3498823308902479,
+                0.37794140366375184,
+                0.460084266976933,
+                0.0403885784928603,
+                0.06616144248501059,
+                0.07763074391911857,
+                0.4994683356809767,
+            ],
+            max=[
+                0.9375,
+                0.9375,
+                0.9375,
+                0.3557142913341522,
+                0.375,
+                0.375,
+                1.0,
+            ],
+            min=[
+                -0.9375,
+                -0.9375,
+                -0.9375,
+                -0.2582142949104309,
+                -0.375,
+                -0.3675000071525574,
+                0.0,
+            ],
+            q01=[
+                -0.8785714507102966,
+                -0.8758928775787354,
+                -0.9375,
+                -0.1510714292526245,
+                -0.20678570866584778,
+                -0.2742857038974762,
+                0.0,
+            ],
+            q99=[
+                0.9375,
+                0.9107142686843872,
+                0.9375,
+                0.20357142388820648,
+                0.26357144117355347,
+                0.375,
+                1.0,
+            ],
+            mask=[True, True, True, True, True, True, False],
+        ),
+        state=dict(
+            mean=[
+                -0.04889854742214084,
+                0.03689368185587227,
+                0.7890402488410473,
+                2.9771945476531982,
+                -0.1417286954820156,
+                -0.11769362539052963,
+                0.026436020154505968,
+                -0.02665513101965189,
+            ],
+            std=[
+                0.10639013941746686,
+                0.15115733130675715,
+                0.38406895599530033,
+                0.3530238395244304,
+                0.8227341427331599,
+                0.32357567121520087,
+                0.014583991652936385,
+                0.014467005007200339,
+            ],
+            max=[
+                0.21031762659549713,
+                0.39128610491752625,
+                1.3660105466842651,
+                3.6714255809783936,
+                3.560650587081909,
+                1.386339545249939,
+                0.04233968257904053,
+                0.0013633022317662835,
+            ],
+            min=[
+                -0.4828203022480011,
+                -0.3255046010017395,
+                0.008128180168569088,
+                0.35277295112609863,
+                -3.641430377960205,
+                -1.842738389968872,
+                -0.0013586411951109767,
+                -0.042040832340717316,
+            ],
+            q01=[
+                -0.42401049643754957,
+                -0.2838300323486328,
+                0.009925739830359817,
+                1.3085840785503386,
+                -2.886677579879761,
+                -1.1599004411697387,
+                0.001503719249740243,
+                -0.040336399003863335,
+            ],
+            q99=[
+                0.1530261474847791,
+                0.3629165390133857,
+                1.2910678112506866,
+                3.303542451858519,
+                2.7496529006957933,
+                0.6893712210655194,
+                0.040610933862626555,
+                -0.0015016929572448147,
+            ],
+        ),
+        num_transitions=273465,
+        num_trajectories=1693,
+    ), )
 
 _action_dim = 8
 _ori_action_dim = 7
@@ -32,12 +156,26 @@ _image_frame_stride = 2
 _image_size = 224
 
 _action_norm_mask = [True, True, True, True, True, True, False]
+# This local conversion is the closest available match to the released
+# 1.0.0 mixture (273233/1692 vs. source 273465/1693 transitions/trajectories)
+# and reproduces all released action min/max values exactly.
 _libero_data_roots = [
-    './datasets/libero_10_no_noops_lerobotv2.1',
+    './datasets/libero_object_no_noops_lerobotv2.1',
     './datasets/libero_goal_no_noops_lerobotv2.1',
     './datasets/libero_spatial_no_noops_lerobotv2.1',
-    './datasets/libero_object_no_noops_lerobotv2.1',
+    './datasets/libero_10_no_noops_lerobotv2.1',
 ]
+_prompt_input_keys = [
+    'prompt',
+    'task_description',
+    'lang',
+    'instruction',
+    'instructions',
+    'text',
+]
+
+# Match the source training RNG and its equal-weight mixture sampler.
+seed = 42
 
 # The official release evaluates these suites independently. FluxVLA's eval
 # runner takes one suite per launch; override eval.task_suite_name for each.
@@ -62,8 +200,6 @@ model = dict(
     },
     strict_mapping=False,
     repeated_diffusion_steps=4,
-    image_layout='btchw',
-    multiview_strategy='tile',
     vlm_backbone=dict(
         type='Cosmos25Backbone',
         base_model=_cosmos_base_model,
@@ -123,95 +259,117 @@ inference_model.update(
     strict_mapping=False,
 )
 
+_dit4dit_train_transforms = [
+    dict(
+        type='ProcessParquetInputs',
+        parquet_keys=[
+            'observation.state',
+            'timestamp',
+            'actions',
+            'info',
+            'stats',
+            'action_masks',
+        ],
+        video_keys=[
+            'observation.images.image',
+            'observation.images.wrist_image',
+        ],
+        name_mappings={
+            'observation.state': ['states'],
+            'actions': ['actions'],
+        },
+    ),
+    dict(
+        type='CanonicalizePrompt',
+        output_key='prompt',
+        input_keys=_prompt_input_keys,
+        remove_source_keys=True,
+    ),
+    dict(
+        type='ProcessCosmos25Prompt',
+        tokenizer=_cosmos_tokenizer,
+        input_key='prompt',
+        remove_input_key=True,
+    ),
+    dict(type='ResizeImages', height=_image_size, width=_image_size),
+    dict(type='SimpleNormalizeImages'),
+    dict(
+        type='ConcatImagesHorizontally',
+        key='images',
+        num_views=2,
+        frame_stride=_image_frame_stride,
+        views_first=True,
+        keep_time_dim=True,
+    ),
+    dict(
+        type='SinCosKeys',
+        keys=['states'],
+        target_dims={'states': _state_dim},
+        interleave=True,
+    ),
+    dict(
+        type='NormalizeStatesAndActions',
+        state_key='proprio',
+        action_key='action',
+        action_dim=None,
+        state_dim=None,
+        state_norm_type='none',
+        action_norm_type='min_max',
+        norm_type='min_max',
+        action_norm_mask=_action_norm_mask,
+        clip_norm=False,
+    ),
+    dict(
+        type='PadActionsAndActionMasks',
+        action_dim=_action_dim,
+        valid_action_dim=_ori_action_dim,
+    ),
+    dict(
+        type='PrepareDiT4DiTInputs',
+        state_dim=_state_dim,
+        action_horizon=_action_horizon,
+        action_dim=_action_dim,
+        valid_action_dim=_ori_action_dim,
+        mark_all_action_steps_valid=True,
+    ),
+]
+
+_dit4dit_parquet_dataset = dict(
+    type='ParquetDataset',
+    transforms=_dit4dit_train_transforms,
+    action_window_size=_action_horizon,
+    action_key='action',
+    use_delta=False,
+    statistic_name='franka',
+    window_start_idx=0,
+    frame_window_size=_frame_window_size,
+)
+
 train_dataloader = dict(
-    # 2 nodes * 8 GPUs/node * 16 samples/GPU = global batch 256.
-    per_device_batch_size=16,
+    # Official topology: 8 nodes * 8 GPUs/node * 4 samples/GPU = batch 256.
+    # For 32/16 GPUs override this to 8/16 while keeping accumulation at 1.
+    per_device_batch_size=4,
     per_device_num_workers=4,
     dataset=dict(
-        type='DistributedRepeatingDataset',
+        type='DistributedBalancedRepeatingDataset',
         name_mappings={
             'observation.state': ['proprio'],
             'action': ['action'],
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name='franka',
-        datasets=dict(
-            type='ParquetDataset',
-            data_root_path=_libero_data_roots,
-            transforms=[
-                dict(
-                    type='ProcessParquetInputs',
-                    parquet_keys=[
-                        'observation.state',
-                        'timestamp',
-                        'actions',
-                        'info',
-                        'stats',
-                        'action_masks',
-                    ],
-                    video_keys=[
-                        'observation.images.image',
-                        'observation.images.wrist_image',
-                    ],
-                    name_mappings={
-                        'observation.state': ['states'],
-                        'actions': ['actions'],
-                    },
-                ),
-                dict(
-                    type='CanonicalizePrompt',
-                    output_key='prompt',
-                    remove_source_keys=True,
-                ),
-                dict(
-                    type='ProcessCosmos25Prompt',
-                    tokenizer=_cosmos_tokenizer,
-                    input_key='prompt',
-                    remove_input_key=True,
-                ),
-                dict(
-                    type='ResizeImages', height=_image_size,
-                    width=_image_size),
-                dict(type='SimpleNormalizeImages'),
-                dict(
-                    type='ConcatImagesHorizontally',
-                    key='images',
-                    num_views=2,
-                    frame_stride=_image_frame_stride,
-                    views_first=True,
-                    keep_time_dim=True,
-                ),
-                dict(
-                    type='SinCosKeys',
-                    keys=['states'],
-                    target_dims={'states': _state_dim},
-                    interleave=True,
-                ),
-                dict(
-                    type='NormalizeStatesAndActions',
-                    state_key='proprio',
-                    action_key='action',
-                    action_dim=None,
-                    state_dim=None,
-                    state_norm_type='none',
-                    action_norm_type='min_max',
-                    norm_type='min_max',
-                    action_norm_mask=_action_norm_mask,
-                    clip_norm=False,
-                ),
-                dict(
-                    type='PadActionsAndActionMasks',
-                    action_dim=_action_dim,
-                    valid_action_dim=_ori_action_dim,
-                ),
-            ],
-            action_window_size=_action_horizon,
-            action_key='action',
-            use_delta=False,
-            statistic_name='franka',
-            window_start_idx=0,
-            frame_window_size=_frame_window_size,
-        ),
+        # Source DiT4DiT samples all four suites uniformly with replacement.
+        datasets=[
+            dict(_dit4dit_parquet_dataset, data_root_path=data_root)
+            for data_root in _libero_data_roots
+        ],
+        sampling_weights=[1.0, 1.0, 1.0, 1.0],
+        shuffle=False,
+        reshuffle_each_epoch=True,
+        seed=seed,
+        # Pin normalization to the released model instead of transition-count
+        # weighted statistics from a locally converted dataset revision.
+        dataset_statistics=_official_dataset_statistics,
     ),
 )
 
@@ -267,10 +425,13 @@ runner = dict(
         min_lr=5e-7,
     ),
     sharding_strategy='full-shard',
-    pre_fsdp_param_dtype='bf16',
+    # Keep FP32 master parameters/Adam moments like DeepSpeed BF16_Optimizer;
+    # FSDP still casts forward parameters to BF16 below.
+    pre_fsdp_param_dtype='fp32',
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
+    reduce_in_full_precision=True,
     change_key_name=False,
 )
 
@@ -294,6 +455,7 @@ eval = dict(
             dict(
                 type='CanonicalizePrompt',
                 output_key='prompt',
+                input_keys=_prompt_input_keys,
                 remove_source_keys=True,
             ),
             dict(
@@ -321,6 +483,12 @@ eval = dict(
                 keys=['states'],
                 target_dims={'states': _state_dim},
                 interleave=True,
+            ),
+            dict(
+                type='PrepareDiT4DiTInputs',
+                image_key='pixel_values',
+                state_dim=_state_dim,
+                require_actions=False,
             ),
         ],
     ),
