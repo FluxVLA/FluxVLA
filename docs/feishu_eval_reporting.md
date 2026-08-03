@@ -12,7 +12,7 @@ This feature works with:
 - `scripts/train.py --eval-after-train`
 - `scripts/train.sh ... --eval-after-train`
 - `tools/summarize_libero_eval_results.py`
-- `scripts/ros_inference_server.py` with FluxThemis `ReportEvaluation`
+- `scripts/ros_inference_server.sh` with FluxThemis `ReportEvaluation`
 
 ## FluxThemis ROS Evaluation Reporting
 
