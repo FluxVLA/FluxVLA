@@ -77,7 +77,7 @@ def _assert_tensor_tree_on_cpu(value):
             _assert_tensor_tree_on_cpu(item)
 
 
-def test_move_checkpoint_tensors_to_cpu_recurses_and_preserves_metadata():
+def test_move_checkpoint_tensors_to_cpu_does_not_mutate_live_state():
     pair_type = namedtuple('Pair', ('first', 'second'))
     cpu_tensor = torch.ones(1)
     with FakeTensorMode():
@@ -93,15 +93,40 @@ def test_move_checkpoint_tensors_to_cpu_recurses_and_preserves_metadata():
         ])
         state._metadata = OrderedDict([('', {'version': 1})])
         state['cpu_tensor'] = cpu_tensor
+        original_nested = state['nested']
 
         converted = FSDPTrainRunner._move_checkpoint_tensors_to_cpu(state)
 
-    assert converted is state
+    assert converted is not state
+    assert converted['nested'] is not original_nested
+    assert state['tensor'] is cuda_tensor
+    assert state['tensor'].device.type == 'cuda'
+    assert state['nested']['list'][0] is cuda_tensor
+    assert state['nested']['tuple'][0] is cuda_tensor
     assert converted['cpu_tensor'] is cpu_tensor
     assert converted._metadata == OrderedDict([('', {'version': 1})])
     assert isinstance(converted['nested']['namedtuple'], pair_type)
     assert isinstance(converted['nested']['size'], torch.Size)
     _assert_tensor_tree_on_cpu(converted)
+
+
+def test_checkpoint_cpu_copy_breaks_live_optimizer_container_aliases():
+    model = nn.Linear(4, 2)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    model(torch.ones(2, 4)).sum().backward()
+    optimizer.step()
+
+    parameter = next(model.parameters())
+    exported = optimizer.state_dict()
+    parameter_id = exported['param_groups'][0]['params'][0]
+    assert exported['state'][parameter_id] is optimizer.state[parameter]
+
+    converted = FSDPTrainRunner._move_checkpoint_tensors_to_cpu(exported)
+
+    assert converted is not exported
+    assert converted['state'] is not exported['state']
+    assert converted['state'][parameter_id] is not optimizer.state[parameter]
+    assert exported['state'][parameter_id] is optimizer.state[parameter]
 
 
 def test_nested_fsdp_checkpoint_has_stable_keys_and_cpu_locations(

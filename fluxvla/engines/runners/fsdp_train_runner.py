@@ -5,6 +5,7 @@
 # SPDX-License-Identifier: MIT
 # Notes: Attribution normalized; no functional change.
 
+import copy
 import gc
 import math
 import os
@@ -141,25 +142,30 @@ class FSDPTrainRunner(BaseTrainRunner):
 
     @classmethod
     def _move_checkpoint_tensors_to_cpu(cls, value):
-        """Recursively replace non-CPU tensors with detached CPU tensors.
+        """Build a CPU checkpoint tree without mutating the source tree.
 
-        The conversion mutates dictionaries and lists in place. In particular,
-        this preserves ``state_dict`` ordering and its private ``_metadata``
-        attribute while releasing references to any CUDA checkpoint clones as
-        soon as each entry has been copied.
+        ``FSDP.full_optim_state_dict`` may return nested containers shared with
+        the live optimizer when ``NO_SHARD`` is used. Mutating those containers
+        would move rank zero's Adam moments to CPU and make the next optimizer
+        step fail with a device/dtype mismatch.
         """
         if isinstance(value, torch.Tensor):
             if value.device.type == 'cpu':
                 return value
             return value.detach().cpu()
         if isinstance(value, dict):
+            converted = copy.copy(value)
+            converted.clear()
             for key, item in value.items():
-                value[key] = cls._move_checkpoint_tensors_to_cpu(item)
-            return value
+                converted[key] = cls._move_checkpoint_tensors_to_cpu(item)
+            if hasattr(value, '_metadata'):
+                converted._metadata = cls._move_checkpoint_tensors_to_cpu(
+                    value._metadata)
+            return converted
         if isinstance(value, list):
-            for index, item in enumerate(value):
-                value[index] = cls._move_checkpoint_tensors_to_cpu(item)
-            return value
+            return [
+                cls._move_checkpoint_tensors_to_cpu(item) for item in value
+            ]
         if isinstance(value, tuple):
             converted = tuple(
                 cls._move_checkpoint_tensors_to_cpu(item) for item in value)
