@@ -284,11 +284,6 @@ train_dataloader = dict(
             ],
             action_window_size=16,
             action_key='action',
-            # RoboCasa reports a macro average over 24 tasks, while uniformly
-            # sampling concatenated frames overweights longer seen tasks by
-            # up to 2.5x. Repeat shorter roots so every task contributes the
-            # same number of training samples.
-            balance_data_roots=True,
             use_delta=False,
             statistic_name=_ROBOCASA_STATISTIC_NAME,
             window_start_idx=0,
