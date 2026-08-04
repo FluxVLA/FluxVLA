@@ -1,6 +1,6 @@
 # Inference Acceleration
 
-FluxVLA provides inference-optimized model variants for GR00T and PI0.5, achieving significant speedups on A100 hardware (GR00T ~5x, PI0.5 ~15x) through a combination of custom Triton kernels, CUDA Graphs, and algorithmic optimizations.
+FluxVLA provides inference-optimized paths for GR00T, PI0.5, and DreamZero through custom kernels, CUDA Graphs, algorithmic caching, and TensorRT cached-denoise execution.
 
 ## Overview
 
@@ -65,7 +65,21 @@ Located in `fluxvla/ops/cuda/`, these are hand-written CUDA C++ kernels targetin
 
 ## Configuration
 
-Inference acceleration is enabled by defining an `inference_model` (for GR00T) or using the inference-specific model class (for PI0.5) in your config. Below are example configurations.
+Inference acceleration is configured per model: GR00T uses an
+`inference_model`, PI0.5 uses an inference-specific model class, and DreamZero
+combines model and evaluation switches. The following sections show the entry
+points.
+
+### DreamZero TensorRT
+
+DreamZero can combine two-rank CFG parallelism, DiT prediction caching,
+TensorRT cached-denoise execution, and encoder `torch.compile`. TensorRT only
+replaces the read-only cached denoise forward; cache fill and cache update stay
+in PyTorch.
+
+See the [DreamZero TensorRT 构建与推理指南](dreamzero_tensorrt_zh-CN.md) for
+the required TensorRT Python package and `trtexec`, ONNX export, engine shape
+profiles, build commands, runtime configuration, and troubleshooting.
 
 ### GR00T Example
 

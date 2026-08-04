@@ -123,9 +123,8 @@ class Wan21Backbone(WanBaseBackbone):
         if self._torch_compile_applied:
             return
         if os.getenv('ENABLE_TENSORRT', 'False').lower() == 'true':
-            logger.info(
-                'Skipping Wan21Backbone encoder torch.compile because '
-                'ENABLE_TENSORRT=true.')
+            logger.info('Skipping Wan21Backbone encoder torch.compile because '
+                        'ENABLE_TENSORRT=true.')
             return
 
         compile_kwargs = dict(
@@ -138,7 +137,8 @@ class Wan21Backbone(WanBaseBackbone):
         self.text_encoder.forward = torch.compile(**compile_kwargs)(
             self.text_encoder.forward)
         self.image_encoder.model.visual.forward = torch.compile(
-            **compile_kwargs)(self.image_encoder.model.visual.forward)
+            **compile_kwargs)(
+                self.image_encoder.model.visual.forward)
         self.vae.model.encode = torch.compile(**compile_kwargs)(
             self.vae.model.encode)
         self._torch_compile_applied = True

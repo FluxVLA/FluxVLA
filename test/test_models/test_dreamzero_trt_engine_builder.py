@@ -7,8 +7,8 @@ from pathlib import Path
 def _load_builder_module():
     repo_root = Path(__file__).resolve().parents[2]
     module_path = repo_root / 'tools' / 'build_dreamzero_trt_engine.py'
-    spec = importlib.util.spec_from_file_location(
-        'build_dreamzero_trt_engine', module_path)
+    spec = importlib.util.spec_from_file_location('build_dreamzero_trt_engine',
+                                                  module_path)
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
     sys.modules[spec.name] = module
@@ -63,17 +63,17 @@ class TestDreamZeroTrtEngineBuilder(unittest.TestCase):
         self.assertIn('--onnx=/tmp/model.onnx', cmd)
         self.assertIn('--saveEngine=/tmp/model.trt', cmd)
         self.assertIn('--useCudaGraph', cmd)
-        self.assertIn('--minShapes=kv_cache_packed:40x2x1x128x40x128',
-                      cmd)
-        self.assertIn('--optShapes=kv_cache_packed:40x2x1x384x40x128',
-                      cmd)
-        self.assertIn('--maxShapes=kv_cache_packed:40x2x1x640x40x128',
-                      cmd)
+        self.assertNotIn('--dumpProfile', cmd)
+        self.assertNotIn('--dumpLayerInfo', cmd)
+        self.assertNotIn('--verbose', cmd)
+        self.assertIn('--minShapes=kv_cache_packed:40x2x1x128x40x128', cmd)
+        self.assertIn('--optShapes=kv_cache_packed:40x2x1x384x40x128', cmd)
+        self.assertIn('--maxShapes=kv_cache_packed:40x2x1x640x40x128', cmd)
         self.assertNotIn('--fp16', joined)
         self.assertNotIn('--bf16', joined)
         self.assertNotIn('--fp8', joined)
 
-    def test_legacy_precision_flags_are_optional(self):
+    def test_legacy_precision_is_optional_and_exclusive(self):
         spec = self.module.build_shape_spec(
             self.head_cfg, latent_height=32, latent_width=16)
         cmd = self.module.build_trtexec_command(
@@ -81,16 +81,46 @@ class TestDreamZeroTrtEngineBuilder(unittest.TestCase):
             onnx_path='/tmp/model.onnx',
             engine_path='/tmp/model.trt',
             spec=spec,
-            legacy_precision_flags=True,
+            legacy_precision='fp16',
         )
 
         self.assertIn('--fp16', cmd)
-        self.assertIn('--bf16', cmd)
+        self.assertNotIn('--bf16', cmd)
 
     def test_latent_shape_must_match_frame_seqlen(self):
         with self.assertRaises(ValueError):
             self.module.build_shape_spec(
                 self.head_cfg, latent_height=44, latent_width=80)
+
+    def test_cache_profile_must_be_valid(self):
+        with self.assertRaisesRegex(ValueError, 'min_cache_frames'):
+            self.module.build_shape_spec(
+                self.head_cfg,
+                latent_height=32,
+                latent_width=16,
+                min_cache_frames=0,
+            )
+        with self.assertRaisesRegex(ValueError, 'max_cache_frames'):
+            self.module.build_shape_spec(
+                self.head_cfg,
+                latent_height=32,
+                latent_width=16,
+                min_cache_frames=3,
+                max_cache_frames=2,
+            )
+
+    def test_verbose_trtexec_output_is_opt_in(self):
+        spec = self.module.build_shape_spec(
+            self.head_cfg, latent_height=32, latent_width=16)
+        cmd = self.module.build_trtexec_command(
+            trtexec='trtexec',
+            onnx_path='model.onnx',
+            engine_path='model.trt',
+            spec=spec,
+            verbose=True,
+        )
+
+        self.assertIn('--verbose', cmd)
 
 
 if __name__ == '__main__':

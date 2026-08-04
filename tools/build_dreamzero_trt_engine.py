@@ -11,16 +11,15 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-"""Build a TensorRT engine for the FluxVLA DreamZero cached DiT path.
+"""Export and build a TensorRT engine for DreamZero cached DiT inference.
 
 This follows the official DreamZero TensorRT strategy: export the Wan DiT
 cached denoise forward, keep task-specific video/action shapes fixed, and make
-only ``kv_cache_packed.shape[3]`` dynamic.
+only ``kv_cache_packed.shape[3]`` dynamic. The defaults match the FluxVLA
+LIBERO setup; other deployments must pass shapes that match their config.
 """
 
 from __future__ import annotations
-
 import argparse
 import gc
 import os
@@ -29,7 +28,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Mapping, Optional
+from typing import Any, Literal, Mapping, Optional
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT) not in sys.path:
@@ -74,10 +73,9 @@ class DreamZeroTrtShapeSpec:
         return self._shape_arg(self.max_cache_len)
 
     def _shape_arg(self, cache_len: int) -> str:
-        return (
-            'kv_cache_packed:'
-            f'{self.num_layers}x{self.kv_slots}x{self.batch_size}x'
-            f'{cache_len}x{self.num_heads}x{self.head_dim}')
+        return ('kv_cache_packed:'
+                f'{self.num_layers}x{self.kv_slots}x{self.batch_size}x'
+                f'{cache_len}x{self.num_heads}x{self.head_dim}')
 
 
 def _cfg_get(cfg: Mapping[str, Any], key: str, default: Any) -> Any:
@@ -102,6 +100,19 @@ def build_shape_spec(
     clip_tokens: int = 257,
     clip_dim: int = 1280,
 ) -> DreamZeroTrtShapeSpec:
+    if batch_size < 1:
+        raise ValueError(f'batch_size must be positive, got {batch_size}')
+    if min_cache_frames < 1:
+        raise ValueError(
+            f'min_cache_frames must be positive, got {min_cache_frames}')
+    if opt_cache_frames < 1:
+        raise ValueError(
+            f'opt_cache_frames must be positive, got {opt_cache_frames}')
+    if max_cache_frames is not None and max_cache_frames < min_cache_frames:
+        raise ValueError(
+            'max_cache_frames must be greater than or equal to '
+            f'min_cache_frames, got {max_cache_frames} < {min_cache_frames}')
+
     frame_seqlen = int(_cfg_get(head_cfg, 'frame_seqlen', 880))
     inferred_frame_seqlen = latent_height * latent_width // 4
     if inferred_frame_seqlen != frame_seqlen:
@@ -118,8 +129,8 @@ def build_shape_spec(
         else:
             max_cache_frames = int(_cfg_get(head_cfg, 'num_frames', 1))
     max_cache_frames = max(min_cache_frames, max_cache_frames)
-    opt_cache_frames = min(max(opt_cache_frames, min_cache_frames),
-                           max_cache_frames)
+    opt_cache_frames = min(
+        max(opt_cache_frames, min_cache_frames), max_cache_frames)
 
     dit_dim = int(_cfg_get(head_cfg, 'dit_dim', 5120))
     num_heads = int(_cfg_get(head_cfg, 'dit_num_heads', 40))
@@ -131,9 +142,8 @@ def build_shape_spec(
     dit_in_dim = int(_cfg_get(head_cfg, 'dit_in_dim', 36))
     cond_channels = dit_in_dim - video_channels
     if cond_channels <= 0:
-        raise ValueError(
-            f'dit_in_dim={dit_in_dim} must be larger than '
-            f'dit_out_dim={video_channels}')
+        raise ValueError(f'dit_in_dim={dit_in_dim} must be larger than '
+                         f'dit_out_dim={video_channels}')
 
     return DreamZeroTrtShapeSpec(
         batch_size=batch_size,
@@ -168,26 +178,21 @@ def build_trtexec_command(
     engine_path: str,
     spec: DreamZeroTrtShapeSpec,
     workspace_mib: int = 65536,
-    legacy_precision_flags: bool = False,
-    verbose: bool = True,
+    legacy_precision: Optional[Literal['fp16', 'bf16']] = None,
+    verbose: bool = False,
 ) -> list[str]:
     cmd = [
         trtexec,
         f'--onnx={onnx_path}',
         f'--saveEngine={engine_path}',
-        '--separateProfileRun',
-        '--profilingVerbosity=detailed',
         f'--memPoolSize=workspace:{workspace_mib}',
-        '--dumpProfile',
-        '--dumpLayerInfo',
         '--useCudaGraph',
         f'--minShapes={spec.min_shape_arg}',
         f'--optShapes={spec.opt_shape_arg}',
         f'--maxShapes={spec.max_shape_arg}',
     ]
-    if legacy_precision_flags:
-        cmd.append('--fp16')
-        cmd.append('--bf16')
+    if legacy_precision is not None:
+        cmd.append(f'--{legacy_precision}')
     if verbose:
         cmd.append('--verbose')
     return cmd
@@ -201,8 +206,8 @@ def _load_checkpoint_state_dict(path: str):
         state_dict = {}
         for item in sorted(os.listdir(path)):
             if item.endswith('.safetensors'):
-                state_dict.update(load_file(os.path.join(path, item),
-                                            device='cpu'))
+                state_dict.update(
+                    load_file(os.path.join(path, item), device='cpu'))
         if not state_dict:
             raise FileNotFoundError(f'No .safetensors files found in {path}')
         return state_dict
@@ -325,11 +330,12 @@ def _load_head_cfg(config_path: str, cfg_options):
 
 
 def _build_head_from_config(config_path: str, cfg_options):
-    os.environ.setdefault('ENABLE_TENSORRT', 'true')
-    os.environ.setdefault('ATTENTION_BACKEND', 'TE')
+    # This must be set before importing DreamZero modules so ONNX-compatible
+    # attention and rotary implementations are selected during construction.
+    os.environ['ENABLE_TENSORRT'] = 'true'
 
-    from fluxvla.engines import build_head_from_cfg
     import fluxvla.models.heads  # noqa: F401
+    from fluxvla.engines import build_head_from_cfg
 
     head_cfg = _load_head_cfg(config_path, cfg_options)
     return build_head_from_cfg(head_cfg).eval(), head_cfg
@@ -348,8 +354,7 @@ def _export_onnx(
     os.makedirs(os.path.dirname(os.path.abspath(onnx_path)), exist_ok=True)
     wan_model = head.model.eval().to(device=device, dtype=torch.float16)
     wan_model.forward = wan_model._forward_inference_trt
-    test_inputs = _make_dummy_inputs(
-        spec, device=device, dtype=torch.float16)
+    test_inputs = _make_dummy_inputs(spec, device=device, dtype=torch.float16)
 
     input_names = [
         'x',
@@ -380,9 +385,6 @@ def _export_onnx(
 
 
 def run(args: argparse.Namespace) -> None:
-    if args.device.startswith('cuda') and 'CUDA_VISIBLE_DEVICES' not in os.environ:
-        os.environ['CUDA_VISIBLE_DEVICES'] = str(args.cuda_device)
-
     head_cfg = _load_head_cfg(args.config, args.cfg_options)
     spec = build_shape_spec(
         head_cfg,
@@ -406,6 +408,10 @@ def run(args: argparse.Namespace) -> None:
     if args.print_shapes_only:
         return
 
+    if not args.onnx_path:
+        raise ValueError(
+            '--onnx-path is required unless --print-shapes-only is used.')
+
     head, _ = _build_head_from_config(args.config, args.cfg_options)
 
     if args.ckpt_path is not None:
@@ -417,7 +423,8 @@ def run(args: argparse.Namespace) -> None:
         print(f'  missing tensors: {len(missing)}')
         print(f'  unexpected tensors: {len(unexpected)}')
         if args.strict_load and (missing or unexpected):
-            raise RuntimeError('Checkpoint did not strictly match DreamZeroHead')
+            raise RuntimeError(
+                'Checkpoint did not strictly match DreamZeroHead')
         del state_dict
         del head_state
         gc.collect()
@@ -434,23 +441,28 @@ def run(args: argparse.Namespace) -> None:
     if args.export_only:
         return
 
-    trtexec = args.trtexec or shutil.which('trtexec')
+    if not args.engine_path:
+        raise ValueError('--engine-path is required unless --export-only or '
+                         '--print-shapes-only is used.')
+
+    trtexec = shutil.which(args.trtexec or 'trtexec')
     if trtexec is None:
         raise FileNotFoundError(
-            'trtexec was not found. Set PATH or pass --trtexec.')
+            'trtexec was not found or is not executable. Install the '
+            'TensorRT CLI, add its bin directory to PATH, or pass an '
+            'executable path with --trtexec.')
     cmd = build_trtexec_command(
         trtexec=trtexec,
         onnx_path=args.onnx_path,
         engine_path=args.engine_path,
         spec=spec,
         workspace_mib=args.workspace_mib,
-        legacy_precision_flags=args.legacy_precision_flags,
-        verbose=not args.no_verbose,
+        legacy_precision=args.legacy_precision,
+        verbose=args.verbose,
     )
-    os.makedirs(os.path.dirname(os.path.abspath(args.engine_path)),
-                exist_ok=True)
-    log_path = args.build_log or args.engine_path.replace('.trt',
-                                                          '_build.log')
+    os.makedirs(
+        os.path.dirname(os.path.abspath(args.engine_path)), exist_ok=True)
+    log_path = args.build_log or args.engine_path.replace('.trt', '_build.log')
     print('Running trtexec:')
     print('  ' + ' '.join(cmd))
     print(f'Build log: {log_path}')
@@ -474,14 +486,14 @@ def parse_args() -> argparse.Namespace:
     from mmengine import DictAction
 
     parser = argparse.ArgumentParser(
-        description='Build FluxVLA DreamZero-LIBERO TensorRT engine.')
+        description=('Export and build a FluxVLA DreamZero cached-denoise '
+                     'TensorRT engine. Defaults match LIBERO.'))
     parser.add_argument('--config', required=True)
     parser.add_argument('--ckpt-path', default=None)
-    parser.add_argument('--onnx-path', required=True)
-    parser.add_argument('--engine-path', required=True)
+    parser.add_argument('--onnx-path', default=None)
+    parser.add_argument('--engine-path', default=None)
     parser.add_argument('--cfg-options', nargs='+', action=DictAction)
     parser.add_argument('--device', default='cuda')
-    parser.add_argument('--cuda-device', default='0')
     parser.add_argument('--trtexec', default=None)
     parser.add_argument('--build-log', default=None)
     parser.add_argument('--batch-size', type=int, default=1)
@@ -499,11 +511,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--timeout', type=int, default=3600)
     parser.add_argument('--strict-load', action='store_true')
     parser.add_argument(
-        '--legacy-precision-flags',
-        action='store_true',
-        help=('Append legacy --fp16/--bf16 trtexec flags. Do not use this '
-              'with TensorRT 11, where strongly typed networks are default.'))
-    parser.add_argument('--no-verbose', action='store_true')
+        '--legacy-precision',
+        choices=('fp16', 'bf16'),
+        default=None,
+        help=('Append one legacy trtexec precision flag. Leave unset for '
+              'TensorRT 11 strongly typed networks.'))
+    parser.add_argument('--verbose', action='store_true')
     parser.add_argument('--export-only', action='store_true')
     parser.add_argument('--print-shapes-only', action='store_true')
     return parser.parse_args()

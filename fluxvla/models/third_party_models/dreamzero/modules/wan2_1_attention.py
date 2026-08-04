@@ -44,38 +44,6 @@ except ModuleNotFoundError:
 
 import warnings
 
-_LOGGED_ATTENTION_BACKENDS: set[tuple[str, bool, bool, bool, str]] = set()
-
-
-def _log_attention_backend_once(backend: str, requested_backend: Optional[str],
-                                dtype: torch.dtype, causal: bool,
-                                window_size: Optional[tuple[int, int]]) -> None:
-    if os.getenv('DREAMZERO_LOG_ATTENTION_BACKEND',
-                 'False').lower() not in {'1', 'true', 'yes'}:
-        return
-    rank = os.getenv('RANK', os.getenv('LOCAL_RANK', '0'))
-    key = (
-        backend,
-        FLASH_ATTN_2_AVAILABLE,
-        FLASH_ATTN_3_AVAILABLE,
-        TRANSFORMER_ENGINE_AVAILABLE,
-        str(rank),
-    )
-    if key in _LOGGED_ATTENTION_BACKENDS:
-        return
-    _LOGGED_ATTENTION_BACKENDS.add(key)
-    print(
-        '[DreamZeroAttention] '
-        f'rank={rank} backend={backend} '
-        f'requested={requested_backend or "<default>"} '
-        f'enable_tensorrt={os.getenv("ENABLE_TENSORRT", "False")} '
-        f'flash_attn2={FLASH_ATTN_2_AVAILABLE} '
-        f'flash_attn3={FLASH_ATTN_3_AVAILABLE} '
-        f'transformer_engine={TRANSFORMER_ENGINE_AVAILABLE} '
-        f'dtype={dtype} causal={causal} window_size={window_size}',
-        flush=True,
-    )
-
 
 def flash_attention(
     q: torch.Tensor,
@@ -183,7 +151,7 @@ def flash_attention(
             window_size=window_size,
             deterministic=deterministic).unflatten(0, (b, lq))
     else:
-        raise ValueError(f"Invalid version: {version}")
+        raise ValueError(f'Invalid version: {version}')
 
     # output
     return x.type(out_dtype)
@@ -227,8 +195,6 @@ class AttentionModule(torch.nn.Module):
 
         assert backend in ['torch', 'FA2', 'FA3', 'TE', 'torch_onnx']
         self.backend = backend
-        _log_attention_backend_once(backend, requested_backend, dtype, causal,
-                                    window_size)
 
         if backend == 'torch':
 
@@ -337,7 +303,7 @@ class AttentionModule(torch.nn.Module):
             self.attn_func = _flash_attn_impl
 
         else:
-            raise ValueError(f"Invalid backend: {backend}")
+            raise ValueError(f'Invalid backend: {backend}')
 
     def forward(
         self,

@@ -12,9 +12,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
-import time
-from contextlib import contextmanager
 from typing import Callable, Dict, List, Optional
 
 import torch
@@ -86,41 +83,6 @@ class DreamZeroVLA(BaseVLA):
         self.use_cache = use_cache
         self.vla_head.use_cache = use_cache
         self.all_module_keys = ['vlm_backbone', 'vla_head']
-        self._last_predict_profile = {}
-
-    @staticmethod
-    def _profile_sync(enabled: bool) -> None:
-        if enabled and torch.cuda.is_available():
-            torch.cuda.synchronize()
-
-    @staticmethod
-    def _nvtx_enabled() -> bool:
-        return os.environ.get('FLUXVLA_NVTX_PROFILE', '').lower() in (
-            '1', 'true', 'yes', 'on')
-
-    @classmethod
-    @contextmanager
-    def _nvtx_range(cls, name: str):
-        if cls._nvtx_enabled() and torch.cuda.is_available():
-            torch.cuda.nvtx.range_push(name)
-            try:
-                yield
-            finally:
-                torch.cuda.nvtx.range_pop()
-            return
-        yield
-
-    def _profile_time(self, enabled: bool, profile: Dict, name: str,
-                      fn: Callable):
-        with self._nvtx_range(f'dreamzero.vla.{name}'):
-            if not enabled:
-                return fn()
-            self._profile_sync(True)
-            start = time.perf_counter()
-            output = fn()
-            self._profile_sync(True)
-            profile[name] = (time.perf_counter() - start) * 1000.0
-            return output
 
     def _prepare_states(self, states: torch.Tensor,
                         num_tokens: int) -> torch.Tensor:
@@ -302,8 +264,6 @@ class DreamZeroVLA(BaseVLA):
         reset_history: bool = False,
         **kwargs,
     ) -> torch.Tensor:
-        profile_enabled = bool(kwargs.get('_profile_inference', False))
-        profile = {}
         device = images.device
         # images: [B, C, T, H, W] (prepared by PrepareVideo)
         video = images
@@ -330,10 +290,8 @@ class DreamZeroVLA(BaseVLA):
                 and self.vla_head.current_start_frame >= local_attn_size)
             initial_cache_fill = reset_cache or (
                 self.vla_head.current_start_frame == 0) or cache_window_full
-            with self._nvtx_range(
-                    'dreamzero.vla.prepare_cache_observation_video'):
-                video_for_latents = self._prepare_cache_observation_video(
-                    video, initial_cache_fill)
+            video_for_latents = self._prepare_cache_observation_video(
+                video, initial_cache_fill)
 
             # Upstream DreamZero keeps the image-to-video condition fixed for
             # the episode and injects later real observations through KV cache.
@@ -345,29 +303,14 @@ class DreamZeroVLA(BaseVLA):
                 condition_image = video[:, :, :1]
 
             self.vlm_backbone.set_frozen_modules_to_eval_mode()
-            prompt_embs = self._profile_time(
-                profile_enabled,
-                profile,
-                'vla_encode_prompt_ms',
-                lambda: self._encode_wan_prompts(lang_tokens.to(device),
-                                                 lang_masks.to(device)),
-            )
-            latents = self._profile_time(
-                profile_enabled,
-                profile,
-                'vla_encode_video_ms',
-                lambda: self.vlm_backbone.encode_video(video_for_latents),
-            )
-            clip_feas, image_cond, _ = self._profile_time(
-                profile_enabled,
-                profile,
-                'vla_encode_image_ms',
-                lambda: self.vlm_backbone.encode_image(
-                    condition_image.transpose(1, 2),
-                    self.frame_window_size,
-                    h,
-                    w,
-                ),
+            prompt_embs = self._encode_wan_prompts(
+                lang_tokens.to(device), lang_masks.to(device))
+            latents = self.vlm_backbone.encode_video(video_for_latents)
+            clip_feas, image_cond, _ = self.vlm_backbone.encode_image(
+                condition_image.transpose(1, 2),
+                self.frame_window_size,
+                h,
+                w,
             )
             observed_latent_frames = latents.shape[2]
         else:
@@ -383,16 +326,11 @@ class DreamZeroVLA(BaseVLA):
                 video = torch.cat([video, pad], dim=2)
 
             # --- Encode with Wan21Backbone (vlm_backbone) ---
-            vlm_outputs = self._profile_time(
-                profile_enabled,
-                profile,
-                'vla_wan_backbone_total_ms',
-                lambda: self.vlm_backbone(
-                    video=video,
-                    lang_tokens=lang_tokens.long().to(device),
-                    lang_masks=lang_masks.long().to(device),
-                    condition_image=condition_image,
-                ),
+            vlm_outputs = self.vlm_backbone(
+                video=video,
+                lang_tokens=lang_tokens.long().to(device),
+                lang_masks=lang_masks.long().to(device),
+                condition_image=condition_image,
             )
             prompt_embs = vlm_outputs['prompt_embs']
             latents = vlm_outputs['latents']
@@ -426,22 +364,10 @@ class DreamZeroVLA(BaseVLA):
         )
         if 'num_inference_steps' in kwargs:
             head_kwargs['num_inference_steps'] = kwargs['num_inference_steps']
-        if profile_enabled:
-            head_kwargs['_profile_inference'] = True
         if self.use_cache:
             head_kwargs['observed_latent_frames'] = observed_latent_frames
 
-        actions = self._profile_time(
-            profile_enabled,
-            profile,
-            'vla_head_predict_ms',
-            lambda: self.vla_head.predict_action(**head_kwargs),
-        )
-        head_profile = getattr(self.vla_head, '_last_predict_profile', {})
-        if head_profile:
-            profile['head'] = head_profile
-        self._last_predict_profile = profile
-        return actions
+        return self.vla_head.predict_action(**head_kwargs)
 
     # ------------------------------------------------------------------
     # BaseVLA abstract method implementations
