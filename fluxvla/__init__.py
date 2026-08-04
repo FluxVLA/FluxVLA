@@ -56,16 +56,4 @@ from .engines import *  # noqa: E402, F401, F403
 from .optimizers import *  # noqa: E402, F401, F403
 from .tokenizers import *  # noqa: E402, F401, F403
 from .transforms import *  # noqa: E402, F401, F403
-
-
-def _is_optional_torch_distributed_error(exc: ModuleNotFoundError) -> bool:
-    name = getattr(exc, 'name', '') or ''
-    return name.startswith('torch.distributed') or name.startswith(
-        'torch._C._distributed_c10d')
-
-
-try:
-    from .models import *  # noqa: E402, F401, F403
-except ModuleNotFoundError as exc:
-    if not _is_optional_torch_distributed_error(exc):
-        raise
+from .models import *  # noqa: E402, F401, F403
