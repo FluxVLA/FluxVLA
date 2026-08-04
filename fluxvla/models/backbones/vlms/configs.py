@@ -19,6 +19,7 @@ from transformers import (PaliGemmaConfig, PaliGemmaForConditionalGeneration,
 try:
     from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
 except ImportError:
+    print("Orin Docker not support QWEN3-VL recently.")
     Qwen3VLConfig = None
     Qwen3VLForConditionalGeneration = None
 
