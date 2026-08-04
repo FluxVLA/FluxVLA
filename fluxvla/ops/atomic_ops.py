@@ -88,7 +88,7 @@ def layer_norm_matmul_bias_gelu(x, norm_w, norm_b, weight, bias, out, x_norm,
     seq_len = num_patches * num_views
     layer_norm_small_kernel[seq_len, ](
         x, x_norm, norm_w, norm_b, seq_len=seq_len, features=vit_hidden)
-    BLOCK_SIZE_N = 64
+    BLOCK_SIZE_N = 128
     BLOCK_SIZE_M = 64
     BLOCK_SIZE_K = 64
     matmul_small_bias_gelu[((seq_len + BLOCK_SIZE_N - 1) // BLOCK_SIZE_N) *
@@ -103,7 +103,9 @@ def layer_norm_matmul_bias_gelu(x, norm_w, norm_b, weight, bias, out, x_norm,
                                  hidden=vit_intermediate,
                                  BLOCK_SIZE_N=BLOCK_SIZE_N,
                                  BLOCK_SIZE_M=BLOCK_SIZE_M,
-                                 BLOCK_SIZE_K=BLOCK_SIZE_K)
+                                 BLOCK_SIZE_K=BLOCK_SIZE_K,
+                                 num_warps=8,
+                                 num_stages=3)
 
 
 def matmul_split_k_bias_res(x, weight, bias, res, out, buf, num_patches,
@@ -479,7 +481,7 @@ def ff_gelu(x, up_w_T, up_b, down_w, down_b, up_features, up_hidden):
     intermediate = torch.empty(
         seq_len, up_hidden, dtype=inp.dtype, device=inp.device)
 
-    BN, BM, BK = 64, 64, 64
+    BN, BM, BK = 128, 64, 64
     grid_size = (((seq_len + BN - 1) // BN) * ((up_hidden + BM - 1) // BM))
     matmul_small_bias_gelu[grid_size, ](
         inp,
@@ -491,7 +493,9 @@ def ff_gelu(x, up_w_T, up_b, down_w, down_b, up_features, up_hidden):
         hidden=up_hidden,
         BLOCK_SIZE_N=BN,
         BLOCK_SIZE_M=BM,
-        BLOCK_SIZE_K=BK)
+        BLOCK_SIZE_K=BK,
+        num_warps=8,
+        num_stages=3)
 
     return F.linear(
         intermediate.view(*orig_shape[:-1], up_hidden), down_w, down_b)

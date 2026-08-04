@@ -375,7 +375,7 @@ Head: FlowMatchingInferenceHead
 Backbone: EagleInferenceBackbone
 image_token_id=151669, image_token_count=512
 predict_action output shape: (1, 32, 7)
-latency_ms: ... median=about 150-155 ms ...
+latency_ms: ... median=about 135 ms ...
 OK
 ```
 
@@ -386,7 +386,7 @@ Suggested result table:
 | Variant     | Head                      | Backbone               | Median latency | Frequency |
 | ----------- | ------------------------- | ---------------------- | -------------- | --------- |
 | baseline    | FlowMatchingHead          | EagleBackbone          | 256 ms         | 3.9 Hz    |
-| accelerated | FlowMatchingInferenceHead | EagleInferenceBackbone | 150-155 ms     | 6.5 Hz    |
+| accelerated | FlowMatchingInferenceHead | EagleInferenceBackbone | 135 ms         | 7.4 Hz    |
 
 ## 7. Issues and Troubleshooting Notes
 
