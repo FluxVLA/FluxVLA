@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from dataclasses import dataclass
 from functools import partial
 import logging
 from typing import Any, Callable, Dict, Optional, Type
@@ -12,7 +14,6 @@ from typing import Any, Callable, Dict, Optional, Type
 import torch
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers import Qwen3VLForConditionalGeneration
-from transformers.feature_extraction_utils import BatchFeature
 from transformers.models.qwen3_vl.modeling_qwen3_vl import \
     Qwen3VLTextDecoderLayer
 
@@ -20,6 +21,13 @@ from fluxvla.engines.utils import VLM_BACKBONES
 
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class GrootN17BackboneOutput:
+    backbone_features: torch.Tensor
+    backbone_attention_mask: torch.Tensor
+    image_mask: torch.Tensor
 
 
 @VLM_BACKBONES.register_module()
@@ -118,10 +126,10 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
             if self.model.visual and not self.tune_visual:
                 self.model.visual.eval()
 
-    def prepare_input(self, batch: dict) -> BatchFeature:
-        return BatchFeature(data=batch)
-
-    def forward(self, vl_input: BatchFeature) -> BatchFeature:
+    def forward(
+        self,
+        vl_input: Mapping[str, torch.Tensor],
+    ) -> GrootN17BackboneOutput:
         self.set_frozen_modules_to_eval_mode()
         keys_to_use = [
             'input_ids',
@@ -134,12 +142,11 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
         backbone_features = outputs.hidden_states[-1]
         image_mask = vl_input['input_ids'] == self.model.config.image_token_id
         attention_mask = vl_input['attention_mask'] == 1
-        return BatchFeature(
-            data={
-                'backbone_features': backbone_features,
-                'backbone_attention_mask': attention_mask,
-                'image_mask': image_mask,
-            })
+        return GrootN17BackboneOutput(
+            backbone_features=backbone_features,
+            backbone_attention_mask=attention_mask,
+            image_mask=image_mask,
+        )
 
     def enable_gradient_checkpointing(self) -> None:
         """Enable HuggingFace gradient checkpointing on the inner Qwen3-VL."""

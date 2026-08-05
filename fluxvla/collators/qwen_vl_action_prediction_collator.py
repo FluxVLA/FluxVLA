@@ -10,65 +10,9 @@ from typing import Any, Dict, Optional
 import numpy as np
 import torch
 import torch.nn.functional as F
-from transformers import Qwen3VLProcessor
 from transformers.feature_extraction_utils import BatchFeature
 
 from fluxvla.engines import COLLATORS
-from fluxvla.transforms.qwen_vl_action_inputs import resolve_qwen_vl_model_path
-
-
-def build_qwen_vl_processor(model_name: str,
-                            transformers_loading_kwargs: Optional[dict] = None):
-    kwargs = dict(transformers_loading_kwargs or {})
-    model_name = resolve_qwen_vl_model_path(model_name)
-    processor = Qwen3VLProcessor.from_pretrained(model_name, **kwargs)
-    processor.tokenizer.padding_side = 'left'
-    return processor
-
-
-@COLLATORS.register_module()
-class QwenVLActionPredictionCollator:
-    """Batch Qwen-VL chat/image content into action prediction inputs.
-
-    Samples carry ``vlm_content`` instead of pre-tokenized tensors, so this
-    collator must call ``Qwen3VLProcessor`` at batch time to produce text and
-    image tensors with consistent padding/grid metadata.
-    """
-
-    def __init__(self,
-                 model_name: str,
-                 model_type: str = 'qwen',
-                 transformers_loading_kwargs: Optional[dict] = None):
-        self.processor = build_qwen_vl_processor(
-            model_name, transformers_loading_kwargs)
-        self.model_type = model_type
-        self.model_name = resolve_qwen_vl_model_path(model_name)
-
-    def __call__(self, features: list[Dict[str, Any]]) -> BatchFeature:
-        batch = {}
-        keys = list(set().union(*(elem.keys() for elem in features)))
-        for key in keys:
-            values = [elem[key] for elem in features if key in elem]
-            if key == 'vlm_content':
-                texts = []
-                images = []
-                for value in values:
-                    texts.append(value['text'])
-                    images.extend(value['images'])
-                vlm_inputs = self.processor(
-                    text=texts, images=images, return_tensors='pt', padding=True)
-                batch.update(vlm_inputs)
-            elif key in ('pixel_values', 'image_grid_thw', 'attention_mask',
-                         'input_ids'):
-                raise NotImplementedError(f'Pre-tokenized {key} is not supported.')
-            else:
-                batch[key] = torch.from_numpy(np.stack(values))
-        return BatchFeature(data={'inputs': batch})
-
-
-@COLLATORS.register_module()
-class GrootN17DataCollator(QwenVLActionPredictionCollator):
-    """Backward-compatible registry name for existing GR00T N1.7 configs."""
 
 
 def _to_tensor(value: Any) -> torch.Tensor:
@@ -86,11 +30,9 @@ def _to_tensor(value: Any) -> torch.Tensor:
 class QwenVLSplitActionPredictionCollator:
     """Batch pre-tokenized Qwen-VL action-prediction samples.
 
-    This collator is the split-input counterpart of
-    ``QwenVLActionPredictionCollator``. It assumes previous transforms already
-    produced ``input_ids``, ``attention_mask``, ``pixel_values`` and
-    ``image_grid_thw``. It only pads/stacks tensors and does not call the
-    Hugging Face processor.
+    Previous transforms must produce ``input_ids``, ``attention_mask``,
+    ``pixel_values`` and ``image_grid_thw``. This collator only pads/stacks
+    tensors and does not call the Hugging Face processor.
     """
 
     def __init__(
