@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import random
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -28,6 +29,9 @@ from fluxvla.engines import TRANSFORMS
 from fluxvla.engines.utils.eval_utils import crop_and_resize, quat2axisangle
 from .transform_images import (_resize_hwc_lanczos3_numpy,
                                _resize_hwc_lanczos3_tensorflow)
+from .modality_state_action import (
+    EMBODIMENT_TAG_TO_PROJECTOR_INDEX, ModalityStateActionCodec,
+    load_groot_n17_metadata)
 from .utils import pad_to_dim, parse_image
 
 
@@ -390,6 +394,202 @@ class ProcessGrootN17NativeInputs:
 
 
 @TRANSFORMS.register_module()
+class BuildModalityStateActionTargets:
+    """Build N1.7 continuous action-head tensors from metadata layouts.
+
+    This transform is the state/action half of ``ProcessGrootN17NativeInputs``.
+    It intentionally preserves the input sample so later transforms can build
+    Qwen-VL image/text inputs from the same parquet fields.
+    """
+
+    def __init__(
+        self,
+        processor_path: str,
+        embodiment_tag: str = 'ROBOCASA_GR1_TABLETOP',
+        state_key: str = 'states',
+        action_key: str = 'actions',
+        action_mask_key: str = 'action_masks',
+        flat_layout: str = 'auto',
+        train_mode: bool = True,
+        processor_kwargs: Optional[Dict[str, Any]] = None,
+        output_state_key: str = 'state',
+        output_action_key: str = 'action',
+        output_action_mask_key: str = 'action_mask',
+        output_embodiment_id_key: str = 'embodiment_id',
+    ):
+        self.processor_path = processor_path
+        self.embodiment_key = N17_EMBODIMENT_ALIASES.get(
+            embodiment_tag, N17_EMBODIMENT_ALIASES.get(
+                str(embodiment_tag).lower(), str(embodiment_tag).lower()))
+        self.state_key = state_key
+        self.action_key = action_key
+        self.action_mask_key = action_mask_key
+        self.flat_layout = flat_layout
+        self.output_state_key = output_state_key
+        self.output_action_key = output_action_key
+        self.output_action_mask_key = output_action_mask_key
+        self.output_embodiment_id_key = output_embodiment_id_key
+        self.training = train_mode
+
+        processor_kwargs = load_groot_n17_metadata(
+            processor_path, **dict(processor_kwargs or {}))
+        self.modality_configs = processor_kwargs['modality_configs']
+        self.modality_config = self.modality_configs[self.embodiment_key]
+        self.statistics = processor_kwargs['statistics'][self.embodiment_key]
+        self.max_state_dim = processor_kwargs.get('max_state_dim', 29)
+        self.max_action_dim = processor_kwargs.get('max_action_dim', 29)
+        self.max_action_horizon = processor_kwargs.get(
+            'max_action_horizon', 50)
+        self.exclude_state = processor_kwargs.get('exclude_state', False)
+        self.state_dropout_prob = processor_kwargs.get(
+            'state_dropout_prob', 0.0)
+        self.embodiment_id_mapping = dict(
+            processor_kwargs.get('embodiment_id_mapping')
+            or EMBODIMENT_TAG_TO_PROJECTOR_INDEX)
+        for key, value in EMBODIMENT_TAG_TO_PROJECTOR_INDEX.items():
+            self.embodiment_id_mapping.setdefault(key, value)
+        self.state_action_processor = ModalityStateActionCodec(
+            modality_configs=self.modality_configs,
+            statistics=processor_kwargs.get('statistics'),
+            use_percentiles=processor_kwargs.get('use_percentiles', False),
+            clip_outliers=processor_kwargs.get('clip_outliers', True),
+            apply_sincos_state_encoding=processor_kwargs.get(
+                'apply_sincos_state_encoding', False),
+            use_relative_action=processor_kwargs.get(
+                'use_relative_action', False))
+        if train_mode:
+            self.state_action_processor.train()
+        else:
+            self.state_action_processor.eval()
+
+    def _flat_slices(self, modality: str) -> Dict[str, tuple[int, int]]:
+        keys = self.modality_config[modality]['modality_keys']
+        if (self.flat_layout in ('auto', 'robocasa_gr1_fluxvla')
+                and self.embodiment_key == 'robocasa_gr1_tabletop'):
+            return {key: ROBOCASA_GR1_FLUXVLA_SLICES[key] for key in keys}
+
+        start = 0
+        slices = {}
+        for key in keys:
+            dim = _stat_dim(self.statistics[modality][key])
+            slices[key] = (start, start + dim)
+            start += dim
+        return slices
+
+    def _split_flat(self, value: Any, modality: str) -> Dict[str, np.ndarray]:
+        if isinstance(value, dict):
+            return {
+                key: _to_numpy(item).astype(np.float32)
+                for key, item in value.items()
+            }
+
+        array = _to_numpy(value).astype(np.float32)
+        if array.ndim == 1:
+            array = array[None, :]
+        slices = self._flat_slices(modality)
+        return {
+            key: array[..., start:end].copy()
+            for key, (start, end) in slices.items()
+        }
+
+    def _apply_external_action_mask(self, outputs: Dict[str, Any],
+                                    sample: Dict[str, Any]) -> None:
+        if (self.action_mask_key not in sample
+                or self.output_action_mask_key not in outputs):
+            return
+        mask = torch.as_tensor(
+            _to_numpy(sample[self.action_mask_key]),
+            dtype=outputs[self.output_action_mask_key].dtype)
+        if mask.ndim == 1:
+            mask = mask[:, None]
+        horizon = min(mask.shape[0], outputs[self.output_action_mask_key].shape[0])
+        outputs[self.output_action_mask_key][:horizon] *= mask[:horizon]
+        if horizon < outputs[self.output_action_mask_key].shape[0]:
+            outputs[self.output_action_mask_key][horizon:] = 0
+
+    def _build_action_targets(
+            self, normalized_actions: Dict[str, np.ndarray]) -> tuple[
+                Optional[torch.Tensor], Optional[torch.Tensor]]:
+        if not normalized_actions:
+            assert not self.training, 'Action is required in training mode'
+            return None, None
+
+        action_keys = self.modality_config['action']['modality_keys']
+        normalized_action = torch.cat(
+            [torch.from_numpy(normalized_actions[key]) for key in action_keys],
+            dim=-1)
+        action_dim = normalized_action.shape[1]
+        normalized_action = torch.cat([
+            normalized_action,
+            torch.zeros(normalized_action.shape[0],
+                        self.max_action_dim - normalized_action.shape[1])
+        ],
+                                      dim=-1)
+        action_horizon = normalized_action.shape[0]
+        normalized_action = torch.cat([
+            normalized_action,
+            torch.zeros(self.max_action_horizon - normalized_action.shape[0],
+                        self.max_action_dim)
+        ],
+                                      dim=0)
+        action_mask = torch.ones_like(normalized_action)
+        action_mask[action_horizon:] = 0
+        action_mask[:, action_dim:] = 0
+        return normalized_action, action_mask
+
+    def _build_state(self, raw_state: Dict[str, np.ndarray],
+                     normalized_state: Dict[str, np.ndarray]) -> torch.Tensor:
+        state_keys = self.modality_config['state']['modality_keys']
+        state_cfg = self.modality_config['state']
+        exclude_state = self.exclude_state or bool(
+            state_cfg.get('exclude_state', False))
+        if exclude_state or (self.state_dropout_prob > 0
+                             and random.random() < self.state_dropout_prob
+                             and self.training):
+            state = torch.cat(
+                [torch.from_numpy(np.zeros_like(raw_state[key])) for key in state_keys],
+                dim=-1)
+        else:
+            state = torch.cat(
+                [torch.from_numpy(normalized_state[key]) for key in state_keys],
+                dim=-1)
+        state = torch.cat([
+            state,
+            torch.zeros(state.shape[0], self.max_state_dim - state.shape[1])
+        ],
+                          dim=-1)
+        return state
+
+    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        state_data = self._split_flat(sample[self.state_key], 'state')
+        action_data = {}
+        if self.action_key in sample and sample[self.action_key] is not None:
+            action_data = self._split_flat(sample[self.action_key], 'action')
+        elif self.training:
+            raise KeyError(f'Missing action key: {self.action_key!r}')
+
+        normalized_state, normalized_actions = self.state_action_processor.apply(
+            state=state_data,
+            action=action_data,
+            embodiment_tag=self.embodiment_key)
+        normalized_action, action_mask = self._build_action_targets(
+            normalized_actions)
+        state = self._build_state(state_data, normalized_state)
+
+        outputs = dict(sample)
+        outputs[self.output_state_key] = state.to(torch.get_default_dtype())
+        if normalized_action is not None:
+            outputs[self.output_action_key] = normalized_action.to(
+                torch.get_default_dtype())
+        if action_mask is not None:
+            outputs[self.output_action_mask_key] = action_mask
+        outputs[self.output_embodiment_id_key] = self.embodiment_id_mapping[
+            self.embodiment_key]
+        self._apply_external_action_mask(outputs, sample)
+        return outputs
+
+
+@TRANSFORMS.register_module()
 class ProcessOBSInputs():
     """Process inputs for OBS dataset.
     This transform processes the inputs from the OBS dataset
@@ -514,8 +714,13 @@ class ProcessLiberoEvalInputs:
 
 
 @TRANSFORMS.register_module()
-class ProcessGrootN17LiberoEvalInputs:
-    """Build native GR00T N1.7 observation from existing LIBERO env obs."""
+class BuildLiberoFlatEvalObservation:
+    """Build a flat modality observation from existing LIBERO env obs.
+
+    The output observation uses explicit ``video.*`` and ``state.*`` keys so
+    later model-specific transforms can consume the same adapter result without
+    depending on raw LIBERO key names.
+    """
 
     def __init__(self,
                  image_key: str = 'agentview_image',
@@ -523,19 +728,25 @@ class ProcessGrootN17LiberoEvalInputs:
                  pos_key: str = 'robot0_eef_pos',
                  quat_key: str = 'robot0_eef_quat',
                  gripper_key: str = 'robot0_gripper_qpos',
-                 task_key: str = 'task_description') -> None:
+                 task_key: str = 'task_description',
+                 observation_key: str = 'flat_observation',
+                 task_output_key: Optional[str] = None,
+                 replay_image_key: Optional[str] = 'replay_img') -> None:
         self.image_key = image_key
         self.wrist_image_key = wrist_image_key
         self.pos_key = pos_key
         self.quat_key = quat_key
         self.gripper_key = gripper_key
         self.task_key = task_key
+        self.observation_key = observation_key
+        self.task_output_key = task_output_key
+        self.replay_image_key = replay_image_key
 
-    def __call__(self, inputs: Dict) -> Dict:
+    def build_observation(self, inputs: Dict) -> tuple[Dict[str, Any], str]:
         for key in (self.image_key, self.wrist_image_key, self.pos_key,
                     self.quat_key, self.gripper_key):
             if key not in inputs:
-                raise KeyError(f'Missing LIBERO N1.7 input key: {key!r}')
+                raise KeyError(f'Missing LIBERO eval input key: {key!r}')
 
         xyz = np.asarray(inputs[self.pos_key], dtype=np.float32)
         rpy = quat2axisangle(np.asarray(inputs[self.quat_key], dtype=np.float32))
@@ -558,11 +769,130 @@ class ProcessGrootN17LiberoEvalInputs:
             'annotation.human.action.task_description': task,
             'task_description': task,
         }
+        return observation, task
 
+    def __call__(self, inputs: Dict) -> Dict:
+        observation, task = self.build_observation(inputs)
         outputs = dict(inputs)
-        outputs['n17_observation'] = observation
-        outputs['n17_task'] = task
-        outputs['replay_img'] = observation['video.image'].copy()
+        outputs[self.observation_key] = observation
+        if self.task_output_key is not None:
+            outputs[self.task_output_key] = task
+        if self.replay_image_key is not None:
+            outputs[self.replay_image_key] = observation['video.image'].copy()
+        return outputs
+
+
+@TRANSFORMS.register_module()
+class BuildEvalInputsFromFlatObservation:
+    """Build reusable eval sample fields from a flat modality observation."""
+
+    def __init__(
+        self,
+        observation_key: str = 'flat_observation',
+        video_keys: Optional[List[str]] = None,
+        state_keys: Optional[List[str]] = None,
+        video_prefix: str = 'video.',
+        state_prefix: str = 'state.',
+        task_key: str = 'task_description',
+        output_image_key: str = 'images',
+        output_state_key: str = 'states',
+        output_task_key: str = 'task_description',
+        add_state_step_dim: bool = True,
+    ) -> None:
+        self.observation_key = observation_key
+        self.video_keys = video_keys
+        self.state_keys = state_keys
+        self.video_prefix = video_prefix
+        self.state_prefix = state_prefix
+        self.task_key = task_key
+        self.output_image_key = output_image_key
+        self.output_state_key = output_state_key
+        self.output_task_key = output_task_key
+        self.add_state_step_dim = add_state_step_dim
+
+    def _resolve_keys(self, observation: Dict[str, Any], prefix: str,
+                      keys: Optional[List[str]]) -> List[str]:
+        if keys is not None:
+            return list(keys)
+        return sorted(
+            key[len(prefix):]
+            for key in observation
+            if key.startswith(prefix))
+
+    def _state_value(self, value: Any) -> np.ndarray:
+        array = np.asarray(value, dtype=np.float32)
+        if self.add_state_step_dim and array.ndim == 1:
+            array = array[None, :]
+        return array.copy()
+
+    def __call__(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        if self.observation_key not in inputs:
+            raise KeyError(
+                f'Missing flat observation key: {self.observation_key!r}')
+        observation = inputs[self.observation_key]
+        video_keys = self._resolve_keys(
+            observation, self.video_prefix, self.video_keys)
+        state_keys = self._resolve_keys(
+            observation, self.state_prefix, self.state_keys)
+
+        images = {}
+        for key in video_keys:
+            flat_key = f'{self.video_prefix}{key}'
+            if flat_key not in observation:
+                raise KeyError(f'Missing flat video key: {flat_key!r}')
+            images[key] = [np.asarray(observation[flat_key]).copy()]
+
+        states = {}
+        for key in state_keys:
+            flat_key = f'{self.state_prefix}{key}'
+            if flat_key not in observation:
+                raise KeyError(f'Missing flat state key: {flat_key!r}')
+            states[key] = self._state_value(observation[flat_key])
+
+        task = inputs.get(
+            self.task_key,
+            observation.get(
+                self.task_key,
+                observation.get('annotation.human.action.task_description',
+                                '')))
+        outputs = dict(inputs)
+        outputs[self.output_image_key] = images
+        outputs[self.output_state_key] = states
+        outputs[self.output_task_key] = task
+        return outputs
+
+
+@TRANSFORMS.register_module()
+class ProcessGrootN17LiberoEvalInputs:
+    """Build native GR00T N1.7 observation from existing LIBERO env obs."""
+
+    def __init__(self,
+                 image_key: str = 'agentview_image',
+                 wrist_image_key: str = 'robot0_eye_in_hand_image',
+                 pos_key: str = 'robot0_eef_pos',
+                 quat_key: str = 'robot0_eef_quat',
+                 gripper_key: str = 'robot0_gripper_qpos',
+                 task_key: str = 'task_description') -> None:
+        self.image_key = image_key
+        self.wrist_image_key = wrist_image_key
+        self.pos_key = pos_key
+        self.quat_key = quat_key
+        self.gripper_key = gripper_key
+        self.task_key = task_key
+        self.adapter = BuildLiberoFlatEvalObservation(
+            image_key=image_key,
+            wrist_image_key=wrist_image_key,
+            pos_key=pos_key,
+            quat_key=quat_key,
+            gripper_key=gripper_key,
+            task_key=task_key,
+            observation_key='n17_observation',
+            task_output_key='n17_task',
+            replay_image_key='replay_img',
+        )
+
+    def __call__(self, inputs: Dict) -> Dict:
+        outputs = self.adapter(inputs)
         return outputs
 
 
