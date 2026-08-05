@@ -15,7 +15,6 @@ from torch import nn
 from torch.distributed.fsdp.wrap import _module_wrap_policy
 from torch.distributions import Beta
 import torch.nn.functional as F
-from transformers.feature_extraction_utils import BatchFeature
 
 from fluxvla.engines import HEADS
 from fluxvla.models.blocks import AlternateVLDiT, DiT, SelfAttentionTransformer
@@ -170,11 +169,6 @@ class GrootN17ActionHead(nn.Module):
         input_features = self.vlln(input_features)
         return self.vl_self_attention(input_features)
 
-    def process_backbone_output(self, backbone_output: BatchFeature) -> BatchFeature:
-        backbone_output['backbone_features'] = self.process_vl_features(
-            backbone_output['backbone_features'])
-        return backbone_output
-
     def encode_state_features(
         self,
         states: torch.Tensor,
@@ -184,7 +178,7 @@ class GrootN17ActionHead(nn.Module):
         states = states.view(states.shape[0], 1, -1)
         return self.state_encoder(states, embodiment_ids)
 
-    def encode_features_tensors(
+    def encode_features(
         self,
         input_features: torch.Tensor,
         states: torch.Tensor,
@@ -194,7 +188,7 @@ class GrootN17ActionHead(nn.Module):
         state_features = self.encode_state_features(states, embodiment_ids)
         return vl_embeds, state_features
 
-    def forward_tensors(
+    def forward(
         self,
         input_features: torch.Tensor,
         states: torch.Tensor,
@@ -204,11 +198,11 @@ class GrootN17ActionHead(nn.Module):
         action_masks: torch.Tensor,
         image_mask: torch.Tensor | None = None,
         sample_weight: torch.Tensor | None = None,
-    ) -> BatchFeature:
+    ) -> dict[str, torch.Tensor]:
         del sample_weight
         self.set_frozen_modules_to_eval_mode()
 
-        vl_embeds, state_features = self.encode_features_tensors(
+        vl_embeds, state_features = self.encode_features(
             input_features, states, embodiment_ids)
         device = vl_embeds.device
 
@@ -275,37 +269,8 @@ class GrootN17ActionHead(nn.Module):
             'state_features': state_features,
         }
 
-    def forward(self, backbone_output: BatchFeature,
-                action_input: BatchFeature) -> BatchFeature:
-        return self.forward_tensors(
-            input_features=backbone_output.backbone_features,
-            states=action_input.state,
-            attention_mask=backbone_output.backbone_attention_mask,
-            embodiment_ids=action_input.embodiment_id,
-            actions=action_input.action,
-            action_masks=action_input.action_mask,
-            image_mask=backbone_output.get('image_mask'),
-            sample_weight=action_input.get('sample_weight'),
-        )
-
-    def _encode_features(
-        self,
-        backbone_output: BatchFeature,
-        action_input: BatchFeature,
-    ) -> BatchFeature:
-        vl_embeds, state_features = self.encode_features_tensors(
-            backbone_output.backbone_features,
-            action_input.state,
-            action_input.embodiment_id,
-        )
-        return BatchFeature(
-            data={
-                'backbone_features': vl_embeds,
-                'state_features': state_features,
-            })
-
     @torch.no_grad()
-    def get_action_with_tensor_features(
+    def get_action_from_features(
         self,
         backbone_features: torch.Tensor,
         state_features: torch.Tensor,
@@ -314,7 +279,7 @@ class GrootN17ActionHead(nn.Module):
         image_mask: torch.Tensor | None = None,
         prev_actions: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
-    ) -> BatchFeature:
+    ) -> dict[str, torch.Tensor]:
         vl_embeds = backbone_features
         batch_size = vl_embeds.shape[0]
         device = vl_embeds.device
@@ -386,15 +351,14 @@ class GrootN17ActionHead(nn.Module):
             pred_velocity = pred[:, -self.action_horizon:]
             actions = actions + dt * pred_velocity * vel_strength
 
-        return BatchFeature(
-            data={
-                'action_pred': actions,
-                'backbone_features': vl_embeds,
-                'state_features': state_features,
-            })
+        return {
+            'action_pred': actions,
+            'backbone_features': vl_embeds,
+            'state_features': state_features,
+        }
 
     @torch.no_grad()
-    def get_action_tensors(
+    def get_action(
         self,
         input_features: torch.Tensor,
         states: torch.Tensor,
@@ -403,10 +367,10 @@ class GrootN17ActionHead(nn.Module):
         image_mask: torch.Tensor | None = None,
         prev_actions: torch.Tensor | None = None,
         options: dict[str, Any] | None = None,
-    ) -> BatchFeature:
-        vl_embeds, state_features = self.encode_features_tensors(
+    ) -> dict[str, torch.Tensor]:
+        vl_embeds, state_features = self.encode_features(
             input_features, states, embodiment_ids)
-        return self.get_action_with_tensor_features(
+        return self.get_action_from_features(
             backbone_features=vl_embeds,
             state_features=state_features,
             embodiment_ids=embodiment_ids,
@@ -431,7 +395,7 @@ class GrootN17ActionHead(nn.Module):
         **kwargs,
     ) -> torch.Tensor:
         del prefix_len, rtc_config, kwargs
-        return self.get_action_tensors(
+        return self.get_action(
             input_features=input_features,
             states=states,
             attention_mask=attention_mask,
@@ -439,54 +403,4 @@ class GrootN17ActionHead(nn.Module):
             image_mask=image_mask,
             prev_actions=prev_actions,
             options=options,
-        ).action_pred
-
-    @torch.no_grad()
-    def get_action_with_features(
-        self,
-        backbone_features: torch.Tensor,
-        state_features: torch.Tensor,
-        embodiment_id: torch.Tensor,
-        backbone_output: BatchFeature,
-        action_input: BatchFeature,
-        options: dict[str, Any] | None = None,
-    ) -> BatchFeature:
-        prev_actions = (
-            action_input['action'] if 'action' in action_input else None)
-        return self.get_action_with_tensor_features(
-            backbone_features=backbone_features,
-            state_features=state_features,
-            embodiment_ids=embodiment_id,
-            attention_mask=backbone_output.backbone_attention_mask,
-            image_mask=backbone_output.get('image_mask'),
-            prev_actions=prev_actions,
-            options=options,
-        )
-
-    @torch.no_grad()
-    def get_action(
-        self,
-        backbone_output: BatchFeature,
-        action_input: BatchFeature,
-        options: dict[str, Any] | None = None,
-    ) -> BatchFeature:
-        features = self._encode_features(backbone_output, action_input)
-        return self.get_action_with_features(
-            backbone_features=features.backbone_features,
-            state_features=features.state_features,
-            embodiment_id=action_input.embodiment_id,
-            backbone_output=backbone_output,
-            action_input=action_input,
-            options=options,
-        )
-
-    @property
-    def device(self):
-        return next(iter(self.parameters())).device
-
-    @property
-    def dtype(self):
-        return next(iter(self.parameters())).dtype
-
-    def prepare_input(self, batch: dict) -> BatchFeature:
-        return BatchFeature(data=batch)
+        )['action_pred']

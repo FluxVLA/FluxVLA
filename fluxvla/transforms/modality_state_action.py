@@ -256,6 +256,23 @@ class ModalityStateActionCodec:
             result[key] = values
         return result
 
+    def decode_action(self,
+                      action: np.ndarray,
+                      embodiment_tag: Any,
+                      state: Optional[Dict[str, np.ndarray]] = None
+                      ) -> Dict[str, np.ndarray]:
+        """Decode a padded action tensor using the configured modality layout."""
+        embodiment_key = normalize_tag_value(embodiment_tag)
+        action_cfg = self.modality_configs[embodiment_key]['action']
+        horizon = len(action_cfg['delta_indices'])
+        decoded = {}
+        start_idx = 0
+        for key in action_cfg['modality_keys']:
+            dim = int(self.norm_params[embodiment_key]['action'][key]['dim'])
+            decoded[key] = action[..., :horizon, start_idx:start_idx + dim]
+            start_idx += dim
+        return self.unapply_action(decoded, embodiment_key, state=state)
+
     def apply(self, state: Dict[str, np.ndarray], action: Dict[str, np.ndarray],
               embodiment_tag: str):
         processed_state = self.apply_state(state, embodiment_tag)
@@ -318,5 +335,3 @@ def load_groot_n17_metadata(pretrained_model_name_or_path: str | Path,
 
 # Backward-compatible aliases while the old processor facade remains as a
 # golden-reference path.
-GrootN17StateActionProcessor = ModalityStateActionCodec
-load_groot_n17_processor_kwargs = load_groot_n17_metadata

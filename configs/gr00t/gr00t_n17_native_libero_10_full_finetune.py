@@ -56,7 +56,6 @@ model = dict(
     load_metadata=True,
     load_mode='native_safe',
     qwen3_runtime='compat_457',
-    processor_runtime='native',
     assembly_runtime='native',
     vlm_backbone=dict(
         type='GrootN17Qwen3Backbone',
