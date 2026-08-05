@@ -18,6 +18,8 @@ adds lightweight checkpoint metadata loading without instantiating the large
 N1.7 model or processor.
 """
 
+import copy
+from functools import partial
 import importlib
 import json
 import os
@@ -29,8 +31,11 @@ from typing import Any, Callable, Dict, Optional
 import numpy as np
 import torch
 import torch.nn as nn
+from torch.distributed.fsdp.wrap import _or_policy
 
-from fluxvla.engines import VLAS, initialize_overwatch
+from fluxvla.engines import (VLAS, build_head_from_cfg,
+                             build_vlm_backbone_from_cfg,
+                             initialize_overwatch)
 from .llava_vla import LlavaVLA
 
 
@@ -163,6 +168,8 @@ class GrootN17VLA(LlavaVLA):
         qwen3_runtime: str = 'hf_53',
         processor_runtime: str = 'official',
         assembly_runtime: str = 'official',
+        vlm_backbone: Optional[Dict[str, Any]] = None,
+        vla_head: Optional[Dict[str, Any]] = None,
         load_metadata: bool = True,
         norm_stats: Optional[Dict[str, Any]] = None,
         use_relative_action: Optional[bool] = None,
@@ -201,6 +208,8 @@ class GrootN17VLA(LlavaVLA):
         self.qwen3_runtime_summary: Optional[Dict[str, Any]] = None
         self.checkpoint_use_flash_attention = None
         self.load_metadata = load_metadata
+        self._native_vlm_backbone_cfg = copy.deepcopy(vlm_backbone)
+        self._native_vla_head_cfg = copy.deepcopy(vla_head)
         self.norm_stats = norm_stats
         self.use_relative_action = use_relative_action
         self.apply_sincos_state_encoding = apply_sincos_state_encoding
@@ -448,6 +457,12 @@ class GrootN17VLA(LlavaVLA):
 
     @property
     def effective_backbone_model_name(self) -> str:
+        if self.backbone_model_path:
+            return self.backbone_model_path
+        if self._native_vlm_backbone_cfg:
+            model_name = self._native_vlm_backbone_cfg.get('model_name')
+            if model_name:
+                return model_name
         return self.backbone_model_path or self.model_name
 
     def _ensure_official_gr00t_importable(self) -> None:
@@ -1884,19 +1899,30 @@ class GrootN17VLA(LlavaVLA):
                 state_dict[lm_head_key] = state_dict[embed_key]
         return state_dict
 
+    def _native_runtime_modules(self):
+        backbone = (
+            self.vlm_backbone
+            if self.vlm_backbone is not None else self.n17_backbone)
+        action_head = (
+            self.vla_head
+            if self.vla_head is not None else self.n17_action_head)
+        return backbone, action_head
+
     def _ensure_native_runtime(
         self,
         local_files_only: bool = True,
         trust_remote_code: bool = True,
     ) -> Dict[str, Any]:
         """Load FluxVLA-native processor, backbone, and action head."""
-        if (self.processor is not None and self.n17_backbone is not None
-                and self.n17_action_head is not None):
+        backbone, action_head = self._native_runtime_modules()
+        if (self.processor is not None and backbone is not None
+                and action_head is not None):
             return {
                 'status': 'already_loaded',
                 'checkpoint_dir': str(self.checkpoint_dir),
                 'processor_runtime': 'native',
                 'assembly_runtime': 'native',
+                'all_module_keys': list(self.all_module_keys or []),
             }
         if self.checkpoint_dir is None:
             raise ValueError('Native runtime requires model_path metadata.')
@@ -1907,49 +1933,99 @@ class GrootN17VLA(LlavaVLA):
         self._apply_qwen3_runtime(patch_gr00t_backbone=False)
 
         config = self._native_n17_config()
-        backbones = importlib.import_module(
-            'fluxvla.models.backbones.vlms.groot_n17_qwen3_backbone')
-        heads = importlib.import_module('fluxvla.models.heads.groot_n17_action_head')
-        GrootN17Qwen3Backbone = getattr(backbones, 'GrootN17Qwen3Backbone')
-        GrootN17ActionHead = getattr(heads, 'GrootN17ActionHead')
-
-        backbone = GrootN17Qwen3Backbone(
-            model_name=self.effective_backbone_model_name,
-            tune_llm=config.tune_llm,
-            tune_visual=config.tune_visual,
-            select_layer=config.select_layer,
-            reproject_vision=config.reproject_vision,
-            use_flash_attention=config.use_flash_attention,
-            load_bf16=False,
-            tune_top_llm_layers=config.tune_top_llm_layers,
-            trainable_params_fp32=config.backbone_trainable_params_fp32,
-            transformers_loading_kwargs={
-                'local_files_only': local_files_only,
-                'trust_remote_code': trust_remote_code,
-            },
-            qwen3_runtime=self.qwen3_runtime,
-        )
+        backbone_attr = 'n17_backbone'
+        if self._native_vlm_backbone_cfg is not None:
+            backbone_attr = 'vlm_backbone'
+            backbone = build_vlm_backbone_from_cfg(
+                copy.deepcopy(self._native_vlm_backbone_cfg),
+                default_args={
+                    'model_name':
+                    self.effective_backbone_model_name,
+                    'tune_llm':
+                    config.tune_llm,
+                    'tune_visual':
+                    config.tune_visual,
+                    'select_layer':
+                    config.select_layer,
+                    'reproject_vision':
+                    config.reproject_vision,
+                    'use_flash_attention':
+                    config.use_flash_attention,
+                    'load_bf16':
+                    False,
+                    'tune_top_llm_layers':
+                    config.tune_top_llm_layers,
+                    'trainable_params_fp32':
+                    config.backbone_trainable_params_fp32,
+                    'transformers_loading_kwargs': {
+                        'local_files_only': local_files_only,
+                        'trust_remote_code': trust_remote_code,
+                    },
+                    'qwen3_runtime':
+                    self.qwen3_runtime,
+                })
+        else:
+            backbones = importlib.import_module(
+                'fluxvla.models.backbones.vlms.groot_n17_qwen3_backbone')
+            GrootN17Qwen3Backbone = getattr(backbones, 'GrootN17Qwen3Backbone')
+            backbone = GrootN17Qwen3Backbone(
+                model_name=self.effective_backbone_model_name,
+                tune_llm=config.tune_llm,
+                tune_visual=config.tune_visual,
+                select_layer=config.select_layer,
+                reproject_vision=config.reproject_vision,
+                use_flash_attention=config.use_flash_attention,
+                load_bf16=False,
+                tune_top_llm_layers=config.tune_top_llm_layers,
+                trainable_params_fp32=config.backbone_trainable_params_fp32,
+                transformers_loading_kwargs={
+                    'local_files_only': local_files_only,
+                    'trust_remote_code': trust_remote_code,
+                },
+                qwen3_runtime=self.qwen3_runtime,
+            )
         backbone_load = backbone.load_state_dict(
             self._load_prefixed_state_dict('backbone.'),
             strict=True,
         )
         backbone.eval()
 
-        action_head = GrootN17ActionHead(config)
+        action_head_attr = 'n17_action_head'
+        if self._native_vla_head_cfg is not None:
+            action_head_attr = 'vla_head'
+            action_head = build_head_from_cfg(
+                copy.deepcopy(self._native_vla_head_cfg),
+                default_args={'config': config})
+        else:
+            heads = importlib.import_module(
+                'fluxvla.models.heads.groot_n17_action_head')
+            GrootN17ActionHead = getattr(heads, 'GrootN17ActionHead')
+            action_head = GrootN17ActionHead(config)
         action_head_load = action_head.load_state_dict(
             self._load_prefixed_state_dict('action_head.'),
             strict=True,
         )
         action_head.eval()
 
-        self.n17_backbone = backbone
-        self.n17_action_head = action_head
-        self.all_module_keys = ['n17_backbone', 'n17_action_head']
+        if backbone_attr == 'vlm_backbone':
+            self.vlm_backbone = backbone
+            self.n17_backbone = None
+        else:
+            self.n17_backbone = backbone
+            self.vlm_backbone = None
+        if action_head_attr == 'vla_head':
+            self.vla_head = action_head
+            self.n17_action_head = None
+        else:
+            self.n17_action_head = action_head
+            self.vla_head = None
+        self.all_module_keys = [backbone_attr, action_head_attr]
         return {
             'status': 'ok',
             'checkpoint_dir': str(self.checkpoint_dir),
             'processor_runtime': 'native',
             'assembly_runtime': 'native',
+            'all_module_keys': list(self.all_module_keys),
             'qwen3_runtime': self.qwen3_runtime,
             'qwen3_runtime_summary': self.qwen3_runtime_summary,
             'native_processor': {
@@ -1961,11 +2037,13 @@ class GrootN17VLA(LlavaVLA):
             },
             'native_backbone': {
                 'class': type(backbone).__name__,
+                'attr': backbone_attr,
                 'missing_keys': list(backbone_load.missing_keys),
                 'unexpected_keys': list(backbone_load.unexpected_keys),
             },
             'native_action_head': {
                 'class': type(action_head).__name__,
+                'attr': action_head_attr,
                 'missing_keys': list(action_head_load.missing_keys),
                 'unexpected_keys': list(action_head_load.unexpected_keys),
             },
@@ -1998,25 +2076,79 @@ class GrootN17VLA(LlavaVLA):
         action_inputs = BatchFeature(data=moved)
         return backbone_inputs, action_inputs
 
-    def native_get_action(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        if self.n17_backbone is None or self.n17_action_head is None:
+    def _run_native_backbone_head(
+        self,
+        inputs: Dict[str, Any],
+        mode: str = 'loss',
+        options: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, torch.Tensor]:
+        backbone, action_head = self._native_runtime_modules()
+        if backbone is None or action_head is None:
             raise RuntimeError('Native N1.7 runtime is not loaded.')
-        device = next(iter(self.n17_action_head.parameters())).device
-        dtype = next(iter(self.n17_action_head.parameters())).dtype
+        device = next(iter(action_head.parameters())).device
+        dtype = next(iter(action_head.parameters())).dtype
         backbone_inputs, action_inputs = self._native_prepare_inputs(
             inputs, device, dtype)
-        backbone_outputs = self.n17_backbone(backbone_inputs)
-        return self.n17_action_head.get_action(backbone_outputs, action_inputs)
+        backbone_outputs = backbone(backbone_inputs)
+        if mode == 'loss':
+            return action_head.forward_tensors(
+                input_features=backbone_outputs.backbone_features,
+                states=action_inputs.state,
+                attention_mask=backbone_outputs.backbone_attention_mask,
+                embodiment_ids=action_inputs.embodiment_id,
+                actions=action_inputs.action,
+                action_masks=action_inputs.action_mask,
+                image_mask=backbone_outputs.get('image_mask'),
+                sample_weight=action_inputs.get('sample_weight'),
+            )
+        if mode == 'action':
+            prev_actions = (
+                action_inputs['action'] if 'action' in action_inputs else None)
+            return action_head.get_action_tensors(
+                input_features=backbone_outputs.backbone_features,
+                states=action_inputs.state,
+                attention_mask=backbone_outputs.backbone_attention_mask,
+                embodiment_ids=action_inputs.embodiment_id,
+                image_mask=backbone_outputs.get('image_mask'),
+                prev_actions=prev_actions,
+                options=options,
+            )
+        raise ValueError(f'Unsupported native backbone/head mode: {mode!r}')
+
+    def native_get_action(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
+        return self._run_native_backbone_head(inputs, mode='action')
 
     def native_forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        if self.n17_backbone is None or self.n17_action_head is None:
-            raise RuntimeError('Native N1.7 runtime is not loaded.')
-        device = next(iter(self.n17_action_head.parameters())).device
-        dtype = next(iter(self.n17_action_head.parameters())).dtype
-        backbone_inputs, action_inputs = self._native_prepare_inputs(
-            inputs, device, dtype)
-        backbone_outputs = self.n17_backbone(backbone_inputs)
-        return self.n17_action_head(backbone_outputs, action_inputs)
+        return self._run_native_backbone_head(inputs, mode='loss')
+
+    def _prepare_native_eval_runtime(
+        self,
+        dtype: str,
+    ) -> tuple[torch.device, torch.dtype]:
+        self._ensure_native_runtime()
+        backbone, action_head = self._native_runtime_modules()
+        if self.processor is None or backbone is None or action_head is None:
+            raise RuntimeError('Failed to load native N1.7 runtime.')
+        target_device = self._resolve_runtime_device()
+        target_dtype = getattr(torch, dtype)
+        backbone.to(device=target_device, dtype=target_dtype)
+        action_head.to(device=target_device, dtype=target_dtype)
+        backbone.eval()
+        action_head.eval()
+        return target_device, target_dtype
+
+    def _prepare_official_eval_runtime(
+        self,
+        dtype: str,
+    ) -> tuple[torch.device, torch.dtype]:
+        self._ensure_official_runtime()
+        if self.processor is None or self.n17_model is None:
+            raise RuntimeError('Failed to load official N1.7 runtime.')
+        target_device = self._resolve_runtime_device()
+        target_dtype = getattr(torch, dtype)
+        self.n17_model.to(device=target_device, dtype=target_dtype)
+        self.n17_model.eval()
+        return target_device, target_dtype
 
     @staticmethod
     def _recursive_to_dtype(value: Any, dtype: torch.dtype) -> Any:
@@ -2042,27 +2174,11 @@ class GrootN17VLA(LlavaVLA):
     ) -> torch.Tensor:
         """Run N1.7 inference and return raw flat env actions."""
         if self.assembly_runtime == 'native':
-            self._ensure_native_runtime()
-            if (self.processor is None or self.n17_backbone is None
-                    or self.n17_action_head is None):
-                raise RuntimeError('Failed to load native N1.7 runtime.')
+            target_device, target_dtype = self._prepare_native_eval_runtime(
+                dtype)
         else:
-            self._ensure_official_runtime()
-            if self.processor is None or self.n17_model is None:
-                raise RuntimeError('Failed to load official N1.7 runtime.')
-
-        target_device = self._device_anchor.device
-        if target_device.type == 'cpu' and torch.cuda.is_available():
-            target_device = torch.device('cuda')
-        target_dtype = getattr(torch, dtype)
-        if self.assembly_runtime == 'native':
-            self.n17_backbone.to(device=target_device, dtype=target_dtype)
-            self.n17_action_head.to(device=target_device, dtype=target_dtype)
-            self.n17_backbone.eval()
-            self.n17_action_head.eval()
-        else:
-            self.n17_model.to(device=target_device, dtype=target_dtype)
-            self.n17_model.eval()
+            target_device, target_dtype = self._prepare_official_eval_runtime(
+                dtype)
 
         task_text = task or observation.get('task') or observation.get(
             'task_description', 'pick up the object')
@@ -2110,30 +2226,157 @@ class GrootN17VLA(LlavaVLA):
         collated = self._recursive_to_dtype(collated, target_dtype)
         with torch.inference_mode():
             if self.assembly_runtime == 'native':
-                model_pred = self.native_get_action(collated['inputs'])
+                model_pred = self._run_native_backbone_head(
+                    collated['inputs'], mode='action')
             else:
                 model_pred = self.n17_model.get_action(**collated)
         normalized_action = model_pred['action_pred'].float().cpu().numpy()
-        decoded = self.decode_action_array(normalized_action,
-                                           raw_state=raw_state)
-        layout = self.state_action_layout_summary()
+        return self._decode_n17_action_to_env_tensor(
+            normalized_action,
+            embodiment_key=batched['embodiment_key'],
+            raw_state=raw_state)
+
+    def _decode_n17_action_to_env_tensor(
+        self,
+        normalized_action: np.ndarray,
+        embodiment_key: Optional[str] = None,
+        raw_state: Optional[Dict[str, Any]] = None,
+    ) -> torch.Tensor:
+        """Decode normalized N1.7 actions and flatten them for the env."""
+        if self.processor is None:
+            self._ensure_native_processor()
+        if embodiment_key is None:
+            embodiment_key = self.active_embodiment_key
+        if hasattr(self.processor, 'decode_action'):
+            if normalized_action.ndim == 3:
+                if normalized_action.shape[0] != 1:
+                    raise ValueError('N1.7 eval decode expects batch=1, got '
+                                     f'action shape {normalized_action.shape}')
+                action_for_decode = normalized_action[0]
+            else:
+                action_for_decode = normalized_action
+            decoded = self.processor.decode_action(
+                action_for_decode, embodiment_key, state=raw_state)
+            action_keys = self.processor.modality_configs[
+                embodiment_key]['action']['modality_keys']
+        else:
+            decoded = self.decode_action_array(normalized_action,
+                                               raw_state=raw_state,
+                                               embodiment_tag=embodiment_key)
+            action_keys = [
+                entry['key'] for entry in self.state_action_layout_summary(
+                    embodiment_key)['action_layout']
+            ]
         flat_action = np.concatenate(
-            [decoded[entry['key']] for entry in layout['action_layout']],
+            [np.asarray(decoded[key], dtype=np.float32) for key in action_keys],
             axis=-1,
         ).astype(np.float32)
         return torch.from_numpy(flat_action[None, ...]).to(
             device=self._device_anchor.device, dtype=torch.float32)
 
+    @staticmethod
+    def _extract_predict_inputs(batch: Dict[str, Any]) -> Dict[str, Any]:
+        inputs = batch.get('inputs', batch)
+        if hasattr(inputs, 'data') and isinstance(inputs.data, dict):
+            return inputs.data
+        return inputs
+
+    @staticmethod
+    def _has_split_action_inputs(inputs: Dict[str, Any]) -> bool:
+        required = {
+            'input_ids',
+            'attention_mask',
+            'pixel_values',
+            'image_grid_thw',
+            'state',
+            'embodiment_id',
+        }
+        return required.issubset(inputs.keys())
+
+    @staticmethod
+    def _normalize_split_predict_inputs(
+            inputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize one-sample eval tensors to the batched train contract."""
+        normalized = dict(inputs)
+        for key in (
+                'input_ids',
+                'attention_mask',
+                'pixel_values',
+                'image_grid_thw',
+                'state',
+                'embodiment_id',
+        ):
+            if key not in normalized:
+                continue
+            value = normalized[key]
+            if not torch.is_tensor(value):
+                value = torch.as_tensor(value)
+            if key in ('input_ids', 'attention_mask') and value.ndim == 1:
+                value = value.unsqueeze(0)
+            elif key == 'state':
+                if value.ndim == 1:
+                    value = value.unsqueeze(0).unsqueeze(0)
+                elif value.ndim == 2:
+                    value = value.unsqueeze(0)
+            elif key == 'embodiment_id':
+                if value.ndim == 0:
+                    value = value.reshape(1)
+                elif value.ndim > 1:
+                    value = value.reshape(-1)
+            normalized[key] = value
+        return normalized
+
+    def _predict_n17_action_from_split_inputs(
+        self,
+        inputs: Dict[str, Any],
+        dtype: str = 'bfloat16',
+        raw_state: Optional[Dict[str, Any]] = None,
+        embodiment_key: Optional[str] = None,
+    ) -> torch.Tensor:
+        """Run N1.7 inference from split tensor inputs and decode actions."""
+        if self.assembly_runtime != 'native':
+            raise NotImplementedError(
+                'Split N1.7 predict_action is only supported for native '
+                f'assembly_runtime, got {self.assembly_runtime!r}.')
+        self._prepare_native_eval_runtime(dtype)
+        model_inputs = {
+            key: value
+            for key, value in inputs.items()
+            if key in {
+                'input_ids',
+                'attention_mask',
+                'pixel_values',
+                'image_grid_thw',
+                'state',
+                'embodiment_id',
+            }
+        }
+        model_inputs = self._normalize_split_predict_inputs(model_inputs)
+        with torch.inference_mode():
+            model_pred = self._run_native_backbone_head(
+                model_inputs, mode='action')
+        normalized_action = model_pred['action_pred'].float().cpu().numpy()
+        return self._decode_n17_action_to_env_tensor(
+            normalized_action,
+            embodiment_key=embodiment_key,
+            raw_state=raw_state)
+
     def freeze_backbones(self) -> None:
         """Freeze native N1.7 backbone modules when they are loaded."""
-        if self.n17_backbone is not None:
-            self.n17_backbone.requires_grad_(False)
-            self.n17_backbone.eval()
+        backbone, _ = self._native_runtime_modules()
+        if backbone is not None:
+            backbone.requires_grad_(False)
+            backbone.eval()
         elif self.n17_model is not None:
             self.n17_model.backbone.requires_grad_(False)
             self.n17_model.backbone.eval()
         else:
             overwatch.info('GrootN17VLA runtime is not loaded yet.')
+
+    @staticmethod
+    def _module_has_trainable_parameters(module: Optional[nn.Module]) -> bool:
+        return module is not None and any(
+            param.requires_grad for param in module.parameters())
 
     def from_pretrained(self):
         """Runner-facing loader hook.
@@ -2149,7 +2392,17 @@ class GrootN17VLA(LlavaVLA):
         return self
 
     def get_fsdp_wrapping_policy(self) -> Callable:
-        """Return a no-op policy until native N1.7 modules are available."""
+        """Return FSDP wrapping policy for loaded native N1.7 modules."""
+        policies = []
+        backbone, action_head = self._native_runtime_modules()
+        if (self._module_has_trainable_parameters(backbone)
+                and hasattr(backbone, 'get_fsdp_wrapping_policy')):
+            policies.append(backbone.get_fsdp_wrapping_policy())
+        if (self._module_has_trainable_parameters(action_head)
+                and hasattr(action_head, 'get_fsdp_wrapping_policy')):
+            policies.append(action_head.get_fsdp_wrapping_policy())
+        if policies:
+            return partial(_or_policy, policies=policies)
 
         def _no_wrap_policy(module, recurse, nonwrapped_numel):
             del module, recurse, nonwrapped_numel
@@ -2157,12 +2410,49 @@ class GrootN17VLA(LlavaVLA):
 
         return _no_wrap_policy
 
+    @staticmethod
+    def _has_state_prefix(state_dict, prefix: str) -> bool:
+        return any(key.startswith(prefix) for key in state_dict.keys())
+
+    @classmethod
+    def _remap_state_prefix_if_needed(cls, state_dict, source: str,
+                                      target: str):
+        if (not cls._has_state_prefix(state_dict, source)
+                or cls._has_state_prefix(state_dict, target)):
+            return state_dict
+        return {
+            (target + key[len(source):] if key.startswith(source) else key):
+            value
+            for key, value in state_dict.items()
+        }
+
+    def _remap_native_state_dict_keys(self, state_dict):
+        """Support old N1.7 checkpoint prefixes after config-visible modules."""
+        backbone, action_head = self._native_runtime_modules()
+        if backbone is not None:
+            if self.vlm_backbone is backbone:
+                state_dict = self._remap_state_prefix_if_needed(
+                    state_dict, 'n17_backbone.', 'vlm_backbone.')
+            elif self.n17_backbone is backbone:
+                state_dict = self._remap_state_prefix_if_needed(
+                    state_dict, 'vlm_backbone.', 'n17_backbone.')
+        if action_head is not None:
+            if self.vla_head is action_head:
+                state_dict = self._remap_state_prefix_if_needed(
+                    state_dict, 'n17_action_head.', 'vla_head.')
+            elif self.n17_action_head is action_head:
+                state_dict = self._remap_state_prefix_if_needed(
+                    state_dict, 'vla_head.', 'n17_action_head.')
+        return state_dict
+
     def load_state_dict(self, state_dict, strict: bool = True):
         if self.assembly_runtime == 'native':
             self._ensure_native_runtime()
+            state_dict = self._remap_native_state_dict_keys(state_dict)
         return super().load_state_dict(state_dict, strict=strict)
 
-    def forward(self, *args, **kwargs):
+    @staticmethod
+    def _extract_forward_inputs(args, kwargs) -> Dict[str, Any]:
         if args:
             if len(args) != 1 or not isinstance(args[0], dict):
                 raise TypeError('GrootN17VLA.forward accepts either one dict '
@@ -2173,48 +2463,83 @@ class GrootN17VLA(LlavaVLA):
             batch = args[0]
         else:
             batch = kwargs
-        inputs = batch.get('inputs', batch)
+        return batch.get('inputs', batch)
 
-        if self.assembly_runtime == 'native':
-            self._ensure_native_runtime()
-            target_device = self._device_anchor.device
-            if target_device.type == 'cpu' and torch.cuda.is_available():
-                target_device = torch.device('cuda')
-            dtype = None
-            for value in inputs.values():
-                if torch.is_tensor(value) and torch.is_floating_point(value):
-                    dtype = value.dtype
-                    break
-            if dtype is None:
-                dtype = torch.bfloat16
-            self.n17_backbone.to(device=target_device, dtype=dtype)
-            self.n17_action_head.to(device=target_device, dtype=dtype)
-            return self.native_forward(inputs)
-
-        self._ensure_official_runtime()
-        if self.n17_model is None:
-            raise RuntimeError('Failed to load official N1.7 runtime.')
+    def _resolve_runtime_device(self) -> torch.device:
         target_device = self._device_anchor.device
         if target_device.type == 'cpu' and torch.cuda.is_available():
             target_device = torch.device('cuda')
-        dtype = None
+        return target_device
+
+    @staticmethod
+    def _infer_batch_dtype(
+        inputs: Dict[str, Any],
+        default: torch.dtype = torch.bfloat16,
+    ) -> torch.dtype:
         for value in inputs.values():
             if torch.is_tensor(value) and torch.is_floating_point(value):
-                dtype = value.dtype
-                break
-        if dtype is None:
-            dtype = torch.bfloat16
+                return value.dtype
+        return default
+
+    def _prepare_native_forward_modules(
+        self,
+        inputs: Dict[str, Any],
+    ) -> tuple[torch.nn.Module, torch.nn.Module, torch.device, torch.dtype]:
+        self._ensure_native_runtime()
+        backbone, action_head = self._native_runtime_modules()
+        if backbone is None or action_head is None:
+            raise RuntimeError('Failed to load native N1.7 runtime.')
+        target_device = self._resolve_runtime_device()
+        dtype = self._infer_batch_dtype(inputs)
+        current_device = next(iter(action_head.parameters())).device
+        if current_device.type == 'cpu':
+            backbone.to(device=target_device, dtype=dtype)
+            action_head.to(device=target_device, dtype=dtype)
+        return backbone, action_head, target_device, dtype
+
+    def _prepare_official_forward_model(
+        self,
+        inputs: Dict[str, Any],
+    ) -> tuple[torch.nn.Module, torch.device, torch.dtype]:
+        self._ensure_official_runtime()
+        if self.n17_model is None:
+            raise RuntimeError('Failed to load official N1.7 runtime.')
+        target_device = self._resolve_runtime_device()
+        dtype = self._infer_batch_dtype(inputs)
         self.n17_model.to(device=target_device, dtype=dtype)
         self.n17_model.eval()
+        return self.n17_model, target_device, dtype
+
+    def forward(self, *args, **kwargs):
+        inputs = self._extract_forward_inputs(args, kwargs)
+
+        if self.assembly_runtime == 'native':
+            self._prepare_native_forward_modules(inputs)
+            return self.native_forward(inputs)
+
+        n17_model, target_device, dtype = self._prepare_official_forward_model(
+            inputs)
         moved = self._move_batch_to_device_dtype(inputs, target_device, dtype)
-        return self.n17_model(moved)
+        return n17_model(moved)
 
     def predict_action(self, **batch):
         if 'n17_observation' in batch:
             return self._predict_n17_raw_action_from_observation(
                 batch['n17_observation'],
                 task=batch.get('n17_task'),
+                dtype=batch.get('dtype', 'bfloat16'),
+            )
+        inputs = self._extract_predict_inputs(batch)
+        if self._has_split_action_inputs(inputs):
+            return self._predict_n17_action_from_split_inputs(
+                inputs,
+                dtype=batch.get('dtype', 'bfloat16'),
+                raw_state=batch.get('n17_raw_state', batch.get('raw_state')),
+                embodiment_key=batch.get('n17_embodiment_key',
+                                         batch.get('embodiment_key')),
             )
         raise NotImplementedError(
-            'GrootN17VLA.predict_action currently expects an '
-            '`n17_observation` batch produced by an N1.7 eval dataset.')
+            'GrootN17VLA.predict_action expects either an `n17_observation` '
+            'batch produced by an N1.7 eval dataset or split tensor inputs '
+            'containing input_ids, attention_mask, pixel_values, '
+            'image_grid_thw, state, and embodiment_id.')

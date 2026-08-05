@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import os
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 import torch
@@ -106,6 +106,152 @@ class ProcessCosmos25Prompt:
             np.bool_, copy=False)
         if self.remove_input_key:
             inputs.pop(self.input_key, None)
+        return inputs
+
+
+@TRANSFORMS.register_module()
+class QwenVLImageTokenExpandAndTokenize:
+    """Tokenize Qwen-VL text after expanding image placeholders.
+
+    Qwen3-VL expands every ``<|image_pad|>`` according to the corresponding
+    ``image_grid_thw`` row before tokenization. This transform exposes that
+    processor step as a config-visible text transform while leaving image
+    preprocessing to a preceding image transform.
+    """
+
+    def __init__(
+        self,
+        tokenizer: Dict,
+        text_key: str = 'text',
+        image_grid_thw_key: str = 'image_grid_thw',
+        input_ids_key: str = 'input_ids',
+        attention_mask_key: str = 'attention_mask',
+        mm_token_type_ids_key: Optional[str] = None,
+        expanded_text_key: Optional[str] = None,
+        image_token: str = '<|image_pad|>',
+        video_token: str = '<|video_pad|>',
+        placeholder_token: str = '<|placeholder|>',
+        image_token_id: Optional[int] = None,
+        video_token_id: Optional[int] = None,
+        image_mm_token_type_id: int = 1,
+        video_mm_token_type_id: int = 2,
+        merge_size: int = 2,
+        padding: bool | str = False,
+        add_special_tokens: bool = True,
+        return_tensors: str = 'np',
+        squeeze_batch: bool = True,
+        strict_num_images: bool = True,
+        tokenizer_kwargs: Optional[Dict[str, Any]] = None,
+        padding_side: str = 'left',
+        use_eos_as_pad: bool = False,
+    ) -> None:
+        from fluxvla.engines import build_tokenizer_from_cfg
+
+        self.tokenizer = build_tokenizer_from_cfg(tokenizer)
+        self.text_key = text_key
+        self.image_grid_thw_key = image_grid_thw_key
+        self.input_ids_key = input_ids_key
+        self.attention_mask_key = attention_mask_key
+        self.mm_token_type_ids_key = mm_token_type_ids_key
+        self.expanded_text_key = expanded_text_key
+        self.image_token = image_token
+        self.video_token = video_token
+        self.placeholder_token = placeholder_token
+        self.image_token_id = image_token_id
+        self.video_token_id = video_token_id
+        self.image_mm_token_type_id = image_mm_token_type_id
+        self.video_mm_token_type_id = video_mm_token_type_id
+        self.merge_size = merge_size
+        self.padding = padding
+        self.add_special_tokens = add_special_tokens
+        self.return_tensors = return_tensors
+        self.squeeze_batch = squeeze_batch
+        self.strict_num_images = strict_num_images
+        self.tokenizer_kwargs = dict(tokenizer_kwargs or {})
+
+        tokenizer_obj = getattr(self.tokenizer, 'tokenizer', self.tokenizer)
+        if hasattr(tokenizer_obj, 'padding_side'):
+            tokenizer_obj.padding_side = padding_side
+        if use_eos_as_pad and getattr(tokenizer_obj, 'pad_token_id', None) is None:
+            tokenizer_obj.pad_token = tokenizer_obj.eos_token
+        if self.image_token_id is None:
+            self.image_token_id = tokenizer_obj.convert_tokens_to_ids(
+                self.image_token)
+        if self.video_token_id is None:
+            self.video_token_id = tokenizer_obj.convert_tokens_to_ids(
+                self.video_token)
+
+    def _expand_text(self, text: str, image_grid_thw: Any) -> str:
+        grids = np.asarray(image_grid_thw)
+        if grids.ndim == 1:
+            grids = grids.reshape(1, -1)
+        if grids.ndim != 2:
+            raise ValueError(
+                f'{self.image_grid_thw_key} must be 1D or 2D, got '
+                f'shape {grids.shape}')
+
+        merge_length = self.merge_size**2
+        expanded = str(text)
+        image_index = 0
+        while self.image_token in expanded:
+            if image_index >= len(grids):
+                raise ValueError(
+                    f'Text contains more {self.image_token!r} tokens than '
+                    f'{self.image_grid_thw_key} rows.')
+            num_image_tokens = int(np.prod(grids[image_index]) // merge_length)
+            expanded = expanded.replace(
+                self.image_token,
+                self.placeholder_token * num_image_tokens,
+                1,
+            )
+            image_index += 1
+        expanded = expanded.replace(self.placeholder_token, self.image_token)
+
+        if self.strict_num_images and image_index != len(grids):
+            raise ValueError(
+                f'Text contains {image_index} {self.image_token!r} tokens, '
+                f'but {self.image_grid_thw_key} has {len(grids)} rows.')
+        return expanded
+
+    def __call__(self, inputs: Dict) -> Dict:
+        if self.text_key not in inputs:
+            raise KeyError(f'Missing text key: {self.text_key!r}')
+        if self.image_grid_thw_key not in inputs:
+            raise KeyError(
+                f'Missing image grid key: {self.image_grid_thw_key!r}')
+
+        expanded_text = self._expand_text(
+            inputs[self.text_key], inputs[self.image_grid_thw_key])
+        encoded = self.tokenizer(
+            [expanded_text],
+            padding=self.padding,
+            add_special_tokens=self.add_special_tokens,
+            return_tensors=self.return_tensors,
+            **self.tokenizer_kwargs,
+        )
+
+        input_ids = encoded['input_ids']
+        attention_mask = encoded['attention_mask']
+        if self.squeeze_batch:
+            input_ids = input_ids[0]
+            attention_mask = attention_mask[0]
+
+        inputs[self.input_ids_key] = np.asarray(input_ids, dtype=np.int64)
+        inputs[self.attention_mask_key] = np.asarray(
+            attention_mask, dtype=np.int64)
+        if self.mm_token_type_ids_key is not None:
+            mm_token_type_ids = np.zeros_like(
+                inputs[self.input_ids_key], dtype=np.int64)
+            mm_token_type_ids[
+                inputs[self.input_ids_key] == self.image_token_id] = (
+                    self.image_mm_token_type_id)
+            if self.video_token_id is not None:
+                mm_token_type_ids[
+                    inputs[self.input_ids_key] == self.video_token_id] = (
+                        self.video_mm_token_type_id)
+            inputs[self.mm_token_type_ids_key] = mm_token_type_ids
+        if self.expanded_text_key is not None:
+            inputs[self.expanded_text_key] = expanded_text
         return inputs
 
 

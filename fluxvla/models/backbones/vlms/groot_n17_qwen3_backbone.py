@@ -5,12 +5,16 @@
 
 from __future__ import annotations
 
+from functools import partial
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional, Type
 
 import torch
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers import Qwen3VLForConditionalGeneration
 from transformers.feature_extraction_utils import BatchFeature
+from transformers.models.qwen3_vl.modeling_qwen3_vl import \
+    Qwen3VLTextDecoderLayer
 
 from fluxvla.engines.utils import VLM_BACKBONES
 
@@ -86,6 +90,10 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
                     param.data = param.data.to(torch.float32)
                     logger.debug('Casting trainable parameter %s to fp32', name)
 
+    @property
+    def transformer_layer_cls(self) -> Type[torch.nn.Module]:
+        return Qwen3VLTextDecoderLayer
+
     def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool,
                                  tune_top_llm_layers: int) -> None:
         self.tune_llm = tune_llm
@@ -132,3 +140,26 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
                 'backbone_attention_mask': attention_mask,
                 'image_mask': image_mask,
             })
+
+    def enable_gradient_checkpointing(self) -> None:
+        """Enable HuggingFace gradient checkpointing on the inner Qwen3-VL."""
+        if not any(param.requires_grad for param in self.parameters()):
+            logger.info(
+                'Skipping Qwen3-VL gradient checkpointing because the '
+                'backbone is frozen.')
+            return
+        if not hasattr(self.model, 'gradient_checkpointing_enable'):
+            return
+        gradient_checkpointing_kwargs = {'use_reentrant': False}
+        try:
+            self.model.gradient_checkpointing_enable(
+                gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
+        except TypeError:
+            self.model.gradient_checkpointing_enable()
+
+    def get_fsdp_wrapping_policy(self) -> Callable:
+        """Return FSDP wrapping policy for Qwen3-VL text decoder layers."""
+        return partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls={self.transformer_layer_cls},
+        )
