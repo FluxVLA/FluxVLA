@@ -16,7 +16,8 @@ import math
 from typing import Dict, Optional
 
 from torch.optim import AdamW
-from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
+from torch.optim.lr_scheduler import (CosineAnnealingLR, LambdaLR, LinearLR,
+                                      SequentialLR)
 
 from fluxvla.engines.utils.builder import build_optimizer_from_cfg
 from fluxvla.engines.utils.root import LR_SCHEDULERS
@@ -68,6 +69,9 @@ class BaseLRSchedulerPolicy:
         optimizer_cfg = runner.optimizer_cfg
         paramwise_lr = optimizer_cfg.get('paramwise_learning_rate', {})
         exclude_1d = optimizer_cfg.get('exclude_1d_from_weight_decay', True)
+        weight_decay_all_params = optimizer_cfg.get('weight_decay_all_params',
+                                                    False)
+        decay_all_params = weight_decay_all_params or not exclude_1d
         if weight_decay is None:
             weight_decay = optimizer_cfg.get('weight_decay')
         if not paramwise_lr and weight_decay is None:
@@ -75,16 +79,16 @@ class BaseLRSchedulerPolicy:
                 param for param in runner.vla.parameters()
                 if param.requires_grad
             ]
+        if not paramwise_lr and decay_all_params:
+            return [{
+                'params': [
+                    param for param in runner.vla.parameters()
+                    if param.requires_grad
+                ],
+                'weight_decay':
+                weight_decay,
+            }]
         if not paramwise_lr:
-            if not exclude_1d:
-                return [{
-                    'params': [
-                        param for param in runner.vla.parameters()
-                        if param.requires_grad
-                    ],
-                    'weight_decay':
-                    weight_decay,
-                }]
             decay, no_decay = [], []
             for name, param in runner.vla.named_parameters():
                 if not param.requires_grad:
@@ -107,9 +111,10 @@ class BaseLRSchedulerPolicy:
                 continue
             lr = self._get_param_lr(runner, name)
             decay = 0.0
-            if weight_decay is not None and (not exclude_1d or
-                                             (param.ndim > 1
-                                              and not name.endswith('.bias'))):
+            if decay_all_params and weight_decay is not None:
+                decay = float(weight_decay)
+            elif (weight_decay is not None and param.ndim > 1
+                  and not name.endswith('.bias')):
                 decay = float(weight_decay)
             key = (lr, decay)
             if key not in groups:
@@ -125,6 +130,7 @@ class BaseLRSchedulerPolicy:
         optimizer_cfg = runner.optimizer_cfg
         optimizer_kwargs = dict(optimizer_cfg)
         optimizer_kwargs.pop('paramwise_learning_rate', None)
+        optimizer_kwargs.pop('weight_decay_all_params', None)
         optimizer_kwargs.pop('weight_decay', None)
         optimizer_kwargs.pop('exclude_1d_from_weight_decay', None)
         return optimizer_kwargs
@@ -301,6 +307,67 @@ class LinearWarmupLinearDecayLRScheduler(BaseLRSchedulerPolicy):
         for param_group in optimizer.param_groups:
             param_group['lr'] = 0.0
         return scheduler
+
+
+@LR_SCHEDULERS.register_module(
+    name=['openpi-warmup+cosine-decay', 'OpenPIWarmupCosineDecayLRScheduler'])
+class OpenPIWarmupCosineDecayLRScheduler(BaseLRSchedulerPolicy):
+    """Optax/OpenPI warmup-cosine schedule used by RLinf's parity path.
+
+    Unlike the common HuggingFace schedule, step zero starts at
+    ``peak_lr / (warmup_steps + 1)`` instead of zero.
+    """
+
+    def __init__(self,
+                 warmup_steps: int = 1000,
+                 decay_steps: Optional[int] = None,
+                 min_lr: float = 0.0,
+                 **kwargs) -> None:
+        super().__init__(**kwargs)
+        if warmup_steps < 0:
+            raise ValueError('warmup_steps must be non-negative')
+        if decay_steps is not None and decay_steps <= 0:
+            raise ValueError('decay_steps must be positive when provided')
+        if min_lr < 0:
+            raise ValueError('min_lr must be non-negative')
+        self.warmup_steps = int(warmup_steps)
+        self.decay_steps = (None if decay_steps is None else int(decay_steps))
+        self.min_lr = float(min_lr)
+
+    @staticmethod
+    def lr_multiplier(step: int, warmup_steps: int, decay_steps: int,
+                      min_multiplier: float) -> float:
+        if step < warmup_steps:
+            init_multiplier = 1.0 / (warmup_steps + 1)
+            return init_multiplier + (
+                (1.0 - init_multiplier) * step / max(1, warmup_steps))
+        progress = (step - warmup_steps) / max(1, decay_steps - warmup_steps)
+        progress = min(1.0, max(0.0, progress))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_multiplier + (1.0 - min_multiplier) * cosine
+
+    def build_scheduler(self, runner, optimizer):
+        decay_steps = self.decay_steps or runner.num_training_steps
+        if self.warmup_steps > decay_steps:
+            raise ValueError('warmup_steps must not exceed decay_steps, got '
+                             f'{self.warmup_steps} > {decay_steps}.')
+        peak_lr = float(optimizer.param_groups[0]['lr'])
+        if peak_lr <= 0:
+            raise ValueError('OpenPI scheduler requires a positive peak LR.')
+        min_multiplier = self.min_lr / peak_lr
+        if min_multiplier > 1.0:
+            raise ValueError(
+                f'min_lr ({self.min_lr}) exceeds peak lr ({peak_lr}).')
+
+        return LambdaLR(
+            optimizer,
+            lambda step: self.lr_multiplier(
+                step,
+                self.warmup_steps,
+                decay_steps,
+                min_multiplier,
+            ),
+        )
 
 
 @LR_SCHEDULERS.register_module(name=['step-based', 'StepBasedLRScheduler'])

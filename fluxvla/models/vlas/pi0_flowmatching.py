@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import math
 from typing import Callable, Dict, List, Optional, Union
 
@@ -23,6 +24,7 @@ from fluxvla.engines import (VLAS, build_llm_backbone_from_cfg,
                              build_projector_from_cfg)
 from fluxvla.engines.losses import reduce_action_bc_loss
 from fluxvla.engines.utils.fsdp_wrapping import build_combined_wrap_policy
+from fluxvla.engines.utils import model_utils
 from fluxvla.engines.utils.model_utils import (apply_rotary_pos_emb,
                                                create_sinusoidal_pos_embedding,
                                                eager_attention_forward,
@@ -73,6 +75,9 @@ class PI0FlowMatching(BaseVLA):
             OpenPI; ``legacy_power_ratio`` reproduces historical FluxVLA.
         time_beta_alpha (float): Alpha parameter of the time sampler.
         time_beta_beta (float): Beta parameter of the time sampler.
+        openpi_fp32_flow (bool): Preserve OpenPI's FP32 flow variables,
+            external projections, velocity head, and loss, casting only at the
+            Gemma input boundary.
         loss_action_dim (int, optional): Number of output action dimensions
             supervised by flow matching. When omitted, ``ori_action_dim`` is
             retained for backward compatibility. Set it to the padded model
@@ -118,6 +123,7 @@ class PI0FlowMatching(BaseVLA):
                  time_sampler: str = 'beta',
                  time_beta_alpha: float = 1.5,
                  time_beta_beta: float = 1.0,
+                 openpi_fp32_flow: bool = False,
                  rtc_training_config: Optional[Dict] = None,
                  **kwargs):
         super(PI0FlowMatching, self).__init__(
@@ -197,7 +203,31 @@ class PI0FlowMatching(BaseVLA):
         self.time_sampler = time_sampler
         self.time_beta_alpha = float(time_beta_alpha)
         self.time_beta_beta = float(time_beta_beta)
+        self.openpi_fp32_flow = bool(openpi_fp32_flow)
         self.rtc_training_config = rtc_training_config
+
+    @staticmethod
+    def _disable_autocast(tensor: torch.Tensor):
+        """Return an autocast-disabled context for a tensor's device."""
+        if tensor.device.type in ('cpu', 'cuda'):
+            return torch.autocast(
+                device_type=tensor.device.type, enabled=False)
+        return contextlib.nullcontext()
+
+    def _cast_gemma_input(self, tensor: Optional[torch.Tensor]):
+        """Match OpenPI's single FP32-to-BF16 boundary at Gemma input."""
+        if tensor is None:
+            return None
+        if self.openpi_fp32_flow and self.enable_mixed_precision_training:
+            return tensor.to(torch.bfloat16)
+        return tensor
+
+    def _project_action_output(self, suffix_out: torch.Tensor):
+        """Apply OpenPI's FP32 action head without ambient autocast."""
+        if not self.openpi_fp32_flow:
+            return self.action_out_proj(suffix_out)
+        with self._disable_autocast(suffix_out):
+            return self.action_out_proj(suffix_out.float())
 
     def to_bfloat16(self):
         for name, param in self.named_parameters():
@@ -246,10 +276,12 @@ class PI0FlowMatching(BaseVLA):
             attention_interface = sdpa_attention_forward
         elif self.attention_implementation == 'eager':
             attention_interface = eager_attention_forward
+        elif self.attention_implementation == 'jax':
+            attention_interface = model_utils.jax_attention_forward
         else:
             raise ValueError(
                 f'Invalid attention implementation: {self.attention_implementation}. '  # noqa: E501
-                "Expected one of ['sdpa', 'eager'].")
+                "Expected one of ['sdpa', 'eager', 'jax'].")
         return attention_interface
 
     def embed_prefix(self, images, lang_tokens, img_masks, lang_masks, *args,
@@ -580,6 +612,8 @@ class PI0FlowMatching(BaseVLA):
     def _prepare_attention_masks_4d(self, att_2d_masks):
         """Helper method to prepare 4D attention masks for transformer."""
         att_2d_masks_4d = att_2d_masks[:, None, :, :]
+        if self.attention_implementation == 'jax':
+            return att_2d_masks_4d
         mask = torch.zeros_like(att_2d_masks_4d, dtype=torch.bfloat16)
         mask.masked_fill_(~att_2d_masks_4d, torch.finfo(torch.bfloat16).min)
         return mask
@@ -626,6 +660,13 @@ class PI0FlowMatching(BaseVLA):
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
 
+        if self.openpi_fp32_flow:
+            # OpenPI keeps the complete flow path in float32 and casts only
+            # the resulting tokens at the Gemma boundary.
+            actions = actions.float()
+            noise = noise.float()
+            time = time.float()
+
         # `time` is the sampled scalar flow-matching time, shape (B,).
         # Below we derive `t` which is passed to embed_suffix as the timestep:
         #   - RTC:     t is (B, T), per-position time (delay positions get
@@ -660,6 +701,8 @@ class PI0FlowMatching(BaseVLA):
 
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
             self.embed_suffix(states, x_t, t))
+        prefix_embs = self._cast_gemma_input(prefix_embs)
+        suffix_embs = self._cast_gemma_input(suffix_embs)
         inputs_embeds = [prefix_embs, suffix_embs]
         pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
         att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
@@ -682,7 +725,7 @@ class PI0FlowMatching(BaseVLA):
         suffix_out = suffix_out[:, -self.n_action_steps:]
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
-        v_t = self.action_out_proj(suffix_out)
+        v_t = self._project_action_output(suffix_out)
         v_t, u_t = self._select_flow_loss_dimensions(v_t, u_t)
         losses = F.mse_loss(u_t, v_t, reduction='none')
         sample_weight = kwarg.get('sample_weight')
@@ -780,6 +823,7 @@ class PI0FlowMatching(BaseVLA):
             lang_tokens=lang_tokens,
             img_masks=img_masks,
             lang_masks=lang_masks)
+        prefix_embs = self._cast_gemma_input(prefix_embs)
 
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks,
                                                 prefix_att_masks)
@@ -851,6 +895,7 @@ class PI0FlowMatching(BaseVLA):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
             self.embed_suffix(states, x_t, timestep))
+        suffix_embs = self._cast_gemma_input(suffix_embs)
 
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
@@ -883,7 +928,7 @@ class PI0FlowMatching(BaseVLA):
             adarms_cond=[None, adarms_cond])
         suffix_out = suffix_out[:, -self.n_action_steps:]
         suffix_out = suffix_out.to(dtype=torch.float32)
-        v_t = self.action_out_proj(suffix_out)
+        v_t = self._project_action_output(suffix_out)
         return v_t
 
     def get_fsdp_wrapping_policy(self) -> Callable:

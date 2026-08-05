@@ -66,6 +66,8 @@ class BaseTrainRunner(ABC):
             Defaults to True.
         mixed_precision_dtype (str, optional): Data type for mixed
             precision training. Defaults to 'bf16'.
+        cast_batch_to_mixed_precision (bool, optional): Cast floating-point
+            batch tensors before the model forward. Defaults to True.
         sharding_strategy (str, optional): Sharding strategy for
             distributed training. Defaults to 'full-shard'.
     """
@@ -87,6 +89,7 @@ class BaseTrainRunner(ABC):
                  enable_mixed_precision_training: bool = True,
                  reduce_in_full_precision: bool = True,
                  mixed_precision_dtype: str = 'bf16',
+                 cast_batch_to_mixed_precision: bool = True,
                  grad_accumulation_steps: int = 1,
                  evaluator: Optional[Dict] = None,
                  tokenizer: Optional[Dict] = None,
@@ -141,6 +144,8 @@ class BaseTrainRunner(ABC):
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.reduce_in_full_precision = reduce_in_full_precision
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
+        self.cast_batch_to_mixed_precision = bool(
+            cast_batch_to_mixed_precision)
         self.per_device_batch_size = cfg.train_dataloader.per_device_batch_size
         self.grad_accumulation_steps = grad_accumulation_steps
         self.evaluator = (
@@ -872,8 +877,9 @@ class BaseTrainRunner(ABC):
         """Execute single training step: forward, backward, optimize."""
         self.lr_scheduler.prepare_step(self)
         batch = self._prepare_batch(
-            batch, self.device_id, self.mixed_precision_dtype
-            if self.enable_mixed_precision_training else None)
+            batch, self.device_id, self.mixed_precision_dtype if
+            (self.enable_mixed_precision_training
+             and self.cast_batch_to_mixed_precision) else None)
         if ('sample_weight' in batch
                 and not self._vla_accepts_kwarg('sample_weight')):
             batch = dict(batch)

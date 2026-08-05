@@ -42,6 +42,7 @@ except ImportError:
 from fluxvla.engines import LLM_BACKBONES
 from fluxvla.engines.utils.fsdp_wrapping import \
     build_transformer_layer_wrap_policy
+from fluxvla.engines.utils.model_utils import jax_attention_forward
 
 logger = logging.get_logger(__name__)
 
@@ -546,7 +547,9 @@ class GemmaAttention(nn.Module):
                                          dim=2)
 
         attention_interface: Callable = eager_attention_forward
-        if self.config._attn_implementation != 'eager':
+        if self.config._attn_implementation == 'jax':
+            attention_interface = jax_attention_forward
+        elif self.config._attn_implementation != 'eager':
             attention_interface = ALL_ATTENTION_FUNCTIONS[
                 self.config._attn_implementation]
 

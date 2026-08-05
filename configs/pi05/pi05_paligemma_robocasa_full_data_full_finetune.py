@@ -16,13 +16,14 @@
 This StarVLA-inspired recipe starts from the converted official PI0.5 base
 checkpoint, uses all 1,000 episodes from each of the 24 task roots, samples
 task roots uniformly, and applies a lower learning rate to the pretrained
-vision-language backbone than to the action expert. The historical filename
-is retained so existing launch automation does not need to change.
+vision-language backbone than to the action expert. This remains the
+throughput-oriented score recipe; use the sibling ``rlinf_aligned`` config for
+the slower source-parity baseline.
 
 Example for a 16-rank job:
     torchrun --nproc_per_node=16 scripts/train.py \
         --config \
-        configs/pi05/pi05_paligemma_robocasa_30_eps_full_finetune.py \
+        configs/pi05/pi05_paligemma_robocasa_full_data_full_finetune.py \
         --work-dir work_dirs/pi05_robocasa_official_starvla_full24k
 """
 
@@ -348,9 +349,13 @@ runner = dict(
     save_epoch_interval=1,
     save_iter_interval=10000,
     max_keep_ckpts=10,
-    # Use DDP-style replicated parameters with bf16 master weights to avoid
-    # wrapping hundreds of small FSDP submodules.
+    # Use DDP-style replicated parameters to avoid wrapping hundreds of small
+    # FSDP submodules. Keep optimizer/master parameters in FP32; the old BF16
+    # master path lost small AdamW updates and was a primary convergence drift.
     sharding_strategy='no-shard',
+    master_weight_dtype='fp32',
+    fsdp_param_dtype='bf16',
+    reduce_in_full_precision=True,
     collator=dict(
         type='DictCollator',
         keys=[
@@ -393,7 +398,7 @@ runner = dict(
 #   conda activate fluxvla && cd /root/projects/fluxvla
 #   bash scripts/eval_robocasa.sh \
 #       --config \
-#       configs/pi05/pi05_paligemma_robocasa_30_eps_full_finetune.py \
+#       configs/pi05/pi05_paligemma_robocasa_full_data_full_finetune.py \
 #       --ckpt-path checkpoints/pi05_paligemma_robocasa_30_eps/checkpoints/\
 #       latest-checkpoint.safetensors
 #
