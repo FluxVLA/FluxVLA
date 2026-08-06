@@ -26,7 +26,6 @@ import logging.config
 import os
 from contextlib import nullcontext
 from logging import LoggerAdapter
-from types import SimpleNamespace
 from typing import Any, Callable, ClassVar, Dict, MutableMapping, Tuple, Union
 
 # Overwatch Default Format String
@@ -217,12 +216,6 @@ class PureOverwatch:
             name (str): Logger name.
         """
         self.logger = ContextAdapter(logging.getLogger(name), extra={})
-        self.distributed_state = SimpleNamespace(
-            process_index=0,
-            local_process_index=0,
-            num_processes=1,
-            is_main_process=True,
-        )
 
         self.debug = self.logger.debug
         self.info = self.logger.info
@@ -298,16 +291,6 @@ class PureOverwatch:
 
     @staticmethod
     def rank() -> int:
-        """
-        Returns 0 in non-distributed mode.
-
-        Returns:
-            int: Always 0 in pure logger context.
-        """
-        return 0
-
-    @staticmethod
-    def local_rank() -> int:
         """
         Returns 0 in non-distributed mode.
 
