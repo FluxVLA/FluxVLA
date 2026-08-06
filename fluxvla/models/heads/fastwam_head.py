@@ -549,7 +549,6 @@ class FastWAMHead(nn.Module):
         rand_device: str = 'cpu',
         **kwargs,
     ) -> torch.Tensor:
-        self.eval()
         if str(getattr(self.video_expert, 'video_attention_mask_mode', '')) \
                 != 'first_frame_causal':
             raise ValueError(
@@ -642,7 +641,6 @@ class FastWAMHead(nn.Module):
         rand_device: str = 'cpu',
         **kwargs,
     ):
-        self.eval()
         device = first_frame_latents.device
         z_dim, latent_t, latent_h, latent_w = video_latent_shape
 
@@ -830,7 +828,6 @@ class FastWAMJointHead(FastWAMHead):
         rand_device: str = 'cpu',
         **kwargs,
     ) -> torch.Tensor:
-        self.eval()
         device = first_frame_latents.device
         z_dim, latent_t, latent_h, latent_w = video_latent_shape
 
@@ -1177,7 +1174,6 @@ class FastWAMIDMHead(FastWAMJointHead):
         **kwargs,
     ):
         del action
-        self.eval()
         device = first_frame_latents.device
         z_dim, latent_t, latent_h, latent_w = video_latent_shape
 
@@ -1298,7 +1294,6 @@ class FastWAMIDMHead(FastWAMJointHead):
         rand_device: str = 'cpu',
         **kwargs,
     ) -> torch.Tensor:
-        self.eval()
         device = first_frame_latents.device
         z_dim, latent_t, latent_h, latent_w = video_latent_shape
 

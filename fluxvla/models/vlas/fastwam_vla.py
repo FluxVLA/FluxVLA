@@ -484,7 +484,6 @@ class FastWAMVLA(BaseVLA):
         tiled: bool = False,
         task_description=None,
     ):
-        self.eval()
         if action_horizon is None:
             action_horizon = self.action_horizon
         if action_horizon is None:

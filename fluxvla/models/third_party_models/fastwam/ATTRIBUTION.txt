@@ -5,20 +5,20 @@ Source projects:
   Paper: Fast-WAM: Do World Action Models Need Test-time Future Imagination?
   arXiv: https://arxiv.org/abs/2603.16666
   License: Apache-2.0
-  Note: The files under ``modules/`` are vendored largely verbatim from the
-  FastWAM ``src/fastwam/models/wan22`` package to preserve numerical parity.
-  This includes the three model variants ``fastwam.py`` (base/uncond),
-  ``fastwam_joint.py`` (action attends to all video tokens) and
-  ``fastwam_idm.py`` (teacher-forcing video conditioning). The only changes
-  applied to the vendored files are:
+  Note: The numerical kernels under ``modules/`` are derived from the FastWAM
+  ``src/fastwam/models/wan22`` package. FluxVLA retains only the components
+  required by its split ``FastWAMVLA``/``FastWAMHead`` integration; the
+  upstream monolithic model wrappers are intentionally omitted. Adaptations
+  to the retained files include:
     * the logger import, redirected from ``fastwam.utils.logging_config`` to
-      the local ``._logging`` shim (all files);
+      the local ``._logging`` shim where used;
     * ``action_dit.py`` only: the relative-path anchor for
       ``action_dit_pretrained_path`` is ``Path(__file__).parents[5]`` instead
       of ``parents[4]`` upstream, because the vendored module sits one
-      directory deeper; both resolve to the respective repository root.
-  These files are exempt from the repository's string/format pre-commit hooks
-  (see ``.pre-commit-config.yaml``) so they stay byte-identical to upstream.
+      directory deeper; both resolve to the respective repository root;
+    * removal of code unreachable from the supported FluxVLA runtime and
+      checkpoint-packaging paths.
+  The retained numerical paths and checkpoint parameter names are unchanged.
 
 - Alibaba Wan Video (Wan 2.2 TI2V-5B)
   Upstream location: https://github.com/Wan-Video/Wan2.2

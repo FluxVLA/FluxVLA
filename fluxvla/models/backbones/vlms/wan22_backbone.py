@@ -374,8 +374,6 @@ class Wan22Backbone(WanBaseBackbone):
             self,
             video: Optional[torch.Tensor] = None,
             input_image: Optional[torch.Tensor] = None,
-            input_ids: Optional[torch.Tensor] = None,
-            attention_mask: Optional[torch.Tensor] = None,
             context: Optional[torch.Tensor] = None,
             context_mask: Optional[torch.Tensor] = None,
             latents: Optional[torch.Tensor] = None,
@@ -409,20 +407,7 @@ class Wan22Backbone(WanBaseBackbone):
                 tile_stride=tile_stride,
             )
 
-        has_tokens = input_ids is not None or attention_mask is not None
-        has_context = context is not None or context_mask is not None
-        if has_tokens and has_context:
-            raise ValueError(
-                '`input_ids/attention_mask` and `context/context_mask` are '
-                'mutually exclusive.')
-        if has_tokens:
-            if input_ids is None or attention_mask is None:
-                raise ValueError(
-                    '`input_ids` and `attention_mask` must be provided '
-                    'together.')
-            outputs['context'], outputs['context_mask'] = self.encode_prompt(
-                input_ids, attention_mask)
-        elif has_context:
+        if context is not None or context_mask is not None:
             prepared_context, prepared_mask = self.prepare_context(
                 context, context_mask)
             outputs['context'] = prepared_context

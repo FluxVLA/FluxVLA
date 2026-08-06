@@ -158,16 +158,6 @@ class RMSNorm(nn.Module):
         return self.norm(x.float()).to(dtype) * self.weight
 
 
-class AttentionModule(nn.Module):
-    def __init__(self, num_heads):
-        super().__init__()
-        self.num_heads = num_heads
-
-    def forward(self, q, k, v, ctx_mask=None):
-        x = flash_attention(q=q, k=k, v=v, num_heads=self.num_heads, ctx_mask=ctx_mask)
-        return x
-
-
 class SelfAttention(nn.Module):
     def __init__(self, hidden_dim: int, attn_head_dim: int, num_heads: int, eps: float = 1e-6):
         super().__init__()
@@ -182,8 +172,6 @@ class SelfAttention(nn.Module):
         self.o = nn.Linear(self.attn_hidden_dim, hidden_dim)
         self.norm_q = RMSNorm(self.attn_hidden_dim, eps=eps)
         self.norm_k = RMSNorm(self.attn_hidden_dim, eps=eps)
-
-        # self.attn = AttentionModule(self.num_heads)
 
     def forward(self, x, freqs, self_attn_mask: Optional[torch.Tensor] = None):
         q = self.norm_q(self.q(x))
@@ -209,8 +197,6 @@ class CrossAttention(nn.Module):
         self.o = nn.Linear(self.attn_hidden_dim, hidden_dim)
         self.norm_q = RMSNorm(self.attn_hidden_dim, eps=eps)
         self.norm_k = RMSNorm(self.attn_hidden_dim, eps=eps)
-
-        # self.attn = AttentionModule(self.num_heads)
 
     def forward(self, x: torch.Tensor, ctx: torch.Tensor, ctx_mask: Optional[torch.Tensor] = None):
         q = self.norm_q(self.q(x))
@@ -268,26 +254,6 @@ class DiTBlock(nn.Module):
         return x
 
 
-class MLP(torch.nn.Module):
-    def __init__(self, in_dim, out_dim, has_pos_emb=False):
-        super().__init__()
-        self.proj = torch.nn.Sequential(
-            nn.LayerNorm(in_dim),
-            nn.Linear(in_dim, in_dim),
-            nn.GELU(),
-            nn.Linear(in_dim, out_dim),
-            nn.LayerNorm(out_dim)
-        )
-        self.has_pos_emb = has_pos_emb
-        if has_pos_emb:
-            self.emb_pos = torch.nn.Parameter(torch.zeros((1, 514, 1280)))
-
-    def forward(self, x):
-        if self.has_pos_emb:
-            x = x + self.emb_pos.to(dtype=x.dtype, device=x.device)
-        return self.proj(x)
-
-
 class Head(nn.Module):
     def __init__(self, dim: int, out_dim: int, patch_size: Tuple[int, int, int], eps: float):
         super().__init__()
@@ -298,13 +264,15 @@ class Head(nn.Module):
         self.modulation = nn.Parameter(torch.randn(1, 2, dim) / dim**0.5)
 
     def forward(self, x, t_mod):
-        if len(t_mod.shape) == 3:
-            shift, scale = (self.modulation.unsqueeze(0).to(dtype=t_mod.dtype, device=t_mod.device) + t_mod.unsqueeze(2)).chunk(2, dim=2)
-            x = (self.head(self.norm(x) * (1 + scale.squeeze(2)) + shift.squeeze(2)))
-        else:
-            shift, scale = (self.modulation.to(dtype=t_mod.dtype, device=t_mod.device) + t_mod).chunk(2, dim=1)
-            x = (self.head(self.norm(x) * (1 + scale) + shift))
-        return x
+        shift, scale = (
+            self.modulation.unsqueeze(0).to(
+                dtype=t_mod.dtype, device=t_mod.device
+            )
+            + t_mod.unsqueeze(2)
+        ).chunk(2, dim=2)
+        return self.head(
+            self.norm(x) * (1 + scale.squeeze(2)) + shift.squeeze(2)
+        )
 
 
 class WanVideoDiT(torch.nn.Module):
@@ -550,8 +518,6 @@ class WanVideoDiT(torch.nn.Module):
             t_mod = self.time_projection(t).unflatten(2, (6, self.hidden_dim))
         else:
             raise NotImplementedError("Only support seperated_timestep with fuse_vae_embedding_in_latents for now.")
-            t = self.time_embedding(sinusoidal_embedding_1d(self.freq_dim, timestep))
-            t_mod = self.time_projection(t).unflatten(1, (6, self.hidden_dim))
         x = self.patchify(x, control_camera_latents_input=control_camera_latents_input)
         f, h, w = x.shape[2:]
 

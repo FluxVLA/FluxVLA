@@ -15,20 +15,6 @@ from .wan_video_dit import (
 logger = get_logger(__name__)
 
 
-class ActionHead(nn.Module):
-    def __init__(self, hidden_dim: int, out_dim: int, eps: float):
-        super().__init__()
-        self.norm = nn.LayerNorm(hidden_dim, eps=eps, elementwise_affine=False)
-        self.proj = nn.Linear(hidden_dim, out_dim)
-        self.modulation = nn.Parameter(torch.randn(1, 2, hidden_dim) / hidden_dim**0.5)
-
-    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
-        shift, scale = (self.modulation.to(dtype=t.dtype, device=t.device) + t.unsqueeze(1)).chunk(2, dim=1)
-        shift = shift.squeeze(1)
-        scale = scale.squeeze(1)
-        return self.proj(self.norm(x) * (1 + scale.unsqueeze(1)) + shift.unsqueeze(1))
-
-
 class ActionDiT(nn.Module):
     ACTION_BACKBONE_SKIP_PREFIXES = ("action_encoder.", "head.")
     ACTION_BACKBONE_META_KEYS = (
