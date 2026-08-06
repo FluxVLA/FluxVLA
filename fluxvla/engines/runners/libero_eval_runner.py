@@ -44,7 +44,7 @@ def _get_libero_benchmark():
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             'LIBERO is required for simulation evaluation. Install it with '
-            '`bash scripts/install_env.sh sim-only --skip-robocasa` or '
+            '`bash scripts/install_env.sh sim-only` or '
             '`bash scripts/install_env.sh full`.') from exc
     return benchmark
 
@@ -80,8 +80,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         max_steps (int): Override for the per-suite maximum rollout length.
             When ``None`` (default) the built-in per-suite values are used.
         inference_seed (int): Seed forwarded to ``predict_action`` on every
-            prediction (e.g. to match a source eval that re-seeds the action
-            noise each call). When ``None`` (default) no seed is forwarded.
+            prediction so each action query starts from the same deterministic
+            flow-matching noise. When ``None`` (default), no seed is forwarded.
         allowed_missing_key_prefixes (tuple): Checkpoint keys with these
             prefixes may be missing when loading with ``strict=False``.
             Defaults to empty, which keeps strict missing-key validation.
@@ -133,6 +133,15 @@ class LiberoEvalRunner(BaseEvalRunner):
             tokenizer = transform.get('tokenizer')
             if isinstance(tokenizer, dict):
                 tokenizer['model_path'] = tokenizer_path.as_posix()
+
+    @staticmethod
+    def _get_eval_context_keys(component_cls, default_keys: tuple) -> tuple:
+        return tuple(getattr(component_cls, 'eval_context_keys', default_keys))
+
+    @staticmethod
+    def _distributed_collectives_enabled(world_size: int) -> bool:
+        return (world_size > 1 and dist.is_available()
+                and dist.is_initialized())
 
     @staticmethod
     def _build_global_episodes(num_tasks: int,
@@ -352,32 +361,19 @@ class LiberoEvalRunner(BaseEvalRunner):
         }
         return view_names.get(img_key, img_key)
 
-    @staticmethod
-    def _resolve_replay_image(obs: Dict, img_key: str):
-        """Resolve replay image keys from raw LIBERO observations."""
-        if img_key in obs:
-            return obs[img_key], img_key
-        raise KeyError(img_key)
-
-    @staticmethod
-    def _format_replay_image(img, img_key: str):
-        """Return replay image in display orientation."""
-        del img_key
-        return img[::-1, ::-1].copy()
-
     def _get_replay_image(self, obs: Dict, replay_img=None):
         """Extract replay frame, falling back to dataset-produced frame."""
         img_keys = self._get_replay_img_keys()
         try:
             if len(img_keys) == 1:
-                img, resolved_key = self._resolve_replay_image(obs, img_keys[0])
-                return self._format_replay_image(img, resolved_key)
+                img = obs[img_keys[0]]
+                return img[::-1, ::-1].copy()
 
             replay_images = {}
             for img_key in img_keys:
-                img, resolved_key = self._resolve_replay_image(obs, img_key)
+                img = obs[img_key]
                 replay_images[self._get_replay_view_name(img_key)] = \
-                    self._format_replay_image(img, resolved_key)
+                    img[::-1, ::-1].copy()
             return replay_images
         except KeyError:
             if replay_img is not None:
@@ -416,9 +412,10 @@ class LiberoEvalRunner(BaseEvalRunner):
                  result_gpu_id: int = None,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
-        from fluxvla.engines import (build_dataset_from_cfg,
-                                     build_transform_from_cfg,
-                                     build_vla_from_cfg)
+        from fluxvla.engines import (DATASETS, TRANSFORMS,
+                         build_dataset_from_cfg,
+                         build_transform_from_cfg,
+                         build_vla_from_cfg)
         self.set_common_eval_attrs(cfg, seed, ckpt_path, model_family,
                                    mixed_precision_dtype,
                                    enable_mixed_precision_training)
@@ -470,8 +467,16 @@ class LiberoEvalRunner(BaseEvalRunner):
             del state_dict
             gc.collect()
         self.norm_stats_key = norm_stats_key or f'{task_suite_name}_no_noops'
-        requires_norm_stats = denormalize_action.pop(
-            'requires_norm_stats', True)
+        dataset_cls = DATASETS.get(dataset['type'])
+        action_transform_cls = TRANSFORMS.get(denormalize_action['type'])
+        dataset_context_keys = self._get_eval_context_keys(
+            dataset_cls,
+            ('task_suite_name', 'norm_stats_key', 'norm_stats'))
+        action_context_keys = self._get_eval_context_keys(
+            action_transform_cls, ('norm_stats',))
+        requires_norm_stats = (
+            'norm_stats' in dataset_context_keys
+            or 'norm_stats' in action_context_keys)
         data_stat_path = None
         if requires_norm_stats:
             data_stat_path = (
@@ -479,11 +484,15 @@ class LiberoEvalRunner(BaseEvalRunner):
                 self.default_stats_path(self.ckpt_path))
             assert os.path.exists(data_stat_path), \
                 f'Dataset statistics file not found at {data_stat_path}!'
+        if 'norm_stats' in action_context_keys:
             denormalize_action['norm_stats'] = data_stat_path
         # Load dataset and denormalization action
-        dataset['task_suite_name'] = task_suite_name
-        dataset['norm_stats_key'] = self.norm_stats_key
-        dataset['norm_stats'] = data_stat_path
+        dataset_context = dict(
+            task_suite_name=task_suite_name,
+            norm_stats_key=self.norm_stats_key,
+            norm_stats=data_stat_path)
+        for key in dataset_context_keys:
+            dataset[key] = dataset_context[key]
         if ckpt_path is not None:
             self._inject_checkpoint_tokenizer(dataset, ckpt_path)
         self.dataset = build_dataset_from_cfg(dataset)
@@ -588,8 +597,7 @@ class LiberoEvalRunner(BaseEvalRunner):
             f'Using mixed precision dtype: {self.mixed_precision_dtype}')
         rank = overwatch.rank()
         world_size = overwatch.world_size()
-        distributed_enabled = (
-            world_size > 1 and dist.is_available() and dist.is_initialized())
+        distributed_enabled = self._distributed_collectives_enabled(world_size)
         local_episodes = self._build_local_episode_schedule(
             num_tasks,
             self.num_trials_per_task,
@@ -681,20 +689,22 @@ class LiberoEvalRunner(BaseEvalRunner):
                 log_file.write(
                     f'Evaluating Task {task_id}, Trial {trial_id}\n')
 
-                if env is None or task_id != current_task_id:
+                if task_id != current_task_id:
                     if env is not None:
                         env.close()
                     task = task_suite.get_task(task_id)
                     initial_states = self._repeat_initial_states(
                         task_suite.get_task_init_states(task_id),
                         self.num_trials_per_task)
-                    env, task_description = get_libero_env(task, resolution=256)
+                    env, task_description = get_libero_env(
+                        task, resolution=256)
                     current_task_id = task_id
                     overwatch.info(f'\nTask: {task_description}')
                     log_file.write(f'\nTask: {task_description}\n')
 
                 # Reset environment
                 env.reset()
+
                 # Set initial states
                 obs = env.set_init_state(initial_states[trial_id])
                 is_new_episode = True
@@ -711,8 +721,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_start_times[task_id] = min(task_start_times[task_id],
                                                 episode_start)
                 done = False
-                wait_steps = self.num_steps_wait
-                while t < max_steps + wait_steps:
+                while t < max_steps + self.num_steps_wait:
                     # IMPORTANT: Do nothing for the first
                     # few timesteps
                     # because the simulator drops objects
@@ -789,14 +798,12 @@ class LiberoEvalRunner(BaseEvalRunner):
                         break
                 total_episodes += 1
                 rank_episode_count += 1
-                episode_success = done
                 episode_duration = time.time() - episode_start
-                task_successes[task_id] += float(bool(episode_success))
+                task_successes[task_id] += float(bool(done))
                 task_episodes[task_id] += 1.0
                 task_durations[task_id] += episode_duration
-                trial_success_grid[task_id, trial_id] = float(
-                    bool(episode_success))
-                if self._should_save_rollout_video(episode_success):
+                trial_success_grid[task_id, trial_id] = float(bool(done))
+                if self._should_save_rollout_video(done):
                     video_root = (
                         self.result_output_dir if self.result_output_dir
                         is not None else self.run_dir)
@@ -813,7 +820,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                     save_rollout_video(
                         replay_images,
                         f'task{task_id}_trial{trial_id}',
-                        success=episode_success,
+                        success=done,
                         task_description=task_description,
                         work_dir=video_root,
                         log_file=log_file,
@@ -850,7 +857,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 #     print(f'Error during action prediction: {e}')
                 #     log_file.write(f'Caught exception: {e}\n')
                 #     action = get_libero_dummy_action()
-                log_file.write(f'Success: {episode_success}\n')
+                log_file.write(f'Success: {done}\n')
                 log_file.write('# local episodes completed so far: '
                                f'{rank_episode_count}\n')
                 success_log = (f'# local successes: {rank_success_count} '

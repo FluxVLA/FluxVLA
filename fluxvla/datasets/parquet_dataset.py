@@ -463,23 +463,19 @@ class LiberoParquetEvalDataset:
     """
 
     def __init__(self,
-                 norm_stats: Any = None,
-                 task_suite_name: str = None,
-                 transforms: List[Dict] = None,
-                 norm_stats_key: str = None,
+                 norm_stats: Any,
+                 task_suite_name: str,
+                 transforms: List[Dict],
+                 norm_stats_key: str,
                  num_padding_imgs: int = 0,
                  img_buffer_len: int = 1,
-                 extra_tensor_keys: Optional[List[str]] = None,
-                 extra_batch_keys: Optional[List[str]] = None) -> None:
+                 extra_tensor_keys: Optional[List[str]] = None) -> None:
 
         # Build image/token transforms (parquet-style sequential list)
-        self.transforms = [
-            build_transform_from_cfg(t) for t in (transforms or [])
-        ]
+        self.transforms = [build_transform_from_cfg(t) for t in transforms]
         self.task_suite_name = task_suite_name
         self.norm_stats_key = norm_stats_key
         self.num_padding_imgs = num_padding_imgs
-        self.extra_batch_keys = list(extra_batch_keys or [])
         assert img_buffer_len >= 1, 'img_buffer_len must be >= 1'
         self.img_buffer_len = img_buffer_len
         self.extra_tensor_keys = extra_tensor_keys or []
@@ -558,41 +554,37 @@ class LiberoParquetEvalDataset:
             data = t(data)
         replay_img = data.get('replay_img', None)
 
-        batch: Dict[str, Any] = {}
-        missing_prompt = 'lang_tokens' not in data or 'lang_masks' not in data
-        if missing_prompt and not self.extra_batch_keys:
-            raise AssertionError(
-                'Prompt transform must provide lang_tokens and lang_masks')
-        if 'lang_tokens' in data and 'lang_masks' in data:
-            tokens = torch.tensor(data['lang_tokens'])
-            token_mask = data['lang_masks'].tolist() if hasattr(
-                data['lang_masks'], 'tolist') else list(data['lang_masks'])
+        assert 'lang_tokens' in data and 'lang_masks' in data, \
+            'Prompt transform must provide lang_tokens and lang_masks'
+        tokens = torch.tensor(data['lang_tokens'])
+        token_mask = data['lang_masks'].tolist() if hasattr(
+            data['lang_masks'], 'tolist') else list(data['lang_masks'])
 
-            # Proprio
-            img_masks = data.get('img_masks', None)
-            pixel_values = data['pixel_values']
-            if img_masks is None:
-                # Fallback: all True masks based on pixel_values shape
-                num_imgs = pixel_values.shape[0] // 3
-                img_masks = [True] * num_imgs
-            else:
-                img_masks = list(img_masks)
-            # Add padding images with zero values and False masks
-            if self.num_padding_imgs > 0:
-                padding_img = pixel_values.new_zeros(3, pixel_values.shape[-2],
-                                                     pixel_values.shape[-1])
-                padding_imgs = padding_img.repeat(self.num_padding_imgs, 1, 1)
-                pixel_values = torch.cat([pixel_values, padding_imgs], dim=0)
-                img_masks.extend([False] * self.num_padding_imgs)
-            if self.img_buffer_len > 1:
-                pixel_values, img_masks = self._update_img_buffer(
-                    pixel_values, img_masks)
-            batch.update(
-                images=pixel_values.cuda().unsqueeze(0),
-                img_masks=torch.tensor([img_masks]).cuda(),
-                lang_tokens=tokens.unsqueeze(0).cuda(),
-                lang_masks=torch.tensor(token_mask).unsqueeze(0).cuda(),
-            )
+        # Proprio
+        img_masks = data.get('img_masks', None)
+        pixel_values = data['pixel_values']
+        if img_masks is None:
+            # Fallback: all True masks based on pixel_values shape
+            num_imgs = pixel_values.shape[0] // 3
+            img_masks = [True] * num_imgs
+        else:
+            img_masks = list(img_masks)
+        # Add padding images with zero values and False masks
+        if self.num_padding_imgs > 0:
+            padding_img = pixel_values.new_zeros(3, pixel_values.shape[-2],
+                                                 pixel_values.shape[-1])
+            padding_imgs = padding_img.repeat(self.num_padding_imgs, 1, 1)
+            pixel_values = torch.cat([pixel_values, padding_imgs], dim=0)
+            img_masks.extend([False] * self.num_padding_imgs)
+        if self.img_buffer_len > 1:
+            pixel_values, img_masks = self._update_img_buffer(
+                pixel_values, img_masks)
+        batch: Dict[str, Any] = dict(
+            images=pixel_values.cuda().unsqueeze(0),
+            img_masks=torch.tensor([img_masks]).cuda(),
+            lang_tokens=tokens.unsqueeze(0).cuda(),
+            lang_masks=torch.tensor(token_mask).unsqueeze(0).cuda(),
+        )
 
         if 'states' in data:
             batch['states'] = torch.from_numpy(
@@ -605,9 +597,6 @@ class LiberoParquetEvalDataset:
         if data.get('image_grid_thw', None) is not None:
             batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
 
-        for key in self.extra_batch_keys:
-            if key in data:
-                batch[key] = data[key]
         batch['reset_history'] = is_new_episode
 
         return batch, replay_img
