@@ -1,6 +1,16 @@
 # Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Metadata-driven state/action codec used by GR00T-style transforms."""
 
 from __future__ import annotations
@@ -14,24 +24,111 @@ from typing import Any, Dict, Optional
 import numpy as np
 
 
-EMBODIMENT_TAG_TO_PROJECTOR_INDEX = {
-    'oxe_droid_relative_eef_relative_joint': 24,
-    'xdof_relative_eef_relative_joint': 27,
-    'xdof_relative_eef_relative_joint_subtask': 27,
-    'real_g1_relative_eef_relative_joints': 25,
-    'real_r1_pro_sharpa_relative_eef': 26,
-    'real_r1_pro_sharpa_relative_eef_human': 26,
-    'real_r1_pro_sharpa_relative_eef_maxinsights': 26,
-    'real_r1_pro_sharpa_relative_eef_mecka': 26,
-    'unitree_g1_full_body_with_waist_height_nav_cmd': 25,
-    'unitree_g1_sonic': 11,
-    'simpler_env_google': 0,
-    'simpler_env_widowx': 1,
-    'libero_sim': 2,
-    'new_embodiment': 10,
-    'robocasa_panda_omron': 10,
-    'robocasa_gr1_tabletop': 10,
+GROOT_N17_EMBODIMENT_ALIASES = {
+    'LIBERO_PANDA': 'libero_sim',
+    'libero_sim': 'libero_sim',
 }
+
+GROOT_N17_VALIDATED_DEFAULT_EMBODIMENT_IDS = {'libero_sim': 2}
+
+
+def resolve_groot_n17_embodiment_key(
+        embodiment_tag: Optional[str] = None,
+        env_name: Optional[str] = None) -> str:
+    """Resolve a public or environment embodiment name to a metadata key."""
+    value = env_name.split('/', 1)[0] if env_name else embodiment_tag
+    if value is None:
+        raise ValueError('An N1.7 embodiment tag or environment is required.')
+    return GROOT_N17_EMBODIMENT_ALIASES.get(
+        value,
+        GROOT_N17_EMBODIMENT_ALIASES.get(str(value).lower(),
+                                        str(value).lower()))
+
+
+def select_groot_n17_metadata(
+        processor_kwargs: Dict[str, Any],
+        statistics: Dict[str, Any],
+        embodiment_id_mapping: Optional[Dict[str, int]],
+        embodiment_tag: Optional[str] = None,
+        env_name: Optional[str] = None,
+        require_statistics: bool = True) -> Dict[str, Any]:
+    """Select one embodiment from checkpoint-owned N1.7 metadata."""
+    embodiment_key = resolve_groot_n17_embodiment_key(
+        embodiment_tag, env_name)
+    modality_configs = processor_kwargs.get('modality_configs', {})
+    if embodiment_key not in modality_configs:
+        raise KeyError(
+            f'No checkpoint modality config for {embodiment_key!r}')
+
+    selected_statistics = statistics.get(embodiment_key)
+    if require_statistics and selected_statistics is None:
+        raise KeyError(f'No checkpoint statistics for {embodiment_key!r}')
+
+    ids = dict(embodiment_id_mapping or {})
+    if embodiment_key in ids:
+        embodiment_id = int(ids[embodiment_key])
+        embodiment_id_source = 'checkpoint'
+    elif embodiment_key in GROOT_N17_VALIDATED_DEFAULT_EMBODIMENT_IDS:
+        embodiment_id = GROOT_N17_VALIDATED_DEFAULT_EMBODIMENT_IDS[
+            embodiment_key]
+        embodiment_id_source = 'validated_default'
+    else:
+        raise KeyError(f'No checkpoint embodiment id for {embodiment_key!r}')
+
+    return {
+        'embodiment_key': embodiment_key,
+        'embodiment_id': embodiment_id,
+        'embodiment_id_source': embodiment_id_source,
+        'modality_config': modality_configs[embodiment_key],
+        'modality_source': 'checkpoint',
+        'statistics': selected_statistics,
+    }
+
+
+def resolve_groot_n17_metadata(
+        pretrained_model_name_or_path: str | Path,
+        embodiment_tag: Optional[str] = None,
+        env_name: Optional[str] = None,
+        require_statistics: bool = True,
+        **kwargs) -> Dict[str, Any]:
+    """Load checkpoint metadata and select one embodiment."""
+    processor_kwargs = load_groot_n17_metadata(
+        pretrained_model_name_or_path, **kwargs)
+    selected = select_groot_n17_metadata(
+        processor_kwargs,
+        processor_kwargs.get('statistics', {}),
+        processor_kwargs.get('embodiment_id_mapping'),
+        embodiment_tag=embodiment_tag,
+        env_name=env_name,
+        require_statistics=require_statistics)
+    selected['processor_kwargs'] = processor_kwargs
+    return selected
+
+
+def resolve_groot_n17_flat_slices(
+        modality_config: Dict[str, Any],
+        statistics: Dict[str, Any],
+        embodiment_key: str,
+        modality: str,
+        flat_layout: str = 'auto') -> Dict[str, tuple[int, int]]:
+    """Resolve flat slices from checkpoint statistics for validated layouts."""
+    layout = str(flat_layout).lower()
+    if layout != 'auto':
+        raise ValueError(
+            f'Unsupported N1.7 flat layout: {flat_layout!r}. Expected '
+            "'auto'.")
+    if embodiment_key != 'libero_sim':
+        raise ValueError(
+            'Automatic flat N1.7 layout is validated only for '
+            f"'libero_sim', got {embodiment_key!r}.")
+
+    start = 0
+    slices = {}
+    for key in modality_config[modality]['modality_keys']:
+        dim = _normalization_dim(statistics[modality][key])
+        slices[key] = (start, start + dim)
+        start += dim
+    return slices
 
 
 def normalize_tag_value(tag: Any) -> str:

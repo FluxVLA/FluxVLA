@@ -1,6 +1,16 @@
 # Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Qwen-VL action-prediction input transforms."""
 
 from __future__ import annotations
@@ -19,16 +29,7 @@ from transformers import Qwen3VLProcessor
 
 from fluxvla.engines import TRANSFORMS
 from fluxvla.engines.utils.hf_hub import resolve_hf_local_path
-from .modality_state_action import load_groot_n17_metadata
-
-
-N17_EMBODIMENT_ALIASES = {
-    'ROBOCASA_GR1_TABLETOP': 'robocasa_gr1_tabletop',
-    'robocasa_gr1_tabletop': 'robocasa_gr1_tabletop',
-    'gr1_unified': 'robocasa_gr1_tabletop',
-    'LIBERO_PANDA': 'libero_sim',
-    'libero_sim': 'libero_sim',
-}
+from .modality_state_action import resolve_groot_n17_metadata
 
 
 def resolve_qwen_vl_model_path(model_name_or_path: str) -> str:
@@ -352,7 +353,7 @@ class BuildQwenVLChatImageContent:
     def __init__(
         self,
         processor_path: str,
-        embodiment_tag: str = 'ROBOCASA_GR1_TABLETOP',
+        embodiment_tag: str = 'LIBERO_PANDA',
         image_key: str = 'images',
         text_key: str = 'task_description',
         output_image_key: str = 'images',
@@ -364,9 +365,6 @@ class BuildQwenVLChatImageContent:
         processor_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.processor_path = processor_path
-        self.embodiment_key = N17_EMBODIMENT_ALIASES.get(
-            embodiment_tag, N17_EMBODIMENT_ALIASES.get(
-                str(embodiment_tag).lower(), str(embodiment_tag).lower()))
         self.image_key = image_key
         self.text_key = text_key
         self.output_image_key = output_image_key
@@ -379,10 +377,13 @@ class BuildQwenVLChatImageContent:
         if explicit_loading_kwargs is None:
             explicit_loading_kwargs = input_processor_kwargs.get(
                 'transformers_loading_kwargs')
-        processor_kwargs = load_groot_n17_metadata(
-            processor_path, **input_processor_kwargs)
-        self.modality_config = processor_kwargs['modality_configs'][
-            self.embodiment_key]
+        metadata = resolve_groot_n17_metadata(
+            processor_path,
+            embodiment_tag=embodiment_tag,
+            **input_processor_kwargs)
+        processor_kwargs = metadata['processor_kwargs']
+        self.embodiment_key = metadata['embodiment_key']
+        self.modality_config = metadata['modality_config']
         self.formalize_language = processor_kwargs.get(
             'formalize_language', True)
         self.use_albumentations = processor_kwargs.get(
