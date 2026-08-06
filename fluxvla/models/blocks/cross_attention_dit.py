@@ -13,8 +13,6 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from contextlib import nullcontext
-import os
 from typing import Optional
 
 import torch
@@ -29,33 +27,6 @@ from torch import nn
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 
 overwatch = initialize_overwatch(__name__)
-
-
-def _is_spark_sm121() -> bool:
-    if not torch.cuda.is_available():
-        return False
-    major, minor = torch.cuda.get_device_capability()
-    return (major, minor) == (12, 1)
-
-
-def _should_force_math_sdpa() -> bool:
-    override = os.environ.get('GR00T_DIT_SDPA_MODE')
-    if override == 'math':
-        return True
-    if override == 'default':
-        return False
-    return _is_spark_sm121()
-
-
-def _sdpa_context():
-    if not _should_force_math_sdpa():
-        return nullcontext()
-    return torch.backends.cuda.sdp_kernel(
-        enable_flash=False,
-        enable_math=True,
-        enable_mem_efficient=False,
-        enable_cudnn=False,
-    )
 
 
 class TimestepEncoder(nn.Module):
@@ -243,15 +214,13 @@ class BasicTransformerBlock(nn.Module):
         if self.pos_embed is not None:
             norm_hidden_states = self.pos_embed(norm_hidden_states)
 
-        with _sdpa_context():
-            attn_output = self.attn1(
-                norm_hidden_states,
-                encoder_hidden_states=encoder_hidden_states,
-                attention_mask=(
-                    encoder_attention_mask
-                    if encoder_hidden_states is not None else attention_mask
-                ),
-            )
+        attn_output = self.attn1(
+            norm_hidden_states,
+            encoder_hidden_states=encoder_hidden_states,
+            attention_mask=(encoder_attention_mask
+                            if encoder_hidden_states is not None else
+                            attention_mask),
+        )
         if self.final_dropout:
             attn_output = self.final_dropout(attn_output)
 

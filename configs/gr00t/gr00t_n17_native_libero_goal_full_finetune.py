@@ -1,4 +1,16 @@
 # Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Native GR00T N1.7 LIBERO-goal parquet fine-tuning config."""
 
 _SUITE = 'libero_goal'
@@ -48,9 +60,7 @@ model = dict(
     processor_path=_N17_PROCESSOR_META,
     embodiment_tag='LIBERO_PANDA',
     load_metadata=True,
-    load_mode='native_safe',
     qwen3_runtime='compat_457',
-    assembly_runtime='native',
     vlm_backbone=dict(
         type='GrootN17Qwen3Backbone',
         model_name=_BACKBONE_MODEL_PATH,
@@ -221,6 +231,7 @@ eval = dict(
     eval_chunk_size=8,
     max_steps=720,
     seed=7,
+    inference_seed=42,
     num_steps_wait=10,
     eval_shard_strategy='episode',
     preprocess_every_step=True,
@@ -231,7 +242,7 @@ eval = dict(
         'work_dirs/'
         f'n17_native_{_SUITE}_posttrain_auto_eval'),
     dataset=dict(
-        type='LiberoParquetEvalDataset',
+        type='TransformedEvalDataset',
         transforms=[
             dict(
                 type='BuildLiberoFlatEvalObservation',
@@ -308,7 +319,7 @@ eval = dict(
                 expanded_text_key='expanded_text',
             ),
         ],
-        extra_batch_keys=[
+        batch_keys=[
             'input_ids',
             'attention_mask',
             'mm_token_type_ids',
@@ -318,7 +329,5 @@ eval = dict(
             'embodiment_id',
         ]),
     denormalize_action=dict(
-        type='DenormalizeLiberoAction',
-        denorm_action=False,
-        requires_norm_stats=False),
+        type='PostprocessLiberoAction'),
 )

@@ -422,7 +422,6 @@ class FSDPTrainRunner(BaseTrainRunner):
 
     def run_setup(self, n_train_examples: int) -> None:
         self.vla.from_pretrained()
-        self.all_module_keys = self.vla.all_module_keys
         torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
         torch.cuda.empty_cache()
 

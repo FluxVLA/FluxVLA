@@ -22,8 +22,6 @@ import copy
 from functools import partial
 import importlib
 import json
-import os
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
@@ -36,110 +34,12 @@ from torch.distributed.fsdp.wrap import _or_policy
 from fluxvla.engines import (VLAS, build_head_from_cfg,
                              build_vlm_backbone_from_cfg,
                              initialize_overwatch)
+from fluxvla.transforms.modality_state_action import \
+    resolve_groot_n17_embodiment_key
 from .llava_vla import LlavaVLA
 
 
 overwatch = initialize_overwatch(__name__)
-
-
-N17_EMBODIMENT_ALIASES = {
-    'ROBOCASA_GR1_TABLETOP': 'robocasa_gr1_tabletop',
-    'robocasa_gr1_tabletop': 'robocasa_gr1_tabletop',
-    'gr1_unified': 'robocasa_gr1_tabletop',
-    'LIBERO_PANDA': 'libero_sim',
-    'libero_sim': 'libero_sim',
-}
-
-N17_ENV_PREFIX_TO_EMBODIMENT = {
-    'gr1_unified': 'robocasa_gr1_tabletop',
-    'libero_sim': 'libero_sim',
-}
-
-N17_DEFAULT_EMBODIMENT_IDS = {
-    'robocasa_gr1_tabletop': 10,
-    'libero_sim': 2,
-}
-
-N17_BUILTIN_MODALITY_CONFIGS = {
-    'robocasa_gr1_tabletop': {
-        'video': {
-            'delta_indices': [0],
-            'modality_keys': ['ego_view_bg_crop_pad_res256_freq20'],
-        },
-        'state': {
-            'delta_indices': [0],
-            'modality_keys': [
-                'left_arm',
-                'right_arm',
-                'left_hand',
-                'right_hand',
-                'waist',
-            ],
-            'sin_cos_embedding_keys': [
-                'left_arm',
-                'right_arm',
-                'left_hand',
-                'right_hand',
-                'waist',
-            ],
-        },
-        'action': {
-            'delta_indices': list(range(8)),
-            'modality_keys': [
-                'left_arm',
-                'right_arm',
-                'left_hand',
-                'right_hand',
-                'waist',
-            ],
-            'action_representations': [
-                'RELATIVE',
-                'RELATIVE',
-                'RELATIVE',
-                'RELATIVE',
-                'ABSOLUTE',
-            ],
-        },
-        'language': {
-            'delta_indices': [0],
-            'modality_keys': ['task'],
-        },
-    },
-    'libero_sim': {
-        'video': {
-            'delta_indices': [0],
-            'modality_keys': ['image', 'wrist_image'],
-        },
-        'state': {
-            'delta_indices': [0],
-            'modality_keys': [
-                'x',
-                'y',
-                'z',
-                'roll',
-                'pitch',
-                'yaw',
-                'gripper',
-            ],
-        },
-        'action': {
-            'delta_indices': list(range(16)),
-            'modality_keys': [
-                'x',
-                'y',
-                'z',
-                'roll',
-                'pitch',
-                'yaw',
-                'gripper',
-            ],
-        },
-        'language': {
-            'delta_indices': [0],
-            'modality_keys': ['annotation.human.action.task_description'],
-        },
-    },
-}
 
 
 @VLAS.register_module()
@@ -157,16 +57,13 @@ class GrootN17VLA(LlavaVLA):
         self,
         model_path: Optional[str] = None,
         processor_path: Optional[str] = None,
-        embodiment_tag: str = 'ROBOCASA_GR1_TABLETOP',
+        embodiment_tag: str = 'LIBERO_PANDA',
         model_name: str = 'nvidia/Cosmos-Reason2-2B',
         backbone_model_path: Optional[str] = None,
-        official_gr00t_path: Optional[str] = None,
         action_horizon: int = 8,
         action_dim: Optional[int] = None,
         use_flash_attention: Optional[bool] = None,
-        load_mode: str = 'official',
         qwen3_runtime: str = 'hf_53',
-        assembly_runtime: str = 'official',
         vlm_backbone: Optional[Dict[str, Any]] = None,
         vla_head: Optional[Dict[str, Any]] = None,
         load_metadata: bool = True,
@@ -175,21 +72,22 @@ class GrootN17VLA(LlavaVLA):
         apply_sincos_state_encoding: Optional[bool] = None,
         **kwargs,
     ) -> None:
-        super().__init__(vla_head=None, norm_stats=norm_stats)
+        super().__init__(
+            vla_head=None,
+            freeze_vision_backbone=True,
+            freeze_llm_backbone=True,
+            freeze_projector=True,
+            freeze_vlm_backbone=True,
+            norm_stats=norm_stats,
+        )
         self.model_path = model_path
         self.processor_path = processor_path
         self.embodiment_tag = embodiment_tag
         self.model_name = model_name
         self.backbone_model_path = backbone_model_path
-        self.official_gr00t_path = (
-            official_gr00t_path or os.environ.get('FLUXVLA_GROOT_N17_PATH'))
         self.action_horizon = action_horizon
         self.action_dim = action_dim
         self.use_flash_attention = use_flash_attention
-        self.load_mode = str(load_mode).lower()
-        if self.load_mode not in ('official', 'native_safe'):
-            raise ValueError('GrootN17VLA load_mode must be "official" or '
-                             f'"native_safe", got {load_mode!r}.')
         self.qwen3_runtime = str(qwen3_runtime).lower()
         if self.qwen3_runtime not in ('hf_53', 'compat_457'):
             raise ValueError('GrootN17VLA qwen3_runtime must be "hf_53" or '
@@ -198,17 +96,16 @@ class GrootN17VLA(LlavaVLA):
             raise ValueError(
                 'GrootN17VLA no longer supports processor_runtime; use the '
                 'split transform and collator pipeline.')
-        self.assembly_runtime = str(assembly_runtime).lower()
-        if self.assembly_runtime not in ('official', 'native'):
-            raise ValueError(
-                'GrootN17VLA assembly_runtime must be "official" or '
-                f'"native", got {assembly_runtime!r}.')
         self.qwen3_runtime_summary: Optional[Dict[str, Any]] = None
         self.checkpoint_use_flash_attention = None
         self.load_metadata = load_metadata
         self._native_vlm_backbone_cfg = copy.deepcopy(vlm_backbone)
         self._native_vla_head_cfg = copy.deepcopy(vla_head)
-        self.norm_stats = norm_stats
+        if (self._native_vlm_backbone_cfg is None
+            or self._native_vla_head_cfg is None):
+            raise ValueError(
+            'GrootN17VLA requires config-visible vlm_backbone and '
+            'vla_head modules.')
         self.use_relative_action = use_relative_action
         self.apply_sincos_state_encoding = apply_sincos_state_encoding
         self.extra_cfg = dict(kwargs)
@@ -231,20 +128,11 @@ class GrootN17VLA(LlavaVLA):
         self.active_embodiment_key = self.resolve_embodiment_key(
             embodiment_tag)
 
-        self.freeze_vision_backbone = True
-        self.freeze_llm_backbone = True
-        self.freeze_projector = True
-        self.freeze_vlm_backbone = True
-        self.llm_backbone = None
-        self.vlm_backbone = None
-        self.all_module_keys = ['n17_model']
+        self.all_module_keys = ['vlm_backbone', 'vla_head']
 
         # Placeholder so generic module utilities have a device anchor before
         # Layer 2 instantiates the real N1.7 modules.
         self._device_anchor = nn.Parameter(torch.empty(0), requires_grad=False)
-        self.n17_model = None
-        self.n17_backbone = None
-        self.n17_action_head = None
         self.action_codec = None
 
         if self.model_path is not None and self.load_metadata:
@@ -291,18 +179,8 @@ class GrootN17VLA(LlavaVLA):
                               embodiment_tag: Optional[str] = None,
                               env_name: Optional[str] = None) -> str:
         """Resolve FluxVLA/official names to an N1.7 modality/statistics key."""
-        if env_name:
-            env_prefix = env_name.split('/', 1)[0]
-            if env_prefix in N17_ENV_PREFIX_TO_EMBODIMENT:
-                return N17_ENV_PREFIX_TO_EMBODIMENT[env_prefix]
-
-        tag = embodiment_tag or 'ROBOCASA_GR1_TABLETOP'
-        if tag in N17_EMBODIMENT_ALIASES:
-            return N17_EMBODIMENT_ALIASES[tag]
-        lower_tag = tag.lower()
-        if lower_tag in N17_EMBODIMENT_ALIASES:
-            return N17_EMBODIMENT_ALIASES[lower_tag]
-        return lower_tag
+        return resolve_groot_n17_embodiment_key(
+            embodiment_tag or 'LIBERO_PANDA', env_name)
 
     def _load_checkpoint_metadata(self, model_path: Path) -> None:
         checkpoint_dir = model_path.expanduser().resolve()
@@ -392,12 +270,6 @@ class GrootN17VLA(LlavaVLA):
                 return model_name
         return self.backbone_model_path or self.model_name
 
-    def _ensure_official_gr00t_importable(self) -> None:
-        if self.official_gr00t_path:
-            path = str(Path(self.official_gr00t_path).expanduser().resolve())
-            if path not in sys.path:
-                sys.path.insert(0, path)
-
     def _apply_qwen3_runtime(
         self,
         patch_gr00t_backbone: bool = True,
@@ -411,237 +283,6 @@ class GrootN17VLA(LlavaVLA):
             patch_gr00t_backbone=patch_gr00t_backbone,
         )
         return self.qwen3_runtime_summary
-
-    @staticmethod
-    def _compact_exception(exc: BaseException) -> Dict[str, str]:
-        return {
-            'type': type(exc).__name__,
-            'message': str(exc).splitlines()[0] if str(exc) else '',
-        }
-
-    def official_load_probe(self,
-                            load_model: bool = False,
-                            local_files_only: bool = True,
-                            trust_remote_code: bool = True,
-                            load_mode: Optional[str] = None) -> Dict[str, Any]:
-        """Probe official N1.7 AutoConfig/AutoModel loading.
-
-        This method is intentionally opt-in and keeps official Isaac-GR00T
-        imports out of FluxVLA module import time.
-        """
-        if self.checkpoint_dir is None:
-            raise ValueError('official_load_probe requires model_path metadata.')
-        resolved_load_mode = str(load_mode or self.load_mode).lower()
-        if resolved_load_mode not in ('official', 'native_safe'):
-            raise ValueError('load_mode must be "official" or "native_safe", '
-                             f'got {resolved_load_mode!r}.')
-        self._ensure_official_gr00t_importable()
-        qwen3_runtime_summary = self._apply_qwen3_runtime()
-        result = {
-            'checkpoint_dir': str(self.checkpoint_dir),
-            'effective_backbone_model_name': self.effective_backbone_model_name,
-            'load_mode': resolved_load_mode,
-            'qwen3_runtime': self.qwen3_runtime,
-            'qwen3_runtime_summary': qwen3_runtime_summary,
-            'load_model_requested': load_model,
-        }
-        try:
-            importlib.import_module('gr00t.model')
-            result['official_registration'] = 'ok'
-        except Exception as exc:  # pragma: no cover - smoke helper
-            result['official_registration'] = self._compact_exception(exc)
-            return result
-
-        transformers = importlib.import_module('transformers')
-        AutoConfig = getattr(transformers, 'AutoConfig')
-
-        try:
-            config = AutoConfig.from_pretrained(
-                self.checkpoint_dir,
-                local_files_only=local_files_only,
-                trust_remote_code=trust_remote_code,
-            )
-            if self.backbone_model_path is not None:
-                config.model_name = self.effective_backbone_model_name
-            if self.use_flash_attention is not None:
-                config.use_flash_attention = bool(self.use_flash_attention)
-            for key in (
-                    'tune_projector',
-                    'tune_diffusion_model',
-                    'tune_vlln',
-                    'tune_llm',
-                    'tune_visual',
-                    'tune_top_llm_layers',
-                    'reproject_vision',
-                    'backbone_trainable_params_fp32',
-                    'state_dropout_prob',
-                    'use_relative_action',
-            ):
-                if key in self.extra_cfg and self.extra_cfg[key] is not None:
-                    setattr(config, key, self.extra_cfg[key])
-            if hasattr(config, 'load_bf16'):
-                config.load_bf16 = bool(self.extra_cfg.get('load_bf16', False))
-            result['auto_config'] = {
-                'status': 'ok',
-                'class': type(config).__name__,
-                'model_type': getattr(config, 'model_type', None),
-                'architectures': getattr(config, 'architectures', None),
-                'model_name': getattr(config, 'model_name', None),
-                'use_flash_attention': getattr(config, 'use_flash_attention',
-                                               None),
-                'load_bf16': getattr(config, 'load_bf16', None),
-            }
-        except Exception as exc:  # pragma: no cover - smoke helper
-            result['auto_config'] = self._compact_exception(exc)
-            return result
-
-        if load_model:
-            AutoModel = getattr(transformers, 'AutoModel')
-            auto_model_ok = False
-
-            try:
-                model_kwargs = {
-                    'config': config,
-                    'local_files_only': local_files_only,
-                    'trust_remote_code': trust_remote_code,
-                    'output_loading_info': True,
-                }
-                if resolved_load_mode == 'native_safe':
-                    model_kwargs.update({
-                        'low_cpu_mem_usage': False,
-                        'device_map': None,
-                        'transformers_loading_kwargs': {
-                            'local_files_only': local_files_only,
-                            'trust_remote_code': trust_remote_code,
-                            'low_cpu_mem_usage': False,
-                            'device_map': None,
-                        },
-                    })
-                model, loading_info = AutoModel.from_pretrained(
-                    self.checkpoint_dir,
-                    **model_kwargs,
-                )
-                model.eval()
-                self.n17_model = model
-                result['auto_model'] = {
-                    'status': 'ok',
-                    'class': type(model).__name__,
-                    'missing_keys': len(loading_info.get('missing_keys', [])),
-                    'unexpected_keys':
-                    len(loading_info.get('unexpected_keys', [])),
-                    'mismatched_keys':
-                    len(loading_info.get('mismatched_keys', [])),
-                }
-                auto_model_ok = True
-            except Exception as exc:  # pragma: no cover - smoke helper
-                result['auto_model'] = self._compact_exception(exc)
-
-            if not auto_model_ok and resolved_load_mode == 'native_safe':
-                try:
-                    Gr00tN1d7 = getattr(
-                        importlib.import_module(
-                            'gr00t.model.gr00t_n1d7.gr00t_n1d7'),
-                        'Gr00tN1d7')
-                    load_sharded_checkpoint = getattr(
-                        importlib.import_module('transformers.trainer_utils'),
-                        'load_sharded_checkpoint')
-                    model = Gr00tN1d7(
-                        config,
-                        transformers_loading_kwargs={
-                            'local_files_only': local_files_only,
-                            'trust_remote_code': trust_remote_code,
-                            'low_cpu_mem_usage': False,
-                            'device_map': None,
-                        },
-                    )
-                    load_result = load_sharded_checkpoint(
-                        model,
-                        str(self.checkpoint_dir),
-                        strict=False,
-                        prefer_safe=True,
-                    )
-                    model.eval()
-                    self.n17_model = model
-                    missing_keys = getattr(load_result, 'missing_keys', [])
-                    unexpected_keys = getattr(load_result, 'unexpected_keys',
-                                              [])
-                    result['manual_model'] = {
-                        'status': 'ok',
-                        'class': type(model).__name__,
-                        'missing_keys': len(missing_keys),
-                        'unexpected_keys': len(unexpected_keys),
-                        'missing_key_sample': list(missing_keys[:5]),
-                        'unexpected_key_sample': list(unexpected_keys[:5]),
-                    }
-                except Exception as exc:  # pragma: no cover - smoke helper
-                    result['manual_model'] = self._compact_exception(exc)
-
-        return result
-
-    def get_embodiment_id(self, embodiment_key: Optional[str] = None) -> int:
-        key = embodiment_key or self.active_embodiment_key
-        if key in self.embodiment_id_map:
-            return int(self.embodiment_id_map[key])
-        if key in N17_DEFAULT_EMBODIMENT_IDS:
-            return N17_DEFAULT_EMBODIMENT_IDS[key]
-        raise KeyError(f'No GR00T N1.7 embodiment id for {key!r}')
-
-    def get_modality_config(self, embodiment_key: Optional[str] = None) -> Dict:
-        key = embodiment_key or self.active_embodiment_key
-        processor_kwargs = self.processor_config.get('processor_kwargs', {})
-        modality_configs = processor_kwargs.get('modality_configs', {})
-        if key in modality_configs:
-            return modality_configs[key]
-        if key in N17_BUILTIN_MODALITY_CONFIGS:
-            return N17_BUILTIN_MODALITY_CONFIGS[key]
-        raise KeyError(f'No GR00T N1.7 modality config for {key!r}')
-
-    def get_statistics(self,
-                       embodiment_key: Optional[str] = None) -> Optional[Dict]:
-        key = embodiment_key or self.active_embodiment_key
-        return self.statistics.get(key)
-
-    def select_embodiment_metadata(
-        self,
-        embodiment_tag: Optional[str] = None,
-        env_name: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        if embodiment_tag is None and env_name is None:
-            key = self.active_embodiment_key
-        else:
-            key = self.resolve_embodiment_key(embodiment_tag, env_name)
-        processor_kwargs = self.processor_config.get('processor_kwargs', {})
-        modality_configs = processor_kwargs.get('modality_configs', {})
-        has_checkpoint_modality = key in modality_configs
-        modality_config = self.get_modality_config(key)
-        statistics = self.get_statistics(key)
-        return {
-            'embodiment_key': key,
-            'embodiment_id': self.get_embodiment_id(key),
-            'modality_config': modality_config,
-            'modality_source':
-            'checkpoint' if has_checkpoint_modality else 'builtin',
-            'has_modality_config': bool(modality_config),
-            'has_statistics': statistics is not None,
-            'statistics': statistics,
-        }
-
-    def _ensure_official_runtime(
-        self,
-        local_files_only: bool = True,
-        trust_remote_code: bool = True,
-    ) -> Dict[str, Any]:
-        """Lazily load the official model runtime."""
-        if self.n17_model is not None:
-            return {
-                'status': 'already_loaded',
-                'checkpoint_dir': str(self.checkpoint_dir),
-            }
-        return self.official_load_probe(
-            load_model=True,
-            local_files_only=local_files_only,
-            trust_remote_code=trust_remote_code,
-        )
 
     def _ensure_native_action_codec(self):
         """Build the metadata-only codec used by the split eval path."""
@@ -760,27 +401,17 @@ class GrootN17VLA(LlavaVLA):
                 state_dict[lm_head_key] = state_dict[embed_key]
         return state_dict
 
-    def _native_runtime_modules(self):
-        backbone = (
-            self.vlm_backbone
-            if self.vlm_backbone is not None else self.n17_backbone)
-        action_head = (
-            self.vla_head
-            if self.vla_head is not None else self.n17_action_head)
-        return backbone, action_head
-
     def _ensure_native_runtime(
         self,
         local_files_only: bool = True,
         trust_remote_code: bool = True,
     ) -> Dict[str, Any]:
         """Load the FluxVLA-native backbone and action head."""
-        backbone, action_head = self._native_runtime_modules()
+        backbone, action_head = self.vlm_backbone, self.vla_head
         if backbone is not None and action_head is not None:
             return {
                 'status': 'already_loaded',
                 'checkpoint_dir': str(self.checkpoint_dir),
-                'assembly_runtime': 'native',
                 'all_module_keys': list(self.all_module_keys or []),
             }
         if self.checkpoint_dir is None:
@@ -788,109 +419,66 @@ class GrootN17VLA(LlavaVLA):
         self._apply_qwen3_runtime(patch_gr00t_backbone=False)
 
         config = self._native_n17_config()
-        backbone_attr = 'n17_backbone'
-        if self._native_vlm_backbone_cfg is not None:
-            backbone_attr = 'vlm_backbone'
-            backbone = build_vlm_backbone_from_cfg(
-                copy.deepcopy(self._native_vlm_backbone_cfg),
-                default_args={
-                    'model_name':
-                    self.effective_backbone_model_name,
-                    'tune_llm':
-                    config.tune_llm,
-                    'tune_visual':
-                    config.tune_visual,
-                    'select_layer':
-                    config.select_layer,
-                    'reproject_vision':
-                    config.reproject_vision,
-                    'use_flash_attention':
-                    config.use_flash_attention,
-                    'load_bf16':
-                    False,
-                    'tune_top_llm_layers':
-                    config.tune_top_llm_layers,
-                    'trainable_params_fp32':
-                    config.backbone_trainable_params_fp32,
-                    'transformers_loading_kwargs': {
-                        'local_files_only': local_files_only,
-                        'trust_remote_code': trust_remote_code,
-                    },
-                    'qwen3_runtime':
-                    self.qwen3_runtime,
-                })
-        else:
-            backbones = importlib.import_module(
-                'fluxvla.models.backbones.vlms.groot_n17_qwen3_backbone')
-            GrootN17Qwen3Backbone = getattr(backbones, 'GrootN17Qwen3Backbone')
-            backbone = GrootN17Qwen3Backbone(
-                model_name=self.effective_backbone_model_name,
-                tune_llm=config.tune_llm,
-                tune_visual=config.tune_visual,
-                select_layer=config.select_layer,
-                reproject_vision=config.reproject_vision,
-                use_flash_attention=config.use_flash_attention,
-                load_bf16=False,
-                tune_top_llm_layers=config.tune_top_llm_layers,
-                trainable_params_fp32=config.backbone_trainable_params_fp32,
-                transformers_loading_kwargs={
+        backbone = build_vlm_backbone_from_cfg(
+            copy.deepcopy(self._native_vlm_backbone_cfg),
+            default_args={
+                'model_name':
+                self.effective_backbone_model_name,
+                'tune_llm':
+                config.tune_llm,
+                'tune_visual':
+                config.tune_visual,
+                'select_layer':
+                config.select_layer,
+                'reproject_vision':
+                config.reproject_vision,
+                'use_flash_attention':
+                config.use_flash_attention,
+                'load_bf16':
+                False,
+                'tune_top_llm_layers':
+                config.tune_top_llm_layers,
+                'trainable_params_fp32':
+                config.backbone_trainable_params_fp32,
+                'transformers_loading_kwargs': {
                     'local_files_only': local_files_only,
                     'trust_remote_code': trust_remote_code,
                 },
-                qwen3_runtime=self.qwen3_runtime,
-            )
+                'qwen3_runtime':
+                self.qwen3_runtime,
+            })
         backbone_load = backbone.load_state_dict(
             self._load_prefixed_state_dict('backbone.'),
             strict=True,
         )
         backbone.eval()
 
-        action_head_attr = 'n17_action_head'
-        if self._native_vla_head_cfg is not None:
-            action_head_attr = 'vla_head'
-            action_head = build_head_from_cfg(
-                copy.deepcopy(self._native_vla_head_cfg),
-                default_args={'config': config})
-        else:
-            heads = importlib.import_module(
-                'fluxvla.models.heads.groot_n17_action_head')
-            GrootN17ActionHead = getattr(heads, 'GrootN17ActionHead')
-            action_head = GrootN17ActionHead(config)
+        action_head = build_head_from_cfg(
+            copy.deepcopy(self._native_vla_head_cfg),
+            default_args={'config': config})
         action_head_load = action_head.load_state_dict(
             self._load_prefixed_state_dict('action_head.'),
             strict=True,
         )
         action_head.eval()
 
-        if backbone_attr == 'vlm_backbone':
-            self.vlm_backbone = backbone
-            self.n17_backbone = None
-        else:
-            self.n17_backbone = backbone
-            self.vlm_backbone = None
-        if action_head_attr == 'vla_head':
-            self.vla_head = action_head
-            self.n17_action_head = None
-        else:
-            self.n17_action_head = action_head
-            self.vla_head = None
-        self.all_module_keys = [backbone_attr, action_head_attr]
+        self.vlm_backbone = backbone
+        self.vla_head = action_head
         return {
             'status': 'ok',
             'checkpoint_dir': str(self.checkpoint_dir),
-            'assembly_runtime': 'native',
             'all_module_keys': list(self.all_module_keys),
             'qwen3_runtime': self.qwen3_runtime,
             'qwen3_runtime_summary': self.qwen3_runtime_summary,
             'native_backbone': {
                 'class': type(backbone).__name__,
-                'attr': backbone_attr,
+                'attr': 'vlm_backbone',
                 'missing_keys': list(backbone_load.missing_keys),
                 'unexpected_keys': list(backbone_load.unexpected_keys),
             },
             'native_action_head': {
                 'class': type(action_head).__name__,
-                'attr': action_head_attr,
+                'attr': 'vla_head',
                 'missing_keys': list(action_head_load.missing_keys),
                 'unexpected_keys': list(action_head_load.unexpected_keys),
             },
@@ -924,9 +512,9 @@ class GrootN17VLA(LlavaVLA):
         self,
         inputs: Dict[str, Any],
         mode: str = 'loss',
-        options: Optional[Dict[str, Any]] = None,
+        seed: Optional[int] = None,
     ) -> Dict[str, torch.Tensor]:
-        backbone, action_head = self._native_runtime_modules()
+        backbone, action_head = self.vlm_backbone, self.vla_head
         if backbone is None or action_head is None:
             raise RuntimeError('Native N1.7 runtime is not loaded.')
         device = next(iter(action_head.parameters())).device
@@ -946,31 +534,22 @@ class GrootN17VLA(LlavaVLA):
                 sample_weight=action_inputs.get('sample_weight'),
             )
         if mode == 'action':
-            prev_actions = (
-                action_inputs['action'] if 'action' in action_inputs else None)
             return action_head.get_action(
                 input_features=backbone_outputs.backbone_features,
                 states=action_inputs['state'],
                 attention_mask=backbone_outputs.backbone_attention_mask,
                 embodiment_ids=action_inputs['embodiment_id'],
                 image_mask=backbone_outputs.image_mask,
-                prev_actions=prev_actions,
-                options=options,
+                seed=seed,
             )
         raise ValueError(f'Unsupported native backbone/head mode: {mode!r}')
-
-    def native_get_action(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        return self._run_native_backbone_head(inputs, mode='action')
-
-    def native_forward(self, inputs: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        return self._run_native_backbone_head(inputs, mode='loss')
 
     def _prepare_native_eval_runtime(
         self,
         dtype: str,
     ) -> tuple[torch.device, torch.dtype]:
         self._ensure_native_runtime()
-        backbone, action_head = self._native_runtime_modules()
+        backbone, action_head = self.vlm_backbone, self.vla_head
         if backbone is None or action_head is None:
             raise RuntimeError('Failed to load native N1.7 runtime.')
         target_device = self._resolve_runtime_device()
@@ -1075,12 +654,9 @@ class GrootN17VLA(LlavaVLA):
         dtype: str = 'bfloat16',
         raw_state: Optional[Dict[str, Any]] = None,
         embodiment_key: Optional[str] = None,
+        seed: Optional[int] = None,
     ) -> torch.Tensor:
         """Run N1.7 inference from split tensor inputs and decode actions."""
-        if self.assembly_runtime != 'native':
-            raise NotImplementedError(
-                'Split N1.7 predict_action is only supported for native '
-                f'assembly_runtime, got {self.assembly_runtime!r}.')
         self._prepare_native_eval_runtime(dtype)
         model_inputs = {
             key: value
@@ -1097,7 +673,9 @@ class GrootN17VLA(LlavaVLA):
         model_inputs = self._normalize_split_predict_inputs(model_inputs)
         with torch.inference_mode():
             model_pred = self._run_native_backbone_head(
-                model_inputs, mode='action')
+                model_inputs,
+                mode='action',
+                seed=seed)
         normalized_action = model_pred['action_pred'].float().cpu().numpy()
         return self._decode_n17_action_to_env_tensor(
             normalized_action,
@@ -1105,16 +683,10 @@ class GrootN17VLA(LlavaVLA):
             raw_state=raw_state)
 
     def freeze_backbones(self) -> None:
-        """Freeze native N1.7 backbone modules when they are loaded."""
-        backbone, _ = self._native_runtime_modules()
-        if backbone is not None:
-            backbone.requires_grad_(False)
-            backbone.eval()
-        elif self.n17_model is not None:
-            self.n17_model.backbone.requires_grad_(False)
-            self.n17_model.backbone.eval()
-        else:
-            overwatch.info('GrootN17VLA runtime is not loaded yet.')
+        """Apply generic freezing and keep the frozen N1.7 backbone in eval."""
+        super().freeze_backbones()
+        if self.vlm_backbone is not None and self.freeze_vlm_backbone:
+            self.vlm_backbone.eval()
 
     @staticmethod
     def _module_has_trainable_parameters(module: Optional[nn.Module]) -> bool:
@@ -1124,20 +696,17 @@ class GrootN17VLA(LlavaVLA):
     def from_pretrained(self):
         """Runner-facing loader hook.
 
-        Checkpoint loading is handled by the native/official runtime loaders
-        because N1.7 checkpoints are sharded safetensors with nested prefixes.
+        Native module construction adapts the official sharded source weights;
+        runner checkpoints are handled separately by ``load_state_dict``.
         """
-        if self.assembly_runtime == 'native':
-            self._ensure_native_runtime()
-            self.freeze_backbones()
-        else:
-            self._ensure_official_runtime()
+        self._ensure_native_runtime()
+        self.freeze_backbones()
         return self
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return FSDP wrapping policy for loaded native N1.7 modules."""
         policies = []
-        backbone, action_head = self._native_runtime_modules()
+        backbone, action_head = self.vlm_backbone, self.vla_head
         if (self._module_has_trainable_parameters(backbone)
                 and hasattr(backbone, 'get_fsdp_wrapping_policy')):
             policies.append(backbone.get_fsdp_wrapping_policy())
@@ -1171,27 +740,15 @@ class GrootN17VLA(LlavaVLA):
 
     def _remap_native_state_dict_keys(self, state_dict):
         """Support old N1.7 checkpoint prefixes after config-visible modules."""
-        backbone, action_head = self._native_runtime_modules()
-        if backbone is not None:
-            if self.vlm_backbone is backbone:
-                state_dict = self._remap_state_prefix_if_needed(
-                    state_dict, 'n17_backbone.', 'vlm_backbone.')
-            elif self.n17_backbone is backbone:
-                state_dict = self._remap_state_prefix_if_needed(
-                    state_dict, 'vlm_backbone.', 'n17_backbone.')
-        if action_head is not None:
-            if self.vla_head is action_head:
-                state_dict = self._remap_state_prefix_if_needed(
-                    state_dict, 'n17_action_head.', 'vla_head.')
-            elif self.n17_action_head is action_head:
-                state_dict = self._remap_state_prefix_if_needed(
-                    state_dict, 'vla_head.', 'n17_action_head.')
+        state_dict = self._remap_state_prefix_if_needed(
+            state_dict, 'n17_backbone.', 'vlm_backbone.')
+        state_dict = self._remap_state_prefix_if_needed(
+            state_dict, 'n17_action_head.', 'vla_head.')
         return state_dict
 
     def load_state_dict(self, state_dict, strict: bool = True):
-        if self.assembly_runtime == 'native':
-            self._ensure_native_runtime()
-            state_dict = self._remap_native_state_dict_keys(state_dict)
+        self._ensure_native_runtime()
+        state_dict = self._remap_native_state_dict_keys(state_dict)
         return super().load_state_dict(state_dict, strict=strict)
 
     @staticmethod
@@ -1229,7 +786,7 @@ class GrootN17VLA(LlavaVLA):
         inputs: Dict[str, Any],
     ) -> tuple[torch.nn.Module, torch.nn.Module, torch.device, torch.dtype]:
         self._ensure_native_runtime()
-        backbone, action_head = self._native_runtime_modules()
+        backbone, action_head = self.vlm_backbone, self.vla_head
         if backbone is None or action_head is None:
             raise RuntimeError('Failed to load native N1.7 runtime.')
         target_device = self._resolve_runtime_device()
@@ -1240,30 +797,10 @@ class GrootN17VLA(LlavaVLA):
             action_head.to(device=target_device, dtype=dtype)
         return backbone, action_head, target_device, dtype
 
-    def _prepare_official_forward_model(
-        self,
-        inputs: Dict[str, Any],
-    ) -> tuple[torch.nn.Module, torch.device, torch.dtype]:
-        self._ensure_official_runtime()
-        if self.n17_model is None:
-            raise RuntimeError('Failed to load official N1.7 runtime.')
-        target_device = self._resolve_runtime_device()
-        dtype = self._infer_batch_dtype(inputs)
-        self.n17_model.to(device=target_device, dtype=dtype)
-        self.n17_model.eval()
-        return self.n17_model, target_device, dtype
-
     def forward(self, *args, **kwargs):
         inputs = self._extract_forward_inputs(args, kwargs)
-
-        if self.assembly_runtime == 'native':
-            self._prepare_native_forward_modules(inputs)
-            return self.native_forward(inputs)
-
-        n17_model, target_device, dtype = self._prepare_official_forward_model(
-            inputs)
-        moved = self._move_batch_to_device_dtype(inputs, target_device, dtype)
-        return n17_model(moved)
+        self._prepare_native_forward_modules(inputs)
+        return self._run_native_backbone_head(inputs, mode='loss')
 
     def predict_action(self, **batch):
         inputs = self._extract_predict_inputs(batch)
@@ -1274,6 +811,7 @@ class GrootN17VLA(LlavaVLA):
                 raw_state=batch.get('n17_raw_state', batch.get('raw_state')),
                 embodiment_key=batch.get('n17_embodiment_key',
                                          batch.get('embodiment_key')),
+                seed=batch.get('seed'),
             )
         raise NotImplementedError(
             'GrootN17VLA.predict_action expects split tensor inputs containing '
