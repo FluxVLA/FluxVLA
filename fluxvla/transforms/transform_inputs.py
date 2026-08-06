@@ -29,39 +29,15 @@ from fluxvla.engines.utils.eval_utils import crop_and_resize, quat2axisangle
 from .transform_images import (_resize_hwc_lanczos3_numpy,
                                _resize_hwc_lanczos3_tensorflow)
 from .modality_state_action import (
-    EMBODIMENT_TAG_TO_PROJECTOR_INDEX, ModalityStateActionCodec,
-    load_groot_n17_metadata)
+    ModalityStateActionCodec, resolve_groot_n17_flat_slices,
+    resolve_groot_n17_metadata)
 from .utils import pad_to_dim, parse_image
-
-
-N17_EMBODIMENT_ALIASES = {
-    'ROBOCASA_GR1_TABLETOP': 'robocasa_gr1_tabletop',
-    'robocasa_gr1_tabletop': 'robocasa_gr1_tabletop',
-    'gr1_unified': 'robocasa_gr1_tabletop',
-    'LIBERO_PANDA': 'libero_sim',
-    'libero_sim': 'libero_sim',
-}
-
-ROBOCASA_GR1_FLUXVLA_SLICES = {
-    'left_arm': (0, 7),
-    'left_hand': (7, 13),
-    'right_arm': (13, 20),
-    'right_hand': (20, 26),
-    'waist': (26, 29),
-}
 
 
 def _to_numpy(value: Any) -> np.ndarray:
     if torch.is_tensor(value):
         return value.detach().cpu().numpy()
     return np.asarray(value)
-
-
-def _stat_dim(stats: Dict[str, Any]) -> int:
-    for key in ('mean', 'std', 'min', 'max', 'q01', 'q99'):
-        if key in stats:
-            return int(np.asarray(stats[key]).shape[-1])
-    raise KeyError(f'Cannot infer dimension from stats fields: {sorted(stats)}')
 
 
 @TRANSFORMS.register_module()
@@ -263,7 +239,7 @@ class BuildModalityStateActionTargets:
     def __init__(
         self,
         processor_path: str,
-        embodiment_tag: str = 'ROBOCASA_GR1_TABLETOP',
+        embodiment_tag: str = 'LIBERO_PANDA',
         state_key: str = 'states',
         action_key: str = 'actions',
         action_mask_key: str = 'action_masks',
@@ -276,9 +252,6 @@ class BuildModalityStateActionTargets:
         output_embodiment_id_key: str = 'embodiment_id',
     ):
         self.processor_path = processor_path
-        self.embodiment_key = N17_EMBODIMENT_ALIASES.get(
-            embodiment_tag, N17_EMBODIMENT_ALIASES.get(
-                str(embodiment_tag).lower(), str(embodiment_tag).lower()))
         self.state_key = state_key
         self.action_key = action_key
         self.action_mask_key = action_mask_key
@@ -289,11 +262,15 @@ class BuildModalityStateActionTargets:
         self.output_embodiment_id_key = output_embodiment_id_key
         self.training = train_mode
 
-        processor_kwargs = load_groot_n17_metadata(
-            processor_path, **dict(processor_kwargs or {}))
+        metadata = resolve_groot_n17_metadata(
+            processor_path,
+            embodiment_tag=embodiment_tag,
+            **dict(processor_kwargs or {}))
+        processor_kwargs = metadata['processor_kwargs']
+        self.embodiment_key = metadata['embodiment_key']
         self.modality_configs = processor_kwargs['modality_configs']
-        self.modality_config = self.modality_configs[self.embodiment_key]
-        self.statistics = processor_kwargs['statistics'][self.embodiment_key]
+        self.modality_config = metadata['modality_config']
+        self.statistics = metadata['statistics']
         self.max_state_dim = processor_kwargs.get('max_state_dim', 29)
         self.max_action_dim = processor_kwargs.get('max_action_dim', 29)
         self.max_action_horizon = processor_kwargs.get(
@@ -301,11 +278,7 @@ class BuildModalityStateActionTargets:
         self.exclude_state = processor_kwargs.get('exclude_state', False)
         self.state_dropout_prob = processor_kwargs.get(
             'state_dropout_prob', 0.0)
-        self.embodiment_id_mapping = dict(
-            processor_kwargs.get('embodiment_id_mapping')
-            or EMBODIMENT_TAG_TO_PROJECTOR_INDEX)
-        for key, value in EMBODIMENT_TAG_TO_PROJECTOR_INDEX.items():
-            self.embodiment_id_mapping.setdefault(key, value)
+        self.embodiment_id = metadata['embodiment_id']
         self.state_action_processor = ModalityStateActionCodec(
             modality_configs=self.modality_configs,
             statistics=processor_kwargs.get('statistics'),
@@ -321,18 +294,12 @@ class BuildModalityStateActionTargets:
             self.state_action_processor.eval()
 
     def _flat_slices(self, modality: str) -> Dict[str, tuple[int, int]]:
-        keys = self.modality_config[modality]['modality_keys']
-        if (self.flat_layout in ('auto', 'robocasa_gr1_fluxvla')
-                and self.embodiment_key == 'robocasa_gr1_tabletop'):
-            return {key: ROBOCASA_GR1_FLUXVLA_SLICES[key] for key in keys}
-
-        start = 0
-        slices = {}
-        for key in keys:
-            dim = _stat_dim(self.statistics[modality][key])
-            slices[key] = (start, start + dim)
-            start += dim
-        return slices
+        return resolve_groot_n17_flat_slices(
+            self.modality_config,
+            self.statistics,
+            self.embodiment_key,
+            modality,
+            self.flat_layout)
 
     def _split_flat(self, value: Any, modality: str) -> Dict[str, np.ndarray]:
         if isinstance(value, dict):
@@ -441,8 +408,7 @@ class BuildModalityStateActionTargets:
                 torch.get_default_dtype())
         if action_mask is not None:
             outputs[self.output_action_mask_key] = action_mask
-        outputs[self.output_embodiment_id_key] = self.embodiment_id_mapping[
-            self.embodiment_key]
+        outputs[self.output_embodiment_id_key] = self.embodiment_id
         self._apply_external_action_mask(outputs, sample)
         return outputs
 
