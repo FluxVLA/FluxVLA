@@ -14,6 +14,8 @@
 #
 # FastWAM world-action model (uncond) trained on all LIBERO suites.
 
+seed = 42
+
 _ckpt_root = './checkpoints'
 _tokenizer = _ckpt_root + '/fastwam_base_full/tokenizer'
 _text_prompt_template = (
@@ -26,10 +28,10 @@ _frame_sample_stride = 4
 
 # Train jointly on every no-noops LIBERO suite.
 _data_root_paths = [
-    'datasets/libero_10_no_noops_lerobotv2.1',
-    'datasets/libero_goal_no_noops_lerobotv2.1',
-    'datasets/libero_object_no_noops_lerobotv2.1',
     'datasets/libero_spatial_no_noops_lerobotv2.1',
+    'datasets/libero_object_no_noops_lerobotv2.1',
+    'datasets/libero_goal_no_noops_lerobotv2.1',
+    'datasets/libero_10_no_noops_lerobotv2.1',
 ]
 _statistic_name = 'libero_all_no_noops'
 
@@ -197,6 +199,7 @@ eval_dataset = None
 runner = dict(
     type='DDPTrainRunner',
     max_epochs=10,
+    max_keep_ckpts=5,
     optimizer=dict(lr=1e-4, type='AdamW', weight_decay=1e-2),
     max_grad_norm=1.0,
     collator=dict(
@@ -224,7 +227,7 @@ runner = dict(
     lr_scheduler=dict(
         type='linear-warmup+cosine-decay-min-lr',
         warmup_ratio=0.05,
-        min_lr_ratio=0.01,
+        min_lr_ratio=0.05,
         betas=(0.9, 0.95),
         weight_decay_style='uniform',
     ),
@@ -248,10 +251,10 @@ eval = dict(
     runner=dict(
         type='LiberoEvalRunner',
         task_suite_name=[
-            'libero_10',
-            'libero_goal',
-            'libero_object',
             'libero_spatial',
+            'libero_object',
+            'libero_goal',
+            'libero_10',
         ],
         model_family='fastwam',
         task_ids=None,
@@ -261,7 +264,12 @@ eval = dict(
         eval_shard_strategy='task',
         preprocess_every_step=False,
         num_inference_steps=10,
-        max_steps=700,
+        max_steps=dict(
+            libero_10=700,
+            libero_goal=400,
+            libero_object=400,
+            libero_spatial=400,
+        ),
         inference_seed=42,
         resize_size=224,
         num_trials_per_task=50,
