@@ -231,7 +231,7 @@ def create_server(
             batch['unnorm_key'] = unnorm_key
 
         t0 = time.perf_counter()
-        with torch.inference_mode(), torch.autocast(
+        with torch.no_grad(), torch.autocast(
                 'cuda', dtype=mixed_precision_dtype, enabled=True):
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):

@@ -26,5 +26,4 @@ import_optional_symbols(
         'xvla_head': ['XVLAFlowMatchingHead'],
         'dreamzero_head': ['DreamZeroHead'],
     },
-    optional_missing_names=['triton'],
 )
