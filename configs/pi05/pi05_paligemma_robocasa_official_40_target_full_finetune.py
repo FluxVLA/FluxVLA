@@ -23,8 +23,8 @@ and larger sample budget are transferred. The optimizer schedule follows the
 RLinf/OpenPI values, while parameter and Adam state precision intentionally
 retain the historical FluxVLA BF16 behavior.
 
-Expected topology: 2 nodes x 8 A800-80GB GPUs. The effective batch is
-``4 samples/GPU * 16 GPUs * 4 micro-batches = 256``. For a different world
+Expected topology: 4 nodes x 8 A800-80GB GPUs. The effective batch is
+``4 samples/GPU * 32 GPUs * 2 micro-batches = 256``. For a different world
 size, set ``runner.grad_accumulation_steps = 256 // (4 * world_size)``.
 """
 
@@ -35,7 +35,7 @@ runner = dict(
     # the full-data stage behind the strongest measured 31.58% lineage and
     # four times the intended 6c recipe's 6.4M-sample budget.
     max_steps=100000,
-    grad_accumulation_steps=4,
+    grad_accumulation_steps=2,
     optimizer=dict(
         _delete_=True,
         type='AdamW',
@@ -44,6 +44,11 @@ runner = dict(
         eps=1e-8,
         weight_decay=1e-10,
         weight_decay_all_params=True,
+        # PyTorch otherwise auto-selects the foreach CUDA path, whose first
+        # step needs roughly one additional model-sized tensor list. The
+        # fused kernel keeps the same AdamW state while avoiding that peak.
+        foreach=False,
+        fused=True,
     ),
     lr_scheduler=dict(
         _delete_=True,
@@ -59,6 +64,10 @@ runner = dict(
     sharding_strategy='no-shard',
     master_weight_dtype='bf16',
     fsdp_param_dtype='bf16',
+    # Before the RLinf runner refactor, NO_SHARD always reduced gradients and
+    # stored FSDP buffers in BF16. Override the new FP32 default explicitly so
+    # this recipe retains the historical NO_SHARD BF16 memory behavior.
+    reduce_in_full_precision=False,
 )
 
 # Inherit the sheet-comparable formal protocol unchanged: 24 tasks x 50
