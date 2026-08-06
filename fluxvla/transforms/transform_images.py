@@ -206,10 +206,12 @@ class ResizeImages:
             else:
                 image = image.to(torch.float32)
             return self.torchvision_resize(image).cpu().numpy()
+        elif self.backend == 'cv2':
+            return cv2.resize(
+                image.transpose(1, 2, 0), (self.width, self.height),
+                interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)
 
-        return cv2.resize(
-            image.transpose(1, 2, 0), (self.width, self.height),
-            interpolation=cv2.INTER_LINEAR).transpose(2, 0, 1)
+        raise ValueError(f'Unsupported resize backend: {self.backend}')
 
     def _resize_preserve_leading_dims(self, images: np.ndarray) -> np.ndarray:
         original_shape = images.shape
