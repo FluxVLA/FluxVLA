@@ -1,6 +1,16 @@
 # Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """FluxVLA-native GR00T N1.7 action head."""
 
 from __future__ import annotations
@@ -8,7 +18,7 @@ from __future__ import annotations
 from functools import partial
 import logging
 from types import SimpleNamespace
-from typing import Any, Callable
+from typing import Callable
 
 import torch
 from torch import nn
@@ -111,6 +121,20 @@ class GrootN17ActionHead(nn.Module):
             config.tune_projector,
             config.tune_diffusion_model,
             config.tune_vlln,
+        )
+
+    @staticmethod
+    def _sample_initial_actions(size, dtype, device,
+                                seed: int | None = None):
+        generator = None
+        if seed is not None:
+            generator = torch.Generator(device=device)
+            generator.manual_seed(int(seed))
+        return torch.randn(
+            size=size,
+            dtype=dtype,
+            device=device,
+            generator=generator,
         )
 
     def get_fsdp_wrapping_policy(self) -> Callable:
@@ -277,45 +301,18 @@ class GrootN17ActionHead(nn.Module):
         embodiment_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         image_mask: torch.Tensor | None = None,
-        prev_actions: torch.Tensor | None = None,
-        options: dict[str, Any] | None = None,
+        seed: int | None = None,
     ) -> dict[str, torch.Tensor]:
         vl_embeds = backbone_features
         batch_size = vl_embeds.shape[0]
         device = vl_embeds.device
-        actions = torch.randn(
+        actions = self._sample_initial_actions(
             size=(batch_size, self.config.action_horizon, self.action_dim),
             dtype=vl_embeds.dtype,
             device=device,
+            seed=seed,
         )
         dt = 1.0 / self.num_inference_timesteps
-        vel_strength = torch.ones_like(actions)
-
-        if prev_actions is not None:
-            assert options is not None, 'options is not None'
-            assert 'action_horizon' in options, 'action_horizon is not in options'
-            assert 'rtc_overlap_steps' in options, 'rtc_overlap_steps is not in options'
-            assert 'rtc_frozen_steps' in options, 'rtc_frozen_steps is not in options'
-            assert 'rtc_ramp_rate' in options, 'rtc_ramp_rate is not in options'
-            action_horizon_before_padding = options['action_horizon']
-            actions[:, :options['rtc_overlap_steps'], :] = prev_actions[
-                :,
-                action_horizon_before_padding
-                - options['rtc_overlap_steps']:action_horizon_before_padding,
-                :,
-            ]
-            vel_strength[:, :options['rtc_frozen_steps'], :] = 0.0
-            intermediate_steps = (
-                options['rtc_overlap_steps'] - options['rtc_frozen_steps'])
-            t = torch.linspace(0.0, 1.0, intermediate_steps + 2, device=device)
-            ramp = 1 - torch.exp(-options['rtc_ramp_rate'] * t)
-            ramp = ramp / ramp[-1].clamp_min(1e-8)
-            ramp = ramp[1:-1]
-            vel_strength[
-                :,
-                options['rtc_frozen_steps']:options['rtc_overlap_steps'],
-                :,
-            ] = ramp[None, :, None].to(device)
 
         for t in range(self.num_inference_timesteps):
             t_cont = t / float(self.num_inference_timesteps)
@@ -349,7 +346,7 @@ class GrootN17ActionHead(nn.Module):
                 )
             pred = self.action_decoder(model_output, embodiment_ids)
             pred_velocity = pred[:, -self.action_horizon:]
-            actions = actions + dt * pred_velocity * vel_strength
+            actions = actions + dt * pred_velocity
 
         return {
             'action_pred': actions,
@@ -365,8 +362,7 @@ class GrootN17ActionHead(nn.Module):
         attention_mask: torch.Tensor,
         embodiment_ids: torch.Tensor,
         image_mask: torch.Tensor | None = None,
-        prev_actions: torch.Tensor | None = None,
-        options: dict[str, Any] | None = None,
+        seed: int | None = None,
     ) -> dict[str, torch.Tensor]:
         vl_embeds, state_features = self.encode_features(
             input_features, states, embodiment_ids)
@@ -376,8 +372,7 @@ class GrootN17ActionHead(nn.Module):
             embodiment_ids=embodiment_ids,
             attention_mask=attention_mask,
             image_mask=image_mask,
-            prev_actions=prev_actions,
-            options=options,
+            seed=seed,
         )
 
     @torch.no_grad()
@@ -387,20 +382,15 @@ class GrootN17ActionHead(nn.Module):
         states: torch.Tensor,
         attention_mask: torch.Tensor,
         embodiment_ids: torch.Tensor,
-        prev_actions: torch.Tensor | None = None,
         prefix_len: int = 0,
-        rtc_config: dict[str, Any] | None = None,
         image_mask: torch.Tensor | None = None,
-        options: dict[str, Any] | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        del prefix_len, rtc_config, kwargs
+        del prefix_len, kwargs
         return self.get_action(
             input_features=input_features,
             states=states,
             attention_mask=attention_mask,
             embodiment_ids=embodiment_ids,
             image_mask=image_mask,
-            prev_actions=prev_actions,
-            options=options,
         )['action_pred']

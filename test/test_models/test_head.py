@@ -17,6 +17,38 @@ import unittest
 import torch
 
 
+class TestGrootN17ActionNoise(unittest.TestCase):
+
+    @staticmethod
+    def _sample(seed):
+        from fluxvla.models.heads.groot_n17_action_head import \
+            GrootN17ActionHead
+        return GrootN17ActionHead._sample_initial_actions(
+            size=(1, 16, 32),
+            dtype=torch.float32,
+            device=torch.device('cpu'),
+            seed=seed,
+        )
+
+    def test_seeded_noise_is_reproducible_and_distinct(self):
+        first = self._sample(7)
+        second = self._sample(7)
+        different = self._sample(42)
+
+        torch.testing.assert_close(first, second, rtol=0, atol=0)
+        self.assertFalse(torch.equal(first, different))
+
+    def test_seeded_noise_does_not_advance_global_rng(self):
+        torch.manual_seed(123)
+        expected = torch.randn(8)
+
+        torch.manual_seed(123)
+        self._sample(7)
+        actual = torch.randn(8)
+
+        torch.testing.assert_close(expected, actual, rtol=0, atol=0)
+
+
 # ===================================================================
 # DreamZeroHead – tiny DiT forward & predict_action
 # ===================================================================
