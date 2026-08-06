@@ -119,7 +119,7 @@ class DenormalizeLiberoAction:
     """
 
     def __init__(self,
-                 norm_stats: str = None,
+                 norm_stats: str,
                  action_dim: int = None,
                  norm_type: str = 'mean_std',
                  strict: bool = False,
@@ -154,12 +154,12 @@ class DenormalizeLiberoAction:
             data (Dict): The data to be denormalized, which should
                 contain keys that match the keys in `norm_stats`.
         """
-        action = data.get('action', None)
-        assert action is not None, \
-            f'Action is not found in the data: {data.keys()}'
         if self.norm_stats is not None and self.denorm_action:
             norm_stats_key = data.get('norm_stats_key')
             norm_stats = self.norm_stats[norm_stats_key]
+            action = data.get('action', None)
+            assert action is not None, \
+                f'Action is not found in the data: {data.keys()}'
             if self.norm_type == 'quantile':
                 action = self._denormalize_quantile(action,
                                                     norm_stats['action'])
@@ -238,6 +238,33 @@ class DenormalizeLiberoAction:
             action_low,
             normalized_action,
         )
+        return action
+
+
+@TRANSFORMS.register_module()
+class PostprocessLiberoAction:
+    """Apply LIBERO gripper conventions to an env-scale action."""
+
+    eval_context_keys = ()
+
+    def __init__(self,
+                 action_dim: int = None,
+                 normalize_gripper: bool = True,
+                 invert_gripper: bool = True):
+        self.action_dim = action_dim
+        self.normalize_gripper = normalize_gripper
+        self.invert_gripper = invert_gripper
+
+    def __call__(self, data: Dict) -> np.ndarray:
+        action = data.get('action')
+        assert action is not None, \
+            f'Action is not found in the data: {data.keys()}'
+        if self.normalize_gripper:
+            action = normalize_gripper_action(action, binarize=True)
+        if self.invert_gripper:
+            action = invert_gripper_action(action)
+        if self.action_dim is not None:
+            action = action[:self.action_dim]
         return action
 
 
