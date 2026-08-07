@@ -282,6 +282,25 @@ class Cosmos25Backbone(nn.Module):
         for module in (self.transformer, self.text_encoder, self.vae):
             self._enable_module_gradient_checkpointing(module)
 
+    def get_fsdp_ignored_modules(self) -> list[nn.Module]:
+        """Return fully frozen modules that should remain replicated.
+
+        DiT4DiT's source ZeRO-2 recipe keeps the frozen text encoder and VAE
+        resident on every rank. Letting the size-based FSDP policy recurse
+        through them creates hundreds of unnecessary all-gathers, and casting
+        them to FP32 doubles their resident memory without optimizer benefit.
+        """
+        ignored = []
+        seen = set()
+        for module in self._iter_frozen_submodules():
+            params = tuple(module.parameters())
+            if not params or any(param.requires_grad for param in params):
+                continue
+            if id(module) not in seen:
+                ignored.append(module)
+                seen.add(id(module))
+        return ignored
+
     def get_fsdp_wrapping_policy(self):
         from functools import partial
 
@@ -617,7 +636,20 @@ class Cosmos25Backbone(nn.Module):
                                  f'got {tuple(input_ids.shape)}.')
 
         input_ids = input_ids.to(device=device, dtype=torch.long)
-        outputs = self.text_encoder(input_ids, output_hidden_states=True)
+        # ``ForConditionalGeneration.forward`` also projects all 512 tokens to
+        # the 152k-word vocabulary and builds a KV cache. Neither is consumed
+        # by Cosmos; calling its base model gives identical hidden states while
+        # avoiding that substantial frozen-language-model work.
+        text_model = getattr(self.text_encoder, 'model', None)
+        if isinstance(text_model, nn.Module):
+            outputs = text_model(
+                input_ids=input_ids,
+                output_hidden_states=True,
+                use_cache=False,
+                return_dict=True,
+            )
+        else:
+            outputs = self.text_encoder(input_ids, output_hidden_states=True)
         hidden_states = outputs.hidden_states
         normalized = []
         for layer_idx in range(1, len(hidden_states)):
@@ -1038,14 +1070,21 @@ class Cosmos25Backbone(nn.Module):
                 transformer_dtype) * cond_timestep.to(transformer_dtype) + (
                     1.0 - cond_indicator.to(transformer_dtype)) * sigma
 
-            model_out = self.transformer(
-                hidden_states=in_latents,
-                condition_mask=cond_mask_t,
-                timestep=in_timestep,
-                encoder_hidden_states=prompt_embeds,
-                padding_mask=padding_mask,
-                return_dict=False,
-            )[0]
+            # The selected feature is intentionally detached in the source
+            # recipe. Do not build an autograd/checkpoint graph for this first
+            # Cosmos pass; the separate flow-matching pass below carries the
+            # trainable video loss.
+            capture_requires_grad = (
+                torch.is_grad_enabled() and not self.detach_hidden_states)
+            with torch.set_grad_enabled(capture_requires_grad):
+                model_out = self.transformer(
+                    hidden_states=in_latents,
+                    condition_mask=cond_mask_t,
+                    timestep=in_timestep,
+                    encoder_hidden_states=prompt_embeds,
+                    padding_mask=padding_mask,
+                    return_dict=False,
+                )[0]
 
             if idx == 0 and self._cached_hidden:
                 hidden_first = self._cached_hidden[-1]
@@ -1063,6 +1102,7 @@ class Cosmos25Backbone(nn.Module):
                     'No Cosmos transformer hidden state was captured. Check '
                     '`extract_layer` and the installed Cosmos transformer.')
             hidden_first = self._cached_hidden[-1]
+        del model_out
 
         future_video_loss = None
         if compute_future_loss:

@@ -220,7 +220,10 @@ model = dict(
         flow_matching_time_distribution='uniform',
         flow_matching_high_sigma_ratio=None,
         flow_matching_high_sigma_min=None,
-        fsdp_min_num_params=10_000_000,
+        # Wrap transformer blocks only. Combining the block policy with the
+        # 10M size policy recursively wrapped large linears inside each block
+        # and created hundreds of tiny FSDP collectives.
+        fsdp_min_num_params=0,
     ),
     vla_head=dict(
         type='DiT4DiTActionHead',
@@ -278,6 +281,11 @@ _dit4dit_train_transforms = [
             'observation.state': ['states'],
             'actions': ['actions'],
         },
+        # Select the source recipe's 0,2,4,6,8 frames before video decode.
+        # Keeping a 9-row Parquet window preserves its exact episode-boundary
+        # padding while avoiding decode/resize/normalize work for discarded
+        # frames.
+        frame_stride=_image_frame_stride,
     ),
     dict(
         type='CanonicalizePrompt',
@@ -297,7 +305,8 @@ _dit4dit_train_transforms = [
         type='ConcatImagesHorizontally',
         key='images',
         num_views=2,
-        frame_stride=_image_frame_stride,
+        # Temporal striding already happened before video decode above.
+        frame_stride=1,
         views_first=True,
         keep_time_dim=True,
     ),
@@ -346,9 +355,10 @@ _dit4dit_parquet_dataset = dict(
 )
 
 train_dataloader = dict(
-    # Official topology: 8 nodes * 8 GPUs/node * 4 samples/GPU = batch 256.
-    # For 32/16 GPUs override this to 8/16 while keeping accumulation at 1.
-    per_device_batch_size=4,
+    # Four nodes * eight H100s preserving the source effective batch:
+    # 32 GPUs * 8 samples/GPU * 1 accumulation step = batch 256.
+    # This avoids a second forward/backward micro-step per optimizer update.
+    per_device_batch_size=8,
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedBalancedRepeatingDataset',
@@ -378,7 +388,7 @@ runner = dict(
     # The released 98.6% checkpoint was trained for 160k optimizer updates.
     # The public run script's older 80k setting does not describe that model.
     max_steps=160000,
-    # No accumulation is needed for the 16-GPU launch.
+    # One B=8 micro-batch per rank retains the source global batch of 256.
     grad_accumulation_steps=1,
     optimizer=dict(
         # Match dit4dit_libero/config.yaml shipped with the official model.
@@ -393,7 +403,10 @@ runner = dict(
         },
     ),
     max_grad_norm=1.0,
-    save_iter_interval=5000,
+    # The public source launch saves every 40k steps. Full FSDP checkpoints
+    # gather the complete model and optimizer, so a 5k interval creates long
+    # periodic stalls that look like a training hang.
+    save_iter_interval=40000,
     max_keep_ckpts=2,
     collator=dict(
         type='DictCollator',
@@ -424,14 +437,22 @@ runner = dict(
         warmup_steps=10000,
         min_lr=5e-7,
     ),
-    sharding_strategy='full-shard',
+    # DiT4DiT is released with DeepSpeed ZeRO-2: parameters remain resident
+    # while gradients and optimizer state are sharded. FULL_SHARD repeatedly
+    # all-gathers the Cosmos parameters across its two forwards per step.
+    sharding_strategy='shard-grad-op',
     # Keep FP32 master parameters/Adam moments like DeepSpeed BF16_Optimizer;
     # FSDP still casts forward parameters to BF16 below.
     pre_fsdp_param_dtype='fp32',
-    enable_gradient_checkpointing=True,
+    # The upstream flag is not wired into the model and therefore does not
+    # actually enable checkpointing. Enabling it here recomputes Cosmos during
+    # backward and compounds FSDP communication.
+    enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
-    reduce_in_full_precision=True,
+    # Match the source BF16 communication path instead of doubling gradient
+    # traffic with FP32 reductions.
+    reduce_in_full_precision=False,
     change_key_name=False,
 )
 

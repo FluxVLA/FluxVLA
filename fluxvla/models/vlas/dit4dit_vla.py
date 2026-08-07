@@ -300,5 +300,15 @@ class DiT4DiTVLA(BaseVLA):
             return wrapping_policies[0]
         return partial(_or_policy, policies=wrapping_policies)
 
+    def get_fsdp_ignored_modules(self) -> list[torch.nn.Module]:
+        """Keep configured frozen Cosmos modules resident in BF16.
+
+        The source DeepSpeed ZeRO-2 job does not shard the frozen text encoder
+        or VAE. Exposing them to the runner also prevents the generic FSDP
+        policy from recursively wrapping their internal blocks.
+        """
+        getter = getattr(self.vlm_backbone, 'get_fsdp_ignored_modules', None)
+        return list(getter()) if callable(getter) else []
+
 
 __all__ = ['DiT4DiTVLA']
