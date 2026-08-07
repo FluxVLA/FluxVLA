@@ -11,20 +11,18 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Full-data PI0.5 fine-tuning on the RoboCasa GR1 tabletop tasks.
+"""Fine-tune PI0.5 on the first 30 episodes of each RoboCasa GR1 task.
 
 The converted dataset uses a single ego-view camera, 29-dimensional joint
 states and absolute joint-position actions, q01/q99 quantile normalization,
 and a 16-step action horizon. Run ``scripts/convert_robocasa_for_fluxvla.py``
 to trim the source 44-dimensional data and generate ``episodes_stats.jsonl``.
 
-Example for two 8-GPU nodes sharing MASTER_ADDR and MASTER_PORT:
-    torchrun --nnodes=2 --nproc_per_node=8 \
-        --node_rank=${NODE_RANK} --master_addr=${MASTER_ADDR} \
-        --master_port=${MASTER_PORT} scripts/train.py \
+Example:
+    torchrun --nproc_per_node=2 scripts/train.py \
         --config \
-        configs/pi05/pi05_paligemma_robocasa_full_data_full_finetune.py \
-        --work-dir work_dirs/pi05_paligemma_robocasa_full_data_full_finetune
+        configs/pi05/pi05_paligemma_robocasa_30_eps_full_finetune.py \
+        --work-dir work_dirs/pi05_paligemma_robocasa_30_eps_full_finetune
 """
 
 # The PI0.5 architecture matches the LIBERO and ALOHA variants. Its internal
@@ -120,28 +118,24 @@ model = dict(
         use_adarms=True,
         use_cache=True,
         vocab_size=257152),
-    # PI0.5 injects the normalized 29D proprio state through discrete prompt
-    # tokens, so the language backbone remains trainable during adaptation.
-    freeze_llm_backbone=False,
-    freeze_vision_backbone=False,
-    # Initialize from the general PI0.5 base model rather than LIBERO weights.
-    pretrained_name_or_path='./checkpoints/pi05_base/model.safetensors',
-    # Map upstream PI0.5 checkpoint keys to FluxVLA parameter names.
-    name_mapping={
-        'llm_backbone': 'paligemma_with_expert.paligemma.model.language_model',
-        'vision_backbone.vision':
-        'paligemma_with_expert.paligemma.model.vision_tower',
-        'projector.projector':
-        'paligemma_with_expert.paligemma.model.multi_modal_projector.linear',
-        'llm_expert': 'paligemma_with_expert.gemma_expert.model',
-        'time_mlp_in.projector': 'time_mlp_in',
-        'time_mlp_out.projector': 'time_mlp_out',
-        'action_in_proj.projector': 'action_in_proj',
-        'action_out_proj.projector': 'action_out_proj',
-        'llm_backbone.embed_tokens': 'paligemma_with_expert.paligemma.lm_head',
-        'llm_expert.embed_tokens':
-        'paligemma_with_expert.gemma_expert.lm_head',
-    },
+    # The initialization below has already full-finetuned PaliGemma on the
+    # same RoboCasa domain.  Re-training the feature backbones on only 30
+    # episodes per task gave nearly identical flow loss but worse closed-loop
+    # generalization, so keep the pretrained representation fixed and adapt
+    # only the policy expert / action projections.
+    freeze_llm_backbone=True,
+    freeze_vision_backbone=True,
+    freeze_projector=True,
+    # Continue from the released full-data RoboCasa model. Download it with
+    # the command documented in README.md so this local path is preserved.
+    # config.json is experiment metadata rather than a loadable checkpoint.
+    # FluxVLA-trained checkpoints already use native parameter names, so the
+    # external PI0.5 name mapping must be disabled for strict loading.
+    pretrained_name_or_path=(
+        './checkpoints/pi05_paligemma_robocasa_full_data_full_finetune_'
+        'bs256/checkpoints/'
+        'step-100000-epoch-04-loss=0.0110.safetensors'),
+    name_mapping=None,
     strict_mapping=True,
     # Convert the large transformer modules to bf16 to reduce memory use.
     params_to_change_dtype=[
@@ -154,11 +148,38 @@ model = dict(
 )
 
 _ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_30ep'
-_ROBOCASA_DATA_ROOT = './datasets/robocasa_lerobot_V2.1'
-_OFFICIAL_GR1_STATS_PATH = ('./datasets/robocasa_gr1_24tasks_first30ep/'
-                            'official_groot_gr1_dataset_statistics.json')
+_ROBOCASA_DATA_ROOT = './datasets/robocasa_gr1_24tasks_first30ep'
+_OFFICIAL_GR1_STATS_PATH = (
+    f'{_ROBOCASA_DATA_ROOT}/official_groot_gr1_dataset_statistics.json')
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
+
+_ROBOCASA_TASK_DIRS = [
+    'PnPBottleToCabinetClose',
+    'PnPCanToDrawerClose',
+    'PnPCupToDrawerClose',
+    'PnPMilkToMicrowaveClose',
+    'PnPPotatoToMicrowaveClose',
+    'PnPWineToCabinetClose',
+    'PosttrainPnPNovelFromCuttingboardToBasketSplitA',
+    'PosttrainPnPNovelFromCuttingboardToCardboardboxSplitA',
+    'PosttrainPnPNovelFromCuttingboardToPanSplitA',
+    'PosttrainPnPNovelFromCuttingboardToPotSplitA',
+    'PosttrainPnPNovelFromCuttingboardToTieredbasketSplitA',
+    'PosttrainPnPNovelFromPlacematToBasketSplitA',
+    'PosttrainPnPNovelFromPlacematToBowlSplitA',
+    'PosttrainPnPNovelFromPlacematToPlateSplitA',
+    'PosttrainPnPNovelFromPlacematToTieredshelfSplitA',
+    'PosttrainPnPNovelFromPlateToBowlSplitA',
+    'PosttrainPnPNovelFromPlateToCardboardboxSplitA',
+    'PosttrainPnPNovelFromPlateToPanSplitA',
+    'PosttrainPnPNovelFromPlateToPlateSplitA',
+    'PosttrainPnPNovelFromTrayToCardboardboxSplitA',
+    'PosttrainPnPNovelFromTrayToPlateSplitA',
+    'PosttrainPnPNovelFromTrayToPotSplitA',
+    'PosttrainPnPNovelFromTrayToTieredbasketSplitA',
+    'PosttrainPnPNovelFromTrayToTieredshelfSplitA',
+]
 
 
 def _robocasa_data_path(task_name):
@@ -169,14 +190,12 @@ def _robocasa_task_env(task_name):
     return f'{_ROBOCASA_TASK_PREFIX}/{task_name}{_ROBOCASA_ENV_SUFFIX}'
 
 
-# The full dataset contains about 1,000 episodes for each of 24 tasks (6 seen
-# and 18 novel), one 256x256 ego-view camera, 29-dimensional joint states and
-# absolute actions, and fixed q01/q99 quantile statistics shared with eval.
+# The dataset contains 24 tasks (6 seen and 18 novel), one 256x256 ego-view
+# camera, 29-dimensional joint states and absolute actions, and fixed q01/q99
+# quantile statistics shared with evaluation.
 train_dataloader = dict(
-    # 16 A800 GPUs with 16 samples/GPU give a global batch of 256.
-    per_device_batch_size=16,
-    # Eight GPUs/node with eight workers/GPU give 64 workers per node.
-    per_device_num_workers=8,
+    per_device_batch_size=4,  # Validated on two 80 GB A800 GPUs.
+    per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
         # Keep state and action statistics separate. Action statistics must
@@ -187,56 +206,20 @@ train_dataloader = dict(
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name=_ROBOCASA_STATISTIC_NAME,
-        # PI0.5 upstream uses q01/q99 quantile statistics. Reuse one fixed
-        # robot/task statistics asset for both full-data training and eval.
         dataset_statistics_path=_OFFICIAL_GR1_STATS_PATH,
         datasets=dict(
             type='ParquetDataset',
-            # Converted task directories produced by
-            # convert_robocasa_for_fluxvla.py.
+            # Use the same first-30-episode task directories as the GR00T
+            # RoboCasa configuration.
             data_root_path=[
-                _robocasa_data_path('PnPBottleToCabinetClose'),
-                _robocasa_data_path('PnPCanToDrawerClose'),
-                _robocasa_data_path('PnPCupToDrawerClose'),
-                _robocasa_data_path('PnPMilkToMicrowaveClose'),
-                _robocasa_data_path('PnPPotatoToMicrowaveClose'),
-                _robocasa_data_path('PnPWineToCabinetClose'),
-                _robocasa_data_path('PosttrainPnPNovelFromCuttingboard'
-                                    'ToBasketSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromCuttingboard'
-                                    'ToCardboardboxSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromCuttingboard'
-                                    'ToPanSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromCuttingboard'
-                                    'ToPotSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromCuttingboard'
-                                    'ToTieredbasketSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlacemat'
-                                    'ToBasketSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlacemat'
-                                    'ToBowlSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlacemat'
-                                    'ToPlateSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlacemat'
-                                    'ToTieredshelfSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlateToBowlSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlate'
-                                    'ToCardboardboxSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlateToPanSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromPlateToPlateSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromTray'
-                                    'ToCardboardboxSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromTrayToPlateSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromTrayToPotSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromTray'
-                                    'ToTieredbasketSplitA'),
-                _robocasa_data_path('PosttrainPnPNovelFromTray'
-                                    'ToTieredshelfSplitA'),
+                _robocasa_data_path(task_dir)
+                for task_dir in _ROBOCASA_TASK_DIRS
             ],
             transforms=[
                 # Decode the requested Parquet columns and video frames.
                 dict(
                     type='ProcessParquetInputs',
+                    embodiment_id=24,
                     parquet_keys=[
                         'observation.state',  # 29D joint angles
                         'timestamp',  # Seconds
@@ -253,8 +236,8 @@ train_dataloader = dict(
                         'observation.state': ['states'],
                         'actions': ['actions'],
                     }),
-                # Preserve native state ordering and tokenize the normalized
-                # 29D state, matching OpenPI.
+                # Normalize the native 29D robot state before tokenization,
+                # without GR00T reordering or sine/cosine expansion.
                 dict(
                     type='NormalizeStatesAndActions',
                     action_dim=32,  # Zero-pad to the model action dimension.
@@ -262,13 +245,14 @@ train_dataloader = dict(
                     state_key='proprio',
                     action_key='action',
                     norm_type='quantile'),
-                # Build the OpenPI-compatible state-conditioned prompt.
+                # Match OpenPI's exact "Task: ..., State: ...;\nAction: "
+                # prompt format.
                 dict(
                     type='PreparePromptWithState',
                     max_state_dim=29,
                     lowercase_task_description=False,
                     add_action_prefix=True),
-                # Tokenize the prompt.
+                # Tokenize the state-conditioned prompt.
                 dict(
                     type='ProcessPrompts',
                     max_len=200,
@@ -299,21 +283,16 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=None,
-    # Match OpenPI's full-data PI0.5 recipe: global batch 256 and 100k
-    # optimizer updates. Do not shorten the LR horizon when changing the
-    # sample/epoch budget; the previous 50k cosine run reached near-zero LR
-    # at 40k and under-optimized the full-finetuned backbone.
-    max_steps=100000,
-    grad_accumulation_steps=1,
-    # Full-fine-tune the language backbone to learn the discretized state
-    # prompt.
-    # OpenPI full-data PI0.5 uses a 1k-step warmup followed by a constant
-    # 5e-5 LR; decaying to zero over 50k steps materially reduced updates.
-    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
+    # The 30k-step run had already plateaued by step 20k (0.0084 vs 0.0082),
+    # while checkpoint screening found no closed-loop gain after that point.
+    # Finish cosine decay at 20k and use a lower peak LR to avoid overwriting
+    # the stronger full-data initialization.
+    max_steps=20000,
+    optimizer=dict(lr=3e-5, type='AdamW', weight_decay=0.0),
     max_grad_norm=1.0,
     # Keep enough periodic checkpoints for closed-loop model selection.
     save_epoch_interval=1,
-    save_iter_interval=5000,
+    save_iter_interval=2500,
     max_keep_ckpts=8,
     # Use DDP-style replicated parameters with bf16 master weights to avoid
     # wrapping hundreds of small FSDP submodules.
@@ -330,6 +309,7 @@ runner = dict(
             'lang_masks',  # (B, max_len)
             'actions',  # (B, chunk_size, 32), normalized and padded
             'action_masks',  # (B, chunk_size)
+            'embodiment_ids',  # (B,)
         ],
         meta_keys=['task_description', 'prompt', 'info', 'stats']),
     sampler=None,
@@ -344,8 +324,8 @@ runner = dict(
         grad_accumulation_steps=1,
         window_size=1),
     lr_scheduler=dict(
-        type='linear-warmup+constant',
-        warmup_steps=1000,
+        type='linear-warmup+cosine-decay',
+        warmup_ratio=0.03,
     ),
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
@@ -357,11 +337,9 @@ runner = dict(
 #   conda activate fluxvla && cd /root/projects/fluxvla
 #   bash scripts/eval_robocasa.sh \
 #       --config \
-#       configs/pi05/pi05_paligemma_robocasa_full_data_full_finetune.py \
-#       --ckpt-path \
-#       ./checkpoints/pi05_paligemma_robocasa_full_data_full_finetune_\
-#       21aa5e82a_bs256/checkpoints/\
-#       step-100000-epoch-04-loss=0.0110.safetensors
+#       configs/pi05/pi05_paligemma_robocasa_30_eps_full_finetune.py \
+#       --ckpt-path checkpoints/pi05_paligemma_robocasa_30_eps/checkpoints/\
+#       latest-checkpoint.safetensors
 #
 # Optional override:
 #   --cfg-options eval.num_trials_per_task=20 eval.seed=7
@@ -412,10 +390,8 @@ eval = dict(
                            'ToTieredshelfSplitA'),
     ],
     total_tasks=24,
-    # Keep the 16-step prediction horizon, but replan halfway through it.
-    # At 20 Hz this reduces open-loop execution from 0.8 s to 0.4 s without
-    # changing the positive 100k-step training recipe.
-    eval_chunk_size=8,
+    # Match the 16-step training horizon and the historical best evaluation.
+    eval_chunk_size=16,
     max_episode_steps=720,
     num_trials_per_task=20,  # 480 episodes across 24 tasks.
     seed=7,  # Match the GR00T RoboCasa evaluation initial states.

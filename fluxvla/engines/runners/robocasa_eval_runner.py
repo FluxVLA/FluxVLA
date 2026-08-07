@@ -91,9 +91,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         rollout_video_key: Observation image key used for rollout videos.
         action_order: Action split order. Defaults to ``n15`` for GR00T and
             ``fluxvla`` otherwise.
-        action_chunk_ensemble_weight: Weight assigned to the unexecuted tail
-            of the previous action chunk when it overlaps the newly predicted
-            chunk. Zero disables temporal ensembling.
         norm_stats_path: Optional explicit dataset statistics path.
         grouped_norm_stats: Whether to load one statistics file per group.
         norm_stats_group_names: Per-task group names for grouped statistics.
@@ -130,7 +127,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                      'video.ego_view_pad_res256_freq20'),
                  norm_stats_path: Optional[str] = None,
                  action_order: Optional[str] = None,
-                 action_chunk_ensemble_weight: float = 0.0,
                  grouped_norm_stats: bool = False,
                  norm_stats_group_names: Optional[List[str]] = None,
                  deterministic_env: bool = True,
@@ -303,10 +299,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     f'{transform_names}')
 
         self.eval_chunk_size = eval_chunk_size
-        if not 0.0 <= action_chunk_ensemble_weight <= 1.0:
-            raise ValueError('action_chunk_ensemble_weight must be in '
-                             f'[0, 1], got {action_chunk_ensemble_weight}')
-        self.action_chunk_ensemble_weight = float(action_chunk_ensemble_weight)
         self.model_family = model_family
         if action_order is None:
             action_order = 'n15' if model_family == 'groot' else 'fluxvla'
@@ -404,34 +396,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                     step)
 
     @staticmethod
-    def _ensemble_action_chunks(current: np.ndarray,
-                                previous: Optional[np.ndarray],
-                                previous_executed: int,
-                                previous_weight: float) -> np.ndarray:
-        """Blend predictions for timesteps covered by two action chunks.
-
-        Replanning before the full horizon has elapsed produces overlapping
-        predictions. Flow matching samples a fresh noise tensor for every
-        policy call, so directly discarding the old tail can introduce a jump
-        exactly at a grasp or placement contact. Blend only the overlapping
-        prefix; leave the newly extended tail unchanged.
-        """
-        if previous is None or previous_weight <= 0.0:
-            return current
-
-        previous_executed = max(0, int(previous_executed))
-        remaining = previous[previous_executed:]
-        overlap = min(len(current), len(remaining))
-        if overlap == 0:
-            return current
-
-        blended = current.copy()
-        blended[:overlap] = (
-            previous_weight * remaining[:overlap] +
-            (1.0 - previous_weight) * current[:overlap])
-        return blended
-
-    @staticmethod
     def _seed_python_numpy_torch(seed: int) -> None:
         random.seed(seed)
         np.random.seed(seed)
@@ -464,11 +428,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
     def _format_duration(seconds: float) -> str:
         seconds = int(round(seconds))
         if seconds < 60:
-            return f'{seconds:02d}s'
+            return f'{seconds:02d}s'  # noqa: E231
         if seconds < 3600:
-            return f'{seconds // 60:02d}m{seconds % 60:02d}s'
+            return f'{seconds // 60:02d}m{seconds % 60:02d}s'  # noqa: E231
         hours, rem = divmod(seconds, 3600)
-        return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'
+        return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'  # noqa: E231
 
     @staticmethod
     def _robocasa_group_name(env_name: str) -> str:
@@ -531,8 +495,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
                              f'{resolved}')
         invalid = [task for task in resolved if task < 0 or task >= num_tasks]
         if invalid:
-            raise ValueError(f'Invalid task ids {invalid}; expected range [0, '
-                             f'{num_tasks - 1}].')
+            raise ValueError(
+                f'Invalid task ids {invalid}; expected range [0, '  # noqa: E501, E702
+                f'{num_tasks - 1}].')
         return resolved
 
     @classmethod
@@ -682,14 +647,14 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 if stats['total_trials'] > 0:
                     rate = stats['total_successes'] / \
                         max(stats['total_trials'], 1) * 100
-                    group_rates.append(f'{rate:.2f}')
+                    group_rates.append(f'{rate:.2f}')  # noqa: E231
                 else:
                     group_rates.append('')
             writer.writerow([''] + group_order + ['all'])
             writer.writerow([
                 'Success Rate (%)',
                 *group_rates,
-                f'{overall_rate:.2f}',
+                f'{overall_rate:.2f}',  # noqa: E231
             ])
             writer.writerow([
                 'Episodes',
@@ -724,16 +689,16 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 rate = (
                     stats['total_successes'] / max(stats['total_trials'], 1) *
                     100 if stats['total_trials'] > 0 else 0.0)
-                f.write(f'\n{group}:\n')
+                f.write(f'\n{group}:\n')  # noqa: E231
                 f.write(f"- Tasks completed: {stats['total_tasks']}\n")
                 f.write(f"- Total attempts: {stats['total_trials']}\n")
                 f.write(f'- Successful attempts: '
                         f"{stats['total_successes']}\n")
-                f.write(f'- Success rate: {rate:.2f}%\n')
+                f.write(f'- Success rate: {rate:.2f}%\n')  # noqa: E231
                 f.write(f'- Total time: '
                         f"{self._format_duration(stats['total_time'])}\n")
             f.write('\nOverall statistics:\n')
-            f.write(f'- Success rate: {overall_rate:.2f}%\n')
+            f.write(f'- Success rate: {overall_rate:.2f}%\n')  # noqa: E231
             f.write(f'- Total attempts: {total_trials}\n')
             f.write(f'- Successful attempts: {total_successes}\n')
             f.write(f'- Total time: {self._format_duration(total_time)}\n')
@@ -753,8 +718,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     self.model_family,
                     'action_order':
                     self.action_order,
-                    'action_chunk_ensemble_weight':
-                    self.action_chunk_ensemble_weight,
                     'episode_seed_stride':
                     self.episode_seed_stride,
                     'python_hash_seed_at_init':
@@ -797,9 +760,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
         overwatch.info(f'Robocasa Eval: {len(task_ids)}/{num_tasks} tasks, '
                        f'{self.num_trials_per_task} trials each')
         overwatch.info(f'Model family: {self.model_family}, '
-                       f'chunk_size: {self.eval_chunk_size}, '
-                       f'action_chunk_ensemble_weight: '
-                       f'{self.action_chunk_ensemble_weight}')
+                       f'chunk_size: {self.eval_chunk_size}')
         overwatch.info(f'Task ids: {task_ids}, '
                        f'shard_strategy: {self.eval_shard_strategy}')
         overwatch.info(f'Deterministic env: {self.deterministic_env}, '
@@ -908,8 +869,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 # Evaluation loop.
                 success = False
                 replay_images = []
-                previous_action_chunk = None
-                previous_actions_executed = 0
                 if self.save_video:
                     frame = self._get_rollout_frame(obs)
                     if frame is not None:
@@ -952,17 +911,12 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         with torch.no_grad():
                             actions = self.vla.predict_action(**batch)
 
-                    # actions shape: (1, horizon, max_action_dim)
+                    # actions shape: (1, chunk_size, max_action_dim)
                     if len(actions.shape) == 3:
-                        predicted_actions = actions[0].cpu().numpy()
+                        actions = actions[
+                            0, :self.eval_chunk_size, :].cpu().numpy()
                     else:
-                        predicted_actions = actions[0, None, :].cpu().numpy()
-
-                    predicted_actions = self._ensemble_action_chunks(
-                        predicted_actions, previous_action_chunk,
-                        previous_actions_executed,
-                        self.action_chunk_ensemble_weight)
-                    actions = predicted_actions[:self.eval_chunk_size]
+                        actions = actions[0, None, :].cpu().numpy()
 
                     if t == 0:
                         action_min = format(actions.min(), '.6g')
@@ -978,7 +932,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                        f'mean={action_mean}\n')
 
                     # Execute one action chunk.
-                    actions_executed = 0
                     for action in actions:
                         # Denormalize from [-1, 1] to raw joint positions.
                         denorm_input = dict(
@@ -1005,7 +958,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         # Step the environment.
                         obs, reward, terminated, truncated, info = \
                             env.step(action_dict)
-                        actions_executed += 1
 
                         # Collect rendered frames for rollout videos.
                         if self.save_video:
@@ -1019,9 +971,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                             break
                         if terminated or truncated:
                             break
-
-                    previous_action_chunk = predicted_actions
-                    previous_actions_executed = actions_executed
 
                     if success or terminated or truncated:
                         break
@@ -1102,10 +1051,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
             n_ep = int(global_episodes[0].item())
             n_succ = int(global_successes[0].item())
             rate = n_succ / max(n_ep, 1) * 100
-            overwatch.info(f'Robocasa final: {n_succ}/{n_ep} '
-                           f'({rate:.2f}%)')
-            log_file.write(f'Robocasa final: {n_succ}/{n_ep} '
-                           f'({rate:.2f}%)\n')
+            overwatch.info(f'Robocasa final: {n_succ}/{n_ep} '  # noqa: E231
+                           f'({rate:.2f}%)')  # noqa: E231
+            log_file.write(f'Robocasa final: {n_succ}/{n_ep} '  # noqa: E231
+                           f'({rate:.2f}%)\n')  # noqa: E231
             summary_json = self._write_robocasa_summary_artifacts(
                 Path(self.run_dir),
                 run_id,

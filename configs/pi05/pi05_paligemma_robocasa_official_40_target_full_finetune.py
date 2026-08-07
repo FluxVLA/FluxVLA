@@ -30,6 +30,28 @@ size, set ``runner.grad_accumulation_steps = 256 // (4 * world_size)``.
 
 _base_ = ['./pi05_paligemma_robocasa_full_data_full_finetune.py']
 
+seed = 7
+
+model = dict(
+    # OpenPI uses a true Beta distribution and supervises all 32 padded action
+    # dimensions. Keep these PI0.5-specific corrections local to this recipe.
+    time_sampler='beta',
+    time_beta_alpha=1.5,
+    time_beta_beta=1.0,
+    loss_action_dim=32,
+)
+
+train_dataloader = dict(
+    per_device_batch_size=4,
+    per_device_num_workers=4,
+    dataset=dict(
+        type='DistributedBalancedRepeatingDataset',
+        seed=seed,
+        reshuffle_each_epoch=True,
+        datasets=dict(supervise_terminal_padding=True),
+    ),
+)
+
 runner = dict(
     # 100k global-256 updates expose 25.6M samples: the same sample count as
     # the full-data stage behind the strongest measured 31.58% lineage and
@@ -59,16 +81,13 @@ runner = dict(
     ),
     save_iter_interval=10000,
     max_keep_ckpts=10,
-    # Reuse the historical RoboCasa execution path: replicated BF16 model and
-    # BF16 Adam states. This intentionally avoids any runner/FSDP code change.
+    # Reuse main's historical RoboCasa execution path: NO_SHARD already uses
+    # BF16 model parameters, gradient reduction, buffers, and Adam states.
     sharding_strategy='no-shard',
-    master_weight_dtype='bf16',
-    fsdp_param_dtype='bf16',
-    # Before the RLinf runner refactor, NO_SHARD always reduced gradients and
-    # stored FSDP buffers in BF16. Override the new FP32 default explicitly so
-    # this recipe retains the historical NO_SHARD BF16 memory behavior.
-    reduce_in_full_precision=False,
 )
 
-# Inherit the sheet-comparable formal protocol unchanged: 24 tasks x 50
-# deterministic trials, 0.95 crop, execute 8 actions, and ensemble weight 0.5.
+eval = dict(
+    # Formal sheet-comparable protocol: 24 tasks x 50 deterministic trials.
+    num_trials_per_task=50,
+    episode_seed_stride=50,
+)

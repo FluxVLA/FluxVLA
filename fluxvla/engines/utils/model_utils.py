@@ -72,28 +72,19 @@ def sample_beta(alpha,
                 beta,
                 bsize,
                 device,
-                sampler: str = 'beta') -> torch.Tensor:
-    """Sample flow-matching times from a configurable beta-like sampler.
-
-    ``beta`` matches OpenPI and samples through
-    :class:`torch.distributions.Beta`. ``legacy_power_ratio`` preserves the
-    historical FluxVLA formula for reproducing old experiments; despite its
-    old helper name, that formula is not a Beta distribution.
-    """
+                sampler: str = 'legacy_power_ratio') -> torch.Tensor:
+    """Sample flow times from OpenPI's Beta or the legacy FluxVLA rule."""
     if alpha <= 0 or beta <= 0:
         raise ValueError(
             f'alpha and beta must be positive, got {alpha=} and {beta=}')
-
     if sampler == 'beta':
         alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=device)
         beta_t = torch.as_tensor(beta, dtype=torch.float32, device=device)
         return torch.distributions.Beta(alpha_t, beta_t).sample((int(bsize), ))
-
     if sampler == 'legacy_power_ratio':
         gamma1 = torch.rand((bsize, ), device=device).pow(1 / alpha)
         gamma2 = torch.rand((bsize, ), device=device).pow(1 / beta)
         return gamma1 / (gamma1 + gamma2)
-
     raise ValueError(f'Unsupported beta sampler {sampler!r}. Expected '
                      "'beta' or 'legacy_power_ratio'.")
 
@@ -239,83 +230,6 @@ def eager_attention_forward(
     attn_output = attn_output.transpose(1, 2).contiguous()
 
     return attn_output, attn_weights
-
-
-def jax_attention_forward(
-    module: nn.Module,
-    query: torch.Tensor,
-    key: torch.Tensor,
-    value: torch.Tensor,
-    attention_mask: Optional[torch.Tensor],
-    scaling: float,
-    dropout: float = 0.0,
-    **kwargs,
-):
-    """OpenPI/JAX-compatible grouped-query attention.
-
-    OpenPI computes QK logits with float32 accumulation, applies its boolean
-    block mask using Gemma's finite ``big_neg`` constant, evaluates softmax in
-    float32, and only then casts probabilities back to the model dtype.  CUDA
-    SDPA is algebraically equivalent but may select fused kernels with a
-    different accumulation order, which is unsuitable for source-parity
-    checks.
-
-    Inputs use the HuggingFace layout ``(B, H, T, D)`` while the reference
-    equation uses ``(B, T, K, G, D)`` where ``H = K * G``.
-    """
-    del kwargs
-    if dropout and module.training:
-        raise ValueError(
-            'OpenPI JAX attention parity requires attention dropout == 0.')
-
-    batch_size, num_query_heads, query_len, head_dim = query.shape
-    num_kv_heads = key.shape[1]
-    if num_query_heads % num_kv_heads != 0:
-        raise ValueError(
-            'Query heads must be divisible by key/value heads, got '
-            f'{num_query_heads} and {num_kv_heads}.')
-    num_groups = num_query_heads // num_kv_heads
-    key_len = key.shape[2]
-
-    query_jax = query.transpose(1,
-                                2).reshape(batch_size, query_len, num_kv_heads,
-                                           num_groups, head_dim)
-    key_jax = key.transpose(1, 2)
-    value_jax = value.transpose(1, 2)
-
-    # Disabling autocast is essential: OpenPI requests float32 accumulation
-    # explicitly through jax.lax.Precision.HIGHEST/preferred_element_type.
-    with torch.autocast(device_type=query.device.type, enabled=False):
-        # OpenPI scales Q while it is still in the model dtype and only asks
-        # the following einsum to accumulate into FP32.
-        scaled_query = query_jax * query_jax.new_tensor(float(scaling))
-        logits = torch.einsum(
-            'BTKGH,BSKH->BKGTS',
-            scaled_query.float(),
-            key_jax.float(),
-        )
-
-        if attention_mask is not None:
-            mask = attention_mask[..., :query_len, :key_len]
-            if mask.dtype == torch.bool:
-                allowed = mask
-            else:
-                # FluxVLA/HuggingFace additive masks use zero for allowed
-                # entries and a negative finite value (or -inf) for blocked
-                # entries.
-                allowed = mask >= 0
-            allowed = allowed[:, :, None, :, :]
-            logits = torch.where(allowed, logits,
-                                 logits.new_tensor(-2.3819763e38))
-
-        probabilities = torch.softmax(logits, dim=-1).to(query.dtype)
-
-    encoded = torch.einsum('BKGTS,BSKH->BTKGH', probabilities, value_jax)
-    encoded = encoded.reshape(batch_size, query_len, num_query_heads,
-                              head_dim).contiguous()
-    attention_weights = probabilities.reshape(batch_size, num_query_heads,
-                                              query_len, key_len)
-    return encoded, attention_weights
 
 
 def sdpa_attention_forward(
