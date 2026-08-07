@@ -23,12 +23,12 @@ SKIPPED_PRETRAIN_SENTINEL = "SKIPPED_PRETRAIN"
 class Wan22LoadedComponents:
     dit: WanVideoDiT
     vae: WanVideoVAE38
-    text_encoder: WanTextEncoder | None
-    tokenizer: HuggingfaceTokenizer | None
+    text_encoder: WanTextEncoder
+    tokenizer: HuggingfaceTokenizer
     dit_path: str
     vae_path: str
-    text_encoder_path: str | None
-    tokenizer_path: str | None
+    text_encoder_path: str
+    tokenizer_path: str
 
 
 WAN22_MODEL_REGISTRY = [
@@ -156,7 +156,6 @@ def load_wan22_ti2v_5b_components(
     redirect_common_files: bool = False,
     dit_config: dict[str, Any] | None = None,
     skip_dit_load_from_pretrain: bool = False,
-    load_text_encoder: bool = True,
 ):
     logger.info("Loading Wan2.2-TI2V-5B components...")
     start = time.time()
@@ -172,9 +171,8 @@ def load_wan22_ti2v_5b_components(
     )
 
     vae_config.resolve_local_path()
-    if load_text_encoder:
-        text_config.resolve_local_path()
-        tokenizer_config.resolve_local_path()
+    text_config.resolve_local_path()
+    tokenizer_config.resolve_local_path()
 
     if skip_dit_load_from_pretrain:
         logger.info(
@@ -193,30 +191,20 @@ def load_wan22_ti2v_5b_components(
             model_kwargs_override=validated_dit_config,
         )
         dit_path = str(dit_model_config.path)
-    text_encoder: WanTextEncoder | None = None
-    tokenizer: HuggingfaceTokenizer | None = None
-    text_encoder_path: str | None = None
-    tokenizer_path: str | None = None
-    if load_text_encoder:
-        text_encoder = _load_registered_model(
-            text_config.path,
-            "wan_video_text_encoder",
-            torch_dtype=torch_dtype,
-            device=device,
-        )
-        tokenizer_dir = _as_tokenizer_dir(tokenizer_config.path)
-        tokenizer = HuggingfaceTokenizer(
-            name=tokenizer_dir,
-            seq_len=int(tokenizer_max_len),
-            clean="whitespace",
-        )
-        text_encoder_path = str(text_config.path)
-        tokenizer_path = str(tokenizer_dir)
-    else:
-        logger.info(
-            "Skipping pretrained text encoder/tokenizer load (`load_text_encoder=False`); "
-            "training must provide cached `context/context_mask`."
-        )
+    text_encoder = _load_registered_model(
+        text_config.path,
+        "wan_video_text_encoder",
+        torch_dtype=torch_dtype,
+        device=device,
+    )
+    tokenizer_dir = _as_tokenizer_dir(tokenizer_config.path)
+    tokenizer = HuggingfaceTokenizer(
+        name=tokenizer_dir,
+        seq_len=int(tokenizer_max_len),
+        clean="whitespace",
+    )
+    text_encoder_path = str(text_config.path)
+    tokenizer_path = str(tokenizer_dir)
     vae: WanVideoVAE38 = _load_registered_model(vae_config.path, "wan_video_vae", torch_dtype=torch_dtype, device=device)
     logger.info("Finished loading Wan2.2-TI2V-5B components in %.2f seconds.", time.time() - start)
     return Wan22LoadedComponents(

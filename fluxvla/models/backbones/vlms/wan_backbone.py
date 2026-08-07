@@ -91,9 +91,7 @@ class WanBaseBackbone(nn.Module):
         """Encode tokenized prompts and zero padded embeddings."""
         text_encoder = getattr(self, 'text_encoder', None)
         if text_encoder is None:
-            raise ValueError(
-                'Token encoding requires a loaded text encoder. Provide '
-                'precomputed context or enable the text encoder for eval.')
+            raise ValueError('Token encoding requires a loaded text encoder.')
 
         ids, mask = self._prepare_prompt_inputs(input_ids, attention_mask)
         prompt_emb = text_encoder(ids, mask).clone()

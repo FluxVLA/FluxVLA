@@ -47,12 +47,9 @@ model = dict(
     mot_checkpoint_mixed_attn=True,
     vlm_backbone=dict(
         type='Wan22Backbone',
-        text_embed_cache_dir=None,
         text_embed_cache_context_len=128,
-        text_embed_cache_enc_id='wan22ti2v5b',
         text_embed_cache_size=256,
         text_embed_cache_device='cpu',
-        text_embed_prompt_template=_text_prompt_template,
     ),
     vla_head=dict(
         type='FastWAMHead',
@@ -258,7 +255,6 @@ eval = dict(
         ],
         model_family='fastwam',
         task_ids=None,
-        allowed_missing_key_prefixes=('vlm_backbone.text_encoder.', ),
         norm_stats_key=_statistic_name,
         eval_chunk_size=10,
         eval_shard_strategy='task',
