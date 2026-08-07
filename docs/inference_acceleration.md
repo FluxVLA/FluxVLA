@@ -316,4 +316,4 @@ Notes:
 
 | Model | Baseline (Hz) | Accelerated (Hz) | Speedup |
 | ----- | ------------- | ---------------- | ------- |
-| GR00T | 3.2           | 7.4             | 1.63x   |
+| GR00T | 3.2           | 7.4              | 1.63x   |

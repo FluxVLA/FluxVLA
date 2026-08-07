@@ -287,10 +287,11 @@ class OliOperator(BaseOperator):
                                                    TeleopMsg, None)
         self.finger_publisher = mros.advertise(
             self.finger_cmd_topic, Float32Array, queue_size=10)
+        left_wrist_topic = self.left_wrist_rgb_topic or 'disabled'
         print(
             '[mros] OliOperator subscribed to '
             f'head={self.head_rgb_topic}, '
-            f'left_wrist={self.left_wrist_rgb_topic or "disabled"}, '
+            f'left_wrist={left_wrist_topic}, '
             f'joint_state={self.joint_state_topic}, '
             f'finger_state={self.finger_state_topic}',
             flush=True)

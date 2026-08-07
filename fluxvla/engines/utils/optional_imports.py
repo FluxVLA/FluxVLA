@@ -28,7 +28,8 @@ def is_optional_torch_distributed_error(exc: ImportError) -> bool:
 
 def is_optional_import_error(
         exc: ImportError,
-        optional_missing_names: Iterable[str] = ()) -> bool:
+        optional_missing_names: Iterable[str] = (),
+) -> bool:
     """Return True if ``exc`` belongs to an explicitly optional import."""
     if is_optional_torch_distributed_error(exc):
         return True
@@ -36,8 +37,7 @@ def is_optional_import_error(
     name = getattr(exc, 'name', '') or ''
     if not name:
         return False
-    return any(name == optional_name
-               or name.startswith(f'{optional_name}.')
+    return any(name == optional_name or name.startswith(f'{optional_name}.')
                for optional_name in optional_missing_names)
 
 
@@ -49,11 +49,11 @@ def _public_names(module: ModuleType) -> Sequence[str]:
 
 
 def import_optional_symbols(
-    package: str,
-    namespace: MutableMapping[str, object],
-    module_symbols: Mapping[str, Optional[Iterable[str]]],
-    *,
-    optional_missing_names: Iterable[str] = (),
+        package: str,
+        namespace: MutableMapping[str, object],
+        module_symbols: Mapping[str, Optional[Iterable[str]]],
+        *,
+        optional_missing_names: Iterable[str] = (),
 ) -> None:
     """Import optional modules and expose selected symbols in ``namespace``.
 
@@ -73,6 +73,7 @@ def import_optional_symbols(
                 continue
             raise
 
-        selected_symbols = _public_names(module) if symbols is None else symbols
+        selected_symbols = _public_names(
+            module) if symbols is None else symbols
         for symbol in selected_symbols:
             namespace[symbol] = getattr(module, symbol)

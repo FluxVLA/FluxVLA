@@ -47,8 +47,7 @@ class QWen2_5VL(VLMBackbone):
                  vlm_config: Dict = None,
                  vlm_path: Optional[str] = None,
                  attn_implementation: str = 'flash_attention_2') -> None:
-        attn_implementation = validate_attn_implementation(
-            attn_implementation)
+        attn_implementation = validate_attn_implementation(attn_implementation)
         super().__init__(
             vlm_backbone_id,
             vlm_config,

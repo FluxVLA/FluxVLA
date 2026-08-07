@@ -26,7 +26,6 @@ from fluxvla.engines import VLM_BACKBONES, str_to_dtype
 from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
 from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl import \
     Eagle2_5_VLForConditionalGeneration  # noqa: E501
-
 from .hf_vlm import apply_attn_implementation_to_config
 
 

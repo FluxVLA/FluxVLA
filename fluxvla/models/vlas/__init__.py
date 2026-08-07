@@ -13,7 +13,6 @@
 # limitations under the License.
 
 from fluxvla.engines.utils.optional_imports import import_optional_symbols
-
 from .llava_vla import LlavaVLA  # noqa: F401, F403
 from .open_vla import OpenVLA  # noqa: F401, F403
 
@@ -25,9 +24,7 @@ import_optional_symbols(
         'pi0_flowmatching': ['PI0FlowMatching'],
         'pi05_flowmatching': ['PI05FlowMatching'],
         'pi05_flowmatching_inference': ['PI05FlowMatchingInference'],
-        'pi05_flowmatching_inference_rtc': [
-            'PI05FlowMatchingRTCInference'
-        ],
+        'pi05_flowmatching_inference_rtc': ['PI05FlowMatchingRTCInference'],
         'sarm_reward_model': ['SARMRewardModel'],
         'smolvla_flowmatching': ['SmolVLAFlowMatching'],
         'x_vla': ['X_VLA'],

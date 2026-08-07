@@ -13,13 +13,12 @@
 # limitations under the License.
 
 from transformers import (PaliGemmaConfig, PaliGemmaForConditionalGeneration,
-                          Qwen2_5_VLConfig,
-                          Qwen2_5_VLForConditionalGeneration)
+                          Qwen2_5_VLConfig, Qwen2_5_VLForConditionalGeneration)
 
 try:
     from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
 except ImportError:
-    print("Orin Docker not support QWEN3-VL recently.")
+    print('Orin Docker not support QWEN3-VL recently.')
     Qwen3VLConfig = None
     Qwen3VLForConditionalGeneration = None
 

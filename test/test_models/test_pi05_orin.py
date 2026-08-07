@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
 from __future__ import annotations
-
 import argparse
 import statistics
 import sys
@@ -62,8 +61,7 @@ def make_dummy_batch(device, batch_size, num_views, image_size, lang_len,
         'lang_tokens':
         torch.randint(
             100,
-            min(32000, max(101, vocab_size - 1)),
-            (batch_size, lang_len),
+            min(32000, max(101, vocab_size - 1)), (batch_size, lang_len),
             device=device,
             dtype=torch.long),
         'lang_masks':

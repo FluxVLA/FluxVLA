@@ -62,8 +62,7 @@ class Qwen3VL(VLMBackbone):
                  projection_mlp_hidden_dim: Optional[int] = None,
                  attn_implementation: str = 'flash_attention_2',
                  torch_dtype: Union[torch.dtype, str] = 'bf16') -> None:
-        attn_implementation = validate_attn_implementation(
-            attn_implementation)
+        attn_implementation = validate_attn_implementation(attn_implementation)
         self._attn_implementation = attn_implementation
         assert torch_dtype is not None, 'torch_dtype must be specified'
         if isinstance(torch_dtype, str):

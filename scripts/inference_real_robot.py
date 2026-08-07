@@ -22,6 +22,8 @@ import fluxvla.engines.operators  # noqa: F401
 import fluxvla.tokenizers  # noqa: F401
 import fluxvla.transforms  # noqa: F401
 from fluxvla.engines import build_runner_from_cfg
+from fluxvla.engines.utils.torch_utils import \
+    configure_inference_attention_defaults
 from fluxvla.models.backbones.vlms.eagle import EagleBackbone  # noqa: F401
 from fluxvla.models.backbones.vlms.eagle import \
     EagleInferenceBackbone  # noqa: F401
@@ -30,8 +32,6 @@ from fluxvla.models.heads.flow_matching_head import \
 from fluxvla.models.heads.flow_matching_inference_head import \
     FlowMatchingInferenceHead  # noqa: F401
 from fluxvla.models.vlas.llava_vla import LlavaVLA  # noqa: F401
-from fluxvla.engines.utils.torch_utils import \
-    configure_inference_attention_defaults
 
 
 def parse_args():
