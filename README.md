@@ -315,6 +315,10 @@ pip install --no-build-isolation -e .
 > **Note**: `requirements.txt` now composes `requirements-base.txt`,
 > `requirements-sim.txt`, and `requirements-real.txt`. It does not install
 > PyTorch; install CUDA PyTorch first or use `scripts/install_env.sh`.
+> TorchCodec is also installed by the environment scripts because its version
+> must match PyTorch. For a manual x86_64 install, use
+> `torchcodec==0.7.0` with Torch 2.8 or `torchcodec==0.2.1` with Torch 2.6.
+> Linux aarch64 uses the PyAV fallback.
 
 </details>
 

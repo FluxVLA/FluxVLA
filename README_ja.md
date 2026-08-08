@@ -267,7 +267,10 @@ pip install -r requirements.txt
 pip install --no-build-isolation -e .
 ```
 
-> **補足**：現在の `requirements.txt` は `requirements-base.txt`、`requirements-sim.txt`、`requirements-real.txt` を組み合わせる構成で、PyTorch はインストールしません。先に CUDA PyTorch をインストールするか、`scripts/install_env.sh` を使ってください。
+> **補足**：`requirements.txt` は `requirements-base.txt`、`requirements-sim.txt`、`requirements-real.txt` をまとめるファイルになりました。PyTorch はインストールしないため、先に CUDA 版 PyTorch を入れるか、`scripts/install_env.sh` を使用してください。
+> TorchCodec は PyTorch とバージョンを合わせる必要があるため、環境スクリプトが別途インストールします。x86_64
+> の手動インストールでは、Torch 2.8 に `torchcodec==0.7.0`、Torch 2.6 に
+> `torchcodec==0.2.1` を使用します。Linux aarch64 は PyAV fallback を使用します。
 
 </details>
 

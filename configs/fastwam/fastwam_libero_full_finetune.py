@@ -131,6 +131,7 @@ train_dataloader = dict(
                         'observation.images.image',
                         'observation.images.wrist_image',
                     ],
+                    video_backend='torchcodec',
                     name_mappings={
                         'observation.state': ['states'],
                         'actions': ['actions'],

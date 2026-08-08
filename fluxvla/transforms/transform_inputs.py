@@ -106,11 +106,10 @@ class ProcessParquetInputs():
             Defaults to None.
         video_backend (str, optional): Video decoding backend. One of
             ``'torchcodec'``, ``'pyav'`` or ``'video_reader'``. When ``None``
-            (default) it resolves to ``'torchcodec'`` if the package is
-            importable, otherwise ``'pyav'``. The ``'torchcodec'`` path
-            decodes by frame index (``round(ts * average_fps)``); on any
-            decode error it transparently falls back to the ``'pyav'``
-            torchvision path.
+            (default), the ``'pyav'`` torchvision path is used. Explicitly
+            selecting ``'torchcodec'`` is strict and raises instead of falling
+            back. The TorchCodec path decodes by frame index
+            (``round(ts * average_fps)``).
     """
 
     def __init__(self,
