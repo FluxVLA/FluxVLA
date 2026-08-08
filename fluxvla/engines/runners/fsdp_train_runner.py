@@ -121,7 +121,12 @@ class FSDPTrainRunner(BaseTrainRunner):
         self.args = args
         self.max_grad_norm = max_grad_norm
         self.sharding_strategy = sharding_strategy
-        if self.sharding_strategy == 'shard-grad-op':
+        if self.sharding_strategy == 'global-shard-grad-op':
+            # Use the default global process group. Unlike the private
+            # hybrid Zero2 strategy below, this does not create one extra
+            # inter-node communicator per local rank.
+            self.fsdp_sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
+        elif self.sharding_strategy == 'shard-grad-op':
             self.fsdp_sharding_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
         elif self.sharding_strategy == 'full-shard':
             self.fsdp_sharding_strategy = ShardingStrategy.FULL_SHARD
