@@ -20,7 +20,7 @@ PI0.5 base checkpoint instead of continuing the 31.58% RoboCasa checkpoint.
 The public StarVLA 43.9% result is from QwenPI_v2, not OpenPI PI0.5, so 40% is
 a target rather than a reproduced guarantee. Only its uniform 24-task mixture
 and larger sample budget are transferred. The optimizer schedule follows the
-RLinf/OpenPI values. Hybrid FSDP keeps BF16 compute while sharding FP32 master
+RLinf/OpenPI values. Full FSDP keeps BF16 compute while sharding FP32 master
 parameters, gradients, and optimizer state across the training topology.
 
 Expected topology: 4 nodes x 8 RTX PRO 5000 72GB GPUs. The effective batch is
@@ -81,9 +81,11 @@ runner = dict(
     ),
     save_iter_interval=10000,
     max_keep_ckpts=10,
-    # Reduce per-GPU parameter, gradient, and optimizer-state memory while
-    # retaining BF16 compute and the runner's FP32 master/reduction path.
-    sharding_strategy='hybrid-shard',
+    # Use the default global process group. Hybrid sharding creates a second
+    # inter-node NCCL communicator; on the DLC RDMA fabric that communicator
+    # can exhaust Queue Pair resources (ibv_create_qp error -12). Full shard
+    # retains BF16 compute and sharded FP32 state without that extra group.
+    sharding_strategy='full-shard',
 )
 
 eval = dict(
