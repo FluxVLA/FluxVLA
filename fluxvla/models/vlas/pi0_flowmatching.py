@@ -17,6 +17,7 @@ from typing import Callable, Dict, List, Optional, Union
 
 import torch
 import torch.nn.functional as F
+from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
 from transformers.cache_utils import Cache
 
 from fluxvla.engines import (VLAS, build_llm_backbone_from_cfg,
@@ -911,3 +912,54 @@ class PI0FlowMatching(BaseVLA):
             return False
 
         return build_combined_wrap_policy([*wrapping_policies, match_module])
+
+    def get_fsdp_execution_block_wrapping_policy(self) -> Callable:
+        """Wrap modules whose ``forward`` methods PI0 actually executes.
+
+        The legacy policy wraps individual linear and normalization modules,
+        producing hundreds of tiny collectives on a multi-node global process
+        group. PI0 also bypasses ``GemmaDecoderLayer.forward`` in its fused
+        prefix/suffix path, so wrapping full decoder layers would leave their
+        sharded parameters inaccessible. Gemma MLPs and SigLIP encoder layers
+        are real execution boundaries and are safe, coarse FSDP units.
+        """
+        try:
+            vision_layers = (
+                self.vision_backbone.vision.vision_model.encoder.layers)
+        except AttributeError as exc:
+            raise ValueError(
+                'Execution-block FSDP requires a SigLIP-style vision '
+                'encoder with an encoder.layers module list.') from exc
+        if not vision_layers:
+            raise ValueError('The vision encoder has no execution blocks.')
+
+        vision_layer_classes = {type(layer) for layer in vision_layers}
+        if len(vision_layer_classes) != 1:
+            names = sorted(cls.__name__ for cls in vision_layer_classes)
+            raise ValueError(
+                'Vision execution blocks must share one class, got '
+                f'{names}.')
+
+        mlp_classes = set()
+        for backbone_name in ('llm_backbone', 'llm_expert'):
+            backbone = getattr(self, backbone_name, None)
+            try:
+                layers = backbone.layers
+            except AttributeError as exc:
+                raise ValueError('Execution-block FSDP requires '
+                                 f'{backbone_name}.layers.') from exc
+            if not layers:
+                raise ValueError(f'{backbone_name} has no transformer layers.')
+            if any(not hasattr(layer, 'mlp') for layer in layers):
+                raise ValueError(
+                    f'Every {backbone_name} layer must expose an MLP.')
+            mlp_classes.update(type(layer.mlp) for layer in layers)
+
+        if len(mlp_classes) != 1:
+            names = sorted(cls.__name__ for cls in mlp_classes)
+            raise ValueError('Gemma execution MLPs must share one class, got '
+                             f'{names}.')
+
+        return partial(
+            transformer_auto_wrap_policy,
+            transformer_layer_cls=vision_layer_classes | mlp_classes)

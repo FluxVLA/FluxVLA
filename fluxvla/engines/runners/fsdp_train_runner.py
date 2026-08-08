@@ -63,7 +63,11 @@ class FSDPTrainRunner(BaseTrainRunner):
         mixed_precision_dtype (str, optional): Data type for mixed precision
             training.  Defaults to 'bf16'.
         sharding_strategy (str, optional): Sharding strategy for FSDP.
-            Defaults to 'full-shard'.
+            Defaults to 'hybrid-shard'.
+        fsdp_wrap_policy (str, optional): FSDP auto-wrap granularity. ``model``
+            uses the model's existing policy, ``execution-block`` uses an
+            execution-aware policy supplied by the model, and ``root`` wraps
+            only the root module. Defaults to ``model``.
     """
 
     def __init__(self,
@@ -86,6 +90,7 @@ class FSDPTrainRunner(BaseTrainRunner):
                  grad_accumulation_steps: int = 1,
                  evaluator: Optional[Dict] = None,
                  sharding_strategy: str = 'hybrid-shard',
+                 fsdp_wrap_policy: str = 'model',
                  change_key_name: bool = False,
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None,
@@ -138,6 +143,11 @@ class FSDPTrainRunner(BaseTrainRunner):
             raise ValueError(
                 f'FSDP Sharding Strategy {sharding_strategy} is not supported!'
             )
+        if fsdp_wrap_policy not in ('model', 'execution-block', 'root'):
+            raise ValueError(
+                'FSDP wrap policy must be one of model, execution-block, '
+                f'or root, got {fsdp_wrap_policy!r}.')
+        self.fsdp_wrap_policy = fsdp_wrap_policy
         self.change_key_name = change_key_name
         self.fsdp_state_dict_type = StateDictType.FULL_STATE_DICT
         self.fsdp_save_policy = FullStateDictConfig(
@@ -285,8 +295,16 @@ class FSDPTrainRunner(BaseTrainRunner):
         is_no_shard = (
             self.fsdp_sharding_strategy == ShardingStrategy.NO_SHARD)
 
-        if is_no_shard:
+        if is_no_shard or self.fsdp_wrap_policy == 'root':
             vla_fsdp_wrapping_policy = None
+        elif self.fsdp_wrap_policy == 'execution-block':
+            policy_getter = getattr(
+                self.vla, 'get_fsdp_execution_block_wrapping_policy', None)
+            if not callable(policy_getter):
+                raise ValueError(
+                    f'{type(self.vla).__name__} does not provide an '
+                    'execution-block FSDP wrapping policy.')
+            vla_fsdp_wrapping_policy = policy_getter()
         else:
             vla_fsdp_wrapping_policy = self.vla.get_fsdp_wrapping_policy()
 
@@ -363,6 +381,12 @@ class FSDPTrainRunner(BaseTrainRunner):
             limit_all_gathers=True,
             use_orig_params=True,
         )
+        fsdp_unit_count = sum(
+            isinstance(module, FSDP) for module in self.vla.modules())
+        overwatch.info(
+            f'FSDP wrapping created {fsdp_unit_count} units '
+            f'(policy={self.fsdp_wrap_policy}).',
+            ctx_level=1)
 
         # Apply Gradient Checkpointing AFTER FSDP wrapping
         if self.enable_gradient_checkpointing:
@@ -423,7 +447,8 @@ class FSDPTrainRunner(BaseTrainRunner):
             warmup_info = '0'
         # Finalize Setup =>> Log!
         overwatch.info(
-            'FSDP Full-Shard Strategy =>> Finalized Training Setup:\n'  # noqa: E501
+            f'FSDP {self.sharding_strategy} Strategy '
+            f'(wrap={self.fsdp_wrap_policy}) =>> Finalized Training Setup:\n'  # noqa: E231, E501
             f'         |-> Global (Effective) Batch Size = {self.global_batch_size}\n'  # noqa: E221, E501
             f'         |-> Per-Device Batch Size = {self.per_device_batch_size}\n'  # noqa: E221, E501
             f'         |-> Distributed World Size = {overwatch.world_size()}\n'  # noqa: E221, E501

@@ -23,7 +23,7 @@ and larger sample budget are transferred. The optimizer schedule follows the
 RLinf/OpenPI values. Global SHARD_GRAD_OP keeps BF16 compute and globally
 sharded FP32 state, but retains unsharded parameters between forward and
 backward. This avoids both Hybrid's extra inter-node communicators and Full
-Shard's second parameter all-gather during gradient-checkpoint recomputation.
+Shard's second parameter all-gather before backward.
 
 Expected topology: 4 nodes x 8 RTX PRO 5000 72GB GPUs. The effective batch is
 ``8 samples/GPU * 32 GPUs * 1 micro-batch = 256``. For a different world
@@ -88,6 +88,12 @@ runner = dict(
     # that maps to private _HYBRID_SHARD_ZERO2 and recreates the failing
     # ``_inter_node_pg`` communicator.
     sharding_strategy='global-shard-grad-op',
+    # PI0's generic policy creates 547 FSDP units, mostly individual Linear
+    # and LayerNorm modules. Across a 32-rank global process group those tiny
+    # collectives dominate step time. Use the 27 executed SigLIP encoder
+    # blocks and 36 executed Gemma MLPs instead; precision and model math are
+    # unchanged.
+    fsdp_wrap_policy='execution-block',
 )
 
 eval = dict(
