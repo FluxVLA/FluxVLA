@@ -225,14 +225,13 @@ sudo pip3 install jetson-stats
 ```bash
 git clone https://github.com/limxdynamics/FluxVLA.git
 cd FluxVLA
-docker/build_docker.sh
-docker/run_docker.sh
+docker pull fluxvla/fluxvla:fluxvla-orin-1.0.0
+scripts/run_docker.sh
 ```
 
 详细 Docker 使用见：
 
-- `docker/README_DOCKER_ORIN.md`
-- `docker/DOCKER_VERSIONING.md`
+- `docs/orin_docker_runtime_zh-CN.md`
 
 ## 9. Q&A
 

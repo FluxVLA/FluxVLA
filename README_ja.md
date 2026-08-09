@@ -154,18 +154,14 @@ pip install --no-build-isolation -e .
 
 Jetson Orin の初期フラッシュと JetPack セットアップは [docs/orin_flashing.md](docs/orin_flashing.md)、検証済みの FluxVLA Docker ランタイム手順は [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md) を参照してください。
 
-主な Orin イメージターゲットは次の階層で構成されています：
-
-- `fluxvla:orin-base`：Jetson L4T、PyTorch、Triton、FluxVLA の共通依存を含む最小ランタイム。
-- `fluxvla:orin-fa`：`orin-base` に SM87 向け FlashAttention を追加した attention-heavy 推論向けイメージ。
-- `fluxvla:orin-ros`：`orin-base` に ROS Noetic ランタイムと Python バインディングを追加したロボット統合向けイメージ。
-- `fluxvla:orin-ros-fa`：ROS と FlashAttention を組み合わせ、実機 ROS ノードと高性能推論を同時に使うためのイメージ。
-
-ビルドターゲットの選択、ROS イメージ、FlashAttention、ミラー設定は [docker/README_DOCKER_ORIN.md](docker/README_DOCKER_ORIN.md) を参照してください。Orin 上で `ports.ubuntu.com` や PyPI が不安定な場合は、同梱のミラー設定を有効にできます：
+検証済みの Orin ランタイムは Docker イメージとして公開されています：
 
 ```bash
-FLUXVLA_USE_CN_MIRRORS=1 docker/build_docker.sh
+docker pull fluxvla/fluxvla:fluxvla-orin-1.0.0
+scripts/run_docker.sh
 ```
+
+`scripts/run_docker.sh` はこのイメージをデフォルトで使用し、現在のリポジトリをコンテナ内の `/workspace/FluxVLA` にマウントします。詳細は [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md) を参照してください。
 
 </details>
 

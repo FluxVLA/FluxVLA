@@ -154,18 +154,14 @@ pip install --no-build-isolation -e .
 
 Jetson Orin 从刷机到 JetPack 初始化见 [docs/orin_flashing_zh-CN.md](docs/orin_flashing_zh-CN.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
 
-常用的 Orin 镜像按层次拆分如下：
-
-- `fluxvla:orin-base`：最小运行时基线，包含 Jetson L4T、PyTorch、Triton 与 FluxVLA 通用依赖。
-- `fluxvla:orin-fa`：在 `orin-base` 上增加面向 SM87 的 FlashAttention，适合 attention-heavy 推理场景。
-- `fluxvla:orin-ros`：在 `orin-base` 上增加 ROS Noetic 运行时与 Python 绑定，用于机器人集成。
-- `fluxvla:orin-ros-fa`：同时集成 ROS 与 FlashAttention，适合真机 ROS 节点和高性能推理共用。
-
-镜像选择、ROS 镜像、FlashAttention 和镜像源选项见 [docker/README_DOCKER_ORIN.md](docker/README_DOCKER_ORIN.md)。如果在 Orin 上构建 Docker 镜像时 `ports.ubuntu.com` 或 PyPI 网络不稳定，可以启用内置国内源：
+当前验证过的 Orin 运行环境已发布为 Docker 镜像：
 
 ```bash
-FLUXVLA_USE_CN_MIRRORS=1 docker/build_docker.sh
+docker pull fluxvla/fluxvla:fluxvla-orin-1.0.0
+scripts/run_docker.sh
 ```
+
+`scripts/run_docker.sh` 默认使用该镜像，并把当前仓库挂载到容器内 `/workspace/FluxVLA`。详细运行方式见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
 
 </details>
 

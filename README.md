@@ -322,18 +322,14 @@ pip install --no-build-isolation -e .
 
 For Jetson Orin setup, see [docs/orin_flashing.md](docs/orin_flashing.md) for initial flashing and JetPack setup, and [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md) for the validated FluxVLA Docker runtime workflow.
 
-Common Orin image targets are layered as follows:
-
-- `fluxvla:orin-base`: minimal runtime baseline with Jetson L4T, PyTorch, Triton, and FluxVLA dependencies.
-- `fluxvla:orin-fa`: `orin-base` plus SM87 FlashAttention for attention-heavy inference.
-- `fluxvla:orin-ros`: `orin-base` plus ROS Noetic runtime and Python bindings for robot integration.
-- `fluxvla:orin-ros-fa`: ROS and FlashAttention combined for real-robot ROS nodes with high-performance inference.
-
-Build selection, ROS image, FlashAttention, and mirror options are documented in [docker/README_DOCKER_ORIN.md](docker/README_DOCKER_ORIN.md). If `ports.ubuntu.com` or PyPI is unstable while building on Orin, enable the bundled mirror option:
+The validated Orin runtime is published as a Docker image:
 
 ```bash
-FLUXVLA_USE_CN_MIRRORS=1 docker/build_docker.sh
+docker pull fluxvla/fluxvla:fluxvla-orin-1.0.0
+scripts/run_docker.sh
 ```
+
+`scripts/run_docker.sh` uses this image by default and mounts the current repository to `/workspace/FluxVLA`. Runtime details are documented in [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md).
 
 </details>
 
