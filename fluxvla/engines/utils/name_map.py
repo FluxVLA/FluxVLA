@@ -14,44 +14,51 @@
 
 import torch
 
-try:
-    from torch.distributed.fsdp import StateDictType
-except ModuleNotFoundError as exc:
-    StateDictType = None
-    _FSDP_IMPORT_ERROR = exc
-else:
-    _FSDP_IMPORT_ERROR = None
+from .heterogeneous_runtime import is_heterogeneous_torch_distributed_error
+
+_DTYPE_MAP = {
+    'fp32': torch.float32,
+    'float32': torch.float32,
+    'fp16': torch.float16,
+    'float16': torch.float16,
+    'bf16': torch.bfloat16,
+    'int8': torch.int8,
+    'int16': torch.int16,
+    'int32': torch.int32,
+    'int64': torch.int64,
+    'uint8': torch.uint8,
+    'bool': torch.bool,
+}
+
+_STATE_DICT_TYPE_ATTRS = {
+    'full_state_dict': 'FULL_STATE_DICT',
+    'local_state_dict': 'LOCAL_STATE_DICT',
+    'sharded_state_dict': 'SHARDED_STATE_DICT',
+}
+
+
+def _get_state_dict_type_cls():
+    try:
+        from torch.distributed.fsdp import StateDictType
+    except ImportError as exc:
+        if not is_heterogeneous_torch_distributed_error(exc):
+            raise
+        raise RuntimeError(
+            'FSDP state-dict types are unavailable in this torch build'
+        ) from exc
+    return StateDictType
 
 
 def str_to_dtype(s: str):
-    mapping = {
-        'fp32': torch.float32,
-        'float32': torch.float32,
-        'fp16': torch.float16,
-        'float16': torch.float16,
-        'bf16': torch.bfloat16,
-        'int8': torch.int8,
-        'int16': torch.int16,
-        'int32': torch.int32,
-        'int64': torch.int64,
-        'uint8': torch.uint8,
-        'bool': torch.bool
-    }
-    s = s.lower()
-    if s in mapping:
-        return mapping[s]
-    raise ValueError(f'Unsupported dtype string: {s}')
+    try:
+        return _DTYPE_MAP[s.lower()]
+    except KeyError as exc:
+        raise ValueError(f'Unsupported dtype string: {s}') from exc
 
 
 def state_dict_type_map(s: str):
-    if StateDictType is None:
-        raise RuntimeError(
-            'FSDP state-dict types are unavailable in this torch build'
-        ) from _FSDP_IMPORT_ERROR
-    if s == 'full_state_dict':
-        return StateDictType.FULL_STATE_DICT
-    if s == 'local_state_dict':
-        return StateDictType.LOCAL_STATE_DICT
-    if s == 'sharded_state_dict':
-        return StateDictType.SHARDED_STATE_DICT
-    assert False, f'Unsupported state dict type: {s}'
+    state_dict_type_cls = _get_state_dict_type_cls()
+    try:
+        return getattr(state_dict_type_cls, _STATE_DICT_TYPE_ATTRS[s])
+    except KeyError as exc:
+        raise ValueError(f'Unsupported state dict type: {s}') from exc
