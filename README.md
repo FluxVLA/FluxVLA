@@ -55,9 +55,9 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## 📢 Latest News
 
-**\[2026/06/30\]** 🔥 Single-arm and dual-arm Franka real-robot inference is now supported, including joint/eepose control configs and a deployment guide. See [docs/franka.md](docs/franka.md).
+**\[2026/08/10\]** 🔥 FluxVLA deployment on NVIDIA Jetson Orin is now supported, with edge inference acceleration reaching 7.4 Hz for GR00T-N1.5. See [orin_flashing.md](docs/orin_flashing.md) for initial flashing and [orin_docker_runtime.md](docs/orin_docker_runtime.md) to start the FluxVLA Docker setup.
 
-**\[2026/06/30\]** 🔥 FluxVLA deployment on NVIDIA Jetson Orin is now supported, with model acceleration optimizations for efficient edge inference. See [docs/orin_flashing.md](docs/orin_flashing.md) for initial flashing and [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md) to start the FluxVLA Docker setup.
+**\[2026/06/30\]** 🔥 Single-arm and dual-arm Franka real-robot inference is now supported, including joint/eepose control configs and a deployment guide. See [docs/franka.md](docs/franka.md).
 
 **\[2026/06/25\]** 🔥 GR00T-RTC-accelerated inference is now supported, achieving 45 Hz on an RTX 5090.
 
