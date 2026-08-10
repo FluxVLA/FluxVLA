@@ -20,7 +20,8 @@ from transformers.models.smolvlm.configuration_smolvlm import SmolVLMConfig
 from transformers.models.smolvlm.modeling_smolvlm import SmolVLMModel
 
 from fluxvla.engines import VLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import or_policy, transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import (
+    build_combined_wrap_policy, build_transformer_layer_wrap_policy)
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 
 overwatch = initialize_overwatch(__name__)
@@ -173,10 +174,12 @@ class SmolVLMBackbone(nn.Module):
         from transformers.models.smolvlm.modeling_smolvlm import \
             SmolVLMEncoderLayer
 
-        llm_policy = transformer_wrap_policy({LlamaDecoderLayer})
-        vision_policy = transformer_wrap_policy({SmolVLMEncoderLayer})
+        llm_policy = build_transformer_layer_wrap_policy({LlamaDecoderLayer})
+        vision_policy = build_transformer_layer_wrap_policy(
+            {SmolVLMEncoderLayer})
 
         def match_linear(module, *args, **kwargs):
             return isinstance(module, (nn.Linear, nn.LayerNorm, LlamaRMSNorm))
 
-        return or_policy([llm_policy, vision_policy, match_linear])
+        return build_combined_wrap_policy(
+            [llm_policy, vision_policy, match_linear])

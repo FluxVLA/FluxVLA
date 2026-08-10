@@ -24,7 +24,6 @@ from typing import Dict
 import torch
 import torch.distributed as dist
 import tqdm
-from libero.libero import benchmark
 from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
@@ -37,6 +36,17 @@ from .base_eval_runner import BaseEvalRunner
 
 overwatch = initialize_overwatch(__name__)
 LIBERO_TASK_SHARDING_ALLOWED_ENV = 'FLUXVLA_ALLOW_LIBERO_TASK_SHARDING'
+
+
+def _get_libero_benchmark():
+    try:
+        from libero.libero import benchmark
+    except ModuleNotFoundError as exc:
+        raise ModuleNotFoundError(
+            'LIBERO is required for simulation evaluation. Install it with '
+            '`bash scripts/install_env.sh sim-only` or '
+            '`bash scripts/install_env.sh full`.') from exc
+    return benchmark
 
 
 @RUNNERS.register_module()
@@ -115,12 +125,14 @@ class LiberoEvalRunner(BaseEvalRunner):
     @staticmethod
     def _inject_checkpoint_tokenizer(dataset: Dict, ckpt_path: str) -> None:
         model_path = Path(ckpt_path).resolve().parent.parent
-        if not (model_path / 'tokenizer').is_dir():
+        tokenizer_path = model_path / 'tokenizer'
+        if not tokenizer_path.is_dir():
             return
 
         for transform in dataset.get('transforms', []):
-            if 'tokenizer' in transform:
-                transform['model_path'] = model_path.as_posix()
+            tokenizer = transform.get('tokenizer')
+            if isinstance(tokenizer, dict):
+                tokenizer['model_path'] = tokenizer_path.as_posix()
 
     @staticmethod
     def _build_global_episodes(num_tasks: int,
@@ -532,6 +544,7 @@ class LiberoEvalRunner(BaseEvalRunner):
 
     def run(self):
         """Run the evaluation process."""
+        benchmark = _get_libero_benchmark()
         benchmark_dict = benchmark.get_benchmark_dict()
         task_suite = benchmark_dict[self.task_suite_name]()
         num_tasks_in_suite = task_suite.n_tasks

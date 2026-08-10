@@ -28,7 +28,7 @@ import torch
 from transformers import PretrainedConfig
 
 from fluxvla.engines import VLAS
-from fluxvla.engines.utils.fsdp_wrap import or_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_combined_wrap_policy
 from .base_vla import BaseVLA
 
 
@@ -166,7 +166,7 @@ class X_VLA(BaseVLA):
             wrapping_policies.append(self.vla_head.get_fsdp_wrapping_policy())
         if not wrapping_policies:
             raise ValueError('X_VLA could not build any FSDP wrapping policy.')
-        return or_policy(wrapping_policies)
+        return build_combined_wrap_policy(wrapping_policies)
 
     def get_lr_param_group_strategy(self, learning_rate: float, lr_coef: float,
                                     weight_decay: Optional[float],

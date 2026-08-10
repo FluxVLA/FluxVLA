@@ -21,7 +21,7 @@ from torch.distributions import Beta
 
 from fluxvla.engines import HEADS
 from fluxvla.engines.losses import reduce_action_bc_loss
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from fluxvla.models.blocks import SelfAttentionTransformer
 from fluxvla.models.blocks.cross_attention_dit import DiT
 
@@ -558,4 +558,4 @@ class FlowMatchingHead(nn.Module):
         """
         Returns a function used to determine which modules to wrap with FSDP.
         """
-        return module_wrap_policy({SelfAttentionTransformer, DiT})
+        return build_module_wrap_policy({SelfAttentionTransformer, DiT})

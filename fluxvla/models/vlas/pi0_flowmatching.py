@@ -22,7 +22,7 @@ from transformers.cache_utils import Cache
 from fluxvla.engines import (VLAS, build_llm_backbone_from_cfg,
                              build_projector_from_cfg)
 from fluxvla.engines.losses import reduce_action_bc_loss
-from fluxvla.engines.utils.fsdp_wrap import or_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_combined_wrap_policy
 from fluxvla.engines.utils.model_utils import (apply_rotary_pos_emb,
                                                create_sinusoidal_pos_embedding,
                                                eager_attention_forward,
@@ -868,4 +868,4 @@ class PI0FlowMatching(BaseVLA):
                 return True
             return False
 
-        return or_policy([*wrapping_policies, match_module])
+        return build_combined_wrap_policy([*wrapping_policies, match_module])

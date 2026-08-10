@@ -23,7 +23,8 @@ from transformers.models.gemma.modeling_gemma import (GemmaAttention,
                                                       GemmaMLP, GemmaRMSNorm)
 
 from fluxvla.engines import VLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import \
+    build_transformer_layer_wrap_policy
 from .hf_vlm import VLMBackbone
 
 
@@ -145,5 +146,5 @@ class PaliGemma(VLMBackbone):
         Returns:
             Callable: Wrapping policy function.
         """
-        return transformer_wrap_policy(
+        return build_transformer_layer_wrap_policy(
             {GemmaAttention, GemmaMLP, GemmaRMSNorm})

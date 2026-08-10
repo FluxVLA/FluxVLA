@@ -22,7 +22,8 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 from fluxvla.engines import (VLAS, build_tokenizer_from_cfg,
                              initialize_overwatch)
 from fluxvla.engines.losses import reduce_action_bc_loss
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy, or_policy
+from fluxvla.engines.utils.fsdp_wrapping import (build_combined_wrap_policy,
+                                                 build_module_wrap_policy)
 from .base_vla import BaseVLA
 
 overwatch = initialize_overwatch(__name__)
@@ -503,14 +504,14 @@ class OpenVLA(BaseVLA):
 
         # Get Prismatic Wrapping Policy =>> just a module wrapping policy
         # around `self.projector`
-        projector_fsdp_wrapping_policy = module_wrap_policy(
+        projector_fsdp_wrapping_policy = build_module_wrap_policy(
             set(PROJECTORS._module_dict.values()))
         fsdp_policy_list.append(projector_fsdp_wrapping_policy)
         # Return union (_or_) over constituent policies
         # => Note: there is *not* a fall-through policy; any module that isn't
         # covered by the above constituents will automatically be folded into
         # the root VLM FSDP instance.
-        return or_policy(fsdp_policy_list)
+        return build_combined_wrap_policy(fsdp_policy_list)
 
     @torch.no_grad()
     def generate(self,

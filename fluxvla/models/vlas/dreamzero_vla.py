@@ -17,7 +17,7 @@ from typing import Callable, Dict, List, Optional
 import torch
 
 from fluxvla.engines import VLAS, initialize_overwatch
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from .base_vla import BaseVLA
 
 overwatch = initialize_overwatch(__name__)
@@ -391,7 +391,7 @@ class DreamZeroVLA(BaseVLA):
             'wan_video_image_encoder')
         CLIPAttentionBlock = _img_enc.AttentionBlock
 
-        return module_wrap_policy({
+        return build_module_wrap_policy({
             CausalWanAttentionBlock,
             T5SelfAttention,
             CLIPAttentionBlock,

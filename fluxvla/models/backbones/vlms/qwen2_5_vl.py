@@ -21,7 +21,8 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import \
     Qwen2_5_VLDecoderLayer
 
 from fluxvla.engines import VLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import \
+    build_transformer_layer_wrap_policy
 from .hf_vlm import VLMBackbone, validate_attn_implementation
 
 
@@ -118,4 +119,4 @@ class QWen2_5VL(VLMBackbone):
         Returns:
             Callable: Wrapping policy function.
         """
-        return transformer_wrap_policy({Qwen2_5_VLDecoderLayer})
+        return build_transformer_layer_wrap_policy({Qwen2_5_VLDecoderLayer})

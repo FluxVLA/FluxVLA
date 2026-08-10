@@ -23,7 +23,8 @@ from transformers.models.qwen3.modeling_qwen3 import (Qwen3Attention,
                                                       Qwen3MLP)
 
 from fluxvla.engines import VLM_BACKBONES, str_to_dtype
-from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import \
+    build_transformer_layer_wrap_policy
 from fluxvla.models.third_party_models.eagle2_hg_model.modeling_eagle2_5_vl import \
     Eagle2_5_VLForConditionalGeneration  # noqa: E501
 from .hf_vlm import apply_attn_implementation_to_config
@@ -223,7 +224,7 @@ class EagleBackbone(nn.Module):
         Returns:
             Callable: Wrapping policy function.
         """
-        return transformer_wrap_policy({Qwen3Attention, Qwen3MLP})
+        return build_transformer_layer_wrap_policy({Qwen3Attention, Qwen3MLP})
 
 
 @VLM_BACKBONES.register_module()

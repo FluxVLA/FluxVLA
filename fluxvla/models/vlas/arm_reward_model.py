@@ -21,7 +21,7 @@ import torch.nn.functional as F
 
 from fluxvla.datasets.utils.sarm_utils import pad_state_to_max_dim
 from fluxvla.engines import VLAS
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from fluxvla.models.backbones.llms.arm import ARMBackbone
 from .base_vla import BaseVLA
 
@@ -379,4 +379,4 @@ class ARMRewardModel(BaseVLA):
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return the FSDP auto-wrap policy for ARM transformer layers."""
-        return module_wrap_policy({nn.TransformerEncoderLayer})
+        return build_module_wrap_policy({nn.TransformerEncoderLayer})

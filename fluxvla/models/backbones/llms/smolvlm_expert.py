@@ -20,7 +20,8 @@ from transformers.models.llama.configuration_llama import LlamaConfig
 from transformers.models.llama.modeling_llama import LlamaModel
 
 from fluxvla.engines import LLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import or_policy, transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import (
+    build_combined_wrap_policy, build_transformer_layer_wrap_policy)
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 
 overwatch = initialize_overwatch(__name__)
@@ -171,9 +172,11 @@ class SmolVLMExpert(nn.Module):
         from transformers.models.llama.modeling_llama import (
             LlamaDecoderLayer, LlamaRMSNorm)
 
-        transformer_block_policy = transformer_wrap_policy({LlamaDecoderLayer})
+        transformer_block_policy = build_transformer_layer_wrap_policy(
+            {LlamaDecoderLayer})
 
         def match_linear(module, *args, **kwargs):
             return isinstance(module, (nn.Linear, nn.LayerNorm, LlamaRMSNorm))
 
-        return or_policy([transformer_block_policy, match_linear])
+        return build_combined_wrap_policy(
+            [transformer_block_policy, match_linear])

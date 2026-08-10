@@ -20,7 +20,8 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import \
     Qwen3VLTextDecoderLayer
 
 from fluxvla.engines import VLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import \
+    build_transformer_layer_wrap_policy
 from fluxvla.engines.utils.name_map import str_to_dtype
 from .hf_vlm import VLMBackbone, validate_attn_implementation
 
@@ -316,4 +317,4 @@ class Qwen3VL(VLMBackbone):
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return FSDP wrapping policy for Qwen3VLTextDecoderLayer."""
-        return transformer_wrap_policy({Qwen3VLTextDecoderLayer})
+        return build_transformer_layer_wrap_policy({Qwen3VLTextDecoderLayer})

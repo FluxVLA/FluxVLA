@@ -33,7 +33,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from fluxvla.engines import HEADS
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from .xvla_action_spaces import build_action_space
 
 
@@ -488,7 +488,7 @@ class XVLAFlowMatchingHead(nn.Module):
         return self.action_space.postprocess(action)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
-        return module_wrap_policy({TransformerBlock})
+        return build_module_wrap_policy({TransformerBlock})
 
 
 __all__ = [

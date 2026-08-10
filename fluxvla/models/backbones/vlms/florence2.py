@@ -28,7 +28,8 @@ import torch
 from torch import nn
 
 from fluxvla.engines import VLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import \
+    build_transformer_layer_wrap_policy
 from fluxvla.models.third_party_models.xvla_models.modeling_florence2 import (
     Florence2EncoderLayer, Florence2ForConditionalGeneration)
 
@@ -210,7 +211,7 @@ class Florence2Backbone(nn.Module):
                 gradient_checkpointing_kwargs={'use_reentrant': False})
 
     def get_fsdp_wrapping_policy(self) -> Callable:
-        return transformer_wrap_policy({Florence2EncoderLayer})
+        return build_transformer_layer_wrap_policy({Florence2EncoderLayer})
 
 
 __all__ = ['Florence2Backbone']

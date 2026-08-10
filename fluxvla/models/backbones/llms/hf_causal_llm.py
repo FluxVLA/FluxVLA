@@ -20,7 +20,8 @@ from transformers import AutoConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from fluxvla.engines import LLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import \
+    build_transformer_layer_wrap_policy
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 from .configs import LLM_BACKBONE_CONFIGS
 
@@ -116,7 +117,8 @@ class HFCausalLLMBackbone(nn.Module):
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return an FSDP policy wrapping transformer layer instances."""
-        return transformer_wrap_policy({self.transformer_layer_cls})
+        return build_transformer_layer_wrap_policy(
+            {self.transformer_layer_cls})
 
     def enable_gradient_checkpointing(self) -> None:
         """Dispatch to underlying LLM instance's `gradient_checkpointing_enable`; defined for all `PretrainedModel`."""  # noqa: E501

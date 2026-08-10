@@ -24,7 +24,7 @@ from torch.distributions import Beta
 
 from fluxvla.engines import HEADS
 from fluxvla.engines.losses import reduce_action_bc_loss
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 
 KVCacheType: TypeAlias = torch.Tensor
 
@@ -895,4 +895,4 @@ class DreamZeroHead(nn.Module):
 
         # Wrap at the block level so FSDP shards each DiT block
         # individually, significantly reducing peak memory.
-        return module_wrap_policy({CausalWanAttentionBlock})
+        return build_module_wrap_policy({CausalWanAttentionBlock})

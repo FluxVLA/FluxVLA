@@ -40,7 +40,8 @@ except ImportError:
     from transformers.utils import LossKwargs as TransformersKwargs
 
 from fluxvla.engines import LLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrap import transformer_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import \
+    build_transformer_layer_wrap_policy
 
 logger = logging.get_logger(__name__)
 
@@ -1043,7 +1044,7 @@ class ConditionGemmaModel(GemmaPreTrainedModel):
         """
         Returns a function used to determine which modules to wrap with FSDP.
         """
-        return transformer_wrap_policy(
+        return build_transformer_layer_wrap_policy(
             {self.transformer_layer_cls, nn.Parameter})
 
 

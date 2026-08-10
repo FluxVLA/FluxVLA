@@ -21,7 +21,7 @@ from transformers import LlamaConfig, LlamaModel
 
 from fluxvla.engines import HEADS
 from fluxvla.engines.losses import reduce_action_bc_loss
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 
 
 class Mlp(nn.Module):
@@ -339,4 +339,4 @@ class LlavaActionHead(nn.Module):
         Returns:
             Callable: A policy that wraps the head module.
         """
-        return module_wrap_policy({SimpleTransformer, Block, Mlp})
+        return build_module_wrap_policy({SimpleTransformer, Block, Mlp})

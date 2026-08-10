@@ -38,21 +38,22 @@ def require_fsdp_wrap_support() -> None:
         ) from _FSDP_WRAP_IMPORT_ERROR
 
 
-def module_wrap_policy(module_classes: Iterable[type]) -> Callable:
+def build_module_wrap_policy(module_classes: Iterable[type]) -> Callable:
     """Build an FSDP policy that wraps instances of the given classes."""
     require_fsdp_wrap_support()
     assert _torch_module_wrap_policy is not None
     return partial(_torch_module_wrap_policy, module_classes=module_classes)
 
 
-def or_policy(policies: Iterable[Callable]) -> Callable:
+def build_combined_wrap_policy(policies: Iterable[Callable]) -> Callable:
     """Build an FSDP policy that matches any policy in ``policies``."""
     require_fsdp_wrap_support()
     assert _torch_or_policy is not None
     return partial(_torch_or_policy, policies=policies)
 
 
-def transformer_wrap_policy(transformer_layer_cls: Iterable[type]) -> Callable:
+def build_transformer_layer_wrap_policy(
+        transformer_layer_cls: Iterable[type]) -> Callable:
     """Build an FSDP policy for transformer layer classes."""
     require_fsdp_wrap_support()
     assert _torch_transformer_auto_wrap_policy is not None

@@ -24,7 +24,7 @@ from fluxvla.datasets.utils.sarm_utils import (load_temporal_proportions,
                                                normalize_stage_tau,
                                                pad_state_to_max_dim)
 from fluxvla.engines import VLAS, initialize_overwatch
-from fluxvla.engines.utils.fsdp_wrap import module_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from fluxvla.models.backbones.llms.sarm import SARMBackbone
 from .base_vla import BaseVLA
 
@@ -488,4 +488,4 @@ class SARMRewardModel(BaseVLA):
         Returns:
             Callable: Policy wrapping ``nn.TransformerEncoderLayer`` modules.
         """
-        return module_wrap_policy({nn.TransformerEncoderLayer})
+        return build_module_wrap_policy({nn.TransformerEncoderLayer})
