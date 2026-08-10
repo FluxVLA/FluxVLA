@@ -1,6 +1,6 @@
 # FluxVLA Docker Runtime on Jetson Orin
 
-FluxVLA Orin runtime is distributed as a published Docker image. The current branch does not require local Docker builds.
+FluxVLA Orin runtime is distributed as a published Docker image.
 
 Recommended image:
 
@@ -73,7 +73,7 @@ To override the image:
 FLUXVLA_IMAGE=<registry>/<repo>:<tag> scripts/run_docker.sh
 ```
 
-## 4. Run One Command
+## 4. Run Env Testing Command
 
 ```bash
 scripts/run_docker.sh python3 -c "import torch; print(torch.cuda.is_available())"

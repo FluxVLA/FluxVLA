@@ -13,9 +13,9 @@
 # limitations under the License.
 
 from .utils import *  # noqa: F401, F403
-from .utils.optional_imports import import_optional_symbols
+from .utils.heterogeneous_runtime import import_heterogeneous_runtime_symbols
 
-import_optional_symbols(__name__, globals(), {
+import_heterogeneous_runtime_symbols(__name__, globals(), {
     'metrics': None,
     'operators': None,
     'processors': None,

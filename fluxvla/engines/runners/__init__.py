@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ..utils.optional_imports import is_optional_torch_distributed_error
+from ..utils.heterogeneous_runtime import \
+    is_heterogeneous_torch_distributed_error
 from .aloha_inference_runner import AlohaInferenceRunner  # noqa: F401, F403
 from .aloha_rtc_inference_runner import \
     AlohaRTCInferenceRunner  # noqa: F401, F403
@@ -28,7 +29,7 @@ from .franka_inference_runner import FrankaInferenceRunner  # noqa: F401, F403
 try:
     from .fsdp_train_runner import FSDPTrainRunner  # noqa: F401, F403
 except ImportError as exc:
-    if not is_optional_torch_distributed_error(exc):
+    if not is_heterogeneous_torch_distributed_error(exc):
         raise
 
 from .oli_inference_runner import OliInferenceRunner  # noqa: F401, F403

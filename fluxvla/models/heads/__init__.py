@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fluxvla.engines.utils.optional_imports import import_optional_symbols
+from fluxvla.engines.utils.heterogeneous_runtime import \
+    import_heterogeneous_runtime_symbols
 from .flow_matching_head import FlowMatchingHead  # noqa: F401, F403
 from .llava_action_head import LlavaActionHead  # noqa: F401, F403
 from .openvla_head import OpenVLAHead  # noqa: F401, F403
 
-import_optional_symbols(
+import_heterogeneous_runtime_symbols(
     __name__,
     globals(),
     {

@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fluxvla.engines.utils.optional_imports import import_optional_symbols
+from fluxvla.engines.utils.heterogeneous_runtime import \
+    import_heterogeneous_runtime_symbols
 from .eagle import EagleBackbone, EagleInferenceBackbone  # noqa: F401, F403
 
-import_optional_symbols(
+import_heterogeneous_runtime_symbols(
     __name__,
     globals(),
     {
@@ -26,5 +27,5 @@ import_optional_symbols(
         'qwen3_vl': ['Qwen3VL'],
         'wan_backbone': ['WanBackbone'],
     },
-    optional_missing_names=['transformers.models.qwen3_vl'],
+    runtime_missing_names=['transformers.models.qwen3_vl'],
 )

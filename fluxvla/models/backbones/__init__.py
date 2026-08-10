@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from fluxvla.engines.utils.optional_imports import import_optional_symbols
+from fluxvla.engines.utils.heterogeneous_runtime import \
+    import_heterogeneous_runtime_symbols
 
-import_optional_symbols(__name__, globals(), {
+import_heterogeneous_runtime_symbols(__name__, globals(), {
     'llms': None,
     'visions': None,
     'vlms': None,

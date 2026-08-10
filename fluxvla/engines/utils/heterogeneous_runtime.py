@@ -17,8 +17,8 @@ from types import ModuleType
 from typing import Iterable, Mapping, MutableMapping, Optional, Sequence
 
 
-def is_optional_torch_distributed_error(exc: ImportError) -> bool:
-    """Return True for torch builds without optional distributed support."""
+def is_heterogeneous_torch_distributed_error(exc: ImportError) -> bool:
+    """Return True for torch builds missing distributed runtime support."""
     name = getattr(exc, 'name', '') or ''
     message = str(exc)
     return (name.startswith('torch.distributed')
@@ -26,19 +26,19 @@ def is_optional_torch_distributed_error(exc: ImportError) -> bool:
             or 'torch._C._distributed_c10d' in message)
 
 
-def is_optional_import_error(
+def is_heterogeneous_import_error(
         exc: ImportError,
-        optional_missing_names: Iterable[str] = (),
+        runtime_missing_names: Iterable[str] = (),
 ) -> bool:
-    """Return True if ``exc`` belongs to an explicitly optional import."""
-    if is_optional_torch_distributed_error(exc):
+    """Return True if ``exc`` is tolerated in a heterogeneous runtime."""
+    if is_heterogeneous_torch_distributed_error(exc):
         return True
 
     name = getattr(exc, 'name', '') or ''
     if not name:
         return False
-    return any(name == optional_name or name.startswith(f'{optional_name}.')
-               for optional_name in optional_missing_names)
+    return any(name == runtime_name or name.startswith(f'{runtime_name}.')
+               for runtime_name in runtime_missing_names)
 
 
 def _public_names(module: ModuleType) -> Sequence[str]:
@@ -48,28 +48,29 @@ def _public_names(module: ModuleType) -> Sequence[str]:
     return tuple(name for name in vars(module) if not name.startswith('_'))
 
 
-def import_optional_symbols(
+def import_heterogeneous_runtime_symbols(
         package: str,
         namespace: MutableMapping[str, object],
         module_symbols: Mapping[str, Optional[Iterable[str]]],
         *,
-        optional_missing_names: Iterable[str] = (),
+        runtime_missing_names: Iterable[str] = (),
 ) -> None:
-    """Import optional modules and expose selected symbols in ``namespace``.
+    """Import modules and expose symbols across heterogeneous runtimes.
 
     Args:
         package: Package name used for relative imports, usually ``__name__``.
         namespace: Caller globals where imported symbols are exported.
         module_symbols: Mapping from relative module name to exported symbols.
             Use ``None`` to export public names, matching ``from module import *``.
-        optional_missing_names: Import names that may be absent in slim
-            runtime environments. Other ImportError instances are re-raised.
+        runtime_missing_names: Import names that may be absent in slim or
+            device-specific runtime environments. Other ImportError instances
+            are re-raised.
     """
     for module_name, symbols in module_symbols.items():
         try:
             module = import_module(f'.{module_name}', package=package)
         except ImportError as exc:
-            if is_optional_import_error(exc, optional_missing_names):
+            if is_heterogeneous_import_error(exc, runtime_missing_names):
                 continue
             raise
 
