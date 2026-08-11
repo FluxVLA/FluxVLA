@@ -11,26 +11,50 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Full-data PI0.5 fine-tuning on the RoboCasa GR1 tabletop tasks.
+"""Low-change, BF16 PI0.5 RoboCasa score-target recipe.
+
+This is the single production recipe selected after auditing the experiment
+sheet, RLinf, OpenPI, and StarVLA. It deliberately starts from the official
+PI0.5 base checkpoint instead of continuing the 31.58% RoboCasa checkpoint.
+
+The public StarVLA 43.9% result is from QwenPI_v2, not OpenPI PI0.5, so 40% is
+a target rather than a reproduced guarantee. Only its uniform 24-task mixture
+and larger sample budget are transferred. The optimizer schedule follows the
+RLinf/OpenPI values. Global SHARD_GRAD_OP uses BF16 forward/backward compute
+with globally sharded FP32 master parameters, reductions, and buffers.
 
 The converted dataset uses a single ego-view camera, 29-dimensional joint
 states and absolute joint-position actions, q01/q99 quantile normalization,
 and a 16-step action horizon. Run ``scripts/convert_robocasa_for_fluxvla.py``
 to trim the source 44-dimensional data and generate ``episodes_stats.jsonl``.
 
-Example for two 8-GPU nodes sharing MASTER_ADDR and MASTER_PORT:
-    torchrun --nnodes=2 --nproc_per_node=8 \
+Expected topology: 4 nodes x 8 RTX PRO 5000 72GB GPUs. The effective batch is
+``8 samples/GPU * 32 GPUs * 1 micro-batch = 256``. For a different world
+size, set ``runner.grad_accumulation_steps = 256 // (8 * world_size)``.
+
+Example for four 8-GPU nodes sharing MASTER_ADDR and MASTER_PORT:
+    torchrun --nnodes=4 --nproc_per_node=8 \
         --node_rank=${NODE_RANK} --master_addr=${MASTER_ADDR} \
         --master_port=${MASTER_PORT} scripts/train.py \
         --config \
-        configs/pi05/pi05_paligemma_robocasa_full_data_full_finetune.py \
-        --work-dir work_dirs/pi05_paligemma_robocasa_full_data_full_finetune
+        configs/pi05/\
+pi05_paligemma_robocasa_official_40_target_full_finetune.py \
+        --work-dir \
+        work_dirs/pi05_paligemma_robocasa_official_40_target_full_finetune
 """
+
+seed = 7
 
 # The PI0.5 architecture matches the LIBERO and ALOHA variants. Its internal
 # action dimension is 32; the 29 RoboCasa joints are padded with three zeros.
 model = dict(
     type='PI05FlowMatching',
+    # Match OpenPI's flow-matching objective and supervise all padded action
+    # dimensions.
+    time_sampler='beta',
+    time_beta_alpha=1.5,
+    time_beta_beta=1.0,
+    loss_action_dim=32,
     # PaliGemma backbone for image and language tokens.
     llm_backbone=dict(
         type='ConditionGemmaModel',
@@ -173,12 +197,14 @@ def _robocasa_task_env(task_name):
 # and 18 novel), one 256x256 ego-view camera, 29-dimensional joint states and
 # absolute actions, and fixed q01/q99 quantile statistics shared with eval.
 train_dataloader = dict(
-    # 16 A800 GPUs with 16 samples/GPU give a global batch of 256.
-    per_device_batch_size=16,
-    # Eight GPUs/node with eight workers/GPU give 64 workers per node.
-    per_device_num_workers=8,
+    # 32 GPUs with 8 samples/GPU give a global batch of 256.
+    per_device_batch_size=8,
+    per_device_num_workers=4,
     dataset=dict(
-        type='DistributedRepeatingDataset',
+        # Sample all 24 tasks uniformly, independently of episode count.
+        type='DistributedBalancedRepeatingDataset',
+        seed=seed,
+        reshuffle_each_epoch=True,
         # Keep state and action statistics separate. Action statistics must
         # come from the action column rather than observation.state.
         name_mappings={
@@ -192,6 +218,7 @@ train_dataloader = dict(
         dataset_statistics_path=_OFFICIAL_GR1_STATS_PATH,
         datasets=dict(
             type='ParquetDataset',
+            supervise_terminal_padding=True,
             # Converted task directories produced by
             # convert_robocasa_for_fluxvla.py.
             data_root_path=[
@@ -299,25 +326,29 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=None,
-    # Match OpenPI's full-data PI0.5 recipe: global batch 256 and 100k
-    # optimizer updates. Do not shorten the LR horizon when changing the
-    # sample/epoch budget; the previous 50k cosine run reached near-zero LR
-    # at 40k and under-optimized the full-finetuned backbone.
+    # 100k global-256 updates expose 25.6M samples.
     max_steps=100000,
     grad_accumulation_steps=1,
-    # Full-fine-tune the language backbone to learn the discretized state
-    # prompt.
-    # OpenPI full-data PI0.5 uses a 1k-step warmup followed by a constant
-    # 5e-5 LR; decaying to zero over 50k steps materially reduced updates.
-    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.0),
+    optimizer=dict(
+        type='AdamW',
+        lr=2.5e-5,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+        weight_decay=1e-10,
+        weight_decay_all_params=True,
+        # Avoid the model-sized peak allocation from AdamW foreach state.
+        foreach=False,
+        fused=True,
+    ),
     max_grad_norm=1.0,
     # Keep enough periodic checkpoints for closed-loop model selection.
     save_epoch_interval=1,
-    save_iter_interval=5000,
-    max_keep_ckpts=8,
-    # Use DDP-style replicated parameters with bf16 master weights to avoid
-    # wrapping hundreds of small FSDP submodules.
-    sharding_strategy='no-shard',
+    save_iter_interval=10000,
+    max_keep_ckpts=10,
+    # Public global SHARD_GRAD_OP: FP32 sharded master parameters with BF16
+    # compute, without Hybrid Shard's extra inter-node communicators.
+    sharding_strategy='global-shard-grad-op',
+    fsdp_wrap_policy='execution-block',
     collator=dict(
         type='DictCollator',
         keys=[
@@ -344,8 +375,10 @@ runner = dict(
         grad_accumulation_steps=1,
         window_size=1),
     lr_scheduler=dict(
-        type='linear-warmup+constant',
-        warmup_steps=1000,
+        type='openpi-warmup+cosine-decay',
+        warmup_steps=5000,
+        decay_steps=100000,
+        min_lr=2.5e-6,
     ),
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
@@ -355,16 +388,16 @@ runner = dict(
 # Evaluate all 24 RoboCasa tasks.
 # Example:
 #   conda activate fluxvla && cd /root/projects/fluxvla
+#   CONFIG_DIR=configs/pi05
+#   CONFIG=pi05_paligemma_robocasa_official_40_target_full_finetune.py
 #   bash scripts/eval_robocasa.sh \
-#       --config \
-#       configs/pi05/pi05_paligemma_robocasa_full_data_full_finetune.py \
+#       --config "$CONFIG_DIR/$CONFIG" \
 #       --ckpt-path \
-#       ./checkpoints/pi05_paligemma_robocasa_full_data_full_finetune_\
-#       21aa5e82a_bs256/checkpoints/\
-#       step-100000-epoch-04-loss=0.0110.safetensors
+#       work_dirs/pi05_paligemma_robocasa_official_40_target_full_finetune/\
+#       checkpoints/latest-checkpoint.safetensors
 #
 # Optional override:
-#   --cfg-options eval.num_trials_per_task=20 eval.seed=7
+#   --cfg-options eval.num_trials_per_task=50 eval.seed=7
 #
 # unnorm_key must match the training statistic_name.
 eval = dict(
@@ -417,7 +450,8 @@ eval = dict(
     # changing the positive 100k-step training recipe.
     eval_chunk_size=8,
     max_episode_steps=720,
-    num_trials_per_task=20,  # 480 episodes across 24 tasks.
+    num_trials_per_task=50,  # 1,200 episodes across 24 tasks.
+    episode_seed_stride=50,
     seed=7,  # Match the GR00T RoboCasa evaluation initial states.
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='fluxvla',
@@ -491,7 +525,9 @@ themis = dict(
         model_client=dict(type='FluxVLAROSModelClient'),
         evaluator=dict(type='SuccessRateEvaluator'),
         seed=eval['seed'],
-        episodes_per_task=eval['num_trials_per_task'],
+        # Preserve the old inherited config's base-time value. The formal
+        # RobocasaEvalRunner protocol above still evaluates 50 trials/task.
+        episodes_per_task=20,
         max_episode_steps=eval['max_episode_steps'],
         execute_horizon=eval['eval_chunk_size'],
         stop_on_success=True,

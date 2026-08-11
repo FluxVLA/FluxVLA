@@ -70,6 +70,10 @@ model = dict(
     action_out_proj=dict(type='LinearProjector', in_dim=1024, out_dim=32),
     time_mlp_in=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
     time_mlp_out=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
+    # Match the OpenPI-aligned RoboCasa flow-matching objective.
+    time_sampler='beta',
+    time_beta_alpha=1.5,
+    time_beta_beta=1.0,
     max_action_dim=32,
     llm_expert=dict(
         type='ConditionGemmaModel',
@@ -121,6 +125,8 @@ model = dict(
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
     ori_action_dim=16,
+    # Supervise all padded model dimensions, as in OpenPI.
+    loss_action_dim=32,
 )
 
 inference_model = model.copy()
@@ -176,15 +182,28 @@ train_dataloader = dict(
                     dict(type='ResizeImages', height=224, width=224),
                     dict(type='SimpleNormalizeImages'),
                 ],
-                action_window_size=50)
+                action_window_size=50,
+                supervise_terminal_padding=True)
         ]))
 
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=6,
-    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.01),
+    optimizer=dict(
+        type='AdamW',
+        lr=5e-5,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+        weight_decay=1e-10,
+        weight_decay_all_params=True,
+        foreach=False,
+        fused=True,
+    ),
     max_grad_norm=1.0,
-    sharding_strategy='no-shard',
+    # BF16 compute with FP32 sharded master parameters and reductions.
+    sharding_strategy='global-shard-grad-op',
+    fsdp_wrap_policy='execution-block',
+    reduce_in_full_precision=True,
     collator=dict(
         type='DictCollator',
         keys=[
