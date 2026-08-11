@@ -61,7 +61,8 @@ def import_heterogeneous_runtime_symbols(
         package: Package name used for relative imports, usually ``__name__``.
         namespace: Caller globals where imported symbols are exported.
         module_symbols: Mapping from relative module name to exported symbols.
-            Use ``None`` to export public names, matching ``from module import *``.
+            Use ``None`` to export public names, matching
+            ``from module import *``.
         runtime_missing_names: Import names that may be absent in slim or
             device-specific runtime environments. Other ImportError instances
             are re-raised.

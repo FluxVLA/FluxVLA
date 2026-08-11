@@ -75,7 +75,8 @@ def main() -> int:
     args = parse_args()
     if args.batch_size != 1 and args.variant == 'accelerated':
         print(
-            'ERROR: accelerated PI05FlowMatchingInference currently uses fixed batch_size=1 buffers',
+            'ERROR: accelerated PI05FlowMatchingInference currently uses '
+            'fixed batch_size=1 buffers',
             file=sys.stderr)
         return 1
 
@@ -106,9 +107,8 @@ def main() -> int:
     print(f'Loading weights: {ckpt_path}')
     state = load_checkpoint_state(ckpt_path)
     missing, unexpected = vla.load_state_dict(state, strict=False)
-    print(
-        f'load_state_dict: missing={len(missing)}, unexpected={len(unexpected)}'
-    )
+    print(f'load_state_dict: missing={len(missing)}, '
+          f'unexpected={len(unexpected)}')
     if missing:
         print('missing_samples:', missing[:20])
     if unexpected:
@@ -120,9 +120,8 @@ def main() -> int:
                              args.image_size, args.lang_len, args.state_dim,
                              vocab_size)
 
-    print(
-        f'Benchmark {args.variant} predict_action: warmup={args.warmup}, runs={args.predict_runs}, lang_len={args.lang_len}'
-    )
+    print(f'Benchmark {args.variant} predict_action: warmup={args.warmup}, '
+          f'runs={args.predict_runs}, lang_len={args.lang_len}')
     times = []
     actions = None
     with torch.inference_mode():
@@ -142,12 +141,16 @@ def main() -> int:
 
     ms = [t * 1000.0 for t in times]
     print(f'predict_action output shape: {tuple(actions.shape)}')
-    print(
-        f'latency_ms: min={min(ms):.3f} max={max(ms):.3f} mean={statistics.mean(ms):.3f} median={statistics.median(ms):.3f} stdev={statistics.stdev(ms) if len(ms) > 1 else 0:.3f}'
-    )
-    print(
-        f'total_wall_predict={sum(times) * 1000.0:.3f} ms ({args.predict_runs} runs, excl. warmup)'
-    )
+    min_ms = min(ms)
+    max_ms = max(ms)
+    mean_ms = statistics.mean(ms)
+    median_ms = statistics.median(ms)
+    stdev_ms = statistics.stdev(ms) if len(ms) > 1 else 0.0
+    print(f'latency_ms: min={min_ms:.3f} max={max_ms:.3f} '
+          f'mean={mean_ms:.3f} median={median_ms:.3f} '
+          f'stdev={stdev_ms:.3f}')
+    print(f'total_wall_predict={sum(times) * 1000.0:.3f} ms '
+          f'({args.predict_runs} runs, excl. warmup)')
     print('OK')
     return 0
 
