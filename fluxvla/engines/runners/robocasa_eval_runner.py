@@ -74,9 +74,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         eval_chunk_size: Number of predicted actions executed per step.
         max_episode_steps: Maximum number of environment steps per episode.
         num_trials_per_task: Number of trials for each task.
-        episode_seed_stride: Optional fixed number of trial slots per task
-            used only for environment/action seeds. Set this to the formal
-            protocol trial count so reduced gates reuse its exact scenes.
         task_ids: Optional task id filter. Used by manager workers to run
             one or a few RoboCasa tasks.
         eval_shard_strategy: Episode assignment strategy. ``task`` keeps all
@@ -115,7 +112,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  eval_chunk_size: int = 10,
                  max_episode_steps: int = 720,
                  num_trials_per_task: int = 50,
-                 episode_seed_stride: Optional[int] = None,
                  task_ids=None,
                  eval_shard_strategy: str = 'episode',
                  mixed_precision_dtype: str = 'bf16',
@@ -138,9 +134,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg)
 
-        # CPython reads this value before imports. Capture it before
-        # ``set_seed_everywhere`` writes an ineffective late value.
-        self.python_hash_seed_at_init = os.environ.get('PYTHONHASHSEED')
         self.device_id = overwatch.local_rank()
 
         # Build model.
@@ -312,15 +305,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.task_list = task_list
         self.max_episode_steps = max_episode_steps
         self.num_trials_per_task = num_trials_per_task
-        if episode_seed_stride is None:
-            episode_seed_stride = num_trials_per_task
-        if int(episode_seed_stride) != episode_seed_stride or \
-                episode_seed_stride < num_trials_per_task:
-            raise ValueError(
-                'episode_seed_stride must be an integer greater than or '
-                'equal to num_trials_per_task, got '
-                f'{episode_seed_stride} for {num_trials_per_task} trials')
-        self.episode_seed_stride = int(episode_seed_stride)
         self.task_ids = task_ids
         self.eval_shard_strategy = eval_shard_strategy
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
@@ -387,10 +371,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
     def _episode_seed(self, local_id: int) -> int:
         return self._normalize_seed(self.seed + local_id)
 
-    def _episode_seed_id(self, task_id: int, trial_id: int) -> int:
-        """Return a protocol-stable episode id for deterministic seeding."""
-        return task_id * self.episode_seed_stride + trial_id
-
     def _action_seed(self, local_id: int, step: int) -> int:
         return self._normalize_seed(self.seed + 1_000_003 * (local_id + 1) +
                                     step)
@@ -409,12 +389,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
     def run_setup(self):
         """Initialize CUDA placement and model state."""
-        if self.python_hash_seed_at_init != str(self.seed):
-            overwatch.warning(
-                'Reproducible RoboCasa construction requires '
-                'PYTHONHASHSEED to be set before Python starts; expected '
-                f'{self.seed}, got {self.python_hash_seed_at_init!r}. Use '
-                'scripts/eval_robocasa_manager.sh or export it explicitly.')
         set_seed_everywhere(self.seed)
         torch.cuda.set_device(self.device_id)
         self.vla.eval()
@@ -428,11 +402,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
     def _format_duration(seconds: float) -> str:
         seconds = int(round(seconds))
         if seconds < 60:
-            return f'{seconds:02d}s'  # noqa: E231
+            return f'{seconds:02d}s'
         if seconds < 3600:
-            return f'{seconds // 60:02d}m{seconds % 60:02d}s'  # noqa: E231
+            return f'{seconds // 60:02d}m{seconds % 60:02d}s'
         hours, rem = divmod(seconds, 3600)
-        return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'  # noqa: E231
+        return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'
 
     @staticmethod
     def _robocasa_group_name(env_name: str) -> str:
@@ -495,9 +469,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                              f'{resolved}')
         invalid = [task for task in resolved if task < 0 or task >= num_tasks]
         if invalid:
-            raise ValueError(
-                f'Invalid task ids {invalid}; expected range [0, '  # noqa: E501, E702
-                f'{num_tasks - 1}].')
+            raise ValueError(f'Invalid task ids {invalid}; expected range [0, '
+                             f'{num_tasks - 1}].')
         return resolved
 
     @classmethod
@@ -647,14 +620,14 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 if stats['total_trials'] > 0:
                     rate = stats['total_successes'] / \
                         max(stats['total_trials'], 1) * 100
-                    group_rates.append(f'{rate:.2f}')  # noqa: E231
+                    group_rates.append(f'{rate:.2f}')
                 else:
                     group_rates.append('')
             writer.writerow([''] + group_order + ['all'])
             writer.writerow([
                 'Success Rate (%)',
                 *group_rates,
-                f'{overall_rate:.2f}',  # noqa: E231
+                f'{overall_rate:.2f}',
             ])
             writer.writerow([
                 'Episodes',
@@ -689,16 +662,16 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 rate = (
                     stats['total_successes'] / max(stats['total_trials'], 1) *
                     100 if stats['total_trials'] > 0 else 0.0)
-                f.write(f'\n{group}:\n')  # noqa: E231
+                f.write(f'\n{group}:\n')
                 f.write(f"- Tasks completed: {stats['total_tasks']}\n")
                 f.write(f"- Total attempts: {stats['total_trials']}\n")
                 f.write(f'- Successful attempts: '
                         f"{stats['total_successes']}\n")
-                f.write(f'- Success rate: {rate:.2f}%\n')  # noqa: E231
+                f.write(f'- Success rate: {rate:.2f}%\n')
                 f.write(f'- Total time: '
                         f"{self._format_duration(stats['total_time'])}\n")
             f.write('\nOverall statistics:\n')
-            f.write(f'- Success rate: {overall_rate:.2f}%\n')  # noqa: E231
+            f.write(f'- Success rate: {overall_rate:.2f}%\n')
             f.write(f'- Total attempts: {total_trials}\n')
             f.write(f'- Successful attempts: {total_successes}\n')
             f.write(f'- Total time: {self._format_duration(total_time)}\n')
@@ -718,10 +691,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     self.model_family,
                     'action_order':
                     self.action_order,
-                    'episode_seed_stride':
-                    self.episode_seed_stride,
-                    'python_hash_seed_at_init':
-                    self.python_hash_seed_at_init,
                     'task_ids':
                     self._resolve_task_ids(len(self.task_list), self.task_ids),
                     'group_stats':
@@ -794,8 +763,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
         log_filepath = os.path.join(self.run_dir, f'rank{rank}.txt')
         log_file = open(log_filepath, 'w', encoding='utf-8', buffering=1)
         log_file.write(f'Rank {rank}/{world_size}, seed={self.seed}\n')
-        log_file.write('PYTHONHASHSEED at runner init='
-                       f'{self.python_hash_seed_at_init}\n')
+        log_file.write(f'PYTHONHASHSEED={os.environ.get("PYTHONHASHSEED")}\n')
         log_file.write(f'Deterministic env: {self.deterministic_env}, '
                        f'deterministic action sampling: '
                        f'{self.deterministic_action_sampling}\n')
@@ -834,8 +802,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     f'Task {task_id} ({env_name}), Trial {trial_id}\n')
 
                 # Create RoboCasa environment.
-                seed_id = self._episode_seed_id(task_id, trial_id)
-                episode_seed = self._episode_seed(seed_id)
+                episode_seed = self._episode_seed(local_id)
                 if self.deterministic_env:
                     self._seed_python_numpy_torch(episode_seed)
                     env = gym.make(env_name, seed=episode_seed)
@@ -903,7 +870,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
                     # Model inference.
                     if self.deterministic_action_sampling:
-                        self._seed_torch(self._action_seed(seed_id, t))
+                        self._seed_torch(self._action_seed(local_id, t))
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,
@@ -1051,10 +1018,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
             n_ep = int(global_episodes[0].item())
             n_succ = int(global_successes[0].item())
             rate = n_succ / max(n_ep, 1) * 100
-            overwatch.info(f'Robocasa final: {n_succ}/{n_ep} '  # noqa: E231
-                           f'({rate:.2f}%)')  # noqa: E231
-            log_file.write(f'Robocasa final: {n_succ}/{n_ep} '  # noqa: E231
-                           f'({rate:.2f}%)\n')  # noqa: E231
+            overwatch.info(f'Robocasa final: {n_succ}/{n_ep} '
+                           f'({rate:.2f}%)')
+            log_file.write(f'Robocasa final: {n_succ}/{n_ep} '
+                           f'({rate:.2f}%)\n')
             summary_json = self._write_robocasa_summary_artifacts(
                 Path(self.run_dir),
                 run_id,
