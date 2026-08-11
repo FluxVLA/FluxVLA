@@ -68,6 +68,8 @@ class BaseInferenceRunner:
         task_pose_sequences (Dict): Task pose sequences mapping.
         mixed_precision_dtype (str): Data type for mixed precision.
         enable_mixed_precision (bool): Whether to enable mixed precision.
+        keep_params_fp32 (bool): Keep parameters and inputs in FP32 while
+            autocast controls compute precision.
         remote_inference (Dict): Remote inference config.  When provided,
             model loading is skipped and inference is delegated to a ZMQ
             server.  Keys: ``server_host``, ``server_port``, ``timeout_s``,
@@ -94,6 +96,7 @@ class BaseInferenceRunner:
                  task_pose_sequences: Dict = None,
                  mixed_precision_dtype: str = 'float32',
                  enable_mixed_precision: bool = True,
+                 keep_params_fp32: bool = False,
                  remote_inference: Dict = None,
                  **kwargs):
         from fluxvla.engines import (build_dataset_from_cfg,
@@ -161,6 +164,7 @@ class BaseInferenceRunner:
         # Mixed precision settings
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
         self.enable_mixed_precision = enable_mixed_precision
+        self.keep_params_fp32 = bool(keep_params_fp32)
 
         # Action context: SimpleNamespace shared between _predict_action,
         # _postprocess_actions, and _execute_actions within one iteration.
@@ -282,7 +286,7 @@ class BaseInferenceRunner:
                            f'Seed set to {self.seed}')
         else:
             self.vla.eval()
-            if self.enable_mixed_precision:
+            if self.enable_mixed_precision and not self.keep_params_fp32:
                 self.vla.to(device='cuda', dtype=self.mixed_precision_dtype)
             else:
                 if self.vla.__class__.__name__ in (
@@ -378,6 +382,8 @@ class BaseInferenceRunner:
             dict: Model-ready inputs (local) or raw obs (remote).
         """
         obs = self.update_observation_window()
+        if obs.get('qpos') is not None:
+            self._action_ctx.state = np.asarray(obs['qpos']).copy()
         obs['task_description'] = instruction
         if self._use_remote:
             obs['unnorm_key'] = self.task_suite_name
@@ -508,7 +514,9 @@ class BaseInferenceRunner:
         if self._use_remote:
             return raw_action.cpu().numpy()[:self.action_chunk]
         denormalized = self.denormalize_action(
-            dict(action=raw_action.cpu().numpy()))
+            dict(
+                action=raw_action.cpu().numpy(),
+                state=getattr(self._action_ctx, 'state', None)))
         return denormalized[:self.action_chunk]
 
     def _get_user_task_instruction(self, default_instruction: str) -> str:

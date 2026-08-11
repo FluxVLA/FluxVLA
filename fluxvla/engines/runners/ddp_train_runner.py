@@ -114,7 +114,11 @@ class DDPTrainRunner(BaseTrainRunner):
                  enable_mixed_precision_training: bool = True,
                  reduce_in_full_precision: bool = True,
                  mixed_precision_dtype: str = 'bf16',
+                 keep_params_fp32: bool = False,
                  grad_accumulation_steps: int = 1,
+                 target_global_batch_size: Optional[int] = None,
+                 ema_decay: Optional[float] = None,
+                 seed: Optional[int] = None,
                  evaluator: Optional[Dict] = None,
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None,
@@ -143,7 +147,11 @@ class DDPTrainRunner(BaseTrainRunner):
             enable_mixed_precision_training=enable_mixed_precision_training,
             reduce_in_full_precision=reduce_in_full_precision,
             mixed_precision_dtype=mixed_precision_dtype,
+            keep_params_fp32=keep_params_fp32,
             grad_accumulation_steps=grad_accumulation_steps,
+            target_global_batch_size=target_global_batch_size,
+            ema_decay=ema_decay,
+            seed=seed,
             evaluator=evaluator,
             tokenizer=tokenizer,
             resume_from=resume_from)
@@ -181,7 +189,8 @@ class DDPTrainRunner(BaseTrainRunner):
     def _move_vla_to_device(self, target_device: torch.device) -> None:
         torch.cuda.empty_cache()
         if (self.enable_mixed_precision_training
-                and self.mixed_precision_dtype == torch.bfloat16):
+                and self.mixed_precision_dtype == torch.bfloat16
+                and not self.keep_params_fp32):
             self.vla = self.vla.to(device=target_device, dtype=torch.bfloat16)
         else:
             self.vla = self.vla.to(target_device)
@@ -344,7 +353,11 @@ class DDPTrainRunner(BaseTrainRunner):
                     os.path.join(save_dir, 'tokenizer'))
 
             # Handle LoRA merging and checkpoint creation
+            train_model_state_dict = None
             if hasattr(self.cfg.model, 'use_lora') and self.cfg.model.use_lora:
+                if getattr(self, '_ema_params', None) is not None:
+                    raise ValueError('EMA checkpoint export is not supported '
+                                     'together with LoRA merging.')
                 # First, save the current LoRA adapter to save_dir
                 # This is necessary before loading it with
                 # PeftModel.from_pretrained
@@ -357,7 +370,20 @@ class DDPTrainRunner(BaseTrainRunner):
                 merged_vla = merged_vla.merge_and_unload()
                 model_state_dict = merged_vla.state_dict()
             else:
-                model_state_dict = self.vla.module.state_dict()
+                raw_state_dict = {
+                    key: value.detach().cpu().clone()
+                    for key, value in self.vla.module.state_dict().items()
+                }
+                if getattr(self, '_ema_params', None) is not None:
+                    with self._use_ema_parameters():
+                        model_state_dict = {
+                            key: value.detach().cpu().clone()
+                            for key, value in
+                            self.vla.module.state_dict().items()
+                        }
+                    train_model_state_dict = raw_state_dict
+                else:
+                    model_state_dict = raw_state_dict
 
             checkpoint_dir = os.path.join(run_dir, 'checkpoints')
             os.makedirs(checkpoint_dir, exist_ok=True)
@@ -380,6 +406,9 @@ class DDPTrainRunner(BaseTrainRunner):
                 'global_step': global_step,
                 'epoch': epoch,
             }
+            if train_model_state_dict is not None:
+                checkpoint_dict['train_model'] = train_model_state_dict
+                checkpoint_dict['ema_decay'] = self.ema_decay
 
             # Save optimizer state with parameter name mapping
             # Fix: Directly save state_index -> param_name mapping dictionary
@@ -741,10 +770,17 @@ class DDPTrainRunner(BaseTrainRunner):
         if overwatch.is_rank_zero():
             overwatch.info(
                 f'Resuming training from checkpoint: {self.resume_from}')
-        checkpoint_info = torch.load(self.resume_from)
+        checkpoint_info = torch.load(
+            self.resume_from, map_location='cpu', weights_only=True)
 
         if 'model' in checkpoint_info:
-            self._load_model_state(checkpoint_info['model'])
+            if (getattr(self, 'ema_decay', None) is not None
+                    and 'train_model' in checkpoint_info):
+                self._load_model_state(checkpoint_info['model'])
+                self._initialize_ema_parameters()
+                self._load_model_state(checkpoint_info['train_model'])
+            else:
+                self._load_model_state(checkpoint_info['model'])
 
         # Restore training state (reuse base class logic)
         if 'global_step' in checkpoint_info:

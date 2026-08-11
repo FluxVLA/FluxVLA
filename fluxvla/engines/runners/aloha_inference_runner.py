@@ -48,9 +48,13 @@ class AlohaInferenceRunner(BaseInferenceRunner):
                  prepare_pose: List[float] = None,
                  async_execution: bool = False,
                  execute_horizon: int = None,
+                 gripper_state_range=None,
+                 gripper_command_range=None,
+                 gripper_closed_value: float = -0.01,
                  *args,
                  **kwargs):
         self.gripper_threshold = gripper_threshold
+        self.gripper_closed_value = float(gripper_closed_value)
         self.async_execution = async_execution
         self.execute_horizon = execute_horizon
         # Set Aloha-specific defaults
@@ -75,6 +79,13 @@ class AlohaInferenceRunner(BaseInferenceRunner):
                 'robot_base_topic': '/odom_raw',
                 'robot_base_cmd_topic': '/cmd_vel',
             }
+        if isinstance(kwargs['operator'], dict):
+            if gripper_state_range is not None:
+                kwargs['operator'].setdefault('gripper_state_range',
+                                              gripper_state_range)
+            if gripper_command_range is not None:
+                kwargs['operator'].setdefault('gripper_command_range',
+                                              gripper_command_range)
 
         # Initialize Aloha-specific task descriptions
         if 'task_descriptions' not in kwargs or kwargs[
@@ -205,9 +216,14 @@ class AlohaInferenceRunner(BaseInferenceRunner):
         img_right = self._apply_jpeg_compression(img_right)
 
         # Combine joint positions from both arms
-        qpos = np.concatenate((np.array(
-            puppet_arm_left.position), np.array(puppet_arm_right.position)),
-                              axis=0)
+        normalize_gripper = getattr(self.ros_operator,
+                                    'normalize_gripper_state', None)
+        if normalize_gripper is None:
+            normalize_gripper = lambda value: np.asarray(  # noqa: E731
+                value, dtype=np.float32)
+        left_qpos = normalize_gripper(puppet_arm_left.position)
+        right_qpos = normalize_gripper(puppet_arm_right.position)
+        qpos = np.concatenate((left_qpos, right_qpos), axis=0)
 
         # Create observation dictionary
         observation = {
@@ -234,7 +250,6 @@ class AlohaInferenceRunner(BaseInferenceRunner):
     # Action layout: [left_arm(7), right_arm(7), base(2)]
     LEFT_GRIPPER_COL = 6
     RIGHT_GRIPPER_COL = 13
-    GRIPPER_CLOSED = -0.01
 
     def _postprocess_actions(self, raw_action):
         """Denormalize and snap near-closed grippers to fully closed."""
@@ -242,7 +257,7 @@ class AlohaInferenceRunner(BaseInferenceRunner):
         for col in (self.LEFT_GRIPPER_COL, self.RIGHT_GRIPPER_COL):
             actions[:,
                     col] = np.where(actions[:, col] < self.gripper_threshold,
-                                    self.GRIPPER_CLOSED, actions[:, col])
+                                    self.gripper_closed_value, actions[:, col])
         return actions
 
     def _execute_actions(self, actions, rate):

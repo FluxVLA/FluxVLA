@@ -160,6 +160,26 @@ def _resize_chw_with_pad(image: np.ndarray, height: int, width: int,
     return padded.transpose(2, 0, 1)
 
 
+def _resize_chw_with_pad_pil(image: np.ndarray, height: int,
+                             width: int) -> np.ndarray:
+    """Replicate OpenPI client's PIL ``resize_with_pad`` implementation."""
+    image_hwc = image.transpose(1, 2, 0)
+    cur_height, cur_width = image_hwc.shape[:2]
+    if (cur_height, cur_width) == (height, width):
+        return image.copy()
+
+    ratio = max(cur_width / width, cur_height / height)
+    resized_height = int(cur_height / ratio)
+    resized_width = int(cur_width / ratio)
+    resized = Image.fromarray(image_hwc).resize(
+        (resized_width, resized_height), resample=Image.Resampling.BILINEAR)
+    canvas = Image.new(resized.mode, (width, height), 0)
+    pad_height = max(0, int((height - resized_height) / 2))
+    pad_width = max(0, int((width - resized_width) / 2))
+    canvas.paste(resized, (pad_width, pad_height))
+    return np.asarray(canvas).transpose(2, 0, 1)
+
+
 @TRANSFORMS.register_module()
 class ResizeImages:
     """Resize images in the dataset to a specified
@@ -317,6 +337,7 @@ class ResizeImagesWithPad:
                  width,
                  pad_value: int = 0,
                  pad_direction: str = 'center',
+                 backend: str = 'opencv',
                  *args,
                  **kwargs):
         self.height = height
@@ -326,6 +347,12 @@ class ResizeImagesWithPad:
             raise ValueError(f"Invalid pad_direction '{pad_direction}'. "
                              f'Valid: {PAD_POSITIONS_TEXT}')
         self.pad_direction = pad_direction
+        if backend not in ('opencv', 'pil'):
+            raise ValueError("backend must be either 'opencv' or 'pil'")
+        if backend == 'pil' and (pad_value != 0 or pad_direction != 'center'):
+            raise ValueError('OpenPI PIL resize supports only centered zero '
+                             'padding.')
+        self.backend = backend
 
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
@@ -339,12 +366,141 @@ class ResizeImagesWithPad:
             images = data['images']
         resized_images = list()
         for image in images:
-            resized_images.append(
-                _resize_chw_with_pad(image, self.height, self.width,
-                                     self.pad_value, self.pad_direction))
+            if self.backend == 'pil':
+                resized_images.append(
+                    _resize_chw_with_pad_pil(image, self.height, self.width))
+            else:
+                resized_images.append(
+                    _resize_chw_with_pad(image, self.height, self.width,
+                                         self.pad_value, self.pad_direction))
 
         resized_images = np.concatenate(resized_images, axis=0)
         data['images'] = resized_images
+        return data
+
+
+@TRANSFORMS.register_module()
+class OpenPIImageAugment:
+    """Mirror the image augmentation policy in OpenPI PI0/PI0.5.
+
+    Inputs must already be float images in ``[-1, 1]``. The 0.95 crop,
+    resize, and +/-5 degree rotation are applied only to the configured base
+    camera indices. Wrist cameras receive only color jitter. OpenPI's pinned
+    augmax version applies the color chain with probability 0.5.
+    """
+
+    def __init__(self,
+                 base_camera_indices=(0, ),
+                 crop_scale: float = 0.95,
+                 rotation_degrees: float = 5.0,
+                 brightness: float = 0.3,
+                 contrast: float = 0.4,
+                 saturation: float = 0.5,
+                 color_jitter_probability: float = 0.5,
+                 *args,
+                 **kwargs):
+        if not 0 < crop_scale <= 1:
+            raise ValueError('crop_scale must be in (0, 1].')
+        if not 0 <= color_jitter_probability <= 1:
+            raise ValueError('color_jitter_probability must be in [0, 1].')
+        self.base_camera_indices = frozenset(base_camera_indices)
+        self.crop_scale = crop_scale
+        self.rotation_degrees = rotation_degrees
+        self.brightness = brightness
+        self.contrast = contrast
+        self.saturation = saturation
+        self.color_jitter_probability = color_jitter_probability
+
+    @staticmethod
+    def _split_images(images):
+        if isinstance(images, list):
+            return [np.asarray(image) for image in images], 'list', None
+        array = np.asarray(images)
+        original_shape = array.shape
+        if array.ndim == 3 and array.shape[0] % 3 == 0:
+            return list(array.reshape(-1, 3, *array.shape[-2:])), \
+                'array', original_shape
+        if array.ndim == 4 and array.shape[1] == 3:
+            return list(array), 'array', original_shape
+        raise ValueError('OpenPIImageAugment expects CHW images, got '
+                         f'{array.shape}.')
+
+    @staticmethod
+    def _restore_images(images, kind, original_shape):
+        if kind == 'list':
+            return images
+        stacked = np.stack(images)
+        if len(original_shape) == 3:
+            return stacked.reshape(original_shape)
+        return stacked
+
+    def _geometric_augment(self, image):
+        chw = np.asarray(image, dtype=np.float32)
+        height, width = chw.shape[-2:]
+        crop_height = int(height * self.crop_scale)
+        crop_width = int(width * self.crop_scale)
+        top = np.random.randint(0, height - crop_height + 1)
+        left = np.random.randint(0, width - crop_width + 1)
+        cropped = chw[:, top:top + crop_height, left:left + crop_width]
+        resized = cv2.resize(
+            cropped.transpose(1, 2, 0), (width, height),
+            interpolation=cv2.INTER_LINEAR)
+        angle = np.random.uniform(-self.rotation_degrees,
+                                  self.rotation_degrees)
+        matrix = cv2.getRotationMatrix2D(
+            ((width - 1) / 2.0, (height - 1) / 2.0), angle, 1.0)
+        rotated = cv2.warpAffine(
+            resized,
+            matrix, (width, height),
+            flags=cv2.INTER_LINEAR,
+            borderMode=cv2.BORDER_CONSTANT,
+            borderValue=0)
+        return rotated.transpose(2, 0, 1)
+
+    def _color_augment(self, image):
+        if np.random.random() >= self.color_jitter_probability:
+            return image
+
+        rgb = np.clip(
+            np.asarray(image, dtype=np.float32).transpose(1, 2, 0) / 2.0 + 0.5,
+            0.0, 1.0)
+        hsv = cv2.cvtColor(rgb, cv2.COLOR_RGB2HSV)
+        value = hsv[..., 2]
+
+        brightness = np.random.uniform(-self.brightness, self.brightness)
+        if brightness < 0:
+            value = value * (1.0 + brightness)
+        else:
+            value = value * (1.0 - brightness) + brightness
+
+        contrast = np.random.uniform(-self.contrast, self.contrast)
+        slant = np.tan((contrast + 1.0) * (np.pi / 4.0))
+        p1 = (slant - slant**2) / (2.0 * (1.0 - slant**2))
+        p2 = 1.0 - p1
+        value = np.where(
+            value < p1, value / slant,
+            np.where(value > p2, value / slant + 1.0 - 1.0 / slant,
+                     slant * (value - 0.5) + 0.5))
+        hsv[..., 2] = value
+
+        # augmax 0.3.4 samples saturation but does not assign the returned
+        # value. Preserve that pinned-source behavior for exact policy parity.
+        _ = self.saturation
+        rgb = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
+        return (np.clip(rgb, 0.0, 1.0).transpose(2, 0, 1) * 2.0 - 1.0).astype(
+            np.float32)
+
+    def __call__(self, data: dict):
+        if 'images' not in data:
+            raise KeyError("Input data must contain 'images' key")
+        images, kind, original_shape = self._split_images(data['images'])
+        augmented = []
+        for index, image in enumerate(images):
+            image = np.asarray(image, dtype=np.float32)
+            if index in self.base_camera_indices:
+                image = self._geometric_augment(image)
+            augmented.append(self._color_augment(image))
+        data['images'] = self._restore_images(augmented, kind, original_shape)
         return data
 
 
@@ -1131,7 +1287,7 @@ class SimpleNormalizeImages:
         normalized_images = list()
         for image in images:
             # Divide by 255 to get [0, 1], then map to [-1, 1]
-            normalized_image = (image / 255.0) * 2.0 - 1.0
+            normalized_image = (image.astype(np.float32) / 255.0) * 2.0 - 1.0
             normalized_images.append(normalized_image)
 
         normalized_images = np.concatenate(normalized_images, axis=0)

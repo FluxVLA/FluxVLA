@@ -86,7 +86,6 @@ class PI05FlowMatching(PI0FlowMatching):
         att_masks = []
 
         bsize = states.shape[0]
-        dtype = states.dtype
         device = states.device
 
         # Set attention masks so that image and language
@@ -94,18 +93,32 @@ class PI05FlowMatching(PI0FlowMatching):
 
         # Embed timestep using sine-cosine positional
         # encoding with sensitivity in the range [0, 1]
-        time_emb = create_sinusoidal_pos_embedding(
-            timestep,
-            self.proj_width,
-            min_period=4e-3,
-            max_period=4.0,
-            device=device)
-        time_emb = time_emb.type(dtype=dtype)
+        if self.openpi_fp32_flow:
+            with self._disable_autocast(noisy_actions):
+                time_emb = create_sinusoidal_pos_embedding(
+                    timestep.float(),
+                    self.proj_width,
+                    min_period=4e-3,
+                    max_period=4.0,
+                    device=device,
+                    dtype=torch.float32)
+                action_emb = self.action_in_proj(noisy_actions.float())
+                time_emb = F.silu(self.time_mlp_in(time_emb))
+                time_emb = F.silu(self.time_mlp_out(time_emb))
+        else:
+            dtype = states.dtype
+            time_emb = create_sinusoidal_pos_embedding(
+                timestep,
+                self.proj_width,
+                min_period=4e-3,
+                max_period=4.0,
+                device=device)
+            time_emb = time_emb.type(dtype=dtype)
 
-        # Fuse timestep + action information using an MLP
-        action_emb = self.action_in_proj(noisy_actions)
-        time_emb = F.silu(self.time_mlp_in(time_emb))
-        time_emb = F.silu(self.time_mlp_out(time_emb))
+            # Fuse timestep + action information using an MLP
+            action_emb = self.action_in_proj(noisy_actions)
+            time_emb = F.silu(self.time_mlp_in(time_emb))
+            time_emb = F.silu(self.time_mlp_out(time_emb))
         # Add to input tokens
         embs.append(action_emb)
 

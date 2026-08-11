@@ -12,7 +12,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, List
+import json
+from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -157,35 +158,269 @@ def _libero_rot6d_action_to_axisangle(action: np.ndarray) -> np.ndarray:
 
 
 @TRANSFORMS.register_module()
-class ProcessLiberoActions:
+class DeltaActions:
+    """Convert selected absolute action dimensions to state-relative deltas.
 
-    def __init__(self, mask: List[bool] = None) -> None:
-        """ProcessLiberoActions is a transform
-        that modifies the actions in the data
-        by subtracting the state values from
-        the actions based on a mask.
+    This is the same generic operation used by OpenPI.  ``state_key`` and
+    ``action_key`` keep it usable by both the training pipeline and robot
+    post-processing code instead of tying it to one embodiment.
+    """
 
-        Args:
-            mask (List[bool], optional): A list
-                indicating which dimensions
-                of the state should be subtracted from
-                the actions.
-                If None, no subtraction is performed.
-        """
-        self.mask = np.asarray(mask, dtype=bool)
+    def __init__(self,
+                 mask: List[bool] = None,
+                 state_key: str = 'states',
+                 action_key: str = 'actions') -> None:
+        self.mask = None if mask is None else np.asarray(mask, dtype=bool)
+        self.state_key = state_key
+        self.action_key = action_key
 
     def __call__(self, data: Dict) -> Dict:
-        if 'actions' not in data or self.mask is None:
+        if self.action_key not in data or self.mask is None:
             return data
 
-        states, actions = data['states'], data['actions']
-        mask = np.asarray(self.mask)
-        dims = mask.shape[-1]
+        states = np.asarray(data[self.state_key])
+        actions = np.asarray(data[self.action_key]).copy()
+        dims = self.mask.shape[-1]
         actions[..., :dims] -= np.expand_dims(
-            np.where(mask, states[..., :dims], 0), axis=-2)
-        data['actions'] = actions
+            np.where(self.mask, states[..., :dims], 0), axis=-2)
+        data[self.action_key] = actions
 
         return data
+
+
+@TRANSFORMS.register_module()
+class AbsoluteActions(DeltaActions):
+    """Invert :class:`DeltaActions` for selected action dimensions."""
+
+    def __call__(self, data: Dict) -> Dict:
+        if self.action_key not in data or self.mask is None:
+            return data
+
+        states = np.asarray(data[self.state_key])
+        actions = np.asarray(data[self.action_key]).copy()
+        dims = self.mask.shape[-1]
+        actions[..., :dims] += np.expand_dims(
+            np.where(self.mask, states[..., :dims], 0), axis=-2)
+        data[self.action_key] = actions
+        return data
+
+
+@TRANSFORMS.register_module()
+class ProcessLiberoActions(DeltaActions):
+    """Backward-compatible name for the generic delta-action transform."""
+
+
+@TRANSFORMS.register_module()
+class JointSignTransform:
+    """Apply configured joint-axis signs to state and/or action vectors."""
+
+    def __init__(self,
+                 signs: List[float],
+                 state_key: Optional[str] = 'states',
+                 action_key: Optional[str] = 'actions') -> None:
+        signs = np.asarray(signs, dtype=np.float32)
+        if signs.ndim != 1 or not np.all(np.isin(signs, (-1.0, 1.0))):
+            raise ValueError('signs must be a one-dimensional list of +/-1.')
+        self.signs = signs
+        self.state_key = state_key
+        self.action_key = action_key
+
+    def __call__(self, data: Dict) -> Dict:
+        for key in (self.state_key, self.action_key):
+            if key is None or key not in data:
+                continue
+            values = np.asarray(data[key], dtype=np.float32)
+            if values.shape[-1] != self.signs.shape[0]:
+                raise ValueError(
+                    f'JointSignTransform expected {self.signs.shape[0]} '
+                    f'dimensions for {key!r}, got {values.shape}.')
+            data[key] = values * self.signs
+        return data
+
+
+_ALOHA_DELTA_MASK = np.array([True] * 6 + [False] + [True] * 6 + [False])
+
+
+def _normalize_range(x, min_value, max_value):
+    return (x - min_value) / (max_value - min_value)
+
+
+def _unnormalize_range(x, min_value, max_value):
+    return x * (max_value - min_value) + min_value
+
+
+def _aloha_gripper_to_angular(value):
+    value = _unnormalize_range(value, 0.01844, 0.05800)
+    arm_length = 0.036
+    horn_radius = 0.022
+    argument = (horn_radius**2 + value**2 - arm_length**2) / (2 * horn_radius *
+                                                              value)
+    value = np.arcsin(np.clip(argument, -1.0, 1.0))
+    return _normalize_range(value, 0.5476, 1.6296)
+
+
+def _aloha_gripper_from_angular(value):
+    value = value + 0.5476
+    return _normalize_range(value, -0.6213, 1.4910)
+
+
+def _aloha_gripper_from_angular_inv(value):
+    value = _unnormalize_range(value, -0.6213, 1.4910)
+    return value - 0.5476
+
+
+def _aloha_state_gripper_to_pi(state):
+    state = np.asarray(state, dtype=np.float32).copy()
+    state[..., [6, 13]] = _aloha_gripper_to_angular(state[..., [6, 13]])
+    return state
+
+
+def _aloha_action_gripper_to_pi(action):
+    action = np.asarray(action, dtype=np.float32).copy()
+    action[..., [6, 13]] = _aloha_gripper_from_angular_inv(action[...,
+                                                                  [6, 13]])
+    return action
+
+
+def _aloha_action_gripper_from_pi(action):
+    action = np.asarray(action, dtype=np.float32).copy()
+    action[..., [6, 13]] = _aloha_gripper_from_angular(action[..., [6, 13]])
+    return action
+
+
+@TRANSFORMS.register_module()
+class OpenPIAlohaGripperCoordinates:
+    """Convert only ALOHA grippers to OpenPI's internal coordinates.
+
+    Joint signs, delta actions, and normalization deliberately remain in the
+    generic ``JointSignTransform``, ``DeltaActions``, and
+    ``NormalizeStatesAndActions`` stages.
+    """
+
+    def __init__(self,
+                 adapt_to_pi: bool = True,
+                 gripper_input_range=None,
+                 *args,
+                 **kwargs):
+        self.adapt_to_pi = adapt_to_pi
+        if gripper_input_range is not None:
+            if (len(gripper_input_range) != 2
+                    or gripper_input_range[1] <= gripper_input_range[0]):
+                raise ValueError(
+                    'gripper_input_range must be an increasing pair.')
+            gripper_input_range = tuple(map(float, gripper_input_range))
+        self.gripper_input_range = gripper_input_range
+
+    def _standardize_grippers(self, value):
+        value = np.asarray(value, dtype=np.float32).copy()
+        if self.gripper_input_range is not None:
+            low, high = self.gripper_input_range
+            value[..., [6, 13]] = (value[..., [6, 13]] - low) / (high - low)
+        return value
+
+    def __call__(self, data: Dict) -> Dict:
+        states = self._standardize_grippers(data['states'])
+        if states.shape[-1] != 14:
+            raise ValueError(
+                'OpenPIAlohaGripperCoordinates expects 14-dimensional '
+                f'states, got {states.shape}.')
+        if self.adapt_to_pi:
+            states = _aloha_state_gripper_to_pi(states)
+        data['states'] = states
+
+        if 'actions' not in data:
+            return data
+
+        actions = self._standardize_grippers(data['actions'])
+        if actions.shape[-1] != 14:
+            raise ValueError(
+                'OpenPIAlohaGripperCoordinates expects 14-dimensional '
+                f'actions, got {actions.shape}.')
+        if self.adapt_to_pi:
+            actions = _aloha_action_gripper_to_pi(actions)
+        data['actions'] = actions
+        return data
+
+
+@TRANSFORMS.register_module()
+class OpenPIAlohaActionPostprocess:
+    """Invert PI0.5 ALOHA quantile, delta, and coordinate transforms."""
+
+    def __init__(self,
+                 norm_stats: Optional[Dict | str] = None,
+                 openpi_norm_stats: Optional[Dict | str] = None,
+                 action_dim: int = 14,
+                 adapt_to_pi: bool = True,
+                 use_delta_joint_actions: bool = True,
+                 *args,
+                 **kwargs):
+        source = openpi_norm_stats or norm_stats
+        if isinstance(source, str):
+            with open(source, 'r', encoding='utf-8') as f:
+                source = json.load(f)
+        if isinstance(source, dict) and 'norm_stats' in source:
+            source = source['norm_stats']
+        if source is None or 'actions' not in source:
+            raise ValueError('OpenPI ALOHA action statistics are required.')
+        self.action_stats = source['actions']
+        self.action_dim = action_dim
+        self.adapt_to_pi = adapt_to_pi
+        self.use_delta_joint_actions = use_delta_joint_actions
+        joint_signs = [
+            1,
+            -1,
+            -1,
+            1,
+            1,
+            1,
+            1,
+            1,
+            -1,
+            -1,
+            1,
+            1,
+            1,
+            1,
+        ]
+        self.state_joint_signs = JointSignTransform(
+            signs=joint_signs, state_key='state', action_key=None)
+        self.action_joint_signs = JointSignTransform(
+            signs=joint_signs, state_key=None, action_key='action')
+        self.absolute_actions = AbsoluteActions(
+            mask=_ALOHA_DELTA_MASK, state_key='state', action_key='action')
+
+    def __call__(self, data: Dict) -> np.ndarray:
+        actions = np.asarray(data['action'])
+        if actions.ndim == 3:
+            if actions.shape[0] != 1:
+                raise ValueError('Only batch size one is supported for ALOHA '
+                                 'robot inference.')
+            actions = actions[0]
+        actions = actions[..., :self.action_dim]
+
+        low = np.asarray(self.action_stats['q01'], dtype=np.float32)
+        high = np.asarray(self.action_stats['q99'], dtype=np.float32)
+        actions = 0.5 * (actions + 1.0) * (high - low + 1e-6) + low
+
+        if data.get('state') is None:
+            raise ValueError('Current ALOHA state is required to invert '
+                             'delta actions.')
+        state = np.asarray(data['state'], dtype=np.float32)
+        if state.shape[-1] != self.action_dim:
+            raise ValueError('A 14-dimensional current ALOHA state is '
+                             'required to invert delta actions.')
+        if self.adapt_to_pi:
+            state = self.state_joint_signs({'state': state})['state']
+            state = _aloha_state_gripper_to_pi(state)
+        if self.use_delta_joint_actions:
+            actions = self.absolute_actions({
+                'state': state,
+                'action': actions,
+            })['action']
+        if self.adapt_to_pi:
+            actions = self.action_joint_signs({'action': actions})['action']
+            actions = _aloha_action_gripper_from_pi(actions)
+        return actions.astype(np.float32, copy=False)
 
 
 @TRANSFORMS.register_module()

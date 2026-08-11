@@ -53,6 +53,7 @@ model = dict(
     vision_backbone=dict(
         type='SigLIPViTBackbone',
         vision_backbone_id='siglip_224',
+        openpi_stem_fp32=True,
         vision_config=dict(
             attention_dropout=0.0,
             hidden_act='gelu_pytorch_tanh',
@@ -82,6 +83,10 @@ model = dict(
     action_out_proj=dict(type='LinearProjector', in_dim=1024, out_dim=32),
     time_mlp_in=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
     time_mlp_out=dict(type='LinearProjector', in_dim=1024, out_dim=1024),
+    time_sampler='beta',
+    time_beta_alpha=1.5,
+    time_beta_beta=1.0,
+    openpi_fp32_flow=True,
     max_action_dim=32,
     llm_expert=dict(
         type='ConditionGemmaModel',
@@ -133,6 +138,7 @@ model = dict(
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
     ori_action_dim=8,
+    loss_action_dim=32,
 )
 
 inference_model = model.copy()
@@ -171,7 +177,8 @@ train_dataloader = dict(
                         state_dim=32,
                         state_key='proprio',
                         action_key='action',
-                        norm_type='min_max'),
+                        norm_type='quantile',
+                        output_dtype='float32'),
                     dict(type='PreparePromptWithState'),
                     dict[str, str | dict[str, str]](
                         type='ProcessPrompts',
@@ -180,18 +187,38 @@ train_dataloader = dict(
                             type='PretrainedTokenizer',
                             model_path='checkpoints/pi05_base',
                         )),
-                    dict(type='ResizeImages', height=224, width=224),
+                    dict(
+                        type='ResizeImagesWithPad',
+                        height=224,
+                        width=224,
+                        backend='pil'),
                     dict(type='SimpleNormalizeImages'),
+                    dict(type='OpenPIImageAugment', base_camera_indices=(0, )),
                 ],
-                action_window_size=50)
+                action_window_size=50,
+                supervise_terminal_padding=True)
         ]))
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_epochs=6,
-    optimizer=dict(lr=5e-5, type='AdamW', weight_decay=0.01),
+    max_steps=20_000,
+    # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
+    grad_accumulation_steps=2,
+    ema_decay=0.99,
+    seed=42,
+    optimizer=dict(
+        type='AdamW',
+        lr=2.5e-5,
+        betas=(0.9, 0.95),
+        eps=1e-8,
+        weight_decay=1e-10,
+        weight_decay_all_params=True,
+        foreach=False,
+        fused=True),
     max_grad_norm=1.0,
-    sharding_strategy='no-shard',
+    sharding_strategy='global-shard-grad-op',
+    fsdp_wrap_policy='execution-block',
+    reduce_in_full_precision=True,
     collator=dict(
         type='DictCollator',
         keys=[
@@ -208,19 +235,22 @@ runner = dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
         run_dir='work_dirs',
-        grad_accumulation_steps=1,
         window_size=1),
     lr_scheduler=dict(
-        type='linear-warmup+cosine-decay',
-        warmup_ratio=0.03,
-    ),
+        type='openpi-warmup+cosine-decay',
+        warmup_steps=1000,
+        decay_steps=30000,
+        min_lr=2.5e-6),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
+    keep_params_fp32=True,
     change_key_name=False)
 
 inference = dict(
     type='FrankaInferenceRunner',
+    keep_params_fp32=True,
+    mixed_precision_dtype='bf16',
     task_descriptions={
         '1': 'Use the left Franka arm to complete the requested task.'
     },
@@ -243,20 +273,26 @@ inference = dict(
                 state_dim=32,
                 state_key='proprio',
                 action_key='action',
-                norm_type='min_max'),
+                norm_type='quantile',
+                output_dtype='float32'),
             dict(type='PreparePromptWithState'),
             dict[str, str | dict[str, str]](
                 type='ProcessPrompts',
+                max_len=200,
                 tokenizer=dict(
                     type='PretrainedTokenizer',
                     model_path='checkpoints/pi05_base',
                 )),
-            dict(type='ResizeImages', height=224, width=224),
+            dict(
+                type='ResizeImagesWithPad',
+                height=224,
+                width=224,
+                backend='pil'),
             dict(type='SimpleNormalizeImages'),
         ]),
     denormalize_action=dict(
         type='DenormalizePrivateAction',
-        norm_type='min_max',
+        norm_type='quantile',
         # Single-arm checkpoints should denormalize one 8D action block.
         action_dim=8,
     ),

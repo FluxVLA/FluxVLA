@@ -221,6 +221,10 @@ def create_server(
 
         obs = _obs_dict if _obs_dict is not None else \
             ObsSerializer.from_bytes(obs_data)
+        denormalize_context = {}
+        if isinstance(obs, dict) and obs.get('qpos') is not None:
+            denormalize_context['state'] = np.asarray(
+                obs['qpos'], dtype=np.float32).copy()
 
         if dataset is not None:
             result = dataset(obs)
@@ -231,8 +235,13 @@ def create_server(
             batch['unnorm_key'] = unnorm_key
 
         t0 = time.perf_counter()
+        autocast_enabled = (
+            torch_device.type == 'cuda'
+            and mixed_precision_dtype in {torch.bfloat16, torch.float16})
         with torch.no_grad(), torch.autocast(
-                'cuda', dtype=mixed_precision_dtype, enabled=True):
+                torch_device.type,
+                dtype=mixed_precision_dtype,
+                enabled=autocast_enabled):
             for k, v in batch.items():
                 if isinstance(v, torch.Tensor):
                     batch[k] = v.to(torch_device)
@@ -242,7 +251,10 @@ def create_server(
         if denormalize_action is not None:
             actions_np = actions.cpu().numpy()
             d = denormalize_action(
-                dict(action=actions_np, task_suite_name=task_suite_name))
+                dict(
+                    action=actions_np,
+                    task_suite_name=task_suite_name,
+                    **denormalize_context))
             actions = torch.from_numpy(d.astype(np.float32))
 
         action_bytes = serialize_actions(actions)

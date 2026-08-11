@@ -41,6 +41,7 @@ model = dict(
     vision_backbone=dict(
         type='SigLIPViTBackbone',
         vision_backbone_id='siglip_224',
+        openpi_stem_fp32=True,
         vision_config=dict(
             attention_dropout=0.0,
             hidden_act='gelu_pytorch_tanh',
@@ -74,6 +75,7 @@ model = dict(
     time_sampler='beta',
     time_beta_alpha=1.5,
     time_beta_beta=1.0,
+    openpi_fp32_flow=True,
     max_action_dim=32,
     llm_expert=dict(
         type='ConditionGemmaModel',
@@ -164,12 +166,26 @@ train_dataloader = dict(
                             'actions': ['actions']
                         }),
                     dict(
+                        type='JointSignTransform',
+                        signs=[1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1]),
+                    dict(
+                        type='OpenPIAlohaGripperCoordinates',
+                        gripper_input_range=(-0.01, 0.08)),
+                    dict(
+                        type='DeltaActions',
+                        mask=[True] * 6 + [False] + [True] * 6 + [False]),
+                    dict(
                         type='NormalizeStatesAndActions',
                         action_dim=32,
                         state_dim=32,
                         state_key='proprio',
                         action_key='action',
-                        norm_type='min_max'),
+                        norm_type='quantile',
+                        output_dtype='float32',
+                        norm_stats=('configs/pi05/assets/'
+                                    'openpi_trossen_norm_stats.json'),
+                        state_stats_key='state',
+                        action_stats_key='actions'),
                     dict(type='PreparePromptWithState'),
                     dict[str, str | dict[str, str]](
                         type='ProcessPrompts',
@@ -180,8 +196,13 @@ train_dataloader = dict(
                             'checkpoints/pi05_base',  # noqa: E501
                             # special_tokens={'pad_token': '<PAD>'}
                         )),
-                    dict(type='ResizeImages', height=224, width=224),
+                    dict(
+                        type='ResizeImagesWithPad',
+                        height=224,
+                        width=224,
+                        backend='pil'),
                     dict(type='SimpleNormalizeImages'),
+                    dict(type='OpenPIImageAugment', base_camera_indices=(0, )),
                 ],
                 action_window_size=50,
                 supervise_terminal_padding=True)
@@ -189,10 +210,14 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_epochs=6,
+    max_steps=20_000,
+    # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
+    grad_accumulation_steps=2,
+    ema_decay=0.99,
+    seed=42,
     optimizer=dict(
         type='AdamW',
-        lr=5e-5,
+        lr=2.5e-5,
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=1e-10,
@@ -214,9 +239,10 @@ runner = dict(
         meta_keys=['task_description', 'prompt', 'info', 'stats']),
     sampler=None,
     lr_scheduler=dict(
-        type='linear-warmup+cosine-decay',
-        warmup_ratio=0.03,
-    ),
+        type='openpi-warmup+cosine-decay',
+        warmup_steps=1000,
+        decay_steps=30000,
+        min_lr=2.5e-6),
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path=  # noqa: E251
@@ -231,10 +257,13 @@ runner = dict(
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
+    keep_params_fp32=True,
     change_key_name=False)
 
 inference = dict(
     type='AlohaInferenceRunner',
+    keep_params_fp32=True,
+    mixed_precision_dtype='bf16',
     task_descriptions={
         '1': 'pick up the brown bird toy with left arm',
         '2': 'pick up the brown bird toy with right arm',
@@ -253,31 +282,50 @@ inference = dict(
         img_keys=['cam_high', 'cam_left_wrist', 'cam_right_wrist'],
         transforms=[
             dict(
+                type='JointSignTransform',
+                signs=[1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1]),
+            dict(type='OpenPIAlohaGripperCoordinates'),
+            dict(
                 type='NormalizeStatesAndActions',
                 state_dim=32,
                 state_key='proprio',
                 action_key='action',
-                norm_type='min_max'),
+                norm_type='quantile',
+                output_dtype='float32',
+                norm_stats=('configs/pi05/assets/'
+                            'openpi_trossen_norm_stats.json'),
+                state_stats_key='state',
+                action_stats_key='actions'),
             dict(type='PreparePromptWithState'),
             dict[str, str | dict[str, str]](
                 type='ProcessPrompts',
+                max_len=200,
                 tokenizer=dict(
                     type='PretrainedTokenizer',
                     model_path=  # noqa: E251
                     'checkpoints/pi05_base',
                     # special_tokens={'pad_token': '<PAD>'}
                 )),
-            dict(type='ResizeImages', height=224, width=224),
+            dict(
+                type='ResizeImagesWithPad',
+                height=224,
+                width=224,
+                backend='pil'),
             dict(type='SimpleNormalizeImages'),
         ]),
     denormalize_action=dict(
-        type='DenormalizePrivateAction',
-        norm_type='min_max',
+        type='OpenPIAlohaActionPostprocess',
+        openpi_norm_stats=(
+            'configs/pi05/assets/openpi_trossen_norm_stats.json'),
         action_dim=14,
     ),
+    gripper_closed_value=0.0,
     action_chunk=50,
     operator=dict(
         type='AlohaOperator',
+        image_encoding='rgb8',
+        gripper_state_range=(-0.01, 0.08),
+        gripper_command_range=(-0.01, 0.08),
         img_front_topic='/camera_h/color/image_raw',
         img_left_topic='/camera_l/color/image_raw',
         img_right_topic='/camera_r/color/image_raw',

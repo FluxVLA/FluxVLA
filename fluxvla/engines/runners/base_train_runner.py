@@ -66,6 +66,9 @@ class BaseTrainRunner(ABC):
             Defaults to True.
         mixed_precision_dtype (str, optional): Data type for mixed
             precision training. Defaults to 'bf16'.
+        keep_params_fp32 (bool, optional): Keep model parameters and floating
+            batch inputs in FP32 while autocast controls compute precision.
+            Defaults to False.
         sharding_strategy (str, optional): Sharding strategy for
             distributed training. Defaults to 'full-shard'.
     """
@@ -87,13 +90,31 @@ class BaseTrainRunner(ABC):
                  enable_mixed_precision_training: bool = True,
                  reduce_in_full_precision: bool = True,
                  mixed_precision_dtype: str = 'bf16',
+                 keep_params_fp32: bool = False,
                  grad_accumulation_steps: int = 1,
+                 target_global_batch_size: Optional[int] = None,
+                 ema_decay: Optional[float] = None,
+                 seed: Optional[int] = None,
                  evaluator: Optional[Dict] = None,
                  tokenizer: Optional[Dict] = None,
                  resume_from: Optional[str] = None):
         from ..utils.builder import (build_collator_from_cfg,
                                      build_metric_from_cfg, build_vla_from_cfg)
 
+        per_device_batch_size = cfg.train_dataloader.per_device_batch_size
+        if target_global_batch_size is not None:
+            target_global_batch_size = int(target_global_batch_size)
+            data_parallel_batch = (
+                per_device_batch_size * overwatch.world_size())
+            if (target_global_batch_size < data_parallel_batch
+                    or target_global_batch_size % data_parallel_batch != 0):
+                raise ValueError(
+                    'target_global_batch_size must be a positive multiple of '
+                    'per_device_batch_size * world_size, got '
+                    f'{target_global_batch_size} versus '
+                    f'{per_device_batch_size} * {overwatch.world_size()}.')
+            grad_accumulation_steps = (
+                target_global_batch_size // data_parallel_batch)
         grad_accumulation_steps = int(grad_accumulation_steps)
         assert grad_accumulation_steps >= 1, \
             'Gradient accumulation steps must be >= 1!'
@@ -141,8 +162,15 @@ class BaseTrainRunner(ABC):
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.reduce_in_full_precision = reduce_in_full_precision
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
-        self.per_device_batch_size = cfg.train_dataloader.per_device_batch_size
+        self.keep_params_fp32 = bool(keep_params_fp32)
+        self.per_device_batch_size = per_device_batch_size
+        self.target_global_batch_size = target_global_batch_size
         self.grad_accumulation_steps = grad_accumulation_steps
+        if ema_decay is not None and not 0.0 < float(ema_decay) < 1.0:
+            raise ValueError('ema_decay must be in (0, 1) when provided.')
+        self.ema_decay = None if ema_decay is None else float(ema_decay)
+        self.seed = None if seed is None else int(seed)
+        self._ema_params = None
         self.evaluator = (
             build_evaluator_from_cfg(evaluator)
             if evaluator is not None else None)
@@ -309,6 +337,7 @@ class BaseTrainRunner(ABC):
 
         self.optimizer = None
         self.lr_scheduler = None
+        self._ema_params = None
         self.collator = None
         self.tokenizer = None
         self.vla = None
@@ -389,12 +418,19 @@ class BaseTrainRunner(ABC):
         if overwatch.is_rank_zero():
             overwatch.info(
                 f'Resuming training from checkpoint: {self.resume_from}')
-        checkpoint_info = torch.load(self.resume_from)
+        checkpoint_info = torch.load(
+            self.resume_from, map_location='cpu', weights_only=True)
 
         # Restore model state (delegated to subclasses for FSDP/DDP-specific
         # handling)
         if 'model' in checkpoint_info:
-            self._load_model_state(checkpoint_info['model'])
+            if (getattr(self, 'ema_decay', None) is not None
+                    and 'train_model' in checkpoint_info):
+                self._load_model_state(checkpoint_info['model'])
+                self._initialize_ema_parameters()
+                self._load_model_state(checkpoint_info['train_model'])
+            else:
+                self._load_model_state(checkpoint_info['model'])
 
         # Restore training state
         if 'global_step' in checkpoint_info:
@@ -449,6 +485,47 @@ class BaseTrainRunner(ABC):
                 f'Resumed training from step {self.metric.global_step}, '
                 f'epoch {self.current_epoch}')
         dist.barrier()
+
+    def _initialize_ema_parameters(self) -> None:
+        """Create FP32/local-shard EMA buffers from current parameters."""
+        if (getattr(self, 'ema_decay', None) is None
+                or getattr(self, '_ema_params', None) is not None):
+            return
+        self._ema_params = {
+            name: parameter.detach().clone()
+            for name, parameter in self.vla.named_parameters()
+        }
+
+    @torch.no_grad()
+    def _update_ema_parameters(self) -> None:
+        if getattr(self, 'ema_decay', None) is None:
+            return
+        self._initialize_ema_parameters()
+        one_minus_decay = 1.0 - self.ema_decay
+        for name, parameter in self.vla.named_parameters():
+            shadow = self._ema_params[name]
+            if shadow.shape != parameter.shape:
+                raise RuntimeError(f'EMA parameter shape changed for {name}: '
+                                   f'{shadow.shape} != {parameter.shape}.')
+            shadow.lerp_(parameter.detach(), one_minus_decay)
+
+    @contextlib.contextmanager
+    def _use_ema_parameters(self):
+        """Temporarily expose EMA weights through the wrapped model."""
+        if getattr(self, '_ema_params', None) is None:
+            yield
+            return
+        current = {}
+        with torch.no_grad():
+            for name, parameter in self.vla.named_parameters():
+                current[name] = parameter.detach().clone()
+                parameter.copy_(self._ema_params[name])
+        try:
+            yield
+        finally:
+            with torch.no_grad():
+                for name, parameter in self.vla.named_parameters():
+                    parameter.copy_(current[name])
 
     def _should_save_step_checkpoint(self) -> bool:
         """Check if checkpoint should be saved (step-based)."""
@@ -600,6 +677,7 @@ class BaseTrainRunner(ABC):
         self.steps_per_epoch = self._get_steps_per_epoch(vla_dataset)
         self._log_training_info(vla_dataset)
         self.resume()
+        self._initialize_ema_parameters()
 
         # Dispatch to training mode specific loop
         self.vla.train()
@@ -867,9 +945,12 @@ class BaseTrainRunner(ABC):
     def _training_step(self, batch, should_step: bool = True) -> torch.Tensor:
         """Execute single training step: forward, backward, optimize."""
         self.lr_scheduler.prepare_step(self)
-        batch = self._prepare_batch(
-            batch, self.device_id, self.mixed_precision_dtype
-            if self.enable_mixed_precision_training else None)
+        # OpenPI keeps observations/actions and master parameters in FP32.
+        # Autocast is responsible only for BF16 transformer compute.
+        batch_dtype = (
+            self.mixed_precision_dtype if self.enable_mixed_precision_training
+            and not self.keep_params_fp32 else None)
+        batch = self._prepare_batch(batch, self.device_id, batch_dtype)
         if ('sample_weight' in batch
                 and not self._vla_accepts_kwarg('sample_weight')):
             batch = dict(batch)
@@ -908,6 +989,7 @@ class BaseTrainRunner(ABC):
                 self.optimizer.step()
             else:
                 raise
+        self._update_ema_parameters()
         self.lr_scheduler.step(self)
         self.optimizer.zero_grad()
 

@@ -25,12 +25,11 @@ with globally sharded FP32 master parameters, reductions, and buffers.
 
 The converted dataset uses a single ego-view camera, 29-dimensional joint
 states and absolute joint-position actions, q01/q99 quantile normalization,
-and a 16-step action horizon. Run ``scripts/convert_robocasa_for_fluxvla.py``
-to trim the source 44-dimensional data and generate ``episodes_stats.jsonl``.
+and a 16-step action horizon. Set ``ROBOCASA_DATA_ROOT`` when the converted
+LeRobot dataset is not in one of the checked default locations.
 
-Expected topology: 4 nodes x 8 RTX PRO 5000 72GB GPUs. The effective batch is
-``8 samples/GPU * 32 GPUs * 1 micro-batch = 256``. For a different world
-size, set ``runner.grad_accumulation_steps = 256 // (8 * world_size)``.
+Expected topology: 32 RTX PRO 5000 72GB GPUs, for example 4 nodes x 8 GPUs.
+Per-device batch 8 without accumulation gives an effective global batch 256.
 
 Example for four 8-GPU nodes sharing MASTER_ADDR and MASTER_PORT:
     torchrun --nnodes=4 --nproc_per_node=8 \
@@ -38,12 +37,28 @@ Example for four 8-GPU nodes sharing MASTER_ADDR and MASTER_PORT:
         --master_port=${MASTER_PORT} scripts/train.py \
         --config \
         configs/pi05/\
-pi05_paligemma_robocasa_official_40_target_full_finetune.py \
+pi05_paligemma_robocasa_full_data_full_finetune.py \
         --work-dir \
-        work_dirs/pi05_paligemma_robocasa_official_40_target_full_finetune
+        work_dirs/pi05_paligemma_robocasa_full_data_full_finetune
 """
 
-seed = 7
+import os
+
+train_seed = 42
+eval_seed = 7
+
+_LOCAL_ROBOCASA_DATA_ROOT = './datasets/robocasa_lerobot_V2.1'
+_SHARED_ROBOCASA_DATA_ROOT = (
+    '/mnt/data/cpfs/mnt/data/yiming/fluxvla/upload_staging/'
+    'robocasa_lerobot_V2.1')
+_LOCAL_ROBOCASA_DATA_READY = os.path.isdir(
+    f'{_LOCAL_ROBOCASA_DATA_ROOT}/PnPBottleToCabinetClose/videos')
+_DEFAULT_ROBOCASA_DATA_ROOT = (
+    _LOCAL_ROBOCASA_DATA_ROOT
+    if _LOCAL_ROBOCASA_DATA_READY else _SHARED_ROBOCASA_DATA_ROOT)
+_PI05_CHECKPOINT = os.environ.get('PI05_CHECKPOINT',
+                                  './checkpoints/pi05_base/model.safetensors')
+_PI05_TOKENIZER = os.environ.get('PI05_TOKENIZER', './checkpoints/pi05_base')
 
 # The PI0.5 architecture matches the LIBERO and ALOHA variants. Its internal
 # action dimension is 32; the 29 RoboCasa joints are padded with three zeros.
@@ -55,6 +70,7 @@ model = dict(
     time_beta_alpha=1.5,
     time_beta_beta=1.0,
     loss_action_dim=32,
+    openpi_fp32_flow=True,
     # PaliGemma backbone for image and language tokens.
     llm_backbone=dict(
         type='ConditionGemmaModel',
@@ -84,6 +100,7 @@ model = dict(
     vision_backbone=dict(
         type='SigLIPViTBackbone',
         vision_backbone_id='siglip_224',
+        openpi_stem_fp32=True,
         vision_config=dict(
             attention_dropout=0.0,
             hidden_act='gelu_pytorch_tanh',
@@ -149,7 +166,7 @@ model = dict(
     freeze_llm_backbone=False,
     freeze_vision_backbone=False,
     # Initialize from the general PI0.5 base model rather than LIBERO weights.
-    pretrained_name_or_path='./checkpoints/pi05_base/model.safetensors',
+    pretrained_name_or_path=_PI05_CHECKPOINT,
     # Map upstream PI0.5 checkpoint keys to FluxVLA parameter names.
     name_mapping={
         'llm_backbone': 'paligemma_with_expert.paligemma.model.language_model',
@@ -178,9 +195,11 @@ model = dict(
 )
 
 _ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_30ep'
-_ROBOCASA_DATA_ROOT = './datasets/robocasa_lerobot_V2.1'
-_OFFICIAL_GR1_STATS_PATH = ('./datasets/robocasa_gr1_24tasks_first30ep/'
-                            'official_groot_gr1_dataset_statistics.json')
+_ROBOCASA_DATA_ROOT = os.environ.get('ROBOCASA_DATA_ROOT',
+                                     _DEFAULT_ROBOCASA_DATA_ROOT)
+_OFFICIAL_GR1_STATS_PATH = os.environ.get(
+    'ROBOCASA_STATS_PATH', './datasets/robocasa_gr1_24tasks_first30ep/'
+    'official_groot_gr1_dataset_statistics.json')
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
 
@@ -197,13 +216,13 @@ def _robocasa_task_env(task_name):
 # and 18 novel), one 256x256 ego-view camera, 29-dimensional joint states and
 # absolute actions, and fixed q01/q99 quantile statistics shared with eval.
 train_dataloader = dict(
-    # 32 GPUs with 8 samples/GPU give a global batch of 256.
+    # 8 samples/GPU x 32 GPUs x 1 accumulation step = global batch 256.
     per_device_batch_size=8,
     per_device_num_workers=4,
     dataset=dict(
         # Sample all 24 tasks uniformly, independently of episode count.
         type='DistributedBalancedRepeatingDataset',
-        seed=seed,
+        seed=train_seed,
         reshuffle_each_epoch=True,
         # Keep state and action statistics separate. Action statistics must
         # come from the action column rather than observation.state.
@@ -288,7 +307,8 @@ train_dataloader = dict(
                     state_dim=29,
                     state_key='proprio',
                     action_key='action',
-                    norm_type='quantile'),
+                    norm_type='quantile',
+                    output_dtype='float32'),
                 # Build the OpenPI-compatible state-conditioned prompt.
                 dict(
                     type='PreparePromptWithState',
@@ -301,7 +321,7 @@ train_dataloader = dict(
                     max_len=200,
                     tokenizer=dict(
                         type='PretrainedTokenizer',
-                        model_path='checkpoints/pi05_base',
+                        model_path=_PI05_TOKENIZER,
                     )),
                 # Resize to 224 and apply the crop/color augmentations used by
                 # the RoboCasa training recipe.
@@ -329,6 +349,8 @@ runner = dict(
     # 100k global-256 updates expose 25.6M samples.
     max_steps=100000,
     grad_accumulation_steps=1,
+    ema_decay=0.99,
+    seed=train_seed,
     optimizer=dict(
         type='AdamW',
         lr=2.5e-5,
@@ -345,10 +367,11 @@ runner = dict(
     save_epoch_interval=1,
     save_iter_interval=10000,
     max_keep_ckpts=10,
-    # Public global SHARD_GRAD_OP: FP32 sharded master parameters with BF16
-    # compute, without Hybrid Shard's extra inter-node communicators.
+    # 72GB cards fit SHARD_GRAD_OP at batch 8 and avoid FULL_SHARD's extra
+    # backward all-gathers across nodes.
     sharding_strategy='global-shard-grad-op',
     fsdp_wrap_policy='execution-block',
+    reduce_in_full_precision=True,
     collator=dict(
         type='DictCollator',
         keys=[
@@ -366,13 +389,12 @@ runner = dict(
     sampler=None,
     tokenizer=dict(
         type='PretrainedTokenizer',
-        model_path='checkpoints/pi05_base',
+        model_path=_PI05_TOKENIZER,
     ),
     metric=dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
         run_dir='work_dirs',
-        grad_accumulation_steps=1,
         window_size=1),
     lr_scheduler=dict(
         type='openpi-warmup+cosine-decay',
@@ -383,18 +405,17 @@ runner = dict(
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
+    keep_params_fp32=True,
     change_key_name=False)
 
 # Evaluate all 24 RoboCasa tasks.
 # Example:
-#   conda activate fluxvla && cd /root/projects/fluxvla
+#   conda activate fluxvla && cd /root/projects/FluxVLA
 #   CONFIG_DIR=configs/pi05
-#   CONFIG=pi05_paligemma_robocasa_official_40_target_full_finetune.py
-#   bash scripts/eval_robocasa.sh \
-#       --config "$CONFIG_DIR/$CONFIG" \
-#       --ckpt-path \
-#       work_dirs/pi05_paligemma_robocasa_official_40_target_full_finetune/\
-#       checkpoints/latest-checkpoint.safetensors
+#   CONFIG=$CONFIG_DIR/pi05_paligemma_robocasa_full_data_full_finetune.py
+#   CKPT=work_dirs/pi05_paligemma_robocasa_full_data_full_finetune/\
+# checkpoints/latest-checkpoint.safetensors
+#   NUM_GPUS=8 bash scripts/eval_robocasa_manager.sh "$CONFIG" "$CKPT"
 #
 # Optional override:
 #   --cfg-options eval.num_trials_per_task=50 eval.seed=7
@@ -452,7 +473,7 @@ eval = dict(
     max_episode_steps=720,
     num_trials_per_task=50,  # 1,200 episodes across 24 tasks.
     episode_seed_stride=50,
-    seed=7,  # Match the GR00T RoboCasa evaluation initial states.
+    seed=eval_seed,  # Match the GR00T RoboCasa evaluation initial states.
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='fluxvla',
     dataset=dict(
@@ -474,7 +495,8 @@ eval = dict(
                 state_dim=29,
                 state_key='proprio',
                 action_key='action',
-                norm_type='quantile'),
+                norm_type='quantile',
+                output_dtype='float32'),
             dict(
                 type='PreparePromptWithState',
                 max_state_dim=29,
@@ -484,8 +506,7 @@ eval = dict(
                 type='ProcessPrompts',
                 max_len=200,
                 tokenizer=dict(
-                    type='PretrainedTokenizer',
-                    model_path='checkpoints/pi05_base')),
+                    type='PretrainedTokenizer', model_path=_PI05_TOKENIZER)),
         ]),
     denormalize_action=dict(
         type='DenormalizeRobocasaAction',

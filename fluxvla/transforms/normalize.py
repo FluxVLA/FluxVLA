@@ -376,6 +376,9 @@ class NormalizeStatesAndActions:
             that contains the state information.
         action_key (str | None): The key in the data dictionary
             that contains the action information. If None, actions are skipped.
+        output_dtype (str | numpy.dtype | None): Optional dtype for normalized
+            state and action outputs. If None, preserve the historical NumPy
+            result dtype. Defaults to None.
     """
 
     def __init__(self,
@@ -397,6 +400,10 @@ class NormalizeStatesAndActions:
                  pad_invalid_action_delta_dims: bool = False,
                  delta_action_dim_mask: List[bool] = None,
                  action_pad_mask_key: str = 'action_masks',
+                 norm_stats: Optional[Dict | str] = None,
+                 state_stats_key: Optional[str] = None,
+                 action_stats_key: Optional[str] = None,
+                 output_dtype=None,
                  *args,
                  **kwargs):
         self.state_key = state_key
@@ -410,6 +417,16 @@ class NormalizeStatesAndActions:
         self.clip_norm = clip_norm
         self.normalization_epsilon = float(normalization_epsilon)
         self.normalize_states = normalize_states
+        if isinstance(norm_stats, str):
+            with open(norm_stats, 'r', encoding='utf-8') as f:
+                norm_stats = json.load(f)
+        if isinstance(norm_stats, dict) and 'norm_stats' in norm_stats:
+            norm_stats = norm_stats['norm_stats']
+        self.norm_stats = norm_stats
+        self.state_stats_key = state_stats_key or state_key
+        self.action_stats_key = action_stats_key or action_key
+        self.output_dtype = (None if output_dtype is None else
+                             np.dtype(output_dtype))
         if action_norm_mask is not None:
             assert len(action_norm_mask) == action_dim, \
                 f'Action norm mask must be of length {action_dim}'
@@ -443,26 +460,35 @@ class NormalizeStatesAndActions:
         needs_action_stats = (
             actions is not None and self.action_norm_type != 'none')
         if needs_state_stats or needs_action_stats:
-            assert 'stats' in data, "Input data must contain 'stats' key"
+            assert self.norm_stats is not None or 'stats' in data, \
+                "Input data must contain 'stats' key"
+
+        available_stats = (
+            self.norm_stats if self.norm_stats is not None else data.get(
+                'stats', {}))
 
         if needs_state_stats:
-            state_stats = data['stats'][self.state_key]
+            state_stats = available_stats[self.state_stats_key]
             states = self._normalize_mixed(
                 states,
                 state_stats,
                 self.state_norm_type,
                 discrete_dims=self.discrete_state_dims)
+        if self.output_dtype is not None:
+            states = np.asarray(states, dtype=self.output_dtype)
         data['states'] = states
 
         if actions is not None:
             if needs_action_stats:
-                action_stats = data['stats'][self.action_key]
+                action_stats = available_stats[self.action_stats_key]
                 actions = self._normalize_mixed(
                     actions,
                     action_stats,
                     self.action_norm_type,
                     discrete_dims=self.discrete_action_dims,
                     base_mask=self.action_norm_mask)
+            if self.output_dtype is not None:
+                actions = np.asarray(actions, dtype=self.output_dtype)
             data['actions'] = actions
         if self.state_dim is not None:
             data['states'] = self._pad_or_truncate_last_dim(

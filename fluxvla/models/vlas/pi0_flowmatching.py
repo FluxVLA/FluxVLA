@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import contextlib
 import math
 from typing import Callable, Dict, List, Optional, Union
 
@@ -74,6 +75,9 @@ class PI0FlowMatching(BaseVLA):
             ``legacy_power_ratio`` preserves existing FluxVLA recipes.
         loss_action_dim (int, optional): Number of padded action dimensions
             supervised by flow matching. Defaults to ``ori_action_dim``.
+        openpi_fp32_flow (bool): Keep noise, actions, timestep projections,
+            and the velocity head in FP32, matching OpenPI JAX. Gemma inputs
+            are cast to BF16 at the model boundary.
         **kwargs: Additional keyword arguments for model configuration.
     """
 
@@ -115,6 +119,7 @@ class PI0FlowMatching(BaseVLA):
                  time_sampler: str = 'legacy_power_ratio',
                  time_beta_alpha: float = 1.5,
                  time_beta_beta: float = 1.0,
+                 openpi_fp32_flow: bool = False,
                  rtc_training_config: Optional[Dict] = None,
                  **kwargs):
         super(PI0FlowMatching, self).__init__(
@@ -192,7 +197,28 @@ class PI0FlowMatching(BaseVLA):
         self.time_sampler = time_sampler
         self.time_beta_alpha = float(time_beta_alpha)
         self.time_beta_beta = float(time_beta_beta)
+        self.openpi_fp32_flow = bool(openpi_fp32_flow)
         self.rtc_training_config = rtc_training_config
+
+    @staticmethod
+    def _disable_autocast(tensor: torch.Tensor):
+        if tensor.device.type in ('cpu', 'cuda'):
+            return torch.autocast(
+                device_type=tensor.device.type, enabled=False)
+        return contextlib.nullcontext()
+
+    def _cast_gemma_input(self, tensor: Optional[torch.Tensor]):
+        if tensor is None:
+            return None
+        if self.openpi_fp32_flow and self.enable_mixed_precision_training:
+            return tensor.to(torch.bfloat16)
+        return tensor
+
+    def _project_action_output(self, suffix_out: torch.Tensor):
+        if not self.openpi_fp32_flow:
+            return self.action_out_proj(suffix_out)
+        with self._disable_autocast(suffix_out):
+            return self.action_out_proj(suffix_out.float())
 
     def to_bfloat16(self):
         for name, param in self.named_parameters():
@@ -619,6 +645,11 @@ class PI0FlowMatching(BaseVLA):
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
 
+        if self.openpi_fp32_flow:
+            actions = actions.float()
+            noise = noise.float()
+            time = time.float()
+
         # `time` is the sampled scalar flow-matching time, shape (B,).
         # Below we derive `t` which is passed to embed_suffix as the timestep:
         #   - RTC:     t is (B, T), per-position time (delay positions get
@@ -653,6 +684,8 @@ class PI0FlowMatching(BaseVLA):
 
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
             self.embed_suffix(states, x_t, t))
+        prefix_embs = self._cast_gemma_input(prefix_embs)
+        suffix_embs = self._cast_gemma_input(suffix_embs)
         inputs_embeds = [prefix_embs, suffix_embs]
         pad_masks = torch.cat([prefix_pad_masks, suffix_pad_masks], dim=1)
         att_masks = torch.cat([prefix_att_masks, suffix_att_masks], dim=1)
@@ -675,7 +708,7 @@ class PI0FlowMatching(BaseVLA):
         suffix_out = suffix_out[:, -self.n_action_steps:]
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
-        v_t = self.action_out_proj(suffix_out)
+        v_t = self._project_action_output(suffix_out)
         v_t, u_t = self._select_flow_loss_dimensions(v_t, u_t)
         losses = F.mse_loss(u_t, v_t, reduction='none')
         sample_weight = kwarg.get('sample_weight')
@@ -773,6 +806,7 @@ class PI0FlowMatching(BaseVLA):
             lang_tokens=lang_tokens,
             img_masks=img_masks,
             lang_masks=lang_masks)
+        prefix_embs = self._cast_gemma_input(prefix_embs)
 
         prefix_att_2d_masks = make_att_2d_masks(prefix_pad_masks,
                                                 prefix_att_masks)
@@ -844,6 +878,7 @@ class PI0FlowMatching(BaseVLA):
         """Apply one denoising step of the noise `x_t` at a given timestep."""
         suffix_embs, suffix_pad_masks, suffix_att_masks, adarms_cond = (
             self.embed_suffix(states, x_t, timestep))
+        suffix_embs = self._cast_gemma_input(suffix_embs)
 
         suffix_len = suffix_pad_masks.shape[1]
         batch_size = prefix_pad_masks.shape[0]
@@ -876,7 +911,7 @@ class PI0FlowMatching(BaseVLA):
             adarms_cond=[None, adarms_cond])
         suffix_out = suffix_out[:, -self.n_action_steps:]
         suffix_out = suffix_out.to(dtype=torch.float32)
-        v_t = self.action_out_proj(suffix_out)
+        v_t = self._project_action_output(suffix_out)
         return v_t
 
     def get_fsdp_wrapping_policy(self) -> Callable:

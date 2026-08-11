@@ -41,6 +41,7 @@ model = dict(
     vision_backbone=dict(
         type='SigLIPViTBackbone',
         vision_backbone_id='siglip_224',
+        openpi_stem_fp32=True,
         vision_config=dict(
             attention_dropout=0.0,
             hidden_act='gelu_pytorch_tanh',
@@ -74,6 +75,7 @@ model = dict(
     time_sampler='beta',
     time_beta_alpha=1.5,
     time_beta_beta=1.0,
+    openpi_fp32_flow=True,
     max_action_dim=32,
     llm_expert=dict(
         type='ConditionGemmaModel',
@@ -168,7 +170,8 @@ train_dataloader = dict(
                         state_dim=32,
                         state_key='proprio',
                         action_key='action',
-                        norm_type='min_max'),
+                        norm_type='quantile',
+                        output_dtype='float32'),
                     dict(type='PreparePromptWithState'),
                     dict[str, str | dict[str, str]](
                         type='ProcessPrompts',
@@ -179,8 +182,13 @@ train_dataloader = dict(
                             'checkpoints/pi05_base',  # noqa: E501
                             # special_tokens={'pad_token': '<PAD>'}
                         )),
-                    dict(type='ResizeImages', height=224, width=224),
+                    dict(
+                        type='ResizeImagesWithPad',
+                        height=224,
+                        width=224,
+                        backend='pil'),
                     dict(type='SimpleNormalizeImages'),
+                    dict(type='OpenPIImageAugment', base_camera_indices=(0, )),
                 ],
                 action_window_size=50,
                 supervise_terminal_padding=True)
@@ -188,10 +196,14 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_epochs=6,
+    max_steps=20_000,
+    # 8 samples/GPU x 4 GPUs x 2 accumulation steps = global batch 64.
+    grad_accumulation_steps=2,
+    ema_decay=0.99,
+    seed=42,
     optimizer=dict(
         type='AdamW',
-        lr=5e-5,
+        lr=2.5e-5,
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=1e-10,
@@ -222,19 +234,22 @@ runner = dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
         run_dir='work_dirs',
-        grad_accumulation_steps=1,
         window_size=1),
     lr_scheduler=dict(
-        type='linear-warmup+cosine-decay',
-        warmup_ratio=0.03,
-    ),
+        type='openpi-warmup+cosine-decay',
+        warmup_steps=1000,
+        decay_steps=30000,
+        min_lr=2.5e-6),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
+    keep_params_fp32=True,
     change_key_name=False)
 
 inference = dict(
     type='FrankaInferenceRunner',
+    keep_params_fp32=True,
+    mixed_precision_dtype='bf16',
     task_descriptions={
         # 'The right arm picks up the shuttlecock bucket, hands it to the left arm, and places it on the plate.'  # noqa: E501
         '1':
@@ -257,22 +272,28 @@ inference = dict(
                 state_dim=32,
                 state_key='proprio',
                 action_key='action',
-                norm_type='min_max'),
+                norm_type='quantile',
+                output_dtype='float32'),
             dict(type='PreparePromptWithState'),
             dict[str, str | dict[str, str]](
                 type='ProcessPrompts',
+                max_len=200,
                 tokenizer=dict(
                     type='PretrainedTokenizer',
                     model_path=  # noqa: E251
                     'checkpoints/pi05_base',
                     # special_tokens={'pad_token': '<PAD>'}
                 )),
-            dict(type='ResizeImages', height=224, width=224),
+            dict(
+                type='ResizeImagesWithPad',
+                height=224,
+                width=224,
+                backend='pil'),
             dict(type='SimpleNormalizeImages'),
         ]),
     denormalize_action=dict(
         type='DenormalizePrivateAction',
-        norm_type='min_max',
+        norm_type='quantile',
         action_dim=16,
     ),
     action_chunk=50,
