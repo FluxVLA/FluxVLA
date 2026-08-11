@@ -20,8 +20,8 @@ PI0.5 base checkpoint instead of continuing the 31.58% RoboCasa checkpoint.
 The public StarVLA 43.9% result is from QwenPI_v2, not OpenPI PI0.5, so 40% is
 a target rather than a reproduced guarantee. Only its uniform 24-task mixture
 and larger sample budget are transferred. The optimizer schedule follows the
-RLinf/OpenPI values. Global SHARD_GRAD_OP uses BF16 forward/backward compute
-with globally sharded FP32 master parameters, reductions, and buffers.
+RLinf/OpenPI values. Hybrid SHARD_GRAD_OP uses BF16 forward/backward compute
+with FP32 master parameters, reductions, and buffers sharded within each node.
 
 The converted dataset uses a single ego-view camera, 29-dimensional joint
 states and absolute joint-position actions, q01/q99 quantile normalization,
@@ -367,9 +367,10 @@ runner = dict(
     save_epoch_interval=1,
     save_iter_interval=10000,
     max_keep_ckpts=10,
-    # 72GB cards fit SHARD_GRAD_OP at batch 8 and avoid FULL_SHARD's extra
-    # backward all-gathers across nodes.
-    sharding_strategy='global-shard-grad-op',
+    # Keep FP32 parameter all-gathers inside each 8-GPU node. Cross-node
+    # global SHARD_GRAD_OP is much slower because every execution block then
+    # all-gathers FP32 parameters over the inter-node fabric.
+    sharding_strategy='shard-grad-op',
     fsdp_wrap_policy='execution-block',
     reduce_in_full_precision=True,
     collator=dict(
