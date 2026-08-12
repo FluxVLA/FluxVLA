@@ -14,25 +14,21 @@
 """FluxVLA-native GR00T N1.7 action head."""
 
 from __future__ import annotations
-
-from functools import partial
 import logging
+from functools import partial
 from types import SimpleNamespace
 from typing import Callable
 
 import torch
+import torch.nn.functional as F
 from torch import nn
 from torch.distributed.fsdp.wrap import _module_wrap_policy
 from torch.distributions import Beta
-import torch.nn.functional as F
 
 from fluxvla.engines import HEADS
 from fluxvla.models.blocks import AlternateVLDiT, DiT, SelfAttentionTransformer
 from fluxvla.models.heads.flow_matching_head import (
-    CategorySpecificMLP,
-    MultiEmbodimentActionEncoder,
-)
-
+    CategorySpecificMLP, MultiEmbodimentActionEncoder)
 
 logger = logging.getLogger(__name__)
 
@@ -48,15 +44,12 @@ class GrootN17ActionHead(nn.Module):
         if config_overrides:
             config_dict = (
                 dict(config) if isinstance(config, dict) else vars(config))
-            config = SimpleNamespace(
-                **{
-                    **config_dict,
-                    **{
-                        key: value
-                        for key, value in config_overrides.items()
-                        if value is not None
-                    },
-                })
+            valid_overrides = {
+                key: value
+                for key, value in config_overrides.items() if value is not None
+            }
+            config_dict.update(valid_overrides)
+            config = SimpleNamespace(**config_dict)
         self.config = config
         self.hidden_size = config.hidden_size
         self.input_embedding_dim = config.input_embedding_dim
@@ -99,11 +92,12 @@ class GrootN17ActionHead(nn.Module):
 
         self.vlln = (
             nn.LayerNorm(config.backbone_embedding_dim)
-            if config.use_vlln else nn.Identity()
-        )
+            if config.use_vlln else nn.Identity())
         vl_self_attention_cfg = getattr(config, 'vl_self_attention_cfg', None)
-        if vl_self_attention_cfg and vl_self_attention_cfg.get('num_layers', 0) > 0:
-            self.vl_self_attention = SelfAttentionTransformer(**vl_self_attention_cfg)
+        if vl_self_attention_cfg and vl_self_attention_cfg.get(
+                'num_layers', 0) > 0:
+            self.vl_self_attention = SelfAttentionTransformer(
+                **vl_self_attention_cfg)
         else:
             self.vl_self_attention = nn.Identity()
 
@@ -124,8 +118,7 @@ class GrootN17ActionHead(nn.Module):
         )
 
     @staticmethod
-    def _sample_initial_actions(size, dtype, device,
-                                seed: int | None = None):
+    def _sample_initial_actions(size, dtype, device, seed: int | None = None):
         generator = None
         if seed is not None:
             generator = torch.Generator(device=device)
@@ -166,8 +159,14 @@ class GrootN17ActionHead(nn.Module):
         if not tune_vlln:
             self.vlln.requires_grad_(False)
             self.vl_self_attention.requires_grad_(False)
-        if not any(param.requires_grad for param in self.parameters()):
-            logger.warning('No action head trainable parameters found.')
+
+    def apply_trainable_policy(self) -> None:
+        """Restore the fine-grained policy declared by the model config."""
+        self.set_trainable_parameters(
+            self.tune_projector,
+            self.tune_diffusion_model,
+            self.tune_vlln,
+        )
 
     def set_frozen_modules_to_eval_mode(self):
         if self.training:
@@ -232,10 +231,11 @@ class GrootN17ActionHead(nn.Module):
 
         if self.training and self.state_dropout_prob > 0:
             do_dropout = (
-                torch.rand(state_features.shape[0], device=state_features.device)
-                < self.state_dropout_prob
-            )
-            do_dropout = do_dropout[:, None, None].to(dtype=state_features.dtype)
+                torch.rand(
+                    state_features.shape[0], device=state_features.device) <
+                self.state_dropout_prob)
+            do_dropout = do_dropout[:, None,
+                                    None].to(dtype=state_features.dtype)
             state_features = state_features * (1 - do_dropout)
 
         noise = torch.randn(
@@ -318,12 +318,12 @@ class GrootN17ActionHead(nn.Module):
             t_cont = t / float(self.num_inference_timesteps)
             t_discretized = int(t_cont * self.num_timestep_buckets)
             timesteps_tensor = torch.full(
-                size=(batch_size,),
+                size=(batch_size, ),
                 fill_value=t_discretized,
                 device=device,
             )
-            action_features = self.action_encoder(
-                actions, timesteps_tensor, embodiment_ids)
+            action_features = self.action_encoder(actions, timesteps_tensor,
+                                                  embodiment_ids)
             if self.config.add_pos_embed:
                 pos_ids = torch.arange(
                     action_features.shape[1], dtype=torch.long, device=device)

@@ -144,6 +144,7 @@ class QwenVLImageTokenExpandAndTokenize:
         tokenizer_kwargs: Optional[Dict[str, Any]] = None,
         padding_side: str = 'left',
         use_eos_as_pad: bool = False,
+        output_keys: Optional[List[str]] = None,
     ) -> None:
         from fluxvla.engines import build_tokenizer_from_cfg
 
@@ -168,11 +169,14 @@ class QwenVLImageTokenExpandAndTokenize:
         self.squeeze_batch = squeeze_batch
         self.strict_num_images = strict_num_images
         self.tokenizer_kwargs = dict(tokenizer_kwargs or {})
+        self.output_keys = tuple(
+            output_keys) if output_keys is not None else None
 
         tokenizer_obj = getattr(self.tokenizer, 'tokenizer', self.tokenizer)
         if hasattr(tokenizer_obj, 'padding_side'):
             tokenizer_obj.padding_side = padding_side
-        if use_eos_as_pad and getattr(tokenizer_obj, 'pad_token_id', None) is None:
+        if use_eos_as_pad and getattr(tokenizer_obj, 'pad_token_id',
+                                      None) is None:
             tokenizer_obj.pad_token = tokenizer_obj.eos_token
         if self.image_token_id is None:
             self.image_token_id = tokenizer_obj.convert_tokens_to_ids(
@@ -220,8 +224,8 @@ class QwenVLImageTokenExpandAndTokenize:
             raise KeyError(
                 f'Missing image grid key: {self.image_grid_thw_key!r}')
 
-        expanded_text = self._expand_text(
-            inputs[self.text_key], inputs[self.image_grid_thw_key])
+        expanded_text = self._expand_text(inputs[self.text_key],
+                                          inputs[self.image_grid_thw_key])
         encoded = self.tokenizer(
             [expanded_text],
             padding=self.padding,
@@ -236,22 +240,40 @@ class QwenVLImageTokenExpandAndTokenize:
             input_ids = input_ids[0]
             attention_mask = attention_mask[0]
 
+        if self.padding == 'max_length':
+            max_length = self.tokenizer_kwargs.get('max_length')
+            if max_length is None:
+                raise ValueError(
+                    "padding='max_length' requires tokenizer_kwargs.max_length"
+                )
+            if input_ids.shape[0] != max_length:
+                raise ValueError(
+                    'Tokenized Qwen-VL input has length '
+                    f'{input_ids.shape[0]}, '
+                    f'expected {max_length}. Increase max_length rather than '
+                    'truncating image tokens.')
+
         inputs[self.input_ids_key] = np.asarray(input_ids, dtype=np.int64)
         inputs[self.attention_mask_key] = np.asarray(
             attention_mask, dtype=np.int64)
         if self.mm_token_type_ids_key is not None:
             mm_token_type_ids = np.zeros_like(
                 inputs[self.input_ids_key], dtype=np.int64)
-            mm_token_type_ids[
-                inputs[self.input_ids_key] == self.image_token_id] = (
-                    self.image_mm_token_type_id)
+            mm_token_type_ids[inputs[self.input_ids_key] ==
+                              self.image_token_id] = (
+                                  self.image_mm_token_type_id)
             if self.video_token_id is not None:
-                mm_token_type_ids[
-                    inputs[self.input_ids_key] == self.video_token_id] = (
-                        self.video_mm_token_type_id)
+                mm_token_type_ids[inputs[self.input_ids_key] ==
+                                  self.video_token_id] = (
+                                      self.video_mm_token_type_id)
             inputs[self.mm_token_type_ids_key] = mm_token_type_ids
         if self.expanded_text_key is not None:
             inputs[self.expanded_text_key] = expanded_text
+        if self.output_keys is not None:
+            inputs = {
+                key: inputs[key]
+                for key in self.output_keys if key in inputs
+            }
         return inputs
 
 

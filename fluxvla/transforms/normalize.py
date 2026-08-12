@@ -154,12 +154,12 @@ class DenormalizeLiberoAction:
             data (Dict): The data to be denormalized, which should
                 contain keys that match the keys in `norm_stats`.
         """
+        action = data.get('action', None)
+        assert action is not None, \
+            f'Action is not found in the data: {data.keys()}'
         if self.norm_stats is not None and self.denorm_action:
             norm_stats_key = data.get('norm_stats_key')
             norm_stats = self.norm_stats[norm_stats_key]
-            action = data.get('action', None)
-            assert action is not None, \
-                f'Action is not found in the data: {data.keys()}'
             if self.norm_type == 'quantile':
                 action = self._denormalize_quantile(action,
                                                     norm_stats['action'])
@@ -238,33 +238,6 @@ class DenormalizeLiberoAction:
             action_low,
             normalized_action,
         )
-        return action
-
-
-@TRANSFORMS.register_module()
-class PostprocessLiberoAction:
-    """Apply LIBERO gripper conventions to an env-scale action."""
-
-    eval_context_keys = ()
-
-    def __init__(self,
-                 action_dim: int = None,
-                 normalize_gripper: bool = True,
-                 invert_gripper: bool = True):
-        self.action_dim = action_dim
-        self.normalize_gripper = normalize_gripper
-        self.invert_gripper = invert_gripper
-
-    def __call__(self, data: Dict) -> np.ndarray:
-        action = data.get('action')
-        assert action is not None, \
-            f'Action is not found in the data: {data.keys()}'
-        if self.normalize_gripper:
-            action = normalize_gripper_action(action, binarize=True)
-        if self.invert_gripper:
-            action = invert_gripper_action(action)
-        if self.action_dim is not None:
-            action = action[:self.action_dim]
         return action
 
 
@@ -892,28 +865,29 @@ class SinCosKeys:
 
 @TRANSFORMS.register_module()
 class LiberoProprioFromInputs:
-    """Build and normalize Libero proprio state from inputs.
+    """Build Libero proprio state from inputs and optionally normalize it.
 
     Reads `robot0_eef_pos`, `robot0_eef_quat`, `robot0_gripper_qpos`,
     converts quaternion to axis-angle, concatenates into a
-    state vector, and normalizes using `norm_stats[task_suite_name +
-    '_no_noops']['proprio']`.
-
-    Expects `task_suite_name` to be present in the input dict.
+    state vector. When ``norm_type`` is not ``None``, it normalizes using the
+    selected ``norm_stats`` entry. ``modality_keys`` can expose the same raw or
+    normalized values as a per-modality dictionary for metadata-driven models.
 
     Args:
-        norm_stats (str | Dict): Path to JSON or dict of normalization stats.
-        norm_type (str): Type of normalization to use.
-            Options: 'mean_std', 'quantile', or 'min_max'.
-            Defaults to 'quantile'.
+        norm_type (str | None): Type of normalization to use. ``None`` keeps
+            raw values. Other options are ``mean_std``, ``quantile``, and
+            ``min_max``. Defaults to ``quantile``.
         pos_key (str): Key for end-effector position.
         quat_key (str): Key for end-effector quaternion.
         gripper_key (str): Key for gripper position.
         out_key (str): Output key for normalized state (default 'states').
+        modality_keys (List[str] | None): Seven output names corresponding to
+            x, y, z, roll, pitch, yaw, and gripper. When set, ``out_key`` is a
+            dictionary whose values include a leading step dimension.
     """
 
     def __init__(self,
-                 norm_type: str = 'quantile',
+                 norm_type: Optional[str] = 'quantile',
                  state_dim: int = None,
                  pos_key: str = 'robot0_eef_pos',
                  quat_key: str = 'robot0_eef_quat',
@@ -924,7 +898,18 @@ class LiberoProprioFromInputs:
                  stat_subkey: str = 'default',
                  prefix: str = 'global',
                  linear_mode: str = 'min/max',
-                 clamp: float = 5.0) -> None:
+                 clamp: float = 5.0,
+                 modality_keys: Optional[List[str]] = None) -> None:
+        if norm_type not in (None, 'none', 'linear', 'mean_std', 'quantile',
+                             'min_max'):
+            raise ValueError(f'Unsupported norm_type: {norm_type!r}')
+        if modality_keys is not None and len(modality_keys) != 7:
+            raise ValueError(
+                'modality_keys must contain names for x, y, z, roll, '
+                'pitch, yaw, and gripper.')
+        if modality_keys is not None and state_dim is not None:
+            raise ValueError(
+                'state_dim padding is not supported with modality_keys.')
         self.norm_type = norm_type
         self.state_dim = state_dim
         self.pos_key = pos_key
@@ -937,20 +922,30 @@ class LiberoProprioFromInputs:
         self.prefix = prefix
         self.linear_mode = linear_mode
         self.clamp = float(clamp)
+        self.modality_keys = tuple(modality_keys or ())
 
     def __call__(self, data: Dict) -> Dict:
         assert self.pos_key in data and self.quat_key in \
             data and self.gripper_key in data, \
             f'Missing proprio keys in data: {self.pos_key}, {self.quat_key}, {self.gripper_key}'  # noqa: E501
-        robot0_eef_pos = np.asarray(data[self.pos_key])
-        robot0_eef_quat = np.asarray(data[self.quat_key])
-        robot0_gripper_qpos = np.asarray(data[self.gripper_key])
+        robot0_eef_pos = np.asarray(
+            data[self.pos_key], dtype=np.float32).reshape(-1)
+        robot0_eef_quat = np.asarray(
+            data[self.quat_key], dtype=np.float32).reshape(-1)
+        robot0_gripper_qpos = np.asarray(
+            data[self.gripper_key], dtype=np.float32).reshape(-1)
+        rotation = np.asarray(
+            quat2axisangle(robot0_eef_quat), dtype=np.float32).reshape(-1)
+        if robot0_eef_pos.size != 3 or rotation.size != 3:
+            raise ValueError(
+                'LIBERO proprio expects 3D position and axis-angle rotation.')
 
         state = np.concatenate((
             robot0_eef_pos,
-            quat2axisangle(robot0_eef_quat),
+            rotation,
             robot0_gripper_qpos,
-        ))
+        )).astype(
+            np.float32, copy=False)
 
         if self.norm_type == 'linear':
             raw = data['norm_stats'][self.stat_field][self.stat_subkey]
@@ -960,7 +955,7 @@ class LiberoProprioFromInputs:
             state_t = torch.as_tensor(state, dtype=torch.float32)
             state = torch.clamp(state_t * scale + offset, -self.clamp,
                                 self.clamp).numpy()
-        elif self.norm_type == 'none':
+        elif self.norm_type in (None, 'none'):
             state = state.astype(np.float32, copy=False)
         else:
             stats = data['norm_stats'][self.stat_key]
@@ -972,7 +967,14 @@ class LiberoProprioFromInputs:
                 state = self._normalize(state, stats)
 
         out = dict(data)
-        if self.state_dim is not None:
+        if self.modality_keys:
+            split_points = [1, 2, 3, 4, 5, 6]
+            values = np.split(state, split_points)
+            out[self.out_key] = {
+                key: value[None, ...]
+                for key, value in zip(self.modality_keys, values)
+            }
+        elif self.state_dim is not None:
             out[self.out_key] = np.zeros((self.state_dim), dtype=state.dtype)
             out[self.out_key][:state.shape[0]] = state
         else:

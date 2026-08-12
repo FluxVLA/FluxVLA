@@ -25,12 +25,12 @@ from PIL import Image
 from fluxvla.datasets.utils.video_decode import (build_lerobot_video_path,
                                                  decode_video_frames)
 from fluxvla.engines import TRANSFORMS
-from fluxvla.engines.utils.eval_utils import crop_and_resize, quat2axisangle
+from fluxvla.engines.utils.eval_utils import crop_and_resize
+from .modality_state_action import (ModalityStateActionCodec,
+                                    resolve_groot_n17_flat_slices,
+                                    resolve_groot_n17_metadata)
 from .transform_images import (_resize_hwc_lanczos3_numpy,
                                _resize_hwc_lanczos3_tensorflow)
-from .modality_state_action import (
-    ModalityStateActionCodec, resolve_groot_n17_flat_slices,
-    resolve_groot_n17_metadata)
 from .utils import pad_to_dim, parse_image
 
 
@@ -238,7 +238,7 @@ class BuildModalityStateActionTargets:
 
     def __init__(
         self,
-        processor_path: str,
+        processor_path: Optional[str] = None,
         embodiment_tag: str = 'LIBERO_PANDA',
         state_key: str = 'states',
         action_key: str = 'actions',
@@ -246,10 +246,10 @@ class BuildModalityStateActionTargets:
         flat_layout: str = 'auto',
         train_mode: bool = True,
         processor_kwargs: Optional[Dict[str, Any]] = None,
-        output_state_key: str = 'state',
-        output_action_key: str = 'action',
-        output_action_mask_key: str = 'action_mask',
-        output_embodiment_id_key: str = 'embodiment_id',
+        output_state_key: str = 'states',
+        output_action_key: str = 'actions',
+        output_action_mask_key: str = 'action_masks',
+        output_embodiment_id_key: str = 'embodiment_ids',
     ):
         self.processor_path = processor_path
         self.state_key = state_key
@@ -273,11 +273,11 @@ class BuildModalityStateActionTargets:
         self.statistics = metadata['statistics']
         self.max_state_dim = processor_kwargs.get('max_state_dim', 29)
         self.max_action_dim = processor_kwargs.get('max_action_dim', 29)
-        self.max_action_horizon = processor_kwargs.get(
-            'max_action_horizon', 50)
+        self.max_action_horizon = processor_kwargs.get('max_action_horizon',
+                                                       50)
         self.exclude_state = processor_kwargs.get('exclude_state', False)
-        self.state_dropout_prob = processor_kwargs.get(
-            'state_dropout_prob', 0.0)
+        self.state_dropout_prob = processor_kwargs.get('state_dropout_prob',
+                                                       0.0)
         self.embodiment_id = metadata['embodiment_id']
         self.state_action_processor = ModalityStateActionCodec(
             modality_configs=self.modality_configs,
@@ -286,20 +286,18 @@ class BuildModalityStateActionTargets:
             clip_outliers=processor_kwargs.get('clip_outliers', True),
             apply_sincos_state_encoding=processor_kwargs.get(
                 'apply_sincos_state_encoding', False),
-            use_relative_action=processor_kwargs.get(
-                'use_relative_action', False))
+            use_relative_action=processor_kwargs.get('use_relative_action',
+                                                     False))
         if train_mode:
             self.state_action_processor.train()
         else:
             self.state_action_processor.eval()
 
     def _flat_slices(self, modality: str) -> Dict[str, tuple[int, int]]:
-        return resolve_groot_n17_flat_slices(
-            self.modality_config,
-            self.statistics,
-            self.embodiment_key,
-            modality,
-            self.flat_layout)
+        return resolve_groot_n17_flat_slices(self.modality_config,
+                                             self.statistics,
+                                             self.embodiment_key, modality,
+                                             self.flat_layout)
 
     def _split_flat(self, value: Any, modality: str) -> Dict[str, np.ndarray]:
         if isinstance(value, dict):
@@ -327,14 +325,15 @@ class BuildModalityStateActionTargets:
             dtype=outputs[self.output_action_mask_key].dtype)
         if mask.ndim == 1:
             mask = mask[:, None]
-        horizon = min(mask.shape[0], outputs[self.output_action_mask_key].shape[0])
+        horizon = min(mask.shape[0],
+                      outputs[self.output_action_mask_key].shape[0])
         outputs[self.output_action_mask_key][:horizon] *= mask[:horizon]
         if horizon < outputs[self.output_action_mask_key].shape[0]:
             outputs[self.output_action_mask_key][horizon:] = 0
 
     def _build_action_targets(
-            self, normalized_actions: Dict[str, np.ndarray]) -> tuple[
-                Optional[torch.Tensor], Optional[torch.Tensor]]:
+        self, normalized_actions: Dict[str, np.ndarray]
+    ) -> tuple[Optional[torch.Tensor], Optional[torch.Tensor]]:
         if not normalized_actions:
             assert not self.training, 'Action is required in training mode'
             return None, None
@@ -371,13 +370,16 @@ class BuildModalityStateActionTargets:
         if exclude_state or (self.state_dropout_prob > 0
                              and random.random() < self.state_dropout_prob
                              and self.training):
-            state = torch.cat(
-                [torch.from_numpy(np.zeros_like(raw_state[key])) for key in state_keys],
-                dim=-1)
+            state = torch.cat([
+                torch.from_numpy(np.zeros_like(raw_state[key]))
+                for key in state_keys
+            ],
+                              dim=-1)
         else:
-            state = torch.cat(
-                [torch.from_numpy(normalized_state[key]) for key in state_keys],
-                dim=-1)
+            state = torch.cat([
+                torch.from_numpy(normalized_state[key]) for key in state_keys
+            ],
+                              dim=-1)
         state = torch.cat([
             state,
             torch.zeros(state.shape[0], self.max_state_dim - state.shape[1])
@@ -393,10 +395,11 @@ class BuildModalityStateActionTargets:
         elif self.training:
             raise KeyError(f'Missing action key: {self.action_key!r}')
 
-        normalized_state, normalized_actions = self.state_action_processor.apply(
-            state=state_data,
-            action=action_data,
-            embodiment_tag=self.embodiment_key)
+        normalized_state, normalized_actions = (
+            self.state_action_processor.apply(
+                state=state_data,
+                action=action_data,
+                embodiment_tag=self.embodiment_key))
         normalized_action, action_mask = self._build_action_targets(
             normalized_actions)
         state = self._build_state(state_data, normalized_state)
@@ -408,8 +411,13 @@ class BuildModalityStateActionTargets:
                 torch.get_default_dtype())
         if action_mask is not None:
             outputs[self.output_action_mask_key] = action_mask
-        outputs[self.output_embodiment_id_key] = self.embodiment_id
+        outputs[self.output_embodiment_id_key] = np.asarray(
+            self.embodiment_id, dtype=np.int64)
         self._apply_external_action_mask(outputs, sample)
+        for key in (self.output_state_key, self.output_action_key,
+                    self.output_action_mask_key):
+            if key in outputs and torch.is_tensor(outputs[key]):
+                outputs[key] = outputs[key].numpy()
         return outputs
 
 
@@ -535,155 +543,6 @@ class ProcessLiberoEvalInputs:
             inputs['embodiment_ids'] = np.array(
                 self.embodiment_id, dtype=np.int32)
         return inputs
-
-
-@TRANSFORMS.register_module()
-class BuildLiberoFlatEvalObservation:
-    """Build a flat modality observation from existing LIBERO env obs.
-
-    The output observation uses explicit ``video.*`` and ``state.*`` keys so
-    later model-specific transforms can consume the same adapter result without
-    depending on raw LIBERO key names.
-    """
-
-    def __init__(self,
-                 image_key: str = 'agentview_image',
-                 wrist_image_key: str = 'robot0_eye_in_hand_image',
-                 pos_key: str = 'robot0_eef_pos',
-                 quat_key: str = 'robot0_eef_quat',
-                 gripper_key: str = 'robot0_gripper_qpos',
-                 task_key: str = 'task_description',
-                 observation_key: str = 'flat_observation',
-                 task_output_key: Optional[str] = None,
-                 replay_image_key: Optional[str] = 'replay_img') -> None:
-        self.image_key = image_key
-        self.wrist_image_key = wrist_image_key
-        self.pos_key = pos_key
-        self.quat_key = quat_key
-        self.gripper_key = gripper_key
-        self.task_key = task_key
-        self.observation_key = observation_key
-        self.task_output_key = task_output_key
-        self.replay_image_key = replay_image_key
-
-    def build_observation(self, inputs: Dict) -> tuple[Dict[str, Any], str]:
-        for key in (self.image_key, self.wrist_image_key, self.pos_key,
-                    self.quat_key, self.gripper_key):
-            if key not in inputs:
-                raise KeyError(f'Missing LIBERO eval input key: {key!r}')
-
-        xyz = np.asarray(inputs[self.pos_key], dtype=np.float32)
-        rpy = quat2axisangle(np.asarray(inputs[self.quat_key], dtype=np.float32))
-        task = inputs.get(
-            self.task_key,
-            inputs.get('annotation.human.action.task_description', ''))
-        observation = {
-            'video.image': np.asarray(inputs[self.image_key],
-                                      dtype=np.uint8)[::-1, ::-1].copy(),
-            'video.wrist_image': np.asarray(inputs[self.wrist_image_key],
-                                            dtype=np.uint8)[::-1, ::-1].copy(),
-            'state.x': np.asarray([xyz[0]], dtype=np.float32),
-            'state.y': np.asarray([xyz[1]], dtype=np.float32),
-            'state.z': np.asarray([xyz[2]], dtype=np.float32),
-            'state.roll': np.asarray([rpy[0]], dtype=np.float32),
-            'state.pitch': np.asarray([rpy[1]], dtype=np.float32),
-            'state.yaw': np.asarray([rpy[2]], dtype=np.float32),
-            'state.gripper': np.asarray(inputs[self.gripper_key],
-                                        dtype=np.float32).copy(),
-            'annotation.human.action.task_description': task,
-            'task_description': task,
-        }
-        return observation, task
-
-    def __call__(self, inputs: Dict) -> Dict:
-        observation, task = self.build_observation(inputs)
-        outputs = dict(inputs)
-        outputs[self.observation_key] = observation
-        if self.task_output_key is not None:
-            outputs[self.task_output_key] = task
-        if self.replay_image_key is not None:
-            outputs[self.replay_image_key] = observation['video.image'].copy()
-        return outputs
-
-
-@TRANSFORMS.register_module()
-class BuildEvalInputsFromFlatObservation:
-    """Build reusable eval sample fields from a flat modality observation."""
-
-    def __init__(
-        self,
-        observation_key: str = 'flat_observation',
-        video_keys: Optional[List[str]] = None,
-        state_keys: Optional[List[str]] = None,
-        video_prefix: str = 'video.',
-        state_prefix: str = 'state.',
-        task_key: str = 'task_description',
-        output_image_key: str = 'images',
-        output_state_key: str = 'states',
-        output_task_key: str = 'task_description',
-        add_state_step_dim: bool = True,
-    ) -> None:
-        self.observation_key = observation_key
-        self.video_keys = video_keys
-        self.state_keys = state_keys
-        self.video_prefix = video_prefix
-        self.state_prefix = state_prefix
-        self.task_key = task_key
-        self.output_image_key = output_image_key
-        self.output_state_key = output_state_key
-        self.output_task_key = output_task_key
-        self.add_state_step_dim = add_state_step_dim
-
-    def _resolve_keys(self, observation: Dict[str, Any], prefix: str,
-                      keys: Optional[List[str]]) -> List[str]:
-        if keys is not None:
-            return list(keys)
-        return sorted(
-            key[len(prefix):]
-            for key in observation
-            if key.startswith(prefix))
-
-    def _state_value(self, value: Any) -> np.ndarray:
-        array = np.asarray(value, dtype=np.float32)
-        if self.add_state_step_dim and array.ndim == 1:
-            array = array[None, :]
-        return array.copy()
-
-    def __call__(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
-        if self.observation_key not in inputs:
-            raise KeyError(
-                f'Missing flat observation key: {self.observation_key!r}')
-        observation = inputs[self.observation_key]
-        video_keys = self._resolve_keys(
-            observation, self.video_prefix, self.video_keys)
-        state_keys = self._resolve_keys(
-            observation, self.state_prefix, self.state_keys)
-
-        images = {}
-        for key in video_keys:
-            flat_key = f'{self.video_prefix}{key}'
-            if flat_key not in observation:
-                raise KeyError(f'Missing flat video key: {flat_key!r}')
-            images[key] = [np.asarray(observation[flat_key]).copy()]
-
-        states = {}
-        for key in state_keys:
-            flat_key = f'{self.state_prefix}{key}'
-            if flat_key not in observation:
-                raise KeyError(f'Missing flat state key: {flat_key!r}')
-            states[key] = self._state_value(observation[flat_key])
-
-        task = inputs.get(
-            self.task_key,
-            observation.get(
-                self.task_key,
-                observation.get('annotation.human.action.task_description',
-                                '')))
-        outputs = dict(inputs)
-        outputs[self.output_image_key] = images
-        outputs[self.output_state_key] = states
-        outputs[self.output_task_key] = task
-        return outputs
 
 
 @TRANSFORMS.register_module()
