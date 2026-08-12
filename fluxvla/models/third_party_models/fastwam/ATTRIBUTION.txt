@@ -12,20 +12,12 @@ Source projects:
   to the retained files include:
     * the logger import, redirected from ``fastwam.utils.logging_config`` to
       the local ``._logging`` shim where used;
-    * ``action_dit.py`` only: the relative-path anchor for
-      ``action_dit_pretrained_path`` is ``Path(__file__).parents[5]`` instead
-      of ``parents[4]`` upstream, because the vendored module sits one
-      directory deeper; both resolve to the respective repository root;
     * removal of code unreachable from the supported FluxVLA runtime and
-      checkpoint-packaging paths.
+      complete-checkpoint loading path.
   The retained numerical paths and checkpoint parameter names are unchanged.
 
 - Alibaba Wan Video (Wan 2.2 TI2V-5B)
   Upstream location: https://github.com/Wan-Video/Wan2.2
-  License: Apache-2.0
-
-- DiffSynth-Studio (hash-based model loading utilities)
-  Upstream location: https://github.com/modelscope/DiffSynth-Studio
   License: Apache-2.0
 
 License notes:

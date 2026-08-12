@@ -1,9 +1,6 @@
-import os
 import torch
 import torch.nn as nn
 from typing import Any, Dict, Optional
-
-from ._logging import get_logger
 
 from .helpers.gradient import gradient_checkpoint_forward
 from .wan_video_dit import (
@@ -12,22 +9,8 @@ from .wan_video_dit import (
     precompute_freqs_cis,
 )
 
-logger = get_logger(__name__)
-
 
 class ActionDiT(nn.Module):
-    ACTION_BACKBONE_SKIP_PREFIXES = ("action_encoder.", "head.")
-    ACTION_BACKBONE_META_KEYS = (
-        "hidden_dim",
-        "ffn_dim",
-        "num_layers",
-        "num_heads",
-        "attn_head_dim",
-        "text_dim",
-        "freq_dim",
-        "eps",
-    )
-
     def __init__(
         self,
         hidden_dim: int,
@@ -85,129 +68,6 @@ class ActionDiT(nn.Module):
         self.freqs = precompute_freqs_cis(attn_head_dim, end=1024)
 
         self.use_gradient_checkpointing = use_gradient_checkpointing
-
-    @classmethod
-    def backbone_key_set(cls, keys) -> set[str]:
-        return {
-            key
-            for key in keys
-            if not any(key.startswith(prefix) for prefix in cls.ACTION_BACKBONE_SKIP_PREFIXES)
-        }
-
-    @classmethod
-    def from_pretrained(
-        cls,
-        action_dit_config: dict[str, Any],
-        action_dit_pretrained_path: str | None = None,
-        skip_dit_load_from_pretrain: bool = False,
-        device: str = "cuda",
-        torch_dtype: torch.dtype = torch.bfloat16,
-    ) -> "ActionDiT":
-        if action_dit_config is None:
-            raise ValueError("`action_dit_config` is required for ActionDiT.from_pretrained().")
-        if skip_dit_load_from_pretrain:
-            logger.info(
-                "Skipping ActionDiT pretrained load (`skip_dit_load_from_pretrain=True`); "
-                "initializing action expert randomly and expecting checkpoint override."
-            )
-            return cls(**action_dit_config).to(device=device, dtype=torch_dtype)
-        if not action_dit_pretrained_path:
-            logger.info("No `action_dit_pretrained_path` provided, initializing ActionDiT with random weights.")
-            return cls(**action_dit_config).to(device=device, dtype=torch_dtype)
-        from pathlib import Path
-        p = Path(action_dit_pretrained_path)
-        if not p.is_absolute():
-            p = Path(__file__).resolve().parents[5] / p
-        action_dit_pretrained_path = str(p)
-        if not os.path.isfile(action_dit_pretrained_path):
-            raise FileNotFoundError(
-                f"`action_dit_pretrained_path` does not exist: {action_dit_pretrained_path}"
-            )
-
-        action_cfg = dict(action_dit_config)
-        action_expert = cls(**action_cfg).to(device=device, dtype=torch_dtype)
-        action_state = action_expert.state_dict()
-        expected_backbone_keys = cls.backbone_key_set(action_state.keys())
-
-        payload = torch.load(action_dit_pretrained_path, map_location="cpu")
-        if not isinstance(payload, dict):
-            raise ValueError(
-                f"Invalid action backbone payload type from {action_dit_pretrained_path}: {type(payload)}"
-            )
-
-        policy = payload.get("policy", {})
-        if policy:
-            logger.info(f"ActionDiT backbone payload policy: {policy}")
-
-        meta = payload.get("meta")
-        expected_meta = {
-            "hidden_dim": int(action_cfg["hidden_dim"]),
-            "ffn_dim": int(action_cfg["ffn_dim"]),
-            "num_layers": int(action_cfg["num_layers"]),
-            "num_heads": int(action_cfg["num_heads"]),
-            "attn_head_dim": int(action_cfg["attn_head_dim"]),
-            "text_dim": int(action_cfg["text_dim"]),
-            "freq_dim": int(action_cfg["freq_dim"]),
-            "eps": float(action_cfg["eps"]),
-        }
-        for key in cls.ACTION_BACKBONE_META_KEYS:
-            if key not in meta:
-                raise ValueError(f"`meta.{key}` missing in {action_dit_pretrained_path}")
-            expected_value = expected_meta[key]
-            got_value = meta[key]
-            if key == "eps":
-                if abs(float(got_value) - float(expected_value)) > 1e-12:
-                    raise ValueError(
-                        f"`meta.{key}` mismatch in {action_dit_pretrained_path}: "
-                        f"expected {expected_value}, got {got_value}"
-                    )
-            elif int(got_value) != int(expected_value):
-                raise ValueError(
-                    f"`meta.{key}` mismatch in {action_dit_pretrained_path}: "
-                    f"expected {expected_value}, got {got_value}"
-                )
-
-        backbone_state_dict = payload.get("backbone_state_dict")
-        if not isinstance(backbone_state_dict, dict):
-            raise ValueError(
-                f"`backbone_state_dict` must be a dict in {action_dit_pretrained_path}, "
-                f"got {type(backbone_state_dict)}"
-            )
-
-        provided_keys = set(backbone_state_dict.keys())
-        missing_keys = sorted(expected_backbone_keys - provided_keys)
-        unexpected_keys = sorted(provided_keys - expected_backbone_keys)
-        if missing_keys or unexpected_keys:
-            raise ValueError(
-                "Action backbone key mismatch in preprocessed payload. "
-                f"missing={missing_keys[:10]}{'...' if len(missing_keys) > 10 else ''}, "
-                f"unexpected={unexpected_keys[:10]}{'...' if len(unexpected_keys) > 10 else ''}"
-            )
-
-        merged_state = dict(action_state)
-        for key in expected_backbone_keys:
-            value = backbone_state_dict[key]
-            if not isinstance(value, torch.Tensor):
-                raise ValueError(
-                    f"`backbone_state_dict[{key}]` must be torch.Tensor in {action_dit_pretrained_path}, "
-                    f"got {type(value)}"
-                )
-            target = merged_state[key]
-            if tuple(value.shape) != tuple(target.shape):
-                raise ValueError(
-                    f"Shape mismatch for `{key}` in {action_dit_pretrained_path}: "
-                    f"expected {tuple(target.shape)}, got {tuple(value.shape)}"
-                )
-            merged_state[key] = value.to(device=target.device, dtype=target.dtype)
-
-        action_expert.load_state_dict(merged_state, strict=True)
-        logger.info(
-            "Loaded ActionDiT backbone from %s (keys=%d; random_kept_prefixes=%s).",
-            action_dit_pretrained_path,
-            len(expected_backbone_keys),
-            list(cls.ACTION_BACKBONE_SKIP_PREFIXES),
-        )
-        return action_expert.to(device=device, dtype=torch_dtype)
 
     def pre_dit(
         self,
