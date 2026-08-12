@@ -14,21 +14,19 @@
 """FluxVLA-native GR00T N1.7 Qwen3 backbone."""
 
 from __future__ import annotations
-
+import logging
 from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
-import logging
-from typing import Any, Callable, Dict, Optional, Type
+from typing import Any, Callable, Dict, Type
 
 import torch
 from torch.distributed.fsdp.wrap import transformer_auto_wrap_policy
-from transformers import Qwen3VLForConditionalGeneration
+from transformers import Qwen3VLConfig, Qwen3VLForConditionalGeneration
 from transformers.models.qwen3_vl.modeling_qwen3_vl import \
     Qwen3VLTextDecoderLayer
 
 from fluxvla.engines.utils import VLM_BACKBONES
-
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +49,7 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
 
     def __init__(
         self,
-        model_name: str = 'nvidia/Cosmos-Reason2-2B',
+        model_config: Dict[str, Any],
         tune_llm: bool = False,
         tune_visual: bool = False,
         select_layer: int = -1,
@@ -61,7 +59,6 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
         load_bf16: bool = False,
         tune_top_llm_layers: int = 0,
         trainable_params_fp32: bool = False,
-        transformers_loading_kwargs: Optional[Dict[str, Any]] = None,
         qwen3_runtime: str = 'compat_457',
     ) -> None:
         super().__init__()
@@ -79,34 +76,67 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
         else:
             self.qwen3_runtime_summary = None
 
-        extra_kwargs = {}
         if use_flash_attention:
             try:
                 import flash_attn  # noqa: F401
-                extra_kwargs['attn_implementation'] = 'flash_attention_2'
+                attention_implementation = 'flash_attention_2'
             except ImportError:
                 logger.warning(
-                    'flash_attn is not installed. Falling back to sdpa attention.')
-                extra_kwargs['attn_implementation'] = 'sdpa'
-        if load_bf16:
-            extra_kwargs['torch_dtype'] = torch.bfloat16
+                    'flash_attn is not installed. Falling back to sdpa '
+                    'attention.')
+                attention_implementation = 'sdpa'
+        else:
+            attention_implementation = 'sdpa'
 
-        self.model = Qwen3VLForConditionalGeneration.from_pretrained(
-            model_name,
-            **extra_kwargs,
-            **(transformers_loading_kwargs or {}),
-        ).eval()
+        qwen_config = Qwen3VLConfig.from_dict(dict(model_config))
+        qwen_config._attn_implementation = attention_implementation
+        # The GR00T checkpoint owns all backbone weights. Build only the Qwen
+        # architecture here; GrootN17VLA materializes these meta parameters
+        # directly from the ``backbone.*`` tensors in that checkpoint.
+        with torch.device('meta'):
+            self.model = Qwen3VLForConditionalGeneration(qwen_config)
+        self.model.eval()
 
-        while len(self.model.language_model.layers) > select_layer:
-            self.model.language_model.layers.pop(-1)
+        if select_layer > 0:
+            while len(self.model.language_model.layers) > select_layer:
+                self.model.language_model.layers.pop(-1)
 
         self.select_layer = select_layer
-        self.set_trainable_parameters(tune_llm, tune_visual, tune_top_llm_layers)
-        if load_bf16 and trainable_params_fp32:
+        self.load_bf16 = load_bf16
+        self.trainable_params_fp32 = trainable_params_fp32
+        self.set_trainable_parameters(tune_llm, tune_visual,
+                                      tune_top_llm_layers)
+
+    def finalize_checkpoint_load(self) -> None:
+        """Materialize buffers after assigning checkpoint weights."""
+        device = next(self.parameters()).device
+        visual_rotary = self.model.visual.rotary_pos_emb
+        with torch.device(device):
+            fresh_visual_rotary = type(visual_rotary)(visual_rotary.dim,
+                                                      visual_rotary.theta)
+        visual_rotary.register_buffer(
+            'inv_freq', fresh_visual_rotary.inv_freq, persistent=False)
+
+        text_rotary = self.model.language_model.rotary_emb
+        with torch.device(device):
+            fresh_text_rotary = type(text_rotary)(
+                self.model.config.text_config, device=device)
+        text_rotary.register_buffer(
+            'inv_freq', fresh_text_rotary.inv_freq, persistent=False)
+        text_rotary.register_buffer(
+            'original_inv_freq',
+            fresh_text_rotary.original_inv_freq,
+            persistent=False)
+        text_rotary.attention_scaling = fresh_text_rotary.attention_scaling
+
+        if self.load_bf16:
+            self.model.to(dtype=torch.bfloat16)
+        if self.trainable_params_fp32:
             for name, param in self.named_parameters():
                 if param.requires_grad:
                     param.data = param.data.to(torch.float32)
-                    logger.debug('Casting trainable parameter %s to fp32', name)
+                    logger.debug('Casting trainable parameter %s to fp32',
+                                 name)
 
     @property
     def transformer_layer_cls(self) -> Type[torch.nn.Module]:
@@ -116,18 +146,31 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
                                  tune_top_llm_layers: int) -> None:
         self.tune_llm = tune_llm
         self.tune_visual = tune_visual
-        for param in self.parameters():
-            param.requires_grad = True
-        if not tune_llm:
-            self.model.language_model.requires_grad_(False)
-        if not tune_visual:
-            self.model.visual.requires_grad_(False)
+        self.tune_top_llm_layers = tune_top_llm_layers
+        self.requires_grad_(False)
+        if tune_llm:
+            self.model.language_model.requires_grad_(True)
+            if hasattr(self.model, 'lm_head'):
+                self.model.lm_head.requires_grad_(True)
+        if tune_visual:
+            self.model.visual.requires_grad_(True)
         if tune_top_llm_layers > 0:
-            for layer in self.model.language_model.layers[-tune_top_llm_layers:]:
+            for layer in self.model.language_model.layers[
+                    -tune_top_llm_layers:]:
                 for param in layer.parameters():
                     param.requires_grad = True
-        if not any(param.requires_grad for param in self.parameters()):
-            logger.warning('No backbone trainable parameters found.')
+        # A fully frozen backbone is a valid, config-controlled N1.7 policy.
+        # Do not warn here: this method is intentionally called more than once
+        # during DDP/FSDP setup, and a warning from every rank makes it look as
+        # if the trainability policy is changing when it is not.
+
+    def apply_trainable_policy(self) -> None:
+        """Restore the fine-grained policy after BaseVLA runner setup."""
+        self.set_trainable_parameters(
+            self.tune_llm,
+            self.tune_visual,
+            self.tune_top_llm_layers,
+        )
 
     def set_frozen_modules_to_eval_mode(self) -> None:
         if self.training:
@@ -141,17 +184,23 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
         vl_input: Mapping[str, torch.Tensor],
     ) -> GrootN17BackboneOutput:
         self.set_frozen_modules_to_eval_mode()
-        keys_to_use = [
-            'input_ids',
-            'attention_mask',
-            'pixel_values',
-            'image_grid_thw',
-        ]
-        vl_input = {key: vl_input[key] for key in keys_to_use}
-        outputs = self.model(**vl_input, output_hidden_states=True)
+        hf_input = {
+            'input_ids': vl_input['lang_tokens'],
+            'attention_mask': vl_input['lang_masks'],
+            'pixel_values': vl_input['images'],
+            'image_grid_thw': vl_input['image_grid_thw'],
+        }
+        # DictCollator stacks sample-level packed vision tensors. Hugging Face
+        # Qwen3-VL expects the same tensors packed across the whole batch.
+        if hf_input['pixel_values'].ndim == 3:
+            hf_input['pixel_values'] = hf_input['pixel_values'].flatten(0, 1)
+        if hf_input['image_grid_thw'].ndim == 3:
+            hf_input['image_grid_thw'] = hf_input['image_grid_thw'].flatten(
+                0, 1)
+        outputs = self.model(**hf_input, output_hidden_states=True)
         backbone_features = outputs.hidden_states[-1]
-        image_mask = vl_input['input_ids'] == self.model.config.image_token_id
-        attention_mask = vl_input['attention_mask'] == 1
+        image_mask = hf_input['input_ids'] == self.model.config.image_token_id
+        attention_mask = hf_input['attention_mask'] == 1
         return GrootN17BackboneOutput(
             backbone_features=backbone_features,
             backbone_attention_mask=attention_mask,
@@ -161,9 +210,8 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
     def enable_gradient_checkpointing(self) -> None:
         """Enable HuggingFace gradient checkpointing on the inner Qwen3-VL."""
         if not any(param.requires_grad for param in self.parameters()):
-            logger.info(
-                'Skipping Qwen3-VL gradient checkpointing because the '
-                'backbone is frozen.')
+            logger.info('Skipping Qwen3-VL gradient checkpointing because the '
+                        'backbone is frozen.')
             return
         if not hasattr(self.model, 'gradient_checkpointing_enable'):
             return

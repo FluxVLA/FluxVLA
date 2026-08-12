@@ -80,8 +80,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         max_steps (int): Override for the per-suite maximum rollout length.
             When ``None`` (default) the built-in per-suite values are used.
         inference_seed (int): Seed forwarded to ``predict_action`` on every
-            prediction so each action query starts from the same deterministic
-            flow-matching noise. When ``None`` (default), no seed is forwarded.
+            prediction (e.g. to match a source eval that re-seeds the action
+            noise each call). When ``None`` (default) no seed is forwarded.
         allowed_missing_key_prefixes (tuple): Checkpoint keys with these
             prefixes may be missing when loading with ``strict=False``.
             Defaults to empty, which keeps strict missing-key validation.
@@ -133,15 +133,6 @@ class LiberoEvalRunner(BaseEvalRunner):
             tokenizer = transform.get('tokenizer')
             if isinstance(tokenizer, dict):
                 tokenizer['model_path'] = tokenizer_path.as_posix()
-
-    @staticmethod
-    def _get_eval_context_keys(component_cls, default_keys: tuple) -> tuple:
-        return tuple(getattr(component_cls, 'eval_context_keys', default_keys))
-
-    @staticmethod
-    def _distributed_collectives_enabled(world_size: int) -> bool:
-        return (world_size > 1 and dist.is_available()
-                and dist.is_initialized())
 
     @staticmethod
     def _build_global_episodes(num_tasks: int,
@@ -412,10 +403,9 @@ class LiberoEvalRunner(BaseEvalRunner):
                  result_gpu_id: int = None,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
-        from fluxvla.engines import (DATASETS, TRANSFORMS,
-                         build_dataset_from_cfg,
-                         build_transform_from_cfg,
-                         build_vla_from_cfg)
+        from fluxvla.engines import (build_dataset_from_cfg,
+                                     build_transform_from_cfg,
+                                     build_vla_from_cfg)
         self.set_common_eval_attrs(cfg, seed, ckpt_path, model_family,
                                    mixed_precision_dtype,
                                    enable_mixed_precision_training)
@@ -466,35 +456,18 @@ class LiberoEvalRunner(BaseEvalRunner):
             self.load_eval_state_dict(state_dict, allowed_missing_key_prefixes)
             del state_dict
             gc.collect()
-        self.norm_stats_key = norm_stats_key or f'{task_suite_name}_no_noops'
-        dataset_cls = DATASETS.get(dataset['type'])
-        action_transform_cls = TRANSFORMS.get(denormalize_action['type'])
-        dataset_context_keys = self._get_eval_context_keys(
-            dataset_cls,
-            ('task_suite_name', 'norm_stats_key', 'norm_stats'))
-        action_context_keys = self._get_eval_context_keys(
-            action_transform_cls, ('norm_stats',))
-        requires_norm_stats = (
-            'norm_stats' in dataset_context_keys
-            or 'norm_stats' in action_context_keys)
-        data_stat_path = None
-        if requires_norm_stats:
-            data_stat_path = (
-                dataset_stats_path if dataset_stats_path is not None else
-                self.default_stats_path(self.ckpt_path))
-            assert os.path.exists(data_stat_path), \
-                f'Dataset statistics file not found at {data_stat_path}!'
-        if 'norm_stats' in action_context_keys:
-            denormalize_action['norm_stats'] = data_stat_path
+        data_stat_path = (
+            dataset_stats_path if dataset_stats_path is not None else
+            self.default_stats_path(self.ckpt_path))
+        assert os.path.exists(data_stat_path), \
+            f'Dataset statistics file not found at {data_stat_path}!'
         # Load dataset and denormalization action
-        dataset_context = dict(
-            task_suite_name=task_suite_name,
-            norm_stats_key=self.norm_stats_key,
-            norm_stats=data_stat_path)
-        for key in dataset_context_keys:
-            dataset[key] = dataset_context[key]
-        if ckpt_path is not None:
-            self._inject_checkpoint_tokenizer(dataset, ckpt_path)
+        denormalize_action['norm_stats'] = data_stat_path
+        self.norm_stats_key = norm_stats_key or f'{task_suite_name}_no_noops'
+        dataset['task_suite_name'] = task_suite_name
+        dataset['norm_stats_key'] = self.norm_stats_key
+        dataset['norm_stats'] = data_stat_path
+        self._inject_checkpoint_tokenizer(dataset, ckpt_path)
         self.dataset = build_dataset_from_cfg(dataset)
         self.denormalize_action = build_transform_from_cfg(denormalize_action)
         self.eval_chunk_size = eval_chunk_size
@@ -527,11 +500,11 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
 
-        if data_stat_path is not None and os.path.isfile(data_stat_path):
+        if os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
                 norm_stats = json.load(f)
             self.update_model_norm_stats(norm_stats)
-        elif requires_norm_stats:
+        else:
             overwatch.warning(
                 'WARNING: No local dataset_statistics.json file found for current checkpoint.\n'  # noqa: E501
                 'You can ignore this if you are loading the base VLA (i.e. not fine-tuned) checkpoint.'  # noqa: E501
@@ -597,7 +570,6 @@ class LiberoEvalRunner(BaseEvalRunner):
             f'Using mixed precision dtype: {self.mixed_precision_dtype}')
         rank = overwatch.rank()
         world_size = overwatch.world_size()
-        distributed_enabled = self._distributed_collectives_enabled(world_size)
         local_episodes = self._build_local_episode_schedule(
             num_tasks,
             self.num_trials_per_task,
@@ -612,8 +584,7 @@ class LiberoEvalRunner(BaseEvalRunner):
         run_timestamp = (
             time.strftime('%Y_%m_%d-%H_%M_%S') if rank == 0 else None)
         run_timestamp_holder = [run_timestamp]
-        if distributed_enabled:
-            dist.broadcast_object_list(run_timestamp_holder, src=0)
+        dist.broadcast_object_list(run_timestamp_holder, src=0)
         run_timestamp = run_timestamp_holder[0]
         run_id = self._build_run_id(
             self.task_suite_name,
@@ -873,17 +844,16 @@ class LiberoEvalRunner(BaseEvalRunner):
         global_episodes = total_episodes.clone()
         global_successes = total_successes.clone()
         task_start_times = torch.tensor(task_start_times, device=cuda_dev)
-        if distributed_enabled:
-            dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
-            dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
-            dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
-            dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
-            dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
-            # Each (task, trial) is run by exactly one rank under the configured
-            # sharding, so MAX recovers that rank's 0/1 outcome (unrun cells stay
-            # ``-1``); MIN recovers the earliest per-task start time.
-            dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
-            dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
+        dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
+        dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
+        # Each (task, trial) is run by exactly one rank under the configured
+        # sharding, so MAX recovers that rank's 0/1 outcome (unrun cells stay
+        # ``-1``); MIN recovers the earliest per-task start time.
+        dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
+        dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
         global_episode_count = int(global_episodes[0].item())
         global_success_count = int(global_successes[0].item())
         global_success_rate = (
@@ -924,8 +894,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                                                  trial_success_grid.cpu(),
                                                  task_start_times.cpu())
         log_file.close()
-        if distributed_enabled:
-            dist.barrier()
+        dist.barrier()
         return
 
     @staticmethod

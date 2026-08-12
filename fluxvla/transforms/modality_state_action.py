@@ -14,15 +14,13 @@
 """Metadata-driven state/action codec used by GR00T-style transforms."""
 
 from __future__ import annotations
-
-from copy import deepcopy
 import json
 import os
+from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
-
 
 GROOT_N17_EMBODIMENT_ALIASES = {
     'LIBERO_PANDA': 'libero_sim',
@@ -32,17 +30,17 @@ GROOT_N17_EMBODIMENT_ALIASES = {
 GROOT_N17_VALIDATED_DEFAULT_EMBODIMENT_IDS = {'libero_sim': 2}
 
 
-def resolve_groot_n17_embodiment_key(
-        embodiment_tag: Optional[str] = None,
-        env_name: Optional[str] = None) -> str:
+def resolve_groot_n17_embodiment_key(embodiment_tag: Optional[str] = None,
+                                     env_name: Optional[str] = None) -> str:
     """Resolve a public or environment embodiment name to a metadata key."""
     value = env_name.split('/', 1)[0] if env_name else embodiment_tag
     if value is None:
         raise ValueError('An N1.7 embodiment tag or environment is required.')
     return GROOT_N17_EMBODIMENT_ALIASES.get(
         value,
-        GROOT_N17_EMBODIMENT_ALIASES.get(str(value).lower(),
-                                        str(value).lower()))
+        GROOT_N17_EMBODIMENT_ALIASES.get(
+            str(value).lower(),
+            str(value).lower()))
 
 
 def select_groot_n17_metadata(
@@ -53,12 +51,10 @@ def select_groot_n17_metadata(
         env_name: Optional[str] = None,
         require_statistics: bool = True) -> Dict[str, Any]:
     """Select one embodiment from checkpoint-owned N1.7 metadata."""
-    embodiment_key = resolve_groot_n17_embodiment_key(
-        embodiment_tag, env_name)
+    embodiment_key = resolve_groot_n17_embodiment_key(embodiment_tag, env_name)
     modality_configs = processor_kwargs.get('modality_configs', {})
     if embodiment_key not in modality_configs:
-        raise KeyError(
-            f'No checkpoint modality config for {embodiment_key!r}')
+        raise KeyError(f'No checkpoint modality config for {embodiment_key!r}')
 
     selected_statistics = statistics.get(embodiment_key)
     if require_statistics and selected_statistics is None:
@@ -86,14 +82,14 @@ def select_groot_n17_metadata(
 
 
 def resolve_groot_n17_metadata(
-        pretrained_model_name_or_path: str | Path,
+        pretrained_model_name_or_path: Optional[str | Path] = None,
         embodiment_tag: Optional[str] = None,
         env_name: Optional[str] = None,
         require_statistics: bool = True,
         **kwargs) -> Dict[str, Any]:
     """Load checkpoint metadata and select one embodiment."""
-    processor_kwargs = load_groot_n17_metadata(
-        pretrained_model_name_or_path, **kwargs)
+    processor_kwargs = load_groot_n17_metadata(pretrained_model_name_or_path,
+                                               **kwargs)
     selected = select_groot_n17_metadata(
         processor_kwargs,
         processor_kwargs.get('statistics', {}),
@@ -118,9 +114,8 @@ def resolve_groot_n17_flat_slices(
             f'Unsupported N1.7 flat layout: {flat_layout!r}. Expected '
             "'auto'.")
     if embodiment_key != 'libero_sim':
-        raise ValueError(
-            'Automatic flat N1.7 layout is validated only for '
-            f"'libero_sim', got {embodiment_key!r}.")
+        raise ValueError('Automatic flat N1.7 layout is validated only for '
+                         f"'libero_sim', got {embodiment_key!r}.")
 
     start = 0
     slices = {}
@@ -164,8 +159,8 @@ def _unnormalize_minmax(values: np.ndarray,
                         params: Dict[str, np.ndarray]) -> np.ndarray:
     min_vals = params['min']
     max_vals = params['max']
-    return (np.clip(values, -1.0, 1.0) + 1.0) / 2.0 * (
-        max_vals - min_vals) + min_vals
+    return (np.clip(values, -1.0, 1.0) + 1.0) / 2.0 * (max_vals -
+                                                       min_vals) + min_vals
 
 
 def _normalize_meanstd(values: np.ndarray,
@@ -232,9 +227,9 @@ class ModalityStateActionCodec:
                     continue
                 self.norm_params[embodiment_tag][modality] = {}
                 for key, stats in emb_stats[modality].items():
-                    low_field, high_field = (
-                        ('q01', 'q99') if self.use_percentiles else
-                        ('min', 'max'))
+                    low_field, high_field = (('q01', 'q99')
+                                             if self.use_percentiles else
+                                             ('min', 'max'))
                     params = {
                         'min': np.asarray(stats[low_field]),
                         'max': np.asarray(stats[high_field]),
@@ -243,12 +238,13 @@ class ModalityStateActionCodec:
                         'dim': np.array(_normalization_dim(stats)),
                     }
                     self.norm_params[embodiment_tag][modality][key] = params
-            action_cfg = self.modality_configs.get(embodiment_tag, {}).get(
-                'action', {})
-            for key, cfg in zip(action_cfg.get('modality_keys') or [],
-                                action_cfg.get('action_configs') or []):
-                if (self.use_relative_action
-                        and _action_config_value(cfg, 'rep', '') == 'RELATIVE'):
+            action_cfg = self.modality_configs.get(embodiment_tag,
+                                                   {}).get('action', {})
+            for key, cfg in zip(
+                    action_cfg.get('modality_keys') or [],
+                    action_cfg.get('action_configs') or []):
+                if (self.use_relative_action and _action_config_value(
+                        cfg, 'rep', '') == 'RELATIVE'):
                     action_dim = self.norm_params[embodiment_tag]['action'][
                         key]['dim']
                     rel_stats = emb_stats['relative_action'][key]
@@ -293,27 +289,31 @@ class ModalityStateActionCodec:
             if self.apply_sincos_state_encoding and key in sincos_keys:
                 result[key] = _apply_sin_cos_encoding(state[key])
             else:
-                result[key] = self._normalize(
-                    state[key], embodiment_tag, 'state', key)
+                result[key] = self._normalize(state[key], embodiment_tag,
+                                              'state', key)
         return result
 
     def _relative(self, action: np.ndarray, reference_state: np.ndarray,
-                  action_config: Dict[str, Any], to_absolute: bool) -> np.ndarray:
+                  action_config: Dict[str,
+                                      Any], to_absolute: bool) -> np.ndarray:
         action_type = _action_config_value(action_config, 'type', 'NON_EEF')
-        action_format = _action_config_value(action_config, 'format', 'DEFAULT')
+        action_format = _action_config_value(action_config, 'format',
+                                             'DEFAULT')
         if action_type != 'NON_EEF' or action_format != 'DEFAULT':
             raise NotImplementedError(
                 'Native N1.7 processor currently supports NON_EEF/DEFAULT '
                 f'relative actions only, got {action_type}/{action_format}.')
         action = action.astype(np.float64)
         reference_state = reference_state.astype(np.float64)
-        return action + reference_state if to_absolute else action - reference_state
+        if to_absolute:
+            return action + reference_state
+        return action - reference_state
 
     def _maybe_relative(self, values: np.ndarray, state: Dict[str, np.ndarray],
                         key: str, action_config: Dict[str, Any],
                         to_absolute: bool) -> np.ndarray:
-        if (not self.use_relative_action
-                or _action_config_value(action_config, 'rep', '') != 'RELATIVE'):
+        if (not self.use_relative_action or
+                _action_config_value(action_config, 'rep', '') != 'RELATIVE'):
             return values
         state_key = action_config.get('state_key') or key
         reference = np.asarray(state[state_key])[-1]
@@ -322,30 +322,34 @@ class ModalityStateActionCodec:
     def apply_action(self, action: Dict[str, np.ndarray], embodiment_tag: str,
                      state: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
         cfg = self.modality_configs[embodiment_tag]['action']
-        action_configs = cfg.get('action_configs') or [{} for _ in cfg[
-            'modality_keys']]
+        action_configs = cfg.get('action_configs') or [
+            {} for _ in cfg['modality_keys']
+        ]
         result = {}
         for key, action_config in zip(cfg['modality_keys'], action_configs):
             values = deepcopy(action[key])
             values = self._maybe_relative(
                 values, state, key, action_config, to_absolute=False)
-            result[key] = self._normalize(
-                values, embodiment_tag, 'action', key)
+            result[key] = self._normalize(values, embodiment_tag, 'action',
+                                          key)
         return result
 
-    def unapply_action(self, action: Dict[str, np.ndarray], embodiment_tag: str,
-                       state: Optional[Dict[str, np.ndarray]] = None
-                       ) -> Dict[str, np.ndarray]:
+    def unapply_action(
+        self,
+        action: Dict[str, np.ndarray],
+        embodiment_tag: str,
+        state: Optional[Dict[str,
+                             np.ndarray]] = None) -> Dict[str, np.ndarray]:
         cfg = self.modality_configs[embodiment_tag]['action']
-        action_configs = cfg.get('action_configs') or [{} for _ in cfg[
-            'modality_keys']]
+        action_configs = cfg.get('action_configs') or [
+            {} for _ in cfg['modality_keys']
+        ]
         result = {}
         for key, action_config in zip(cfg['modality_keys'], action_configs):
-            values = self._unnormalize(
-                action[key], embodiment_tag, 'action', key)
-            if (self.use_relative_action
-                    and _action_config_value(action_config, 'rep', '') ==
-                    'RELATIVE'):
+            values = self._unnormalize(action[key], embodiment_tag, 'action',
+                                       key)
+            if (self.use_relative_action and _action_config_value(
+                    action_config, 'rep', '') == 'RELATIVE'):
                 if state is None:
                     raise ValueError(f'State is required to decode {key!r}.')
                 values = self._maybe_relative(
@@ -353,12 +357,13 @@ class ModalityStateActionCodec:
             result[key] = values
         return result
 
-    def decode_action(self,
-                      action: np.ndarray,
-                      embodiment_tag: Any,
-                      state: Optional[Dict[str, np.ndarray]] = None
-                      ) -> Dict[str, np.ndarray]:
-        """Decode a padded action tensor using the configured modality layout."""
+    def decode_action(
+        self,
+        action: np.ndarray,
+        embodiment_tag: Any,
+        state: Optional[Dict[str,
+                             np.ndarray]] = None) -> Dict[str, np.ndarray]:
+        """Decode a padded action using the configured modality layout."""
         embodiment_key = normalize_tag_value(embodiment_tag)
         action_cfg = self.modality_configs[embodiment_key]['action']
         horizon = len(action_cfg['delta_indices'])
@@ -370,8 +375,8 @@ class ModalityStateActionCodec:
             start_idx += dim
         return self.unapply_action(decoded, embodiment_key, state=state)
 
-    def apply(self, state: Dict[str, np.ndarray], action: Dict[str, np.ndarray],
-              embodiment_tag: str):
+    def apply(self, state: Dict[str, np.ndarray],
+              action: Dict[str, np.ndarray], embodiment_tag: str):
         processed_state = self.apply_state(state, embodiment_tag)
         if action:
             processed_action = self.apply_action(action, embodiment_tag, state)
@@ -384,33 +389,50 @@ class ModalityStateActionCodec:
         total = 0
         for key in self.modality_configs[embodiment_tag]['action'][
                 'modality_keys']:
-            total += int(self.norm_params[embodiment_tag]['action'][key]['dim'])
+            total += int(
+                self.norm_params[embodiment_tag]['action'][key]['dim'])
         return total
 
 
-def load_groot_n17_metadata(pretrained_model_name_or_path: str | Path,
-                            **kwargs) -> Dict[str, Any]:
+def load_groot_n17_metadata(
+        pretrained_model_name_or_path: Optional[str | Path] = None,
+        **kwargs) -> Dict[str, Any]:
     """Load official N1.7 processor metadata without building HF processors."""
-    root = Path(pretrained_model_name_or_path)
-    with open(root / 'processor_config.json', 'r') as f:
-        config = json.load(f)
-    with open(root / 'statistics.json', 'r') as f:
-        statistics = json.load(f)
-    embodiment_file = root / 'embodiment_id.json'
-    embodiment_id_mapping = None
-    if os.path.exists(embodiment_file):
-        with open(embodiment_file, 'r') as f:
-            embodiment_id_mapping = json.load(f)
+    kwargs = dict(kwargs)
+    inline_statistics = kwargs.pop('statistics', None)
+    inline_embodiment_ids = kwargs.pop('embodiment_id_mapping', None)
+    modality_configs = kwargs.pop('modality_configs', {})
+    if pretrained_model_name_or_path is None:
+        # With no metadata directory, the config is the metadata source. Keep
+        # every processor option instead of filtering it through the small
+        # override allowlist used for checkpoint-backed metadata below.
+        processor_kwargs = deepcopy(kwargs)
+        kwargs = {}
+        statistics = inline_statistics or {}
+        embodiment_id_mapping = inline_embodiment_ids
+    else:
+        root = Path(pretrained_model_name_or_path)
+        with open(root / 'processor_config.json', 'r') as f:
+            config = json.load(f)
+        with open(root / 'statistics.json', 'r') as f:
+            statistics = json.load(f)
+        embodiment_file = root / 'embodiment_id.json'
+        embodiment_id_mapping = None
+        if os.path.exists(embodiment_file):
+            with open(embodiment_file, 'r') as f:
+                embodiment_id_mapping = json.load(f)
+        processor_kwargs = deepcopy(config['processor_kwargs'])
+        if inline_statistics is not None:
+            statistics = inline_statistics
+        if inline_embodiment_ids is not None:
+            embodiment_id_mapping = inline_embodiment_ids
 
-    processor_kwargs = deepcopy(config['processor_kwargs'])
     processor_kwargs['statistics'] = statistics
     processor_kwargs['embodiment_id_mapping'] = embodiment_id_mapping
-    processor_kwargs.setdefault('model_name', 'nvidia/Cosmos-Reason2-2B')
     processor_kwargs.setdefault('model_type', 'qwen')
     processor_kwargs.setdefault('clip_outliers', True)
 
-    kwargs = dict(kwargs)
-    modality_configs = kwargs.pop('modality_configs', {})
+    processor_kwargs.setdefault('modality_configs', {})
     for embodiment_tag, modality_config in modality_configs.items():
         processor_kwargs['modality_configs'][embodiment_tag] = modality_config
     for key in (

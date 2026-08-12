@@ -14,50 +14,18 @@
 """Qwen-VL action-prediction input transforms."""
 
 from __future__ import annotations
-
 import re
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import albumentations as A
 import cv2
 import numpy as np
-from PIL import Image
 import torch
 import torchvision.transforms.v2 as transforms
-from transformers import Qwen3VLProcessor
+from PIL import Image
 
 from fluxvla.engines import TRANSFORMS
-from fluxvla.engines.utils.hf_hub import resolve_hf_local_path
 from .modality_state_action import resolve_groot_n17_metadata
-
-
-def resolve_qwen_vl_model_path(model_name_or_path: str) -> str:
-    """Prefer local checkpoint paths for Qwen-VL processor assets.
-
-    Official N1.7 metadata may store a Hugging Face repo id such as
-    ``nvidia/Cosmos-Reason2-2B``. FluxVLA training jobs usually mount that
-    asset under ``checkpoints/nvidia/Cosmos-Reason2-2B``. Resolve that local
-    path before falling back to the original string.
-    """
-    value = str(model_name_or_path)
-    resolved = resolve_hf_local_path(value)
-    if resolved != value:
-        return resolved
-
-    raw_path = Path(value).expanduser()
-    if raw_path.exists():
-        return resolve_hf_local_path(str(raw_path))
-
-    if raw_path.is_absolute():
-        return value
-
-    repo_root = Path(__file__).resolve().parents[2]
-    for base in (Path.cwd(), repo_root):
-        for candidate in (base / raw_path, base / 'checkpoints' / raw_path):
-            if candidate.exists():
-                return resolve_hf_local_path(str(candidate))
-    return value
 
 
 def _to_numpy(value: Any) -> np.ndarray:
@@ -108,7 +76,7 @@ class FractionalCenterCrop(A.DualTransform):
         }
 
     def get_transform_init_args_names(self):
-        return ('crop_fraction',)
+        return ('crop_fraction', )
 
 
 class FractionalRandomCrop(FractionalCenterCrop):
@@ -139,7 +107,10 @@ class LetterBoxPad(A.DualTransform):
               pad_left: int = 0,
               pad_right: int = 0,
               **params) -> np.ndarray:
-        if pad_top == 0 and pad_bottom == 0 and pad_left == 0 and pad_right == 0:
+        has_no_padding = (
+            pad_top == 0 and pad_bottom == 0 and pad_left == 0
+            and pad_right == 0)
+        if has_no_padding:
             return img
         return cv2.copyMakeBorder(
             img,
@@ -153,7 +124,12 @@ class LetterBoxPad(A.DualTransform):
     def get_params_dependent_on_data(self, params, data) -> dict:
         h, w = params['shape'][:2]
         if h == w:
-            return {'pad_top': 0, 'pad_bottom': 0, 'pad_left': 0, 'pad_right': 0}
+            return {
+                'pad_top': 0,
+                'pad_bottom': 0,
+                'pad_left': 0,
+                'pad_right': 0
+            }
         max_dim = max(h, w)
         pad_h = max_dim - h
         pad_w = max_dim - w
@@ -230,7 +206,9 @@ def build_n17_image_transformations_albumentations(
     fraction = crop_fraction
     if fraction is None:
         fraction = image_crop_size[0] / image_target_size[0]
-    max_size = shortest_image_edge if shortest_image_edge is not None else image_target_size[0]
+    max_size = (
+        shortest_image_edge
+        if shortest_image_edge is not None else image_target_size[0])
     train_ops = [
         LetterBoxPad(),
         A.SmallestMaxSize(max_size=max_size, interpolation=cv2.INTER_AREA),
@@ -272,8 +250,8 @@ def apply_n17_albumentations(transform, images, replay=None):
     return tensors, current_replay
 
 
-def split_images_by_view(value: Any,
-                         image_keys: list[str]) -> Dict[str, list[Image.Image]]:
+def split_images_by_view(
+        value: Any, image_keys: list[str]) -> Dict[str, list[Image.Image]]:
     if isinstance(value, dict):
         return {
             key: [_to_pil_rgb(img) for img in images]
@@ -290,10 +268,8 @@ def split_images_by_view(value: Any,
             f'video keys: {image_keys}')
     per_key = len(images) // len(image_keys)
     return {
-        key: [
-            _to_pil_rgb(img)
-            for img in images[i * per_key:(i + 1) * per_key]
-        ]
+        key:
+        [_to_pil_rgb(img) for img in images[i * per_key:(i + 1) * per_key]]
         for i, key in enumerate(image_keys)
     }
 
@@ -312,38 +288,15 @@ def stack_n17_vlm_images(image_keys: list[str], images: Dict[str, Any],
         for view in image_keys:
             temporal_stacked_images[view] = torch.stack(
                 [image_transform(img) for img in images[view]])
-    return (
-        torch.stack([temporal_stacked_images[view] for view in image_keys],
-                    dim=1).flatten(0, 1).numpy())
+    return (torch.stack([temporal_stacked_images[view] for view in image_keys],
+                        dim=1).flatten(0, 1).numpy())
 
 
-def build_qwen_vl_chat_content(processor: Qwen3VLProcessor,
-                               images_chw: np.ndarray,
-                               language: str) -> Dict[str, Any]:
-    pil_images = [
-        Image.fromarray(np.transpose(v, (1, 2, 0))) for v in images_chw
-    ]
-    conversation = [{
-        'role':
-        'user',
-        'content': [
-            *[{
-                'type': 'image',
-                'image': img
-            } for img in pil_images],
-            {
-                'type': 'text',
-                'text': language
-            },
-        ],
-    }]
-    text = processor.apply_chat_template(
-        conversation, tokenize=False, add_generation_prompt=False)
-    return {
-        'text': text,
-        'images': pil_images,
-        'conversation': conversation,
-    }
+def build_qwen_vl_chat_text(images_chw: np.ndarray, language: str) -> str:
+    """Build the single-user Qwen3-VL prompt without loading a processor."""
+    image_content = ('<|vision_start|><|image_pad|><|vision_end|>' *
+                     len(images_chw))
+    return f'<|im_start|>user\n{image_content}{language}<|im_end|>\n'
 
 
 @TRANSFORMS.register_module()
@@ -352,16 +305,13 @@ class BuildQwenVLChatImageContent:
 
     def __init__(
         self,
-        processor_path: str,
+        processor_path: Optional[str] = None,
         embodiment_tag: str = 'LIBERO_PANDA',
         image_key: str = 'images',
         text_key: str = 'task_description',
         output_image_key: str = 'images',
         output_text_key: str = 'text',
-        vlm_content_key: Optional[str] = 'vlm_content',
         train_mode: bool = True,
-        model_name: Optional[str] = None,
-        transformers_loading_kwargs: Optional[Dict[str, Any]] = None,
         processor_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.processor_path = processor_path
@@ -369,14 +319,9 @@ class BuildQwenVLChatImageContent:
         self.text_key = text_key
         self.output_image_key = output_image_key
         self.output_text_key = output_text_key
-        self.vlm_content_key = vlm_content_key
         self.training = train_mode
 
         input_processor_kwargs = dict(processor_kwargs or {})
-        explicit_loading_kwargs = transformers_loading_kwargs
-        if explicit_loading_kwargs is None:
-            explicit_loading_kwargs = input_processor_kwargs.get(
-                'transformers_loading_kwargs')
         metadata = resolve_groot_n17_metadata(
             processor_path,
             embodiment_tag=embodiment_tag,
@@ -384,17 +329,10 @@ class BuildQwenVLChatImageContent:
         processor_kwargs = metadata['processor_kwargs']
         self.embodiment_key = metadata['embodiment_key']
         self.modality_config = metadata['modality_config']
-        self.formalize_language = processor_kwargs.get(
-            'formalize_language', True)
-        self.use_albumentations = processor_kwargs.get(
-            'use_albumentations', False)
-        self.model_name = (
-            model_name or processor_kwargs.get(
-                'model_name', 'nvidia/Cosmos-Reason2-2B'))
-        self.model_name = resolve_qwen_vl_model_path(self.model_name)
-        self.processor = Qwen3VLProcessor.from_pretrained(
-            self.model_name, **dict(explicit_loading_kwargs or {}))
-        self.processor.tokenizer.padding_side = 'left'
+        self.formalize_language = processor_kwargs.get('formalize_language',
+                                                       True)
+        self.use_albumentations = processor_kwargs.get('use_albumentations',
+                                                       False)
 
         image_target_size = processor_kwargs.get('image_target_size')
         image_crop_size = processor_kwargs.get('image_crop_size')
@@ -405,40 +343,35 @@ class BuildQwenVLChatImageContent:
         if self.use_albumentations:
             self.train_image_transform, self.eval_image_transform = (
                 build_n17_image_transformations_albumentations(
-                    image_target_size,
-                    image_crop_size,
-                    random_rotation_angle,
-                    color_jitter_params,
-                    shortest_image_edge,
-                    crop_fraction))
+                    image_target_size, image_crop_size, random_rotation_angle,
+                    color_jitter_params, shortest_image_edge, crop_fraction))
         else:
             self.train_image_transform, self.eval_image_transform = (
-                build_n17_image_transformations(
-                    image_target_size, image_crop_size,
-                    random_rotation_angle, color_jitter_params))
+                build_n17_image_transformations(image_target_size,
+                                                image_crop_size,
+                                                random_rotation_angle,
+                                                color_jitter_params))
 
     def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
         image_keys = self.modality_config['video']['modality_keys']
-        images_by_view = split_images_by_view(sample[self.image_key], image_keys)
+        images_by_view = split_images_by_view(sample[self.image_key],
+                                              image_keys)
 
         language = sample.get(self.text_key, '')
         if self.formalize_language:
             language = re.sub(r'[^\w\s]', '', str(language).lower())
 
         image_transform = (
-            self.train_image_transform if self.training else
-            self.eval_image_transform)
+            self.train_image_transform
+            if self.training else self.eval_image_transform)
         images_chw = stack_n17_vlm_images(
             image_keys,
             images_by_view,
             image_transform,
             use_albumentations=self.use_albumentations)
-        vlm_content = build_qwen_vl_chat_content(
-            self.processor, images_chw, language)
+        text = build_qwen_vl_chat_text(images_chw, language)
 
         outputs = dict(sample)
         outputs[self.output_image_key] = images_chw
-        outputs[self.output_text_key] = vlm_content['text']
-        if self.vlm_content_key is not None:
-            outputs[self.vlm_content_key] = vlm_content
+        outputs[self.output_text_key] = text
         return outputs

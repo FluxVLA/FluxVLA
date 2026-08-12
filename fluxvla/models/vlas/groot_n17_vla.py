@@ -19,9 +19,9 @@ N1.7 model or processor.
 """
 
 import copy
-from functools import partial
 import importlib
 import json
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
@@ -32,12 +32,10 @@ import torch.nn as nn
 from torch.distributed.fsdp.wrap import _or_policy
 
 from fluxvla.engines import (VLAS, build_head_from_cfg,
-                             build_vlm_backbone_from_cfg,
-                             initialize_overwatch)
+                             build_vlm_backbone_from_cfg, initialize_overwatch)
 from fluxvla.transforms.modality_state_action import \
     resolve_groot_n17_embodiment_key
 from .llava_vla import LlavaVLA
-
 
 overwatch = initialize_overwatch(__name__)
 
@@ -57,34 +55,52 @@ class GrootN17VLA(LlavaVLA):
         self,
         model_path: Optional[str] = None,
         processor_path: Optional[str] = None,
+        processor_kwargs: Optional[Dict[str, Any]] = None,
         embodiment_tag: str = 'LIBERO_PANDA',
-        model_name: str = 'nvidia/Cosmos-Reason2-2B',
-        backbone_model_path: Optional[str] = None,
         action_horizon: int = 8,
         action_dim: Optional[int] = None,
         use_flash_attention: Optional[bool] = None,
         qwen3_runtime: str = 'hf_53',
         vlm_backbone: Optional[Dict[str, Any]] = None,
         vla_head: Optional[Dict[str, Any]] = None,
+        freeze_vision_backbone: bool = True,
+        freeze_llm_backbone: bool = True,
+        freeze_vlm_backbone: bool = False,
+        freeze_projector: bool = False,
         load_metadata: bool = True,
         norm_stats: Optional[Dict[str, Any]] = None,
         use_relative_action: Optional[bool] = None,
         apply_sincos_state_encoding: Optional[bool] = None,
         **kwargs,
     ) -> None:
+        native_vlm_backbone_cfg = copy.deepcopy(vlm_backbone)
+        native_vla_head_cfg = copy.deepcopy(vla_head)
+        if native_vlm_backbone_cfg is not None:
+            # N1.7 exposes a combined VLM backbone, so follow BaseVLA's
+            # standard combined-backbone semantics: freeze_vlm_backbone is
+            # authoritative. Optional nested tune_llm/tune_visual values may
+            # refine the policy only when the whole VLM is not frozen.
+            if freeze_vlm_backbone:
+                native_vlm_backbone_cfg['tune_llm'] = False
+                native_vlm_backbone_cfg['tune_visual'] = False
+            else:
+                native_vlm_backbone_cfg.setdefault('tune_llm', True)
+                native_vlm_backbone_cfg.setdefault('tune_visual', True)
+        if native_vla_head_cfg is not None:
+            native_vla_head_cfg['tune_projector'] = not freeze_projector
+
         super().__init__(
             vla_head=None,
-            freeze_vision_backbone=True,
-            freeze_llm_backbone=True,
-            freeze_projector=True,
-            freeze_vlm_backbone=True,
+            freeze_vision_backbone=freeze_vision_backbone,
+            freeze_llm_backbone=freeze_llm_backbone,
+            freeze_projector=freeze_projector,
+            freeze_vlm_backbone=freeze_vlm_backbone,
             norm_stats=norm_stats,
         )
         self.model_path = model_path
         self.processor_path = processor_path
+        self.inline_processor_kwargs = copy.deepcopy(processor_kwargs)
         self.embodiment_tag = embodiment_tag
-        self.model_name = model_name
-        self.backbone_model_path = backbone_model_path
         self.action_horizon = action_horizon
         self.action_dim = action_dim
         self.use_flash_attention = use_flash_attention
@@ -99,13 +115,13 @@ class GrootN17VLA(LlavaVLA):
         self.qwen3_runtime_summary: Optional[Dict[str, Any]] = None
         self.checkpoint_use_flash_attention = None
         self.load_metadata = load_metadata
-        self._native_vlm_backbone_cfg = copy.deepcopy(vlm_backbone)
-        self._native_vla_head_cfg = copy.deepcopy(vla_head)
+        self._native_vlm_backbone_cfg = native_vlm_backbone_cfg
+        self._native_vla_head_cfg = native_vla_head_cfg
         if (self._native_vlm_backbone_cfg is None
-            or self._native_vla_head_cfg is None):
+                or self._native_vla_head_cfg is None):
             raise ValueError(
-            'GrootN17VLA requires config-visible vlm_backbone and '
-            'vla_head modules.')
+                'GrootN17VLA requires config-visible vlm_backbone and '
+                'vla_head modules.')
         self.use_relative_action = use_relative_action
         self.apply_sincos_state_encoding = apply_sincos_state_encoding
         self.extra_cfg = dict(kwargs)
@@ -138,10 +154,9 @@ class GrootN17VLA(LlavaVLA):
         if self.model_path is not None and self.load_metadata:
             self._load_checkpoint_metadata(Path(self.model_path))
 
-        overwatch.info(
-            'Initialized GrootN17VLA shell: '
-            f'embodiment_tag={self.embodiment_tag}, '
-            f'model_path={self.model_path}')
+        overwatch.info('Initialized GrootN17VLA shell: '
+                       f'embodiment_tag={self.embodiment_tag}, '
+                       f'model_path={self.model_path}')
 
     @staticmethod
     def _load_json(path: Path, required: bool = True) -> Dict[str, Any]:
@@ -176,9 +191,9 @@ class GrootN17VLA(LlavaVLA):
 
     @classmethod
     def resolve_embodiment_key(cls,
-                              embodiment_tag: Optional[str] = None,
-                              env_name: Optional[str] = None) -> str:
-        """Resolve FluxVLA/official names to an N1.7 modality/statistics key."""
+                               embodiment_tag: Optional[str] = None,
+                               env_name: Optional[str] = None) -> str:
+        """Resolve names to an N1.7 modality/statistics key."""
         return resolve_groot_n17_embodiment_key(
             embodiment_tag or 'LIBERO_PANDA', env_name)
 
@@ -192,27 +207,39 @@ class GrootN17VLA(LlavaVLA):
         processor_metadata_dir = self._resolve_processor_metadata_dir(
             checkpoint_dir)
         self.model_config = self._load_json(checkpoint_dir / 'config.json')
-        self.processor_config = self._load_json(
-            self._resolve_processor_config_path(checkpoint_dir))
-        processor_statistics_path = processor_metadata_dir / 'statistics.json'
-        checkpoint_statistics_path = checkpoint_dir / 'statistics.json'
-        if self.processor_path is not None and processor_statistics_path.is_file():
-            statistics_path = processor_statistics_path
+        if self.inline_processor_kwargs is not None:
+            processor_kwargs = copy.deepcopy(self.inline_processor_kwargs)
+            self.processor_config = {'processor_kwargs': processor_kwargs}
+            self.statistics = copy.deepcopy(
+                processor_kwargs.get('statistics', {}))
+            self.embodiment_id_map = copy.deepcopy(
+                processor_kwargs.get('embodiment_id_mapping', {}))
         else:
-            statistics_path = checkpoint_statistics_path
-        if not statistics_path.is_file():
-            statistics_path = processor_statistics_path
-        self.statistics = self._load_json(statistics_path)
-        processor_embodiment_path = processor_metadata_dir / 'embodiment_id.json'
-        checkpoint_embodiment_path = checkpoint_dir / 'embodiment_id.json'
-        if self.processor_path is not None and processor_embodiment_path.is_file():
-            embodiment_path = processor_embodiment_path
-        else:
-            embodiment_path = checkpoint_embodiment_path
-        if not embodiment_path.is_file():
-            embodiment_path = processor_embodiment_path
-        self.embodiment_id_map = self._load_json(
-            embodiment_path, required=False)
+            self.processor_config = self._load_json(
+                self._resolve_processor_config_path(checkpoint_dir))
+            processor_statistics_path = (
+                processor_metadata_dir / 'statistics.json')
+            checkpoint_statistics_path = checkpoint_dir / 'statistics.json'
+            if (self.processor_path is not None
+                    and processor_statistics_path.is_file()):
+                statistics_path = processor_statistics_path
+            else:
+                statistics_path = checkpoint_statistics_path
+            if not statistics_path.is_file():
+                statistics_path = processor_statistics_path
+            self.statistics = self._load_json(statistics_path)
+            processor_embodiment_path = (
+                processor_metadata_dir / 'embodiment_id.json')
+            checkpoint_embodiment_path = checkpoint_dir / 'embodiment_id.json'
+            if (self.processor_path is not None
+                    and processor_embodiment_path.is_file()):
+                embodiment_path = processor_embodiment_path
+            else:
+                embodiment_path = checkpoint_embodiment_path
+            if not embodiment_path.is_file():
+                embodiment_path = processor_embodiment_path
+            self.embodiment_id_map = self._load_json(
+                embodiment_path, required=False)
         self.safetensors_index = self._load_json(
             checkpoint_dir / 'model.safetensors.index.json', required=False)
 
@@ -225,9 +252,6 @@ class GrootN17VLA(LlavaVLA):
         self.active_embodiment_key = self.resolve_embodiment_key(
             self.embodiment_tag)
 
-        if self.backbone_model_path is None:
-            self.model_name = self.model_config.get('model_name',
-                                                    self.model_name)
         self.action_horizon = int(
             self.model_config.get('action_horizon', self.action_horizon))
         self.num_inference_timesteps = self.model_config.get(
@@ -239,7 +263,8 @@ class GrootN17VLA(LlavaVLA):
         self.checkpoint_use_flash_attention = self.model_config.get(
             'use_flash_attention')
         if self.use_flash_attention is None:
-            self.use_flash_attention = bool(self.checkpoint_use_flash_attention)
+            self.use_flash_attention = bool(
+                self.checkpoint_use_flash_attention)
         processor_kwargs = self.processor_config.get('processor_kwargs', {})
         if self.use_relative_action is None:
             self.use_relative_action = bool(
@@ -256,19 +281,8 @@ class GrootN17VLA(LlavaVLA):
                 self.model_config.get('use_percentiles', False)))
         self.use_mean_std = bool(
             processor_kwargs.get('use_mean_std',
-                                 self.model_config.get('use_mean_std',
-                                                       False)))
+                                 self.model_config.get('use_mean_std', False)))
         self.clip_outliers = bool(processor_kwargs.get('clip_outliers', True))
-
-    @property
-    def effective_backbone_model_name(self) -> str:
-        if self.backbone_model_path:
-            return self.backbone_model_path
-        if self._native_vlm_backbone_cfg:
-            model_name = self._native_vlm_backbone_cfg.get('model_name')
-            if model_name:
-                return model_name
-        return self.backbone_model_path or self.model_name
 
     def _apply_qwen3_runtime(
         self,
@@ -289,7 +303,8 @@ class GrootN17VLA(LlavaVLA):
         if self.action_codec is not None:
             return self.action_codec
         if not self.processor_config or not self.statistics:
-            raise ValueError('Native action codec requires processor metadata.')
+            raise ValueError(
+                'Native action codec requires processor metadata.')
         codec_module = importlib.import_module(
             'fluxvla.transforms.modality_state_action')
         codec_cls = getattr(codec_module, 'ModalityStateActionCodec')
@@ -299,8 +314,7 @@ class GrootN17VLA(LlavaVLA):
             statistics=self.statistics,
             use_percentiles=self.use_percentiles,
             clip_outliers=self.clip_outliers,
-            apply_sincos_state_encoding=bool(
-                self.apply_sincos_state_encoding),
+            apply_sincos_state_encoding=bool(self.apply_sincos_state_encoding),
             use_relative_action=bool(self.use_relative_action),
         )
         codec.eval()
@@ -320,39 +334,68 @@ class GrootN17VLA(LlavaVLA):
                 int(diffusion_cfg.get('num_attention_heads', 32)) *
                 int(diffusion_cfg.get('attention_head_dim', 48)))
         defaults = {
-            'model_name': self.effective_backbone_model_name,
-            'hidden_size': cfg.get('hidden_size', 1024),
-            'input_embedding_dim': input_embedding_dim,
-            'backbone_embedding_dim': cfg.get('backbone_embedding_dim', 2048),
-            'max_action_dim': cfg.get('max_action_dim', self.max_action_dim),
-            'max_state_dim': cfg.get('max_state_dim', self.max_state_dim),
-            'action_horizon': cfg.get('action_horizon', self.action_horizon),
-            'state_history_length': cfg.get('state_history_length', 1),
-            'num_inference_timesteps': cfg.get('num_inference_timesteps', 4),
-            'max_num_embodiments': cfg.get('max_num_embodiments', 32),
-            'use_alternate_vl_dit': cfg.get('use_alternate_vl_dit', True),
+            'hidden_size':
+            cfg.get('hidden_size', 1024),
+            'input_embedding_dim':
+            input_embedding_dim,
+            'backbone_embedding_dim':
+            cfg.get('backbone_embedding_dim', 2048),
+            'max_action_dim':
+            cfg.get('max_action_dim', self.max_action_dim),
+            'max_state_dim':
+            cfg.get('max_state_dim', self.max_state_dim),
+            'action_horizon':
+            cfg.get('action_horizon', self.action_horizon),
+            'state_history_length':
+            cfg.get('state_history_length', 1),
+            'num_inference_timesteps':
+            cfg.get('num_inference_timesteps', 4),
+            'max_num_embodiments':
+            cfg.get('max_num_embodiments', 32),
+            'use_alternate_vl_dit':
+            cfg.get('use_alternate_vl_dit', True),
             'attend_text_every_n_blocks':
             cfg.get('attend_text_every_n_blocks', 2),
-            'use_vlln': cfg.get('use_vlln', True),
-            'vl_self_attention_cfg': cfg.get('vl_self_attention_cfg'),
-            'add_pos_embed': cfg.get('add_pos_embed', True),
-            'max_seq_len': cfg.get('max_seq_len', 1024),
-            'state_dropout_prob': cfg.get('state_dropout_prob', 0.0),
-            'noise_beta_alpha': cfg.get('noise_beta_alpha', 1.5),
-            'noise_beta_beta': cfg.get('noise_beta_beta', 1.0),
-            'noise_s': cfg.get('noise_s', 0.999),
-            'num_timestep_buckets': cfg.get('num_timestep_buckets', 1000),
-            'tune_projector': cfg.get('tune_projector', True),
-            'tune_diffusion_model': cfg.get('tune_diffusion_model', True),
-            'tune_vlln': cfg.get('tune_vlln', True),
-            'diffusion_model_cfg': diffusion_cfg,
-            'select_layer': cfg.get('select_layer', 16),
-            'tune_llm': cfg.get('tune_llm', False),
-            'tune_visual': cfg.get('tune_visual', False),
-            'reproject_vision': cfg.get('reproject_vision', True),
-            'use_flash_attention': bool(self.use_flash_attention),
-            'load_bf16': cfg.get('load_bf16', False),
-            'tune_top_llm_layers': cfg.get('tune_top_llm_layers', 0),
+            'use_vlln':
+            cfg.get('use_vlln', True),
+            'vl_self_attention_cfg':
+            cfg.get('vl_self_attention_cfg'),
+            'add_pos_embed':
+            cfg.get('add_pos_embed', True),
+            'max_seq_len':
+            cfg.get('max_seq_len', 1024),
+            'state_dropout_prob':
+            cfg.get('state_dropout_prob', 0.0),
+            'noise_beta_alpha':
+            cfg.get('noise_beta_alpha', 1.5),
+            'noise_beta_beta':
+            cfg.get('noise_beta_beta', 1.0),
+            'noise_s':
+            cfg.get('noise_s', 0.999),
+            'num_timestep_buckets':
+            cfg.get('num_timestep_buckets', 1000),
+            'tune_projector':
+            cfg.get('tune_projector', True),
+            'tune_diffusion_model':
+            cfg.get('tune_diffusion_model', True),
+            'tune_vlln':
+            cfg.get('tune_vlln', True),
+            'diffusion_model_cfg':
+            diffusion_cfg,
+            'select_layer':
+            cfg.get('select_layer', 16),
+            'tune_llm':
+            cfg.get('tune_llm', False),
+            'tune_visual':
+            cfg.get('tune_visual', False),
+            'reproject_vision':
+            cfg.get('reproject_vision', True),
+            'use_flash_attention':
+            bool(self.use_flash_attention),
+            'load_bf16':
+            cfg.get('load_bf16', False),
+            'tune_top_llm_layers':
+            cfg.get('tune_top_llm_layers', 0),
             'backbone_trainable_params_fp32':
             cfg.get('backbone_trainable_params_fp32', False),
         }
@@ -372,13 +415,15 @@ class GrootN17VLA(LlavaVLA):
         cfg.update(defaults)
         return self._namespace_from_dict(cfg)
 
-    def _load_prefixed_state_dict(self, prefix: str) -> Dict[str, torch.Tensor]:
+    def _load_prefixed_state_dict(self,
+                                  prefix: str) -> Dict[str, torch.Tensor]:
         if self.checkpoint_dir is None:
             raise ValueError('Native runtime requires model_path metadata.')
         weight_map = self.safetensors_index.get('weight_map', {})
         keys = [key for key in weight_map if key.startswith(prefix)]
         if not keys:
-            raise KeyError(f'No checkpoint weights found for prefix {prefix!r}')
+            raise KeyError(
+                f'No checkpoint weights found for prefix {prefix!r}')
         shards = sorted({weight_map[key] for key in keys})
         safetensors_torch = importlib.import_module('safetensors.torch')
         load_file = getattr(safetensors_torch, 'load_file')
@@ -401,11 +446,7 @@ class GrootN17VLA(LlavaVLA):
                 state_dict[lm_head_key] = state_dict[embed_key]
         return state_dict
 
-    def _ensure_native_runtime(
-        self,
-        local_files_only: bool = True,
-        trust_remote_code: bool = True,
-    ) -> Dict[str, Any]:
+    def _ensure_native_runtime(self) -> Dict[str, Any]:
         """Load the FluxVLA-native backbone and action head."""
         backbone, action_head = self.vlm_backbone, self.vla_head
         if backbone is not None and action_head is not None:
@@ -422,35 +463,22 @@ class GrootN17VLA(LlavaVLA):
         backbone = build_vlm_backbone_from_cfg(
             copy.deepcopy(self._native_vlm_backbone_cfg),
             default_args={
-                'model_name':
-                self.effective_backbone_model_name,
-                'tune_llm':
-                config.tune_llm,
-                'tune_visual':
-                config.tune_visual,
-                'select_layer':
-                config.select_layer,
-                'reproject_vision':
-                config.reproject_vision,
-                'use_flash_attention':
-                config.use_flash_attention,
-                'load_bf16':
-                False,
-                'tune_top_llm_layers':
-                config.tune_top_llm_layers,
-                'trainable_params_fp32':
-                config.backbone_trainable_params_fp32,
-                'transformers_loading_kwargs': {
-                    'local_files_only': local_files_only,
-                    'trust_remote_code': trust_remote_code,
-                },
-                'qwen3_runtime':
-                self.qwen3_runtime,
+                'tune_llm': config.tune_llm,
+                'tune_visual': config.tune_visual,
+                'select_layer': config.select_layer,
+                'reproject_vision': config.reproject_vision,
+                'use_flash_attention': config.use_flash_attention,
+                'load_bf16': False,
+                'tune_top_llm_layers': config.tune_top_llm_layers,
+                'trainable_params_fp32': config.backbone_trainable_params_fp32,
+                'qwen3_runtime': self.qwen3_runtime,
             })
         backbone_load = backbone.load_state_dict(
             self._load_prefixed_state_dict('backbone.'),
             strict=True,
+            assign=True,
         )
+        backbone.finalize_checkpoint_load()
         backbone.eval()
 
         action_head = build_head_from_cfg(
@@ -485,7 +513,8 @@ class GrootN17VLA(LlavaVLA):
         }
 
     @staticmethod
-    def _move_batch_to_device_dtype(batch: Dict[str, Any], device: torch.device,
+    def _move_batch_to_device_dtype(batch: Dict[str,
+                                                Any], device: torch.device,
                                     dtype: torch.dtype) -> Dict[str, Any]:
         moved = {}
         for key, value in batch.items():
@@ -503,7 +532,7 @@ class GrootN17VLA(LlavaVLA):
         moved = self._move_batch_to_device_dtype(inputs, device, dtype)
         backbone_inputs = {
             key: moved[key]
-            for key in ('input_ids', 'attention_mask', 'pixel_values',
+            for key in ('lang_tokens', 'lang_masks', 'images',
                         'image_grid_thw')
         }
         return backbone_inputs, moved
@@ -525,20 +554,20 @@ class GrootN17VLA(LlavaVLA):
         if mode == 'loss':
             return action_head(
                 input_features=backbone_outputs.backbone_features,
-                states=action_inputs['state'],
+                states=action_inputs['states'],
                 attention_mask=backbone_outputs.backbone_attention_mask,
-                embodiment_ids=action_inputs['embodiment_id'],
-                actions=action_inputs['action'],
-                action_masks=action_inputs['action_mask'],
+                embodiment_ids=action_inputs['embodiment_ids'],
+                actions=action_inputs['actions'],
+                action_masks=action_inputs['action_masks'],
                 image_mask=backbone_outputs.image_mask,
                 sample_weight=action_inputs.get('sample_weight'),
             )
         if mode == 'action':
             return action_head.get_action(
                 input_features=backbone_outputs.backbone_features,
-                states=action_inputs['state'],
+                states=action_inputs['states'],
                 attention_mask=backbone_outputs.backbone_attention_mask,
-                embodiment_ids=action_inputs['embodiment_id'],
+                embodiment_ids=action_inputs['embodiment_ids'],
                 image_mask=backbone_outputs.image_mask,
                 seed=seed,
             )
@@ -573,7 +602,10 @@ class GrootN17VLA(LlavaVLA):
     def _flatten_decoded_action(decoded: Dict[str, np.ndarray],
                                 action_keys: list[str]) -> torch.Tensor:
         flat_action = np.concatenate(
-            [np.asarray(decoded[key], dtype=np.float32) for key in action_keys],
+            [
+                np.asarray(decoded[key], dtype=np.float32)
+                for key in action_keys
+            ],
             axis=-1,
         ).astype(np.float32)
         return torch.from_numpy(flat_action[None, ...])
@@ -591,8 +623,8 @@ class GrootN17VLA(LlavaVLA):
         action_for_decode = self._action_for_decode(normalized_action)
         decoded = codec.decode_action(
             action_for_decode, embodiment_key, state=raw_state)
-        action_keys = codec.modality_configs[
-            embodiment_key]['action']['modality_keys']
+        action_keys = codec.modality_configs[embodiment_key]['action'][
+            'modality_keys']
         return self._flatten_decoded_action(decoded, action_keys).to(
             device=self._device_anchor.device, dtype=torch.float32)
 
@@ -604,43 +636,42 @@ class GrootN17VLA(LlavaVLA):
         return inputs
 
     @staticmethod
-    def _has_split_action_inputs(inputs: Dict[str, Any]) -> bool:
+    def _has_fluxvla_action_inputs(inputs: Dict[str, Any]) -> bool:
         required = {
-            'input_ids',
-            'attention_mask',
-            'pixel_values',
+            'lang_tokens',
+            'lang_masks',
+            'images',
             'image_grid_thw',
-            'state',
-            'embodiment_id',
+            'states',
+            'embodiment_ids',
         }
         return required.issubset(inputs.keys())
 
     @staticmethod
-    def _normalize_split_predict_inputs(
-            inputs: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_predict_inputs(inputs: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize one-sample eval tensors to the batched train contract."""
         normalized = dict(inputs)
         for key in (
-                'input_ids',
-                'attention_mask',
-                'pixel_values',
+                'lang_tokens',
+                'lang_masks',
+                'images',
                 'image_grid_thw',
-                'state',
-                'embodiment_id',
+                'states',
+                'embodiment_ids',
         ):
             if key not in normalized:
                 continue
             value = normalized[key]
             if not torch.is_tensor(value):
                 value = torch.as_tensor(value)
-            if key in ('input_ids', 'attention_mask') and value.ndim == 1:
+            if key in ('lang_tokens', 'lang_masks') and value.ndim == 1:
                 value = value.unsqueeze(0)
-            elif key == 'state':
+            elif key == 'states':
                 if value.ndim == 1:
                     value = value.unsqueeze(0).unsqueeze(0)
                 elif value.ndim == 2:
                     value = value.unsqueeze(0)
-            elif key == 'embodiment_id':
+            elif key == 'embodiment_ids':
                 if value.ndim == 0:
                     value = value.reshape(1)
                 elif value.ndim > 1:
@@ -648,7 +679,7 @@ class GrootN17VLA(LlavaVLA):
             normalized[key] = value
         return normalized
 
-    def _predict_n17_action_from_split_inputs(
+    def _predict_n17_action(
         self,
         inputs: Dict[str, Any],
         dtype: str = 'bfloat16',
@@ -656,42 +687,33 @@ class GrootN17VLA(LlavaVLA):
         embodiment_key: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> torch.Tensor:
-        """Run N1.7 inference from split tensor inputs and decode actions."""
+        """Run N1.7 inference from the FluxVLA batch contract."""
         self._prepare_native_eval_runtime(dtype)
         model_inputs = {
             key: value
-            for key, value in inputs.items()
-            if key in {
-                'input_ids',
-                'attention_mask',
-                'pixel_values',
+            for key, value in inputs.items() if key in {
+                'lang_tokens',
+                'lang_masks',
+                'images',
                 'image_grid_thw',
-                'state',
-                'embodiment_id',
+                'states',
+                'embodiment_ids',
             }
         }
-        model_inputs = self._normalize_split_predict_inputs(model_inputs)
+        model_inputs = self._normalize_predict_inputs(model_inputs)
         with torch.inference_mode():
             model_pred = self._run_native_backbone_head(
-                model_inputs,
-                mode='action',
-                seed=seed)
+                model_inputs, mode='action', seed=seed)
         normalized_action = model_pred['action_pred'].float().cpu().numpy()
         return self._decode_n17_action_to_env_tensor(
             normalized_action,
             embodiment_key=embodiment_key,
             raw_state=raw_state)
 
-    def freeze_backbones(self) -> None:
-        """Apply generic freezing and keep the frozen N1.7 backbone in eval."""
-        super().freeze_backbones()
-        if self.vlm_backbone is not None and self.freeze_vlm_backbone:
-            self.vlm_backbone.eval()
-
     @staticmethod
     def _module_has_trainable_parameters(module: Optional[nn.Module]) -> bool:
-        return module is not None and any(
-            param.requires_grad for param in module.parameters())
+        return module is not None and any(param.requires_grad
+                                          for param in module.parameters())
 
     def from_pretrained(self):
         """Runner-facing loader hook.
@@ -700,7 +722,6 @@ class GrootN17VLA(LlavaVLA):
         runner checkpoints are handled separately by ``load_state_dict``.
         """
         self._ensure_native_runtime()
-        self.freeze_backbones()
         return self
 
     def get_fsdp_wrapping_policy(self) -> Callable:
@@ -739,7 +760,7 @@ class GrootN17VLA(LlavaVLA):
         }
 
     def _remap_native_state_dict_keys(self, state_dict):
-        """Support old N1.7 checkpoint prefixes after config-visible modules."""
+        """Support old N1.7 checkpoint prefixes."""
         state_dict = self._remap_state_prefix_if_needed(
             state_dict, 'n17_backbone.', 'vlm_backbone.')
         state_dict = self._remap_state_prefix_if_needed(
@@ -758,8 +779,9 @@ class GrootN17VLA(LlavaVLA):
                 raise TypeError('GrootN17VLA.forward accepts either one dict '
                                 'argument or keyword tensor inputs.')
             if kwargs:
-                raise TypeError('GrootN17VLA.forward does not accept both args '
-                                'and kwargs.')
+                raise TypeError(
+                    'GrootN17VLA.forward does not accept both args '
+                    'and kwargs.')
             batch = args[0]
         else:
             batch = kwargs
@@ -804,8 +826,8 @@ class GrootN17VLA(LlavaVLA):
 
     def predict_action(self, **batch):
         inputs = self._extract_predict_inputs(batch)
-        if self._has_split_action_inputs(inputs):
-            return self._predict_n17_action_from_split_inputs(
+        if self._has_fluxvla_action_inputs(inputs):
+            return self._predict_n17_action(
                 inputs,
                 dtype=batch.get('dtype', 'bfloat16'),
                 raw_state=batch.get('n17_raw_state', batch.get('raw_state')),
@@ -814,6 +836,6 @@ class GrootN17VLA(LlavaVLA):
                 seed=batch.get('seed'),
             )
         raise NotImplementedError(
-            'GrootN17VLA.predict_action expects split tensor inputs containing '
-            'input_ids, attention_mask, pixel_values, '
-            'image_grid_thw, state, and embodiment_id.')
+            'GrootN17VLA.predict_action expects FluxVLA inputs containing '
+            'lang_tokens, lang_masks, images, image_grid_thw, states, and '
+            'embodiment_ids.')
