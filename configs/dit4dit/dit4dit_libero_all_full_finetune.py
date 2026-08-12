@@ -462,6 +462,7 @@ eval = dict(
     model_family='dit4dit',
     norm_stats_key='franka',
     eval_chunk_size=_action_horizon,
+    truncate_action_chunk_at_horizon=True,
     resize_size=_image_size,
     num_trials_per_task=50,
     num_steps_wait=10,
