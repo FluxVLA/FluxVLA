@@ -427,6 +427,8 @@ class NormalizeStatesAndActions:
             to [-1, 1]. Defaults to False.
         normalize_states (bool): Whether to normalize states before optional
             padding/truncation. Defaults to True.
+        preserve_input_dtype (bool): Keep normalization arithmetic in the
+            input array dtype even when ``output_dtype`` is configured.
         output_dtype (str | None): Optional NumPy dtype used for normalization
             arithmetic and outputs. ``None`` preserves the legacy NumPy dtype
             promotion behavior. Defaults to None.
@@ -448,6 +450,7 @@ class NormalizeStatesAndActions:
                  action_norm_mask: List[bool] = None,
                  clip_norm: bool = False,
                  normalization_epsilon: float = 1e-6,
+                 preserve_input_dtype: bool = False,
                  normalize_states: bool = True,
                  discrete_action_dims: List[int] = None,
                  discrete_state_dims: List[int] = None,
@@ -468,6 +471,7 @@ class NormalizeStatesAndActions:
         self.state_dim = state_dim
         self.clip_norm = clip_norm
         self.normalization_epsilon = float(normalization_epsilon)
+        self.preserve_input_dtype = bool(preserve_input_dtype)
         self.normalize_states = normalize_states
         self.output_dtype = (None if output_dtype is None else
                              np.dtype(output_dtype))
@@ -540,6 +544,12 @@ class NormalizeStatesAndActions:
         if self.action_dim is not None and actions is not None:
             data['actions'] = self._pad_or_truncate_last_dim(
                 actions, self.action_dim)
+        if self.output_dtype is not None:
+            data['states'] = np.asarray(data['states']).astype(
+                self.output_dtype, copy=False)
+            if actions is not None:
+                data['actions'] = np.asarray(data['actions']).astype(
+                    self.output_dtype, copy=False)
         return data
 
     def _zero_padded_delta_action_dims(self, data: Dict,
@@ -606,7 +616,7 @@ class NormalizeStatesAndActions:
                            stats: Dict,
                            norm_type: str,
                            norm_mask: List[bool] = None):
-        if self.output_dtype is not None:
+        if self.output_dtype is not None and not self.preserve_input_dtype:
             x = np.asarray(x, dtype=self.output_dtype)
         if norm_type == 'none':
             return x
@@ -619,12 +629,9 @@ class NormalizeStatesAndActions:
     def _normalize(self, x, stats: Dict, norm_mask: List[bool] = None):
         if norm_mask is None:
             norm_mask = [True] * x.shape[-1]
-        dtype = self.output_dtype
-        mean = np.asarray(stats['mean'], dtype=dtype)
-        std = np.asarray(stats['std'], dtype=dtype)
-        epsilon = (
-            self.normalization_epsilon if dtype is None else np.asarray(
-                self.normalization_epsilon, dtype=dtype))
+        mean = self._statistics_array(stats['mean'], x)
+        std = self._statistics_array(stats['std'], x)
+        epsilon = self._typed_epsilon(x)
         normalized = (x - mean) / (std + epsilon)
         return np.where(norm_mask, normalized, x)
 
@@ -636,12 +643,9 @@ class NormalizeStatesAndActions:
         assert stats['q99'] is not None
         if norm_mask is None:
             norm_mask = [True] * x.shape[-1]
-        dtype = self.output_dtype
-        low = np.asarray(stats['q01'], dtype=dtype)
-        high = np.asarray(stats['q99'], dtype=dtype)
-        epsilon = (
-            self.normalization_epsilon if dtype is None else np.asarray(
-                self.normalization_epsilon, dtype=dtype))
+        low = self._statistics_array(stats['q01'], x)
+        high = self._statistics_array(stats['q99'], x)
+        epsilon = self._typed_epsilon(x)
         normalized = (x - low) / (high - low + epsilon) * 2.0 - 1.0
         if self.clip_norm:
             normalized = np.clip(normalized, -1, 1)
@@ -652,16 +656,25 @@ class NormalizeStatesAndActions:
         assert 'max' in stats and stats['max'] is not None
         if norm_mask is None:
             norm_mask = [True] * x.shape[-1]
-        dtype = self.output_dtype
-        low = np.asarray(stats['min'], dtype=dtype)
-        high = np.asarray(stats['max'], dtype=dtype)
-        epsilon = (
-            self.normalization_epsilon if dtype is None else np.asarray(
-                self.normalization_epsilon, dtype=dtype))
+        low = self._statistics_array(stats['min'], x)
+        high = self._statistics_array(stats['max'], x)
+        epsilon = self._typed_epsilon(x)
         normalized = (x - low) / (high - low + epsilon) * 2.0 - 1.0
         if self.clip_norm:
             normalized = np.clip(normalized, -1, 1)
         return np.where(norm_mask, normalized, x)
+
+    def _statistics_array(self, values, reference: np.ndarray) -> np.ndarray:
+        dtype = (reference.dtype if self.preserve_input_dtype else
+                 self.output_dtype)
+        return np.asarray(values, dtype=dtype)
+
+    def _typed_epsilon(self, reference: np.ndarray):
+        dtype = (reference.dtype if self.preserve_input_dtype else
+                 self.output_dtype)
+        if dtype is None:
+            return self.normalization_epsilon
+        return np.asarray(self.normalization_epsilon, dtype=dtype)
 
 
 @TRANSFORMS.register_module()
@@ -676,6 +689,7 @@ class SinCosKeys:
                  keys: List[str],
                  target_dims=None,
                  interleave: bool = True,
+                 backend: str = 'numpy',
                  dtype: str = 'float32',
                  pad_value: float = 0.0) -> None:
         if isinstance(keys, str):
@@ -683,6 +697,9 @@ class SinCosKeys:
         self.keys = keys
         self.target_dims = target_dims
         self.interleave = interleave
+        self.backend = str(backend).lower()
+        if self.backend not in ('numpy', 'torch'):
+            raise ValueError("SinCosKeys backend must be 'numpy' or 'torch'.")
         self.dtype = np.dtype(dtype)
         self.pad_value = pad_value
 
@@ -709,8 +726,13 @@ class SinCosKeys:
             raise ValueError(f"SinCosKeys expects vector input for '{key}'.")
         arr = arr.astype(np.float32, copy=False)
 
-        sin_value = np.sin(arr)
-        cos_value = np.cos(arr)
+        if self.backend == 'torch':
+            source = torch.from_numpy(arr)
+            sin_value = torch.sin(source).numpy()
+            cos_value = torch.cos(source).numpy()
+        else:
+            sin_value = np.sin(arr)
+            cos_value = np.cos(arr)
         if self.interleave:
             encoded = np.stack([sin_value, cos_value],
                                axis=-1).reshape(*arr.shape[:-1],

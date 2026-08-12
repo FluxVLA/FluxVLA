@@ -299,8 +299,17 @@ _dit4dit_train_transforms = [
         input_key='prompt',
         remove_input_key=True,
     ),
-    dict(type='ResizeImages', height=_image_size, width=_image_size),
-    dict(type='SimpleNormalizeImages'),
+    # Match the source loader: float CHW / 255 first, then torch bilinear
+    # resize. OpenCV uint8 resize followed by normalization quantizes the
+    # interpolation result and measurably drifts the Cosmos inputs.
+    dict(
+        type='ResizeImages',
+        height=_image_size,
+        width=_image_size,
+        backend='torch',
+        scale_divisor=255.0,
+        output_layout='nchw',
+    ),
     dict(
         type='ConcatImagesHorizontally',
         key='images',
@@ -315,6 +324,8 @@ _dit4dit_train_transforms = [
         keys=['states'],
         target_dims={'states': _state_dim},
         interleave=True,
+        # The source StateActionSinCosTransform uses torch.float32 kernels.
+        backend='torch',
     ),
     dict(
         type='NormalizeStatesAndActions',
@@ -327,6 +338,12 @@ _dit4dit_train_transforms = [
         norm_type='min_max',
         action_norm_mask=_action_norm_mask,
         clip_norm=False,
+        # The source torch normalizer divides by (max - min) exactly.
+        normalization_epsilon=0.0,
+        preserve_input_dtype=True,
+        # The source casts normalized actions and sin/cos states to float16
+        # before padding and collation.
+        output_dtype='float16',
     ),
     dict(
         type='PadActionsAndActionMasks',

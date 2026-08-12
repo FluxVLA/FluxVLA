@@ -18,6 +18,7 @@ import cv2
 import numpy as np
 import timm
 import torch
+import torch.nn.functional as F
 from PIL import Image
 from torchvision.transforms import ColorJitter, Compose, RandomCrop, Resize
 from transformers import AutoImageProcessor
@@ -192,10 +193,16 @@ class ResizeImages:
         width (int): The target width for the images.
         preserve_leading_dims (bool): If True, treat the last three
             dimensions as CHW and preserve all leading dimensions.
-        backend (str): Resize backend. ``'cv2'`` preserves legacy behavior;
-            ``'torchvision'`` matches torchvision tensor resize semantics.
+        backend (str): Resize backend. ``'cv2'``/``'opencv'`` preserves
+            legacy behavior; ``'torchvision'`` uses torchvision tensor resize;
+            ``'torch'`` uses ``F.interpolate``.
         scale_to_unit_interval (bool): If True, uint8 images are converted to
-            float32 in ``[0, 1]`` before resizing.
+            float32 in ``[0, 1]`` before a torchvision resize.
+        scale_divisor (float | None): Optional divisor applied before a Torch
+            resize. This is useful when interpolation must happen after
+            converting uint8 images to floating point.
+        output_layout (str): ``flattened_chw`` preserves the historical
+            ``[N * 3, H, W]`` output. ``nchw`` returns ``[N, 3, H, W]``.
     """
 
     def __init__(self,
@@ -204,17 +211,28 @@ class ResizeImages:
                  preserve_leading_dims: bool = False,
                  backend: str = 'cv2',
                  scale_to_unit_interval: bool = False,
+                 scale_divisor: float = None,
+                 output_layout: str = 'flattened_chw',
                  *args,
                  **kwargs):
         self.height = height
         self.width = width
         self.preserve_leading_dims = preserve_leading_dims
-        self.backend = backend
-        self.scale_to_unit_interval = scale_to_unit_interval
-        if self.backend not in ('cv2', 'torchvision'):
-            raise ValueError(
-                f"Unsupported resize backend '{backend}'. Expected 'cv2' "
-                "or 'torchvision'.")
+        self.backend = str(backend).lower()
+        if self.backend == 'opencv':
+            self.backend = 'cv2'
+        if self.backend not in ('cv2', 'torchvision', 'torch'):
+            raise ValueError("ResizeImages backend must be 'cv2', 'opencv', "
+                             "'torchvision', or 'torch'.")
+        self.scale_to_unit_interval = bool(scale_to_unit_interval)
+        self.scale_divisor = (None if scale_divisor is None else
+                              float(scale_divisor))
+        if self.scale_divisor == 0:
+            raise ValueError('ResizeImages scale_divisor cannot be zero.')
+        self.output_layout = str(output_layout).lower()
+        if self.output_layout not in ('flattened_chw', 'nchw'):
+            raise ValueError('ResizeImages output_layout must be '
+                             "'flattened_chw' or 'nchw'.")
         self.torchvision_resize = Resize((self.height, self.width))
 
     def _resize_single_image(self, image: np.ndarray) -> np.ndarray:
@@ -247,8 +265,45 @@ class ResizeImages:
             resized_images, axis=0).reshape(*original_shape[:-2], self.height,
                                             self.width)
 
+    @staticmethod
+    def _to_nchw_tensor(images) -> torch.Tensor:
+        tensor = images.detach() if torch.is_tensor(images) else \
+            torch.as_tensor(np.asarray(images))
+        if tensor.ndim == 3:
+            if tensor.shape[0] % 3 != 0:
+                raise ValueError(
+                    'Flattened CHW images must have a leading dimension '
+                    f'divisible by 3, got {tuple(tensor.shape)}.')
+            tensor = tensor.reshape(-1, 3, tensor.shape[-2], tensor.shape[-1])
+        elif tensor.ndim == 4 and tensor.shape[1] == 3:
+            pass
+        elif tensor.ndim == 4 and tensor.shape[-1] == 3:
+            tensor = tensor.permute(0, 3, 1, 2).contiguous()
+        else:
+            raise ValueError('Torch ResizeImages expects [N*3,H,W], '
+                             '[N,3,H,W], or [N,H,W,3], got '
+                             f'{tuple(tensor.shape)}.')
+        return tensor.to(dtype=torch.float32)
+
+    def _resize_with_torch(self, images) -> torch.Tensor:
+        images = self._to_nchw_tensor(images)
+        if self.scale_divisor is not None:
+            images = images / self.scale_divisor
+        resized = F.interpolate(
+            images,
+            size=(self.height, self.width),
+            mode='bilinear',
+            align_corners=False,
+        ).contiguous()
+        if self.output_layout == 'flattened_chw':
+            return resized.reshape(-1, self.height, self.width)
+        return resized
+
     def __call__(self, data: dict):
         assert 'images' in data, "Input data must contain 'images' key"
+        if self.backend == 'torch':
+            data['images'] = self._resize_with_torch(data['images'])
+            return data
         if self.preserve_leading_dims:
             data['images'] = self._resize_preserve_leading_dims(
                 np.asarray(data['images']))
@@ -266,7 +321,10 @@ class ResizeImages:
         for image in images:
             resized_images.append(self._resize_single_image(image))
 
-        resized_images = np.concatenate(resized_images, axis=0)
+        if self.output_layout == 'nchw':
+            resized_images = np.stack(resized_images, axis=0)
+        else:
+            resized_images = np.concatenate(resized_images, axis=0)
         data['images'] = resized_images
         return data
 
