@@ -16,11 +16,13 @@ from __future__ import annotations
 import copy
 import os
 from abc import ABC, abstractmethod
+from functools import partial
 from typing import Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
 from safetensors.torch import load_file
+from torch.distributed.fsdp.wrap import _module_wrap_policy, _or_policy
 from transformers import GenerationMixin, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
@@ -81,6 +83,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         self.freeze_llm_backbone = freeze_llm_backbone
         self.freeze_vlm_backbone = freeze_vlm_backbone
         self.freeze_projector = freeze_projector
+        self.vision_backbone_requires_grad = not freeze_vision_backbone
         self.vision_backbone_fp32 = vision_backbone_fp32
         self.unfreeze_last_layer = unfreeze_last_layer
         self.enable_mixed_precision_training = enable_mixed_precision_training
@@ -184,6 +187,218 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
             if param.requires_grad:
                 overwatch.debug(name)
 
+    def forward_model(self,
+                      input_ids: Optional[torch.LongTensor] = None,
+                      attention_mask: Optional[torch.Tensor] = None,
+                      pixel_values: Optional[torch.FloatTensor] = None,
+                      labels: Optional[torch.LongTensor] = None,
+                      inputs_embeds: Optional[torch.FloatTensor] = None,
+                      past_key_values: Optional[List[
+                          torch.FloatTensor]] = None,
+                      use_cache: Optional[bool] = None,
+                      output_attentions: Optional[bool] = None,
+                      output_hidden_states: Optional[bool] = None,
+                      return_dict: Optional[bool] = None,
+                      multimodal_indices: Optional[torch.LongTensor] = None,
+                      return_fused_labels: bool = False,
+                      *args,
+                      **kwargs) -> CausalLMOutputWithPast:
+        """
+        Fuse separate vision and language backbones before the action head.
+
+        Supports:
+            - Autoregressive decoding with cached past key values
+            - Fully multimodal batches (image + text)
+            - Unimodal fallback (text only)
+
+        Args:
+            input_ids (LongTensor): Input token IDs [B, T].
+            attention_mask (Tensor): Mask for input tokens [B, T].
+            pixel_values (FloatTensor): Image tensor or dict for vision model.
+            labels (LongTensor): Language modeling target tokens [B, T].
+            inputs_embeds (FloatTensor): Optional precomputed input embeddings.
+            past_key_values (List[FloatTensor]): LLM cache for fast decoding.
+            use_cache (bool): Whether to return cache for next step.
+            output_attentions (bool): Whether to return attention maps.
+            output_hidden_states (bool): Whether to return hidden states.
+            return_dict (bool): Whether to return a CausalLMOutputWithPast.
+            multimodal_indices (LongTensor): Indices of samples using image +
+                text.
+
+        Returns:
+            CausalLMOutputWithPast: Outputs including logits and optional
+                cache.
+        """
+        if input_ids.shape[1] == 1 and past_key_values is not None:
+            # We're leveraging the cache, so just redirect to
+            # `self.llm_backbone` with `input_ids` and `past_key_values`
+            output = self.llm_backbone(
+                input_ids=input_ids,
+                attention_mask=None,
+                position_ids=None,
+                past_key_values=past_key_values,
+                inputs_embeds=None,
+                labels=None,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+            if return_fused_labels:
+                return output, None, None
+            return output
+
+        elif input_ids.shape[1] == 1 or pixel_values is None:
+            raise RuntimeError('Invalid `forward()` call!')
+
+        # Handle Multimodal Indices is None --> pretend like the batch is fully
+        # multimodal (always image + text)!
+        if multimodal_indices is None:
+            multimodal_indices = torch.arange(
+                len(input_ids), dtype=torch.long, device=input_ids.device)
+
+        # Handle Multimodal Indices is Empty (len == 0) --> simple
+        # unimodal forward
+        elif len(multimodal_indices) == 0:
+            output = self.llm_backbone(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                position_ids=None,
+                past_key_values=past_key_values,
+                inputs_embeds=None,
+                labels=labels,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=output_hidden_states,
+                return_dict=return_dict,
+            )
+            if return_fused_labels:
+                return output, attention_mask, labels
+            return output
+
+        with torch.set_grad_enabled(self.vision_backbone_requires_grad):
+            if isinstance(pixel_values, dict):
+                patch_features = self.vision_backbone({
+                    k: pixel_values[k][multimodal_indices]
+                    for k in pixel_values
+                })
+            else:
+                patch_features = self.vision_backbone(
+                    pixel_values[multimodal_indices])
+
+        # Projection Logic :: [bsz, num_patches, llm_embed_dim] =>>
+        # num_patches = (2 *) (256 + 1) for ViT-L + CLS
+        projected_patch_embeddings = self.projector(patch_features)
+        projected_patch_attention_mask = None
+        if attention_mask is not None:
+            projected_patch_attention_mask = torch.full(
+                (projected_patch_embeddings.shape[0],
+                 projected_patch_embeddings.shape[1]),
+                True,
+                dtype=attention_mask.dtype,
+                device=attention_mask.device,
+            )
+
+        # === Step 1: Get Input Embeddings from LLM ===
+        input_embeddings = self.llm_backbone.embed_input_ids(input_ids)
+
+        # === Step 2: Build Multimodal Embeddings & Attention Mask ===
+        multimodal_embeddings = torch.cat([
+            input_embeddings[multimodal_indices, :1, :],
+            projected_patch_embeddings, input_embeddings[multimodal_indices,
+                                                         1:, :]
+        ],
+                                          dim=1)
+
+        multimodal_attention_mask = None
+        if attention_mask is not None:
+            multimodal_attention_mask = torch.cat([
+                attention_mask[multimodal_indices, :1],
+                projected_patch_attention_mask,
+                attention_mask[multimodal_indices, 1:]
+            ],
+                                                  dim=1)
+
+        # === Step 3: Build Multimodal Labels (Ignore patch embeddings) ===
+        multimodal_labels = None
+        if labels is not None:
+            projected_patch_labels = torch.full(
+                (projected_patch_embeddings.shape[0],
+                 projected_patch_embeddings.shape[1]),
+                self.ignore_index,
+                dtype=labels.dtype,
+                device=labels.device)
+            multimodal_labels = torch.cat([
+                labels[multimodal_indices, :1], projected_patch_labels,
+                labels[multimodal_indices, 1:]
+            ],
+                                          dim=1)
+
+        # === Step 4: Handle Unimodal Cases ===
+        unimodal_indices = torch.tensor([
+            idx
+            for idx in range(len(input_ids)) if idx not in multimodal_indices
+        ],
+                                        dtype=torch.long,
+                                        device=multimodal_indices.device)
+
+        if len(unimodal_indices) == 0:
+            fused_embeddings = multimodal_embeddings
+            fused_attention_mask = multimodal_attention_mask
+            fused_labels = multimodal_labels
+        else:
+            patch_len = projected_patch_embeddings.shape[1]
+            embed_dim = input_embeddings.shape[2]
+
+            unimodal_embeddings_pad = torch.zeros(
+                (len(unimodal_indices), patch_len, embed_dim),
+                dtype=input_embeddings.dtype,
+                device=input_embeddings.device)
+            unimodal_attention_pad = torch.full(
+                (len(unimodal_indices), patch_len),
+                False,
+                dtype=attention_mask.dtype,
+                device=attention_mask.device)
+            unimodal_labels_pad = torch.full(
+                (len(unimodal_indices), patch_len),
+                self.ignore_index,
+                dtype=labels.dtype,
+                device=labels.device)
+
+            unimodal_embeddings = torch.cat(
+                [input_embeddings[unimodal_indices], unimodal_embeddings_pad],
+                dim=1)
+
+            unimodal_attention_mask = torch.cat(
+                [attention_mask[unimodal_indices], unimodal_attention_pad],
+                dim=1)
+
+            unimodal_labels = torch.cat(
+                [labels[unimodal_indices], unimodal_labels_pad], dim=1)
+
+            # === Step 5: Merge Multimodal and Unimodal ===
+            fused_embeddings = torch.vstack(
+                [multimodal_embeddings, unimodal_embeddings])
+            fused_attention_mask = torch.vstack(
+                [multimodal_attention_mask, unimodal_attention_mask])
+            fused_labels = torch.vstack([multimodal_labels, unimodal_labels])
+
+        # === Step 6: Final LLM Forward Pass ===
+        output = self.llm_backbone(
+            input_ids=None,
+            attention_mask=fused_attention_mask,
+            position_ids=None,
+            past_key_values=past_key_values,
+            inputs_embeds=fused_embeddings,
+            labels=fused_labels,
+            use_cache=use_cache,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict)
+        if return_fused_labels:
+            return output, fused_attention_mask, fused_labels
+        return output, fused_attention_mask
+
     @abstractmethod
     def forward(
         self,
@@ -214,9 +429,54 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
     def _reorder_cache(self, past_key_values, beam_idx):
         return self.llm_backbone.llm._reorder_cache(past_key_values, beam_idx)
 
-    @abstractmethod
     def get_fsdp_wrapping_policy(self) -> Callable:
-        ...
+        """Returns the FSDP wrapping policy for the model.
+
+        Returns:
+            Callable: The wrapping policy for FSDP.
+        """
+        fsdp_policy_list = list()
+        if hasattr(self, 'vision_backbone') and hasattr(
+                self.vision_backbone, 'get_fsdp_wrapping_policy'):
+            # Get Vision Backbone FSDP Wrapping Policy
+            # =>> just a module wrapping policy around `self.vision_backbone`
+            vision_fsdp_wrapping_policy = self.vision_backbone.get_fsdp_wrapping_policy(  # noqa: E501
+            )
+            fsdp_policy_list.append(vision_fsdp_wrapping_policy)
+        if hasattr(self, 'llm_backbone') and hasattr(
+                self.llm_backbone, 'get_fsdp_wrapping_policy'):
+            # Get LLM Backbone FSDP Wrapping Policy
+            # =>> just a module wrapping policy around `self.llm_backbone`
+            llm_fsdp_wrapping_policy = self.llm_backbone.get_fsdp_wrapping_policy(  # noqa: E501
+            )
+            fsdp_policy_list.append(llm_fsdp_wrapping_policy)
+        if hasattr(self, 'vlm_backbone') and hasattr(
+                self.vlm_backbone, 'get_fsdp_wrapping_policy'):
+            # Get VLM Backbone FSDP Wrapping Policy
+            # =>> just a module wrapping policy around `self.vlm_backbone`
+            vlm_fsdp_wrapping_policy = self.vlm_backbone.get_fsdp_wrapping_policy(  # noqa: E501
+            )
+            fsdp_policy_list.append(vlm_fsdp_wrapping_policy)
+        if hasattr(self, 'vla_head') and hasattr(self.vla_head,
+                                                 'get_fsdp_wrapping_policy'):
+            fsdp_policy_list.append(self.vla_head.get_fsdp_wrapping_policy())
+        from fluxvla.engines import PROJECTORS
+
+        # Get Prismatic Wrapping Policy =>> just a module wrapping policy
+        # around `self.projector`
+        projector_fsdp_wrapping_policy = partial(
+            _module_wrap_policy,
+            module_classes=set(PROJECTORS._module_dict.values()),
+        )
+        fsdp_policy_list.append(projector_fsdp_wrapping_policy)
+        # Return union (_or_) over constituent policies
+        # => Note: there is *not* a fall-through policy; any module that isn't
+        # covered by the above constituents will automatically be folded into
+        # the root VLM FSDP instance.
+        return partial(
+            _or_policy,
+            policies=fsdp_policy_list,
+        )
 
     def from_pretrained(self):
         # Load weights based on file format
