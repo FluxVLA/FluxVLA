@@ -179,6 +179,32 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
             if self.model.visual and not self.tune_visual:
                 self.model.visual.eval()
 
+    @staticmethod
+    def _trim_common_left_padding(
+        input_ids: torch.Tensor,
+        attention_mask: torch.Tensor,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Recover the official collator's dynamic left-padded sequence.
+
+        FluxVLA tokenizes each sample before ``DictCollator``, so training
+        configs use a fixed maximum length to make samples stackable. The
+        official N1.7 collator instead pads each batch only to its longest
+        sequence. Removing columns that are padding for every sample makes
+        the two model inputs identical while retaining the generic collator.
+        """
+        if input_ids.ndim != 2 or attention_mask.ndim != 2:
+            return input_ids, attention_mask
+        valid_columns = attention_mask.to(dtype=torch.bool).any(dim=0)
+        if not torch.any(valid_columns):
+            raise ValueError(
+                'Qwen3-VL attention mask contains no valid token.')
+        first_valid_column = int(
+            torch.nonzero(valid_columns, as_tuple=False)[0].item())
+        if first_valid_column == 0:
+            return input_ids, attention_mask
+        return (input_ids[:, first_valid_column:],
+                attention_mask[:, first_valid_column:])
+
     def forward(
         self,
         vl_input: Mapping[str, torch.Tensor],
@@ -190,6 +216,9 @@ class GrootN17Qwen3Backbone(torch.nn.Module):
             'pixel_values': vl_input['images'],
             'image_grid_thw': vl_input['image_grid_thw'],
         }
+        hf_input['input_ids'], hf_input['attention_mask'] = (
+            self._trim_common_left_padding(hf_input['input_ids'],
+                                           hf_input['attention_mask']))
         # DictCollator stacks sample-level packed vision tensors. Hugging Face
         # Qwen3-VL expects the same tensors packed across the whole batch.
         if hf_input['pixel_values'].ndim == 3:
