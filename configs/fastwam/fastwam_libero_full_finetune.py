@@ -258,7 +258,10 @@ eval = dict(
         task_ids=None,
         norm_stats_key=_statistic_name,
         eval_chunk_size=10,
-        eval_shard_strategy='task',
+        # Direct ``torchrun scripts/eval.py`` launches shard individual
+        # episodes across ranks. The LIBERO manager explicitly overrides this
+        # to ``task`` for its single-task workers.
+        eval_shard_strategy='episode',
         preprocess_every_step=False,
         num_inference_steps=10,
         max_steps=dict(
