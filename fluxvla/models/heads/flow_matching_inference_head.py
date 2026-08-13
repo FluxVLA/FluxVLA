@@ -141,7 +141,8 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                      output_dim=1024,
                      positional_embeddings=None),
                  ori_action_dim=None,
-                 max_input_seq_len: int = 600):
+                 max_input_seq_len: int = 600,
+                 mask_input_padding: bool = False):
         super().__init__(hidden_size, state_dim, input_embedding_dim,
                          action_dim, num_inference_timesteps,
                          max_num_embodiments, use_vlln,
@@ -191,6 +192,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
         self.dit_dim = dit_dim
         self.dit_ff = dit_ff
         self.max_input_seq_len = max_input_seq_len
+        self.mask_input_padding = mask_input_padding
         self.backbone_embedding_dim = bed
         self.state_dim = sd
 
@@ -508,6 +510,9 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                 self.backbone_embedding_dim,
                 dtype=torch.bfloat16,
                 device='cuda'),
+            'input_attention_mask':
+            torch.ones(
+                1, self.max_input_seq_len, dtype=torch.bool, device='cuda'),
             'states':
             torch.empty(
                 1, self.state_dim, dtype=torch.bfloat16, device='cuda'),
@@ -563,6 +568,8 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
     def record_run(self):
         """Core denoising computation for CUDA Graph capture."""
         input_features = self.buffers['input_features']
+        input_attention_mask = self.buffers['input_attention_mask']
+        enc_mask = input_attention_mask if self.mask_input_padding else None
         embodiment_ids = self.buffers['embodiment_ids']
 
         # VLLN (LayerNorm)
@@ -712,7 +719,8 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                         self.dit_hd,
                         inner_dim,
                         ff_features=inner_dim,
-                        ff_hidden=self.dit_ff)
+                        ff_hidden=self.dit_ff,
+                        enc_mask=enc_mask)
                     cross_idx += 1
 
             # DiT output
@@ -818,6 +826,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
             self.loaded_weights = True
 
         self.buffers['input_features'].copy_(input_features)
+        self.buffers['input_attention_mask'].copy_(attention_mask.bool())
         self.buffers['states'].copy_(states)
         self.buffers['embodiment_ids'].copy_(embodiment_ids)
 
