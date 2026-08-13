@@ -56,6 +56,8 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 📢 最新动态
 
+**\[2026/08/13\]** 🔥 现已支持世界动作模型 FastWAM。
+
 **\[2026/08/10\]** 🔥 FluxVLA 现已支持在 NVIDIA Jetson Orin 上部署，GR00T-N1.5 端侧加速推理可达到 7.4 Hz。Orin 初始刷机流程见 [docs/orin_flashing_zh-CN.md](docs/orin_flashing_zh-CN.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
 
 **\[2026/06/30\]** 🔥 现已支持 Franka 单臂与双臂真机推理，包括 joint/eepose 控制配置与部署指南。详见 [docs/franka.md](docs/franka.md)。
@@ -622,7 +624,6 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 | GR00T N1.5                | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                                       |
 | OpenVLA                   | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                                   |
 | FastWAM_base              | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                                    |
-| FastWAM_libero            | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_libero_full_finetune_bs16)                               |
 | PI0_base                  | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                                        |
 | PI05_base                 | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                                       |
 | PI05_libero               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                                     |

@@ -56,6 +56,8 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 ## 📢 最新情報
 
+**\[2026/08/13\]** 🔥 世界行動モデル FastWAM をサポートしました。
+
 **\[2026/08/10\]** 🔥 FluxVLA は NVIDIA Jetson Orin へのデプロイに対応し、GR00T-N1.5 のエッジ高速推論で 7.4 Hz を達成しました。Orin の初期フラッシュ手順は [docs/orin_flashing.md](docs/orin_flashing.md)、FluxVLA Docker セットアップの起動手順は [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md) を参照してください。
 
 **\[2026/06/30\]** 🔥 Franka の単腕・双腕実機推論をサポートしました。joint/eepose 制御設定とデプロイガイドを含みます。詳細は [docs/franka.md](docs/franka.md) を参照してください。
@@ -622,7 +624,6 @@ ARM と SARM のワークフローでは、通常は学習 / 推論用の CLIP �
 | GR00T N1.5                | 3B     | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                                       |
 | OpenVLA                   | 7B     | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                                   |
 | FastWAM_base              | 5B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                                    |
-| FastWAM_libero            | 5B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_libero_full_finetune_bs16)                               |
 | PI0_base                  | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                                        |
 | PI05_base                 | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                                       |
 | PI05_libero               | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                                     |

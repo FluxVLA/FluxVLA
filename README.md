@@ -56,6 +56,8 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## 📢 Latest News
 
+**\[2026/08/13\]** 🔥 FastWAM world-action model support is now available.
+
 **\[2026/08/10\]** 🔥 FluxVLA deployment on NVIDIA Jetson Orin is now supported, with edge inference acceleration reaching 7.4 Hz for GR00T-N1.5. See [orin_flashing.md](docs/orin_flashing.md) for initial flashing and [orin_docker_runtime.md](docs/orin_docker_runtime.md) to start the FluxVLA Docker setup.
 
 **\[2026/06/30\]** 🔥 Single-arm and dual-arm Franka real-robot inference is now supported, including joint/eepose control configs and a deployment guide. See [docs/franka.md](docs/franka.md).
@@ -691,7 +693,6 @@ For ARM and SARM workflows, you typically need a CLIP checkpoint for training / 
 | GR00T N1.5              | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                                       |
 | OpenVLA                 | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                                   |
 | FastWAM_base            | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                                    |
-| FastWAM_libero          | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_libero_full_finetune_bs16)                               |
 | PI0_base                | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                                        |
 | PI05_base               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                                       |
 | PI05_libero             | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                                     |
