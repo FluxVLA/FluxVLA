@@ -85,9 +85,9 @@ def apply_rotary_pos_emb(q, k, cos, sin):
     return qk_embed[:, :num_q_heads], qk_embed[:, num_q_heads:]
 
 
-def qwen3_attn(hidden_states, cos, sin, attention_mask, fully_masked_rows,
-               position_ids, head_dim, num_kv_groups, qkv_w, o_w, q_norm_w,
-               k_norm_w, eps, attn_implementation):
+def qwen3_attn(hidden_states, cos, sin, attention_mask, position_ids, head_dim,
+               num_kv_groups, qkv_w, o_w, q_norm_w, k_norm_w, eps,
+               attn_implementation):
     input_shape = hidden_states.shape[:-1]
     hidden_shape = (*input_shape, -1, head_dim)
 
@@ -136,7 +136,6 @@ def qwen3_attn(hidden_states, cos, sin, attention_mask, fully_masked_rows,
 
     attn_output = F.scaled_dot_product_attention(
         query_states, key_states, value_states, attn_mask=attention_mask)
-    attn_output = attn_output.masked_fill(fully_masked_rows, 0)
 
     attn_output = attn_output.transpose(1, 2).reshape(*input_shape,
                                                       -1).contiguous()
@@ -165,9 +164,8 @@ def qwen3_mlp(hidden_states, gate_w, up_w, down_w):
     return output.reshape(*orig_shape[:-1], -1)
 
 
-def qwen3_decoder_layer(hidden_states, cos, sin, attention_mask,
-                        fully_masked_rows, position_ids, head_dim,
-                        num_kv_groups, eps, input_layernorm_w,
+def qwen3_decoder_layer(hidden_states, cos, sin, attention_mask, position_ids,
+                        head_dim, num_kv_groups, eps, input_layernorm_w,
                         post_attn_layernorm_w, qkv_w, o_w, q_norm_w, k_norm_w,
                         gate_w, up_w, down_w, attn_implementation):
     residual = hidden_states
@@ -183,9 +181,9 @@ def qwen3_decoder_layer(hidden_states, cos, sin, attention_mask,
         eps=eps)
     hidden_states = norm_out
     hidden_states = qwen3_attn(hidden_states, cos, sin, attention_mask,
-                               fully_masked_rows, position_ids, head_dim,
-                               num_kv_groups, qkv_w, o_w, q_norm_w, k_norm_w,
-                               eps, attn_implementation)
+                               position_ids, head_dim, num_kv_groups, qkv_w,
+                               o_w, q_norm_w, k_norm_w, eps,
+                               attn_implementation)
     hidden_states = residual + hidden_states
 
     # Fully Connected
@@ -642,9 +640,7 @@ class Eagle2_5_VLInferenceForConditionalGeneration(Eagle2_5_VLPreTrainedModel,
             'position_ids':
             torch.empty(1, msl, dtype=torch.long, device='cuda'),
             'attention_mask':
-            torch.empty(1, 1, msl, msl, dtype=torch.bfloat16, device='cuda'),
-            'language_fully_masked_rows':
-            torch.empty(1, 1, msl, 1, dtype=torch.bool, device='cuda')
+            torch.empty(1, 1, msl, msl, dtype=torch.bfloat16, device='cuda')
         }
 
         # Initialize vision CUDA Graph
@@ -736,7 +732,6 @@ class Eagle2_5_VLInferenceForConditionalGeneration(Eagle2_5_VLPreTrainedModel,
             hidden_states = qwen3_decoder_layer(
                 self.buffers['language_x'], self.buffers['language_cos'],
                 self.buffers['language_sin'], self.buffers['attention_mask'],
-                self.buffers['language_fully_masked_rows'],
                 self.buffers['position_ids'], head_dim, num_kv_groups, eps,
                 self.weights['language_input_layernorm_w'][i],
                 self.weights['language_post_attn_layernorm_w'][i],
@@ -897,11 +892,7 @@ class Eagle2_5_VLInferenceForConditionalGeneration(Eagle2_5_VLPreTrainedModel,
         padding_mask = attention_mask[:, None, None, :].bool()
         combined = causal_mask[None, None, :, :] & padding_mask
         fully_masked_rows = ~combined.any(dim=-1, keepdim=True)
-        diagonal_mask = torch.eye(
-            seq_len, device=attention_mask.device,
-            dtype=torch.bool)[None, None, :, :]
-        combined = combined | (fully_masked_rows & diagonal_mask)
-        self.buffers['language_fully_masked_rows'].copy_(fully_masked_rows)
+        combined = combined | fully_masked_rows
         self.buffers['attention_mask'].copy_(
             torch.where(combined, 0.0, float('-inf')).to(torch.bfloat16))
 

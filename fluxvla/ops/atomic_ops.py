@@ -458,17 +458,7 @@ def mha_self(x, qkv_w, qkv_b, out_w, out_b, num_heads, head_dim):
     return F.linear(out, out_w, out_b)
 
 
-def mha_cross(x,
-              enc,
-              q_w,
-              q_b,
-              kv_w,
-              kv_b,
-              out_w,
-              out_b,
-              num_heads,
-              head_dim,
-              enc_mask=None):
+def mha_cross(x, enc, q_w, q_b, kv_w, kv_b, out_w, out_b, num_heads, head_dim):
     """Cross-attention with merged KV projection (one matmul for K+V)."""
     B, S, _ = x.shape
     S_enc = enc.shape[1]
@@ -478,10 +468,7 @@ def mha_cross(x,
     k, v = kv.split([hdim, hdim], dim=-1)
     k = k.view(B, S_enc, num_heads, head_dim).transpose(1, 2)
     v = v.view(B, S_enc, num_heads, head_dim).transpose(1, 2)
-    attn_mask = None
-    if enc_mask is not None:
-        attn_mask = enc_mask[:, None, None, :].bool()
-    out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask)
+    out = F.scaled_dot_product_attention(q, k, v)
     out = out.transpose(1, 2).reshape(B, S, -1).contiguous()
     return F.linear(out, out_w, out_b)
 
@@ -564,33 +551,14 @@ def dit_block_self(x, temb, n1_w, n1_b, qkv_w, qkv_b, o_w, o_b, ff_up_w_T,
     return x
 
 
-def dit_block_cross(x,
-                    enc,
-                    temb,
-                    n1_w,
-                    n1_b,
-                    q_w,
-                    q_b,
-                    kv_w,
-                    kv_b,
-                    o_w,
-                    o_b,
-                    ff_up_w_T,
-                    ff_up_b,
-                    ff_dn_w,
-                    ff_dn_b,
-                    nh,
-                    hd,
-                    dim,
-                    ff_features,
-                    ff_hidden,
-                    enc_mask=None):
+def dit_block_cross(x, enc, temb, n1_w, n1_b, q_w, q_b, kv_w, kv_b, o_w, o_b,
+                    ff_up_w_T, ff_up_b, ff_dn_w, ff_dn_b, nh, hd, dim,
+                    ff_features, ff_hidden):
     """DiT cross-attention block with merged KV."""
     ada = F.linear(F.silu(temb), n1_w, n1_b)
     scale, shift = ada.chunk(2, dim=1)
     h = ada_layer_norm(x, scale, shift)
-    x = mha_cross(
-        h, enc, q_w, q_b, kv_w, kv_b, o_w, o_b, nh, hd, enc_mask=enc_mask) + x
+    x = mha_cross(h, enc, q_w, q_b, kv_w, kv_b, o_w, o_b, nh, hd) + x
     h = F.layer_norm(x, [dim])
     x = ff_gelu(h, ff_up_w_T, ff_up_b, ff_dn_w, ff_dn_b, ff_features,
                 ff_hidden) + x
