@@ -136,9 +136,9 @@ class Wan21Backbone(WanBaseBackbone):
         except Exception as e:
             logger.warning('Could not load VAE weights: %s', e)
 
-    def encode_prompt(self, input_ids, attention_mask):
+    def encode_prompt(self, lang_tokens, lang_masks):
         return self.encode_prompt_embeddings(
-            input_ids, attention_mask, output_dtype=torch.bfloat16)
+            lang_tokens, lang_masks, output_dtype=torch.bfloat16)
 
     def encode_video(self, input_video):
         vae_dev = next(self.vae.parameters()).device
@@ -189,7 +189,7 @@ class Wan21Backbone(WanBaseBackbone):
             y = torch.concat([msk, y], dim=1)
         return clip_context, y, new_image
 
-    def forward(self, video, input_ids, attention_mask, condition_image=None):
+    def forward(self, video, lang_tokens, lang_masks, condition_image=None):
 
         self.set_frozen_modules_to_eval_mode()
 
@@ -197,16 +197,17 @@ class Wan21Backbone(WanBaseBackbone):
         if condition_image is None:
             condition_image = video[:, :, :1]
         condition_image = condition_image.transpose(1, 2)
-        if input_ids.ndim == 3:
-            assert input_ids.shape == attention_mask.shape, (
-                'input_ids and attention_mask must have the same shape')
+        if lang_tokens.ndim == 3:
+            assert lang_tokens.shape == lang_masks.shape, (
+                'lang_tokens and lang_masks must have the same shape')
             prompt_embs = list()
-            for i in range(input_ids.shape[1]):
+            for i in range(lang_tokens.shape[1]):
+                prompt_tokens = lang_tokens[:, i, :]
+                prompt_masks = lang_masks[:, i, :]
                 prompt_embs.append(
-                    self.encode_prompt(input_ids[:, i, :],
-                                       attention_mask[:, i, :]))
+                    self.encode_prompt(prompt_tokens, prompt_masks))
         else:
-            prompt_embs = self.encode_prompt(input_ids, attention_mask)
+            prompt_embs = self.encode_prompt(lang_tokens, lang_masks)
         latents = self.encode_video(video)
         clip_feas, image_cond, new_image = self.encode_image(
             condition_image, num_frames, height, width)

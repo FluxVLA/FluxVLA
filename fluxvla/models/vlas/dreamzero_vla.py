@@ -186,7 +186,7 @@ class DreamZeroVLA(BaseVLA):
         task_description: Optional[List[str]] = None,
         **kwargs,
     ) -> Dict:
-        if lang_tokens is None:
+        if lang_tokens is None or lang_masks is None:
             raise ValueError(
                 'DreamZeroVLA requires `lang_tokens` and `lang_masks` '
                 'in the batch. Add ProcessPrompts to the transform pipeline.')
@@ -203,8 +203,8 @@ class DreamZeroVLA(BaseVLA):
         # --- Encode with Wan21Backbone (vlm_backbone) ---
         vlm_outputs = self.vlm_backbone(
             video=video,
-            input_ids=lang_tokens.long().to(device),
-            attention_mask=lang_masks.long().to(device),
+            lang_tokens=lang_tokens.long().to(device),
+            lang_masks=lang_masks.long().to(device),
         )
         prompt_embs = vlm_outputs['prompt_embs']
         latents = vlm_outputs['latents']
@@ -328,8 +328,8 @@ class DreamZeroVLA(BaseVLA):
             # --- Encode with Wan21Backbone (vlm_backbone) ---
             vlm_outputs = self.vlm_backbone(
                 video=video,
-                input_ids=lang_tokens.long().to(device),
-                attention_mask=lang_masks.long().to(device),
+                lang_tokens=lang_tokens.long().to(device),
+                lang_masks=lang_masks.long().to(device),
                 condition_image=condition_image,
             )
             prompt_embs = vlm_outputs['prompt_embs']

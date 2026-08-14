@@ -72,20 +72,20 @@ class WanBaseBackbone(nn.Module):
             if module is not None:
                 module.eval()
 
-    def _prepare_prompt_inputs(self, input_ids, attention_mask):
-        ids = input_ids.to(self.device)
-        mask = attention_mask.to(self.device, dtype=torch.bool)
-        if ids.ndim == 1:
-            ids = ids.unsqueeze(0)
-        if mask.ndim == 1:
-            mask = mask.unsqueeze(0)
-        return ids, mask
+    def _prepare_prompt_inputs(self, lang_tokens, lang_masks):
+        tokens = lang_tokens.to(self.device)
+        masks = lang_masks.to(self.device, dtype=torch.bool)
+        if tokens.ndim == 1:
+            tokens = tokens.unsqueeze(0)
+        if masks.ndim == 1:
+            masks = masks.unsqueeze(0)
+        return tokens, masks
 
     @torch.no_grad()
     def encode_prompt_embeddings(
         self,
-        input_ids,
-        attention_mask,
+        lang_tokens,
+        lang_masks,
         output_dtype: Optional[torch.dtype] = None,
     ):
         """Encode tokenized prompts and zero padded embeddings."""
@@ -93,22 +93,22 @@ class WanBaseBackbone(nn.Module):
         if text_encoder is None:
             raise ValueError('Token encoding requires a loaded text encoder.')
 
-        ids, mask = self._prepare_prompt_inputs(input_ids, attention_mask)
-        prompt_emb = text_encoder(ids, mask).clone()
+        tokens, masks = self._prepare_prompt_inputs(lang_tokens, lang_masks)
+        prompt_emb = text_encoder(tokens, masks).clone()
         if output_dtype is not None:
             prompt_emb = prompt_emb.to(dtype=output_dtype)
 
-        seq_lens = mask.gt(0).sum(dim=1).long()
+        seq_lens = masks.gt(0).sum(dim=1).long()
         for index, seq_len in enumerate(seq_lens):
             prompt_emb[index, seq_len:] = 0
         return prompt_emb
 
     @torch.no_grad()
-    def encode_prompt_context(self, input_ids, attention_mask):
+    def encode_prompt_context(self, lang_tokens, lang_masks):
         """Encode tokenized prompts into FastWAM context and all-ones mask."""
-        _, mask = self._prepare_prompt_inputs(input_ids, attention_mask)
-        context = self.encode_prompt_embeddings(input_ids, attention_mask)
-        context_mask = torch.ones_like(mask)
+        _, masks = self._prepare_prompt_inputs(lang_tokens, lang_masks)
+        context = self.encode_prompt_embeddings(lang_tokens, lang_masks)
+        context_mask = torch.ones_like(masks)
         return context.to(device=self.device), context_mask
 
 

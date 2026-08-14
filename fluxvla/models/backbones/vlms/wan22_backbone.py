@@ -88,22 +88,22 @@ class Wan22Backbone(WanBaseBackbone):
     # Prompt token encoding with an in-memory LRU
     # ------------------------------------------------------------------
     @torch.no_grad()
-    def encode_prompt(self, input_ids, attention_mask):
+    def encode_prompt(self, lang_tokens, lang_masks):
         """Encode tokenized prompts into ``(context, context_mask)``.
 
         Tokenization belongs to the data transform layer, matching
         :class:`Wan21Backbone`. This method only runs the frozen T5 encoder on
-        ``input_ids`` / ``attention_mask`` and applies FastWAM's padded-token
+        ``lang_tokens`` / ``lang_masks`` and applies FastWAM's padded-token
         post-processing.
         """
-        return self.encode_prompt_context(input_ids, attention_mask)
+        return self.encode_prompt_context(lang_tokens, lang_masks)
 
     @staticmethod
-    def _token_cache_key(input_ids: torch.Tensor,
-                         attention_mask: torch.Tensor) -> str:
-        valid_ids = input_ids[attention_mask].detach().to(
+    def _token_cache_key(lang_tokens: torch.Tensor,
+                         lang_masks: torch.Tensor) -> str:
+        valid_tokens = lang_tokens[lang_masks].detach().to(
             device='cpu', dtype=torch.int64).contiguous()
-        return hashlib.sha256(valid_ids.numpy().tobytes()).hexdigest()
+        return hashlib.sha256(valid_tokens.numpy().tobytes()).hexdigest()
 
     def _get_memory_cached_text(self, cache_key: str):
         cached = self._text_embed_cache.get(cache_key)
@@ -134,22 +134,22 @@ class Wan22Backbone(WanBaseBackbone):
     @torch.no_grad()
     def encode_prompt_cached(
         self,
-        input_ids: torch.Tensor,
-        attention_mask: torch.Tensor,
+        lang_tokens: torch.Tensor,
+        lang_masks: torch.Tensor,
     ):
         """Encode each unique prompt once and reuse in-memory cache hits."""
-        ids, mask = self._prepare_prompt_inputs(input_ids, attention_mask)
-        if ids.shape[1] != self.text_embed_cache_context_len:
+        tokens, masks = self._prepare_prompt_inputs(lang_tokens, lang_masks)
+        if tokens.shape[1] != self.text_embed_cache_context_len:
             raise ValueError(
                 'Token sequence length must match '
-                f'text_embed_cache_context_len: {ids.shape[1]} != '
+                f'text_embed_cache_context_len: {tokens.shape[1]} != '
                 f'{self.text_embed_cache_context_len}.')
         if self.text_embed_cache_size == 0:
-            return self.encode_prompt_context(ids, mask)
+            return self.encode_prompt_context(tokens, masks)
 
         cache_keys = [
-            self._token_cache_key(ids[index], mask[index])
-            for index in range(int(ids.shape[0]))
+            self._token_cache_key(tokens[index], masks[index])
+            for index in range(int(tokens.shape[0]))
         ]
         resolved = [None] * len(cache_keys)
         missing_by_key = OrderedDict()
@@ -165,11 +165,11 @@ class Wan22Backbone(WanBaseBackbone):
             missing_keys = list(missing_by_key)
             missing_indices = [missing_by_key[key] for key in missing_keys]
             index_tensor = torch.tensor(
-                missing_indices, device=ids.device, dtype=torch.long)
-            missing_ids = ids.index_select(0, index_tensor)
-            missing_mask = mask.index_select(0, index_tensor)
+                missing_indices, device=tokens.device, dtype=torch.long)
+            missing_tokens = tokens.index_select(0, index_tensor)
+            missing_masks = masks.index_select(0, index_tensor)
             contexts, context_masks = self.encode_prompt_context(
-                missing_ids, missing_mask)
+                missing_tokens, missing_masks)
             for offset, cache_key in enumerate(missing_keys):
                 context = contexts[offset]
                 context_mask = context_masks[offset]
