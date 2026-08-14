@@ -184,16 +184,20 @@ class FastWAMVLA(BaseVLA):
             text_dim=int(video_dit_config['text_dim']),
             proprio_dim=self.proprio_dim,
             temporal_downsample_factor=int(vae.temporal_downsample_factor),
-            video_train_shift=float(video_scheduler.get('train_shift', 5.0)),
-            video_infer_shift=float(video_scheduler.get('infer_shift', 5.0)),
-            video_num_train_timesteps=int(
+            video_training_shift=float(
+                video_scheduler.get('train_shift', 5.0)),
+            video_inference_shift=float(
+                video_scheduler.get('infer_shift', 5.0)),
+            video_num_training_timesteps=int(
                 video_scheduler.get('num_train_timesteps', 1000)),
-            action_train_shift=float(action_scheduler.get('train_shift', 5.0)),
-            action_infer_shift=float(action_scheduler.get('infer_shift', 5.0)),
-            action_num_train_timesteps=int(
+            action_training_shift=float(
+                action_scheduler.get('train_shift', 5.0)),
+            action_inference_shift=float(
+                action_scheduler.get('infer_shift', 5.0)),
+            action_num_training_timesteps=int(
                 action_scheduler.get('num_train_timesteps', 1000)),
-            loss_lambda_video=float(loss.get('lambda_video', 1.0)),
-            loss_lambda_action=float(loss.get('lambda_action', 1.0)),
+            video_loss_weight=float(loss.get('lambda_video', 1.0)),
+            action_loss_weight=float(loss.get('lambda_action', 1.0)),
             device=device,
             torch_dtype=self.torch_dtype,
         )
@@ -247,24 +251,24 @@ class FastWAMVLA(BaseVLA):
             video=images,
             tiled=False,
         )
-        input_latents = vlm_outputs['input_latents']
+        video_latents = vlm_outputs['input_latents']
         proprio = states
         if proprio is not None and proprio.ndim == 2:
             proprio = proprio.unsqueeze(1)
-        action_is_pad = None
+        action_padding_mask = None
         if action_masks is not None:
-            action_is_pad = ~action_masks.to(dtype=torch.bool)
-        image_is_pad = None
+            action_padding_mask = ~action_masks.to(dtype=torch.bool)
+        frame_padding_mask = None
         if frame_masks is not None:
-            image_is_pad = ~frame_masks.to(dtype=torch.bool)
+            frame_padding_mask = ~frame_masks.to(dtype=torch.bool)
 
         return self.vla_head(
-            input_latents=input_latents,
+            video_latents=video_latents,
             context=context,
             context_mask=context_mask,
-            action=actions,
-            action_is_pad=action_is_pad,
-            image_is_pad=image_is_pad,
+            actions=actions,
+            action_padding_mask=action_padding_mask,
+            frame_padding_mask=frame_padding_mask,
             proprio=proprio,
         )
 
@@ -429,13 +433,13 @@ class FastWAMVLA(BaseVLA):
         )
         video_latent_shape = self._build_video_latent_shape(
             input_image, num_frames)
-        latents_video, pred_action = self.vla_head.predict_video_action(
+        video_latents, pred_actions = self.vla_head.predict_video_action(
             first_frame_latents=first_frame_latents,
             context=context,
             context_mask=context_mask,
             action_horizon=int(action_horizon),
             video_latent_shape=video_latent_shape,
-            action=action,
+            conditioning_actions=action,
             num_inference_steps=num_inference_steps,
             sigma_shift=sigma_shift,
             seed=seed,
@@ -443,8 +447,8 @@ class FastWAMVLA(BaseVLA):
         )
         return {
             'video':
-            self.vlm_backbone.decode_latents(latents_video, tiled=tiled),
-            'action': pred_action,
+            self.vlm_backbone.decode_latents(video_latents, tiled=tiled),
+            'action': pred_actions,
         }
 
     @staticmethod
@@ -569,11 +573,11 @@ class FastWAMVLA(BaseVLA):
             'ssim_dg': ssim_dg,
         }
 
-        pred_action = pred.get('action')
+        pred_actions = pred.get('action')
         stats = self._select_first_meta_value(batch.get('stats'))
-        if action0 is not None and pred_action is not None:
+        if action0 is not None and pred_actions is not None:
             pred_denorm = self._denormalize_min_max_action(
-                pred_action.detach().cpu(), stats)
+                pred_actions.detach().cpu(), stats)
             gt_denorm = self._denormalize_min_max_action(
                 action0.detach().cpu(), stats)
             if pred_denorm is not None and gt_denorm is not None:
