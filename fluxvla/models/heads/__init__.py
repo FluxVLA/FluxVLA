@@ -25,8 +25,6 @@ import_heterogeneous_runtime_symbols(
         'flow_matching_inference_head': ['FlowMatchingInferenceHead'],
         'xvla_head': ['XVLAFlowMatchingHead'],
         'dreamzero_head': ['DreamZeroHead'],
-        'fastwam_head': [
-            'FastWAMHead', 'FastWAMJointHead', 'FastWAMIDMHead'
-        ],
+        'fastwam_head': ['FastWAMHead', 'FastWAMJointHead', 'FastWAMIDMHead'],
     },
 )

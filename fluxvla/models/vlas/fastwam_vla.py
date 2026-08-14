@@ -175,7 +175,7 @@ class FastWAMVLA(BaseVLA):
         head_cls = HEADS.get(head_type)
         if head_cls is None:
             raise KeyError(
-                f'`vla_head.type`={head_type!r} is not registered in HEADS.')
+                f'vla_head.type={head_type!r} is not registered in HEADS.')
         head = head_cls(
             video_expert=video_expert,
             action_expert=action_expert,
@@ -417,7 +417,7 @@ class FastWAMVLA(BaseVLA):
                 f'H={height}, W={width}.')
         if int(num_frames) % 4 != 1:
             raise ValueError(
-                f'`num_frames` must satisfy T % 4 == 1, got {num_frames}.')
+                f'num_frames must satisfy T % 4 == 1, got {num_frames}.')
 
         first_frame_latents = self.vlm_backbone.encode_input_image_latents(
             input_image, tiled=tiled)

@@ -1206,12 +1206,12 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
         embs_diff = np.abs(embs_np - embs_target)
         pad_np = pad_masks.float().cpu().detach().numpy()
         att_np = att_masks.float().cpu().detach().numpy()
-        print(f'\n[prefix] embs max_diff={embs_diff.max():.6f}'
-              f', mean_diff={embs_diff.mean():.6f}')
-        print(f'[prefix] pad_masks max_diff='
-              f'{np.max(np.abs(pad_np - pad_masks_target)):.6f}')
-        print(f'[prefix] att_masks max_diff='
-              f'{np.max(np.abs(att_np - att_masks_target)):.6f}')
+        print('\n[prefix] embs max_diff={:.6f}, mean_diff={:.6f}'.format(
+            embs_diff.max(), embs_diff.mean()))
+        print('[prefix] pad_masks max_diff={:.6f}'.format(
+            np.max(np.abs(pad_np - pad_masks_target))))
+        print('[prefix] att_masks max_diff={:.6f}'.format(
+            np.max(np.abs(att_np - att_masks_target))))
         self.assertTrue(np.allclose(embs_np, embs_target, atol=5e-1))
         self.assertTrue(
             np.allclose(pad_masks.float().cpu().detach().numpy(),
@@ -1247,12 +1247,12 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
         s_diff = np.abs(suffix_embs_np - suffix_embs_target)
         s_pad_np = suffix_pad_masks.float().cpu().detach().numpy()
         s_att_np = suffix_att_masks.float().cpu().detach().numpy()
-        print(f'\n[suffix] embs max_diff={s_diff.max():.6f}'
-              f', mean_diff={s_diff.mean():.6f}')
-        print(f'[suffix] pad_masks max_diff='
-              f'{np.max(np.abs(s_pad_np - suffix_pad_masks_target)):.6f}')
-        print(f'[suffix] att_masks max_diff='
-              f'{np.max(np.abs(s_att_np - suffix_att_masks_target)):.6f}')
+        print('\n[suffix] embs max_diff={:.6f}, mean_diff={:.6f}'.format(
+            s_diff.max(), s_diff.mean()))
+        print('[suffix] pad_masks max_diff={:.6f}'.format(
+            np.max(np.abs(s_pad_np - suffix_pad_masks_target))))
+        print('[suffix] att_masks max_diff={:.6f}'.format(
+            np.max(np.abs(s_att_np - suffix_att_masks_target))))
         self.assertTrue(
             np.allclose(suffix_embs_np, suffix_embs_target, atol=1e-2))
         self.assertTrue(
@@ -1326,9 +1326,8 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
 
                 actions_np = actions.float().cpu().detach().numpy()
                 a_diff = np.abs(actions_np - actions_target)
-                print(f'\n[forward] actions max_diff='
-                      f'{a_diff.max():.6f}'
-                      f', mean_diff={a_diff.mean():.6f}')
+                print('\n[forward] actions max_diff={:.6f}, '
+                      'mean_diff={:.6f}'.format(a_diff.max(), a_diff.mean()))
                 self.assertTrue(
                     np.allclose(actions_np, actions_target, atol=1e-1))
 
@@ -1365,9 +1364,8 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
 
         pred_np = actions.float().cpu().detach().numpy()
         p_diff = np.abs(pred_np - pred_actions_target)
-        print(f'\n[predict] pred_actions max_diff='
-              f'{p_diff.max():.6f}'
-              f', mean_diff={p_diff.mean():.6f}')
+        print('\n[predict] pred_actions max_diff={:.6f}, '
+              'mean_diff={:.6f}'.format(p_diff.max(), p_diff.mean()))
         self.assertTrue(np.allclose(pred_np, pred_actions_target, atol=5e-1))
 
     def test_vlm_output_consistency(self):
@@ -1442,8 +1440,8 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
         out_decode = suffix_out_decode.float().cpu().detach().numpy()
         max_diff = np.max(np.abs(out_joint - out_decode))
         mean_diff = np.mean(np.abs(out_joint - out_decode))
-        print(f'\nSuffix output consistency: max_diff={max_diff:.6f}, '
-              f'mean_diff={mean_diff:.6f}')
+        print('\nSuffix output consistency: max_diff={:.6f}, '
+              'mean_diff={:.6f}'.format(max_diff, mean_diff))
         self.assertTrue(
             np.allclose(out_joint, out_decode, atol=1e-1),
             f'Suffix outputs diverge: max_diff={max_diff}')

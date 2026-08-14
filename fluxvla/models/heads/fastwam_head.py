@@ -139,7 +139,7 @@ class FastWAMHead(nn.Module):
             raise ValueError('`proprio` must be 2D [B, D], got shape '
                              f'{tuple(proprio.shape)}')
         if self.proprio_dim is None or proprio.shape[1] != self.proprio_dim:
-            raise ValueError(f'`proprio` last dim must be {self.proprio_dim}, '
+            raise ValueError(f'proprio last dim must be {self.proprio_dim}, '
                              f'got {proprio.shape[1]}')
         proprio_token = self.proprio_encoder(
             proprio.to(device=context.device,
@@ -323,7 +323,7 @@ class FastWAMHead(nn.Module):
                                  f'{tuple(proprio.shape)}')
             if proprio.shape[2] != self.proprio_dim:
                 raise ValueError(
-                    f'`proprio` last dim must be {self.proprio_dim}, '
+                    f'proprio last dim must be {self.proprio_dim}, '
                     f'got {proprio.shape[2]}')
             proprio = proprio[:, 0, :]  # [B, D]
             context, context_mask = self._append_proprio_to_context(

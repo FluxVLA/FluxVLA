@@ -142,7 +142,7 @@ class Wan22Backbone(WanBaseBackbone):
         if ids.shape[1] != self.text_embed_cache_context_len:
             raise ValueError(
                 'Token sequence length must match '
-                f'`text_embed_cache_context_len`: {ids.shape[1]} != '
+                f'text_embed_cache_context_len: {ids.shape[1]} != '
                 f'{self.text_embed_cache_context_len}.')
         if self.text_embed_cache_size == 0:
             return self.encode_prompt_context(ids, mask)
