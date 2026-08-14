@@ -203,10 +203,17 @@ def get_libero_env(task,
         libero_envs = import_module(f'{package}.libero.envs')
         randomization_error = import_module(
             'robosuite.utils.errors').RandomizationError
-    except ModuleNotFoundError as exc:
+    except ImportError as exc:
+        if package == 'libero_plus':
+            missing_dependency = getattr(exc, 'name', None) or str(exc)
+            assert False, (
+                'LIBERO-Plus cannot be loaded because dependency '
+                f'{missing_dependency!r} is missing or unavailable. Update '
+                'the existing FluxVLA '
+                'environment with:\n'
+                '  bash scripts/update_env.sh --skip-pull')
         raise ModuleNotFoundError(
-            f'{package} is required for simulation evaluation. '
-            'Install it with '
+            f'{package} is required for simulation evaluation. Install it with '
             '`bash scripts/install_env.sh sim-only` or '
             '`bash scripts/install_env.sh full`.') from exc
 

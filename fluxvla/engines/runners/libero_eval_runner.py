@@ -43,10 +43,17 @@ def _get_libero_benchmark():
     package = os.environ.get('FLUXVLA_LIBERO_PACKAGE', 'libero')
     try:
         benchmark = importlib.import_module(f'{package}.libero.benchmark')
-    except ModuleNotFoundError as exc:
+    except ImportError as exc:
+        if package == 'libero_plus':
+            missing_dependency = getattr(exc, 'name', None) or str(exc)
+            assert False, (
+                'LIBERO-Plus cannot be loaded because dependency '
+                f'{missing_dependency!r} is missing or unavailable. Update '
+                'the existing FluxVLA '
+                'environment with:\n'
+                '  bash scripts/update_env.sh --skip-pull')
         raise ModuleNotFoundError(
-            f'{package} is required for simulation evaluation. '
-            'Install it with '
+            f'{package} is required for simulation evaluation. Install it with '
             '`bash scripts/install_env.sh sim-only` or '
             '`bash scripts/install_env.sh full`.') from exc
     return benchmark

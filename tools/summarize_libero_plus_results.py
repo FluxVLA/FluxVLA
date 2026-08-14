@@ -75,6 +75,14 @@ def _load_feishu_reporter():
 
 
 def _find_task_classification() -> str:
+    # Looking up a child module raises ModuleNotFoundError when the parent is
+    # absent, so check the top-level package first to preserve our actionable
+    # installation error below.
+    if importlib.util.find_spec('libero_plus') is None:
+        raise AssertionError(
+            'Cannot find the LIBERO-Plus package. Install it with '
+            '`bash scripts/update_env.sh --skip-pull` or pass '
+            '--task-classification.')
     spec = importlib.util.find_spec('libero_plus.libero')
     if spec is not None and spec.origin is not None:
         path = (

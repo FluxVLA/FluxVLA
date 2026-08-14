@@ -39,15 +39,47 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_ROOT}"
 
 export FLUXVLA_LIBERO_PACKAGE=libero_plus
-LIBERO_CONFIG_PATH="${LIBERO_PLUS_CONFIG_PATH:-$(python - <<'PY'
+DEFAULT_LIBERO_PLUS_CONFIG_PATH="$(python - <<'PY'
 import importlib.util
+from ctypes.util import find_library
 from pathlib import Path
 
+required = (
+    ('libero_plus', 'libero-plus'),
+    ('skimage', 'scikit-image'),
+    ('wand', 'Wand'),
+)
+missing = [
+    f'{distribution} (Python import: {module})'
+    for module, distribution in required
+    if importlib.util.find_spec(module) is None
+]
+assert not missing, (
+    'LIBERO-Plus is missing its additional Python package(s):\n  - ' +
+    '\n  - '.join(missing) +
+    '\nUpdate the existing FluxVLA environment with:\n'
+    '  bash scripts/update_env.sh --skip-pull')
+
+magickwand_names = (
+    'MagickWand',
+    'MagickWand-7.Q16HDRI',
+    'MagickWand-7.Q16',
+    'MagickWand-6.Q16HDRI',
+    'MagickWand-6.Q16',
+)
+assert any(find_library(name) for name in magickwand_names), (
+    'LIBERO-Plus requires the ImageMagick MagickWand system library '
+    '(libMagickWand). Install `libmagickwand-dev` first, then run:\n'
+    '  bash scripts/update_env.sh --skip-pull')
+
 spec = importlib.util.find_spec('libero_plus.libero')
-if spec is not None and spec.origin is not None:
-    print(Path(spec.origin).resolve().parents[2] / '.libero')
+assert spec is not None and spec.origin is not None, (
+    'Cannot resolve the installed libero-plus package. Reinstall it with:\n'
+    '  bash scripts/update_env.sh --skip-pull')
+print(Path(spec.origin).resolve().parents[2] / '.libero')
 PY
-)}"
+)"
+LIBERO_CONFIG_PATH="${LIBERO_PLUS_CONFIG_PATH:-${DEFAULT_LIBERO_PLUS_CONFIG_PATH}}"
 export LIBERO_CONFIG_PATH
 [[ -n "${LIBERO_CONFIG_PATH}" \
     && -f "${LIBERO_CONFIG_PATH}/config.yaml" ]] || {

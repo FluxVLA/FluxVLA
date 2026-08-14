@@ -45,15 +45,18 @@ def _find_libero_plus_root(explicit_root=None):
         if _is_libero_plus_root(source_checkout):
             return source_checkout.resolve()
 
-    spec = importlib.util.find_spec('libero_plus.libero')
+    spec = None
+    if importlib.util.find_spec('libero_plus') is not None:
+        spec = importlib.util.find_spec('libero_plus.libero')
     if spec is not None and spec.origin is not None:
         root = Path(spec.origin).resolve().parents[2]
         if _is_libero_plus_root(root):
             return root
 
-    raise SystemExit(
-        'Cannot find the LIBERO-Plus checkout. Install requirements-sim.txt '
-        'or pass --libero-plus-root.')
+    raise AssertionError(
+        'Cannot find the LIBERO-Plus checkout. Install it with '
+        '`bash scripts/update_env.sh --skip-pull` or pass '
+        '--libero-plus-root.')
 
 
 def _sha256(path):
@@ -69,9 +72,9 @@ def _download_archive(cache_dir, endpoint):
         hf_hub_download = importlib.import_module(
             'huggingface_hub').hf_hub_download
     except ImportError as exc:
-        raise SystemExit(
-            'huggingface_hub is required. Install the FluxVLA base '
-            'requirements first.') from exc
+        raise AssertionError(
+            'huggingface_hub is required. Install it with '
+            '`bash scripts/update_env.sh --skip-pull`.') from exc
 
     cache_dir.mkdir(parents=True, exist_ok=True)
     archive = Path(
@@ -148,7 +151,9 @@ def _write_libero_config(root, config_dir):
     try:
         import yaml
     except ImportError as exc:
-        raise SystemExit('PyYAML is required by LIBERO-Plus.') from exc
+        raise AssertionError(
+            'PyYAML is required by LIBERO-Plus. Install it with '
+            '`bash scripts/update_env.sh --skip-pull`.') from exc
 
     benchmark_root = root / 'libero_plus' / 'libero'
     paths = {
