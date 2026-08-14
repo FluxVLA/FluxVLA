@@ -28,8 +28,10 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 性能
 
+#### LIBERO
+
 | Codebase                    |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
-| --------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :------------: |
+| :-------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :------------: |
 | FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
 | FluxVLA(GR00T)              |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |   [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |   [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
 | FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
@@ -39,10 +41,25 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 *带链接的分数可跳转到对应 checkpoint。*
 
+#### LIBERO-Plus
+
+| Model                              | Camera | Robot | Language | Light | Background | Noise | Layout | Total |
+| :--------------------------------: | :----: | :---: | :------: | :---: | :--------: | :---: | :----: | :---: |
+| FluxVLA (SmolVLA)                  |     4.69 |           1.81 | 17.44 | 44.40 | 39.50 |  2.19 |    26.30 | 17.34 |
+| FluxVLA (FastWAM)                  |    12.88 |          55.61 | 75.93 | 85.03 | 58.27 | 34.73 |    71.48 | 54.63 |
+| FluxVLA (Qwen3VL 0.6B + GR00T)     |    42.34 |          50.06 | 78.14 | 83.36 | 76.12 | 84.76 |    73.25 | 68.78 |
+| FluxVLA (DreamZero)                |    67.42 |          58.06 | 85.43 | 86.43 | 74.91 | 74.58 |    76.39 | 74.21 |
+| FluxVLA(PI0.5)                     |    57.72 |          81.10 | 89.39 | 49.74 | 59.20 | 86.63 |    85.44 | 74.27 |
+| FluxVLA(PI0)                       |    69.11 |          44.90 | 79.90 | 92.64 | 88.66 | 87.26 |    78.69 | 76.15 |
+| FluxVLA (GR00T)                    |    55.47 |          61.68 | 84.58 | 90.37 | 89.50 | 89.94 |    77.64 | 77.39 |
+
+以上所有模型均直接使用仅在标准 LIBERO 上训练的原始权重，在 LIBERO-Plus 上进行
+zero-shot 评测；所有模型均未在 LIBERO-Plus 上微调。
+
 #### RoboCasa GR1
 
 | 模型           | 训练数据             | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
-| -------------- | -------------------- | ------- | ------ | --------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| :------------: | :------------------: | :-----: | :----: | :-------: | :------------: | :----------------------------------------------------------------------------------------------------------------------------: |
 | FluxVLA(GR00T) | 24 个任务，30 条演示 | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### 说明
