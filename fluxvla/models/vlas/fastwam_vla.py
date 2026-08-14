@@ -19,6 +19,7 @@ import torch
 from PIL import Image
 
 from fluxvla.engines import HEADS, VLAS, initialize_overwatch
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.video_metrics import (pil_frames_to_video_tensor,
                                                  video_psnr, video_ssim)
@@ -589,10 +590,6 @@ class FastWAMVLA(BaseVLA):
     # BaseVLA abstract method implementations
     # ------------------------------------------------------------------
     def get_fsdp_wrapping_policy(self) -> Callable:
-        from functools import partial
-
-        from torch.distributed.fsdp.wrap import _module_wrap_policy
-
         # Wrap the whole head (MoT + video/action experts) as a single FSDP
         # unit. FastWAM's MoT does not call ``expert.forward`` -- it invokes
         # ``expert.pre_dit`` / ``expert.post_dit`` and reads block parameters
@@ -603,10 +600,7 @@ class FastWAMVLA(BaseVLA):
         # FSDP boundary, so every parameter the head touches is materialized
         # for the whole step. The frozen VAE / T5 stay in the root unit and
         # are gathered at the top-level ``FastWAMVLA.forward``.
-        return partial(
-            _module_wrap_policy,
-            module_classes={FastWAMHead},
-        )
+        return build_module_wrap_policy({FastWAMHead})
 
     @property
     def config(self):
