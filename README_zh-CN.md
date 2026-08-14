@@ -30,37 +30,37 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 #### LIBERO
 
-| Codebase                    |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
+|          Codebase           |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
 | :-------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :------------: |
-| FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
-| FluxVLA(GR00T)              |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |   [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |   [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
-| FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
+|      FluxVLA(SmolVLA)       |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
+|       FluxVLA(GR00T)        |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |   [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |   [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
+|     FluxVLA(DreamZero)      | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
 | FluxVLA(Qwen3VL 0.6B+GR00T) | [96.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_object_full_finetune_bs64) | [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_object_full_finetune_bs64) | [95.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_goal_full_finetune_bs64) | [94.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_10_full_finetune_bs64) |     96.20      |
-| FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
-| FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
+|        FluxVLA(PI0)         |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
+|       FluxVLA(PI0.5)        |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
 
 *带链接的分数可跳转到对应 checkpoint。*
 
 #### LIBERO-Plus
 
-| Model                              | Camera | Robot | Language | Light | Background | Noise | Layout | Total |
-| :--------------------------------: | :----: | :---: | :------: | :---: | :--------: | :---: | :----: | :---: |
-| FluxVLA (SmolVLA)                  |     4.69 |           1.81 | 17.44 | 44.40 | 39.50 |  2.19 |    26.30 | 17.34 |
-| FluxVLA (FastWAM)                  |    12.88 |          55.61 | 75.93 | 85.03 | 58.27 | 34.73 |    71.48 | 54.63 |
-| FluxVLA (Qwen3VL 0.6B + GR00T)     |    42.34 |          50.06 | 78.14 | 83.36 | 76.12 | 84.76 |    73.25 | 68.78 |
-| FluxVLA (DreamZero)                |    67.42 |          58.06 | 85.43 | 86.43 | 74.91 | 74.58 |    76.39 | 74.21 |
-| FluxVLA(PI0.5)                     |    57.72 |          81.10 | 89.39 | 49.74 | 59.20 | 86.63 |    85.44 | 74.27 |
-| FluxVLA(PI0)                       |    69.11 |          44.90 | 79.90 | 92.64 | 88.66 | 87.26 |    78.69 | 76.15 |
-| FluxVLA (GR00T)                    |    55.47 |          61.68 | 84.58 | 90.37 | 89.50 | 89.94 |    77.64 | 77.39 |
+|             Model              | Camera | Robot | Language | Light | Background | Noise | Layout | Total |
+| :----------------------------: | :----: | :---: | :------: | :---: | :--------: | :---: | :----: | :---: |
+|       FluxVLA (SmolVLA)        |  4.69  | 1.81  |  17.44   | 44.40 |   39.50    | 2.19  | 26.30  | 17.34 |
+|       FluxVLA (FastWAM)        | 12.88  | 55.61 |  75.93   | 85.03 |   58.27    | 34.73 | 71.48  | 54.63 |
+| FluxVLA (Qwen3VL 0.6B + GR00T) | 42.34  | 50.06 |  78.14   | 83.36 |   76.12    | 84.76 | 73.25  | 68.78 |
+|      FluxVLA (DreamZero)       | 67.42  | 58.06 |  85.43   | 86.43 |   74.91    | 74.58 | 76.39  | 74.21 |
+|         FluxVLA(PI0.5)         | 57.72  | 81.10 |  89.39   | 49.74 |   59.20    | 86.63 | 85.44  | 74.27 |
+|          FluxVLA(PI0)          | 69.11  | 44.90 |  79.90   | 92.64 |   88.66    | 87.26 | 78.69  | 76.15 |
+|        FluxVLA (GR00T)         | 55.47  | 61.68 |  84.58   | 90.37 |   89.50    | 89.94 | 77.64  | 77.39 |
 
 以上所有模型均直接使用仅在标准 LIBERO 上训练的原始权重，在 LIBERO-Plus 上进行
 zero-shot 评测；所有模型均未在 LIBERO-Plus 上微调。
 
 #### RoboCasa GR1
 
-| 模型           | 训练数据             | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
+|      模型      |       训练数据       | Cabinet | Drawer | Microwave | Generalization |                                                            Average                                                             |
 | :------------: | :------------------: | :-----: | :----: | :-------: | :------------: | :----------------------------------------------------------------------------------------------------------------------------: |
-| FluxVLA(GR00T) | 24 个任务，30 条演示 | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+| FluxVLA(GR00T) | 24 个任务，30 条演示 |  22.7%  | 35.7%  |   32.5%   |     48.9%      | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### 说明
 
@@ -504,48 +504,6 @@ huggingface-cli download limxdynamics/FluxVLAData \
 </details>
 
 <details>
-<summary><b>LIBERO-Plus benchmark 资产</b></summary>
-
-`scripts/install_env.sh sim-only` 和 `scripts/install_env.sh full` 默认会安装固定的
-`libero-plus` editable distribution，并下载官方 6.4 GB `assets.zip`。下载脚本会
-自动定位已安装 checkout、校验 SHA-256、提取嵌套资产目录、检查物体 / 场景 /
-纹理文件，并在 checkout 旁写入 `.libero/config.yaml`。Plus manager 会自动选择
-该配置，标准 LIBERO 命令仍使用原来的 `~/.libero/config.yaml`。
-
-如果不使用一键安装器，请先安装 ImageMagick/Wand 系统库：
-
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  libexpat1 libfontconfig1-dev libpython3-stdlib libmagickwand-dev unzip
-```
-
-如果安装时传了 `--skip-libero-plus-assets`，可稍后执行：
-
-```bash
-python scripts/download_libero_plus_assets.py
-```
-
-已有 checkout 或缓存时可显式指定：
-
-```bash
-python scripts/download_libero_plus_assets.py \
-  --libero-plus-root /path/to/LIBERO-plus \
-  --cache-dir /path/to/cache
-```
-
-仅校验已安装资产、不下载：
-
-```bash
-python scripts/download_libero_plus_assets.py --validate-only
-```
-
-最终的 `libero_plus/libero/assets` 应包含 `articulated_objects/`、`new_objects/`、
-`scenes/`、`textures/`、`serving_region.xml` 等官方 benchmark 资产。
-
-</details>
-
-<details>
 <summary><b>ARM 数据集</b></summary>
 
 内置 ARM 示例配置 `configs/arm/arm_clip_aloha_example.py` 期望带有 progress 标签的 LeRobot v3.x 数据位于 `./datasets/ARM_manual_test_10Episodes_lerobotv3.0`。
@@ -565,6 +523,8 @@ ARM 训练会直接读取该数据集中的 `progress` 列。若需要在没有 
 
 <details>
 <summary><b>准备资产</b></summary>
+
+#### RoboCasa GR1
 
 请使用下面的 FluxVLA 资产下载器作为 RoboCasa GR1 tabletop tasks 的受支持路径。表中列出了脚本使用的上游压缩包；仅手动下载和解压这些压缩包并不足够，因为脚本还会修正目录布局，并为固定版本的 RoboCasa GR1 checkout 规范化 Objaverse XML 元数据。
 
@@ -587,6 +547,25 @@ python scripts/download_robocasa_assets.py --normalize-only
 ```
 
 软链接不是必须的；只有当资产已经位于其他本地磁盘或共享存储时，软链接才是一种便利手段。
+
+#### LIBERO-Plus
+
+`scripts/install_env.sh sim-only` 和 `scripts/install_env.sh full` 默认安装固定的
+`libero-plus` 包并下载官方 6.4 GB benchmark 资产。如果安装时使用了
+`--skip-libero-plus-assets`，可在仓库根目录补充下载：
+
+```bash
+python scripts/download_libero_plus_assets.py
+```
+
+仅校验已有资产而不下载：
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+```
+
+下载器会校验并解压所需物体、场景与纹理，同时写入 LIBERO-Plus manager 自动使用的
+配置；标准 LIBERO 命令继续使用独立配置。
 
 </details>
 
@@ -850,6 +829,8 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
 <details>
 <summary><b>本地评估</b></summary>
 
+#### 标准 LIBERO
+
 ```
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node [NUM_GPUS] scripts/eval.py --config [CONFIG_PATH] --ckpt-path [CKPT_PATH] --cfg-options [CFG_OPTIONS]
 ```
@@ -861,7 +842,9 @@ export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --ckpt-path checkpoints/pi05_paligemma_libero_10_full_finetune_bs64/checkpoints/step-028548-epoch-18-loss=0.0111.safetensors
 ```
 
-RoboCasa GR00T 评估示例：
+#### RoboCasa GR1
+
+GR00T 评估示例：
 
 ```bash
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
@@ -878,24 +861,10 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 
 `eval.seed` 控制 RoboCasa episode seeds 以及评估过程中 GR00T 随机 action sampling seeds。`PYTHONHASHSEED` 与其相互独立，必须在 Python 启动前设置；复现已报告的 RoboCasa 结果时，建议使用相同数值。
 
-</details>
+#### LIBERO-Plus
 
-<details>
-<summary><b>LIBERO-Plus 鲁棒性评测</b></summary>
-
-LIBERO-Plus 在相机视角、机器人初始状态、语言、光照、背景、传感器噪声和
-物体布局七个扰动维度上提供 10,030 个任务。`requirements-sim.txt` 会在同一个
-FluxVLA 环境中安装标准 `libero` namespace 与独立的 `libero_plus` namespace。
-确认资产完整后，每次启动一个 suite：
-
-|                  | 标准 LIBERO                                          | LIBERO-Plus                           |
-| ---------------- | ---------------------------------------------------- | ------------------------------------- |
-| pip distribution | `libero`                                             | `libero-plus`                         |
-| Python namespace | `libero`                                             | `libero_plus`                         |
-| 任务数           | 四个 suite 共 40 个                                  | 四个 suite 共 10,030 个               |
-| 每任务试验次数   | 由 config 决定，通常为 50                            | 固定为 1                              |
-| 入口             | `scripts/eval.py` / `scripts/eval_libero_manager.sh` | `scripts/eval_libero_plus_manager.sh` |
-| 额外运行依赖     | 无                                                   | `Wand`、`scikit-image`、ImageMagick   |
+LIBERO-Plus 包含 10,030 个鲁棒性任务，每个任务固定评测一次。确认资产完整后，
+每次通过 manager 启动一个 suite：
 
 ```bash
 python scripts/download_libero_plus_assets.py --validate-only
@@ -914,13 +883,8 @@ bash scripts/eval_libero_plus_manager.sh
 
 使用同一个 `OUTPUT_DIR`，分别用匹配的 config 与 checkpoint 继续运行
 `libero_object`、`libero_goal` 和 `libero_10`。manager 会强制执行官方的
-每任务一次试验协议，按 worker 原子保存结果，并在 `RESUME=1` 时跳过已完成任务。
-冒烟测试可设置 `TASK_IDS=0,1,2`；完整评测时不设置。`DRY_RUN=1` 只检查任务
-分配，不加载模型。
-
-worker 结果和日志位于
-`$OUTPUT_DIR/<suite>/{worker_results,worker_logs,worker_status,worker_tasks}`。
-中断后使用相同 config、checkpoint、suite 和 `OUTPUT_DIR` 再次启动即可恢复。
+每任务一次试验协议，并在 `RESUME=1` 时跳过已完成任务。冒烟测试可设置
+`TASK_IDS=0,1,2`。
 
 四个 suite 全部结束后，生成严格的 leaderboard 汇总：
 
@@ -930,14 +894,6 @@ python tools/summarize_libero_plus_results.py \
   --output-dir "$OUTPUT_DIR" \
   --title PI0.5
 ```
-
-汇总工具会从已安装的 `libero_plus` 自动读取 `task_classification.json`，并拒绝
-重复任务、未知任务、缺失任务及非单次试验结果。除标准 LIBERO 汇总外，还会
-生成 `libero_plus_summary.{csv,json,txt}`、`libero_plus_by_suite.csv` 和
-`libero_plus_missing_tasks.csv`。leaderboard 列为
-`Camera/Robot/Language/Light/Background/Noise/Layout/Total`，其中 `Total` 对全部
-task trial 做微平均。正式对比要求全部 10,030 个任务完整；
-`--allow-incomplete` 仅用于冒烟测试和进度检查，partial 结果不会上报飞书。
 
 </details>
 

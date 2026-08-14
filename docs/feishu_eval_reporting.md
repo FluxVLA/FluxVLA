@@ -71,6 +71,7 @@ must be `finished`, no task filter may be present, the numeric task set must
 match the authoritative suite manifest, and every task must have exactly the
 configured number of completed trials. Smoke, filtered, partial, interrupted,
 and failed runs keep their native files but do not append a spreadsheet row.
+
 ## What Gets Written
 
 For an evaluation that passes the applicable reporting gate, the reporter writes

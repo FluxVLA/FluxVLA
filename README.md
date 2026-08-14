@@ -30,28 +30,28 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 #### LIBERO
 
-| Codebase                    |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
+|          Codebase           |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     | Libero-Average |
 | :-------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :------------: |
-| FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
-| FluxVLA(GR00T)              |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |   [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |   [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
+|      FluxVLA(SmolVLA)       |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |      84.7      |
+|       FluxVLA(GR00T)        |  [97.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_spatial_full_finetune_bs64)   |   [96.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_object_full_finetune_bs64)   |   [94.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_goal_full_finetune_bs64)   | [93.0±1.5](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_libero_10_full_finetune_bs64) |      95.3      |
 | FluxVLA(Qwen3VL 0.6B+GR00T) | [96.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_object_full_finetune_bs64) | [99.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_object_full_finetune_bs64) | [95.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_goal_full_finetune_bs64) | [94.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_qwen3vl_0.6b_libero_10_full_finetune_bs64) |     96.20      |
-| FluxVLA(DreamZero)          | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
-| FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
-| FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
+|     FluxVLA(DreamZero)      | [98.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_spatial_full_finetune_w_cache_bs64) | [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_object_full_finetune_w_cache_bs64)  | [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_goal_full_finetune_w_cache_bs64)  | [94.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dreamzero_libero_10_full_finetune_w_cache_bs64)  |     96.25      |
+|        FluxVLA(PI0)         |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |     96.85      |
+|       FluxVLA(PI0.5)        |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |     97.95      |
 
 *Linked scores point to the corresponding checkpoints.*
 
 #### LIBERO-Plus
 
-| Model                              | Camera | Robot | Language | Light | Background | Noise | Layout | Total |
-| :--------------------------------: | :----: | :---: | :------: | :---: | :--------: | :---: | :----: | :---: |
-| FluxVLA (SmolVLA)                  |   4.69 |  1.81 |    17.44 | 44.40 |      39.50 |  2.19 |  26.30 | 17.34 |
-| FluxVLA (FastWAM)                  |  12.88 | 55.61 |    75.93 | 85.03 |      58.27 | 34.73 |  71.48 | 54.63 |
-| FluxVLA (Qwen3VL 0.6B + GR00T)     |  42.34 | 50.06 |    78.14 | 83.36 |      76.12 | 84.76 |  73.25 | 68.78 |
-| FluxVLA (DreamZero)                |  67.42 | 58.06 |    85.43 | 86.43 |      74.91 | 74.58 |  76.39 | 74.21 |
-| FluxVLA(PI0.5)                     |  57.72 | 81.10 |    89.39 | 49.74 |      59.20 | 86.63 |  85.44 | 74.27 |
-| FluxVLA(PI0)                       |  69.11 | 44.90 |    79.90 | 92.64 |      88.66 | 87.26 |  78.69 | 76.15 |
-| FluxVLA (GR00T)                    |  55.47 | 61.68 |    84.58 | 90.37 |      89.50 | 89.94 |  77.64 | 77.39 |
+|             Model              | Camera | Robot | Language | Light | Background | Noise | Layout | Total |
+| :----------------------------: | :----: | :---: | :------: | :---: | :--------: | :---: | :----: | :---: |
+|       FluxVLA (SmolVLA)        |  4.69  | 1.81  |  17.44   | 44.40 |   39.50    | 2.19  | 26.30  | 17.34 |
+|       FluxVLA (FastWAM)        | 12.88  | 55.61 |  75.93   | 85.03 |   58.27    | 34.73 | 71.48  | 54.63 |
+| FluxVLA (Qwen3VL 0.6B + GR00T) | 42.34  | 50.06 |  78.14   | 83.36 |   76.12    | 84.76 | 73.25  | 68.78 |
+|      FluxVLA (DreamZero)       | 67.42  | 58.06 |  85.43   | 86.43 |   74.91    | 74.58 | 76.39  | 74.21 |
+|         FluxVLA(PI0.5)         | 57.72  | 81.10 |  89.39   | 49.74 |   59.20    | 86.63 | 85.44  | 74.27 |
+|          FluxVLA(PI0)          | 69.11  | 44.90 |  79.90   | 92.64 |   88.66    | 87.26 | 78.69  | 76.15 |
+|        FluxVLA (GR00T)         | 55.47  | 61.68 |  84.58   | 90.37 |   89.50    | 89.94 | 77.64  | 77.39 |
 
 All models above are evaluated zero-shot on LIBERO-Plus using their original
 weights trained only on standard LIBERO; none are fine-tuned on LIBERO-Plus.
@@ -59,9 +59,9 @@ All values are success rates (%).
 
 #### RoboCasa GR1
 
-| Model          | Training Data      | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
+|     Model      |   Training Data    | Cabinet | Drawer | Microwave | Generalization |                                                            Average                                                             |
 | :------------: | :----------------: | :-----: | :----: | :-------: | :------------: | :----------------------------------------------------------------------------------------------------------------------------: |
-| FluxVLA(GR00T) | 24 tasks, 30 demos | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+| FluxVLA(GR00T) | 24 tasks, 30 demos |  22.7%  | 35.7%  |   32.5%   |     48.9%      | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### Notes
 
@@ -564,51 +564,6 @@ For full-data RoboCasa GR1 training, replace the include pattern with
 </details>
 
 <details>
-<summary><b>LIBERO-Plus benchmark assets</b></summary>
-
-`scripts/install_env.sh sim-only` and `scripts/install_env.sh full` install the
-pinned `libero-plus` editable distribution and download the official 6.4 GB
-`assets.zip` by default. The downloader locates the installed checkout,
-verifies the archive checksum, extracts the nested assets, validates the
-required objects/scenes/textures, and writes a `.libero/config.yaml` beside the
-checkout. The Plus manager selects that config automatically; standard LIBERO
-commands continue using their normal `~/.libero/config.yaml`.
-
-For a manual installation, install the ImageMagick/Wand system libraries first:
-
-```bash
-sudo apt-get update
-sudo apt-get install -y \
-  libexpat1 libfontconfig1-dev libpython3-stdlib libmagickwand-dev unzip
-```
-
-If installation used `--skip-libero-plus-assets`, download the assets later:
-
-```bash
-python scripts/download_libero_plus_assets.py
-```
-
-To use an existing checkout or cache:
-
-```bash
-python scripts/download_libero_plus_assets.py \
-  --libero-plus-root /path/to/LIBERO-plus \
-  --cache-dir /path/to/cache
-```
-
-Validate the installed assets without downloading:
-
-```bash
-python scripts/download_libero_plus_assets.py --validate-only
-```
-
-The resulting `libero_plus/libero/assets` directory contains
-`articulated_objects/`, `new_objects/`, `scenes/`, `textures/`,
-`serving_region.xml`, and the remaining official benchmark assets.
-
-</details>
-
-<details>
 <summary><b>ARM datasets</b></summary>
 
 The built-in ARM example config `configs/arm/arm_clip_aloha_example.py` expects a progress-labeled LeRobot v3.x dataset at `./datasets/ARM_manual_test_10Episodes_lerobotv3.0`.
@@ -628,6 +583,8 @@ ARM training reads the `progress` column directly from this dataset. For RA-BC /
 
 <details>
 <summary><b>Prepare assets</b></summary>
+
+#### RoboCasa GR1
 
 Use the FluxVLA asset downloader below as the supported path for RoboCasa GR1
 tabletop tasks. The table lists the upstream archives used by the script;
@@ -662,6 +619,27 @@ python scripts/download_robocasa_assets.py --normalize-only
 ```
 
 Symlinks are not required; they are only a convenience when the assets already live on another local disk or shared storage.
+
+#### LIBERO-Plus
+
+`scripts/install_env.sh sim-only` and `scripts/install_env.sh full` install the
+pinned `libero-plus` package and download its official 6.4 GB benchmark assets
+by default. If installation used `--skip-libero-plus-assets`, download them
+later from the repository root:
+
+```bash
+python scripts/download_libero_plus_assets.py
+```
+
+Validate an existing installation without downloading:
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+```
+
+The downloader verifies and extracts the required objects, scenes, and
+textures, then writes the configuration used automatically by the LIBERO-Plus
+evaluation manager. Standard LIBERO commands keep their separate configuration.
 
 </details>
 
@@ -931,6 +909,8 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
 <details>
 <summary><b>Local evaluation</b></summary>
 
+#### Standard LIBERO
+
 ```
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node [NUM_GPUS] scripts/eval.py --config [CONFIG_PATH] --ckpt-path [CKPT_PATH] --cfg-options [CFG_OPTIONS]
 ```
@@ -942,7 +922,9 @@ export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --ckpt-path checkpoints/pi05_paligemma_libero_10_full_finetune_bs64/checkpoints/step-028548-epoch-18-loss=0.0111.safetensors
 ```
 
-RoboCasa GR00T evaluation example:
+#### RoboCasa GR1
+
+GR00T evaluation example:
 
 ```bash
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
@@ -962,26 +944,10 @@ sampling seeds during evaluation. `PYTHONHASHSEED` is independent and must be
 set before Python starts; using the same value is recommended when reproducing
 reported RoboCasa results.
 
-</details>
+#### LIBERO-Plus
 
-<details>
-<summary><b>LIBERO-Plus robustness evaluation</b></summary>
-
-LIBERO-Plus adds 10,030 robustness tasks across camera viewpoint, robot initial
-state, language, light, background, sensor noise, and object layout
-perturbations. `requirements-sim.txt` installs both the standard `libero`
-namespace and the independent `libero_plus` namespace in the same FluxVLA
-environment. Confirm that the assets are ready, then run one suite per manager
-invocation:
-
-|                  | Standard LIBERO                                      | LIBERO-Plus                           |
-| ---------------- | ---------------------------------------------------- | ------------------------------------- |
-| pip distribution | `libero`                                             | `libero-plus`                         |
-| Python namespace | `libero`                                             | `libero_plus`                         |
-| task count       | 40 across four suites                                | 10,030 across four suites             |
-| trials per task  | config value, normally 50                            | exactly 1                             |
-| entry point      | `scripts/eval.py` / `scripts/eval_libero_manager.sh` | `scripts/eval_libero_plus_manager.sh` |
-| extra runtime    | none                                                 | `Wand`, `scikit-image`, ImageMagick   |
+LIBERO-Plus evaluates 10,030 robustness tasks with exactly one trial per task.
+Validate the assets, then launch one suite per manager invocation:
 
 ```bash
 python scripts/download_libero_plus_assets.py --validate-only
@@ -1000,15 +966,8 @@ bash scripts/eval_libero_plus_manager.sh
 
 Repeat with the matching config and checkpoint for `libero_object`,
 `libero_goal`, and `libero_10`, using the same `OUTPUT_DIR`. The manager forces
-the official one-trial-per-task protocol, keeps atomic per-worker checkpoints,
-and resumes completed tasks when rerun with `RESUME=1`. Set `TASK_IDS=0,1,2`
-for a smoke test; omit it for all tasks in the selected suite. Set `DRY_RUN=1`
-to validate task assignment without loading the model.
-
-Worker results and logs are stored under
-`$OUTPUT_DIR/<suite>/{worker_results,worker_logs,worker_status,worker_tasks}`.
-If a run is interrupted, launch the same config, checkpoint, suite, and output
-directory again with `RESUME=1`; completed task IDs are not evaluated again.
+the official protocol and resumes completed tasks when rerun with `RESUME=1`.
+For a smoke test, set `TASK_IDS=0,1,2`.
 
 After all four suites finish, generate the strict leaderboard summary:
 
@@ -1018,16 +977,6 @@ python tools/summarize_libero_plus_results.py \
   --output-dir "$OUTPUT_DIR" \
   --title PI0.5
 ```
-
-The summarizer discovers `task_classification.json` from the installed package
-and rejects duplicate task results, unknown task IDs, missing official tasks,
-or anything other than one trial per task. It writes the standard LIBERO
-summary files plus `libero_plus_summary.{csv,json,txt}`,
-`libero_plus_by_suite.csv`, and `libero_plus_missing_tasks.csv`. The leaderboard
-columns are `Camera/Robot/Language/Light/Background/Noise/Layout/Total`;
-`Total` is micro-averaged over all task trials. Official comparison requires
-all 10,030 tasks. Use `--allow-incomplete` only for smoke tests and progress
-inspection; partial summaries are marked and are not uploaded to Feishu.
 
 </details>
 
