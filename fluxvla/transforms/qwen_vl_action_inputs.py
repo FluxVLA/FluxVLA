@@ -300,25 +300,27 @@ def build_qwen_vl_chat_text(images_chw: np.ndarray, language: str) -> str:
 
 
 @TRANSFORMS.register_module()
-class BuildQwenVLChatImageContent:
-    """Build Qwen-VL chat text and N1.7-augmented CHW images."""
+class GrootN17ImageAugmentation:
+    """Apply the native GR00T N1.7 multi-view image augmentation.
+
+    The replay-based albumentations path intentionally shares one sampled
+    augmentation across all views and timesteps in a sample.  Prompt building
+    and tokenization are kept out of this transform so they can be composed
+    from the generic FluxVLA prompt transforms.
+    """
 
     def __init__(
         self,
         processor_path: Optional[str] = None,
         embodiment_tag: str = 'LIBERO_PANDA',
         image_key: str = 'images',
-        text_key: str = 'task_description',
         output_image_key: str = 'images',
-        output_text_key: str = 'text',
         train_mode: bool = True,
         processor_kwargs: Optional[Dict[str, Any]] = None,
     ) -> None:
         self.processor_path = processor_path
         self.image_key = image_key
-        self.text_key = text_key
         self.output_image_key = output_image_key
-        self.output_text_key = output_text_key
         self.training = train_mode
 
         input_processor_kwargs = dict(processor_kwargs or {})
@@ -329,8 +331,6 @@ class BuildQwenVLChatImageContent:
         processor_kwargs = metadata['processor_kwargs']
         self.embodiment_key = metadata['embodiment_key']
         self.modality_config = metadata['modality_config']
-        self.formalize_language = processor_kwargs.get('formalize_language',
-                                                       True)
         self.use_albumentations = processor_kwargs.get('use_albumentations',
                                                        False)
 
@@ -356,11 +356,6 @@ class BuildQwenVLChatImageContent:
         image_keys = self.modality_config['video']['modality_keys']
         images_by_view = split_images_by_view(sample[self.image_key],
                                               image_keys)
-
-        language = sample.get(self.text_key, '')
-        if self.formalize_language:
-            language = re.sub(r'[^\w\s]', '', str(language).lower())
-
         image_transform = (
             self.train_image_transform
             if self.training else self.eval_image_transform)
@@ -369,9 +364,50 @@ class BuildQwenVLChatImageContent:
             images_by_view,
             image_transform,
             use_albumentations=self.use_albumentations)
-        text = build_qwen_vl_chat_text(images_chw, language)
 
         outputs = dict(sample)
         outputs[self.output_image_key] = images_chw
+        return outputs
+
+
+@TRANSFORMS.register_module()
+class BuildQwenVLChatImageContent(GrootN17ImageAugmentation):
+    """Build Qwen-VL chat text and N1.7-augmented CHW images."""
+
+    def __init__(
+        self,
+        processor_path: Optional[str] = None,
+        embodiment_tag: str = 'LIBERO_PANDA',
+        image_key: str = 'images',
+        text_key: str = 'task_description',
+        output_image_key: str = 'images',
+        output_text_key: str = 'text',
+        train_mode: bool = True,
+        processor_kwargs: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        super().__init__(
+            processor_path=processor_path,
+            embodiment_tag=embodiment_tag,
+            image_key=image_key,
+            output_image_key=output_image_key,
+            train_mode=train_mode,
+            processor_kwargs=processor_kwargs,
+        )
+        self.text_key = text_key
+        self.output_text_key = output_text_key
+        metadata = resolve_groot_n17_metadata(
+            processor_path,
+            embodiment_tag=embodiment_tag,
+            **dict(processor_kwargs or {}))
+        self.formalize_language = metadata['processor_kwargs'].get(
+            'formalize_language', True)
+
+    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        outputs = super().__call__(sample)
+        language = sample.get(self.text_key, '')
+        if self.formalize_language:
+            language = re.sub(r'[^\w\s]', '', str(language).lower())
+        text = build_qwen_vl_chat_text(outputs[self.output_image_key],
+                                       language)
         outputs[self.output_text_key] = text
         return outputs

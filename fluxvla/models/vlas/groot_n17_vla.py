@@ -400,6 +400,7 @@ class GrootN17VLA(LlavaVLA):
             cfg.get('backbone_trainable_params_fp32', False),
         }
         for key in (
+                'state_dropout_prob',
                 'tune_projector',
                 'tune_diffusion_model',
                 'tune_vlln',

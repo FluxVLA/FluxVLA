@@ -438,6 +438,9 @@ class NormalizeStatesAndActions:
         output_dtype (str | None): Optional NumPy dtype used for normalization
             arithmetic and outputs. ``None`` preserves the legacy NumPy dtype
             promotion behavior. Defaults to None.
+        statistics_key (str): Input dictionary key containing the state/action
+            statistics. Training datasets use ``stats`` while online
+            evaluation datasets use ``norm_stats``. Defaults to ``stats``.
         state_key (str | None): The key in the data dictionary
             that contains the state information.
         action_key (str | None): The key in the data dictionary
@@ -473,6 +476,7 @@ class NormalizeStatesAndActions:
                  valid_action_dim: int = None,
                  mark_all_action_steps_valid: bool = False,
                  output_dtype: Optional[str] = None,
+                 statistics_key: str = 'stats',
                  *args,
                  **kwargs):
         self.state_key = state_key
@@ -494,6 +498,7 @@ class NormalizeStatesAndActions:
                 and not np.issubdtype(self.output_dtype, np.floating)):
             raise ValueError(
                 f'output_dtype must be a floating dtype, got {output_dtype!r}')
+        self.statistics_key = statistics_key
         if action_norm_mask is not None:
             if (action_dim is not None and len(action_norm_mask) > action_dim):
                 raise ValueError(
@@ -550,10 +555,12 @@ class NormalizeStatesAndActions:
         needs_action_stats = (
             actions is not None and self.action_norm_type != 'none')
         if needs_state_stats or needs_action_stats:
-            assert 'stats' in data, "Input data must contain 'stats' key"
+            assert self.statistics_key in data, (
+                f"Input data must contain {self.statistics_key!r} key")
+            statistics = data[self.statistics_key]
 
         if needs_state_stats:
-            state_stats = data['stats'][self.state_key]
+            state_stats = statistics[self.state_key]
             states = self._normalize_mixed(
                 states,
                 state_stats,
@@ -565,7 +572,7 @@ class NormalizeStatesAndActions:
 
         if actions is not None:
             if needs_action_stats:
-                action_stats = data['stats'][self.action_key]
+                action_stats = statistics[self.action_key]
                 actions = self._normalize_mixed(
                     actions,
                     action_stats,
@@ -688,7 +695,14 @@ class NormalizeStatesAndActions:
         low = self._statistics_array(stats['q01'], x)
         high = self._statistics_array(stats['q99'], x)
         epsilon = self._typed_epsilon(x)
-        normalized = (x - low) / (high - low + epsilon) * 2.0 - 1.0
+        if self.preserve_input_dtype:
+            normalized = np.zeros_like(x)
+            valid = ~np.isclose(high, low)
+            normalized[..., valid] = ((x[..., valid] - low[..., valid]) /
+                                      (high[..., valid] - low[..., valid] + epsilon))
+            normalized[..., valid] = 2 * normalized[..., valid] - 1
+        else:
+            normalized = (x - low) / (high - low + epsilon) * 2.0 - 1.0
         if self.clip_norm:
             normalized = np.clip(normalized, -1, 1)
         return np.where(norm_mask, normalized, x)
