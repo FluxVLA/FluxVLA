@@ -422,6 +422,123 @@ class BuildModalityStateActionTargets:
 
 
 @TRANSFORMS.register_module()
+class PrepareStateActionTargets:
+    """Shape normalized state/action arrays for continuous action heads.
+
+    Normalization is deliberately handled by
+    :class:`NormalizeStatesAndActions`.  This transform only adds the state
+    history axis, pads the action horizon, expands the action-validity mask
+    over valid action dimensions, and optionally applies sample-level state
+    dropout.
+    """
+
+    def __init__(
+        self,
+        state_key: str = 'states',
+        action_key: str = 'actions',
+        action_mask_key: str = 'action_masks',
+        state_history_length: int = 1,
+        action_horizon: int = 40,
+        valid_action_dim: Optional[int] = None,
+        state_dropout_prob: float = 0.0,
+        dtype: str = 'float32',
+    ) -> None:
+        if state_history_length <= 0:
+            raise ValueError('state_history_length must be positive.')
+        if action_horizon <= 0:
+            raise ValueError('action_horizon must be positive.')
+        if valid_action_dim is not None and valid_action_dim <= 0:
+            raise ValueError('valid_action_dim must be positive when set.')
+        if not 0.0 <= state_dropout_prob <= 1.0:
+            raise ValueError('state_dropout_prob must be in [0, 1].')
+        self.state_key = state_key
+        self.action_key = action_key
+        self.action_mask_key = action_mask_key
+        self.state_history_length = state_history_length
+        self.action_horizon = action_horizon
+        self.valid_action_dim = valid_action_dim
+        self.state_dropout_prob = state_dropout_prob
+        self.dtype = np.dtype(dtype)
+
+    def _prepare_states(self, value: Any) -> np.ndarray:
+        states = np.asarray(value, dtype=self.dtype)
+        if states.ndim == 1:
+            states = states[None, :]
+        if states.ndim != 2:
+            raise ValueError(
+                f'{self.state_key} must be 1D or 2D, got {states.shape}.')
+        if states.shape[0] > self.state_history_length:
+            states = states[-self.state_history_length:]
+        elif states.shape[0] < self.state_history_length:
+            pad = np.zeros(
+                (self.state_history_length - states.shape[0], states.shape[1]),
+                dtype=self.dtype)
+            states = np.concatenate([pad, states], axis=0)
+        if (self.state_dropout_prob > 0
+                and random.random() < self.state_dropout_prob):
+            states = np.zeros_like(states)
+        return states
+
+    def _prepare_actions_and_masks(
+        self,
+        actions_value: Any,
+        mask_value: Any,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        actions = np.asarray(actions_value, dtype=self.dtype)
+        if actions.ndim == 1:
+            actions = actions[None, :]
+        if actions.ndim != 2:
+            raise ValueError(
+                f'{self.action_key} must be 1D or 2D, got {actions.shape}.')
+        if actions.shape[0] > self.action_horizon:
+            raise ValueError(
+                f'{self.action_key} horizon {actions.shape[0]} exceeds '
+                f'target horizon {self.action_horizon}.')
+
+        valid_dim = self.valid_action_dim or actions.shape[-1]
+        if valid_dim > actions.shape[-1]:
+            raise ValueError(
+                f'valid_action_dim={valid_dim} exceeds padded action '
+                f'dimension {actions.shape[-1]}.')
+        horizon = actions.shape[0]
+        padded_actions = np.zeros((self.action_horizon, actions.shape[-1]),
+                                  dtype=self.dtype)
+        padded_actions[:horizon] = actions
+
+        source_mask = np.asarray(mask_value, dtype=self.dtype)
+        if source_mask.ndim == 1:
+            source_mask = source_mask[:, None]
+        if source_mask.ndim != 2:
+            raise ValueError(f'{self.action_mask_key} must be 1D or 2D, got '
+                             f'{source_mask.shape}.')
+        if source_mask.shape[0] < horizon:
+            raise ValueError(
+                f'{self.action_mask_key} horizon {source_mask.shape[0]} is '
+                f'shorter than action horizon {horizon}.')
+
+        padded_mask = np.zeros_like(padded_actions)
+        if source_mask.shape[1] == 1:
+            padded_mask[:horizon, :valid_dim] = source_mask[:horizon]
+        else:
+            copy_dim = min(valid_dim, source_mask.shape[1])
+            padded_mask[:horizon, :copy_dim] = source_mask[:horizon, :copy_dim]
+        return padded_actions, padded_mask
+
+    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
+        outputs = dict(sample)
+        outputs[self.state_key] = self._prepare_states(sample[self.state_key])
+        if self.action_key in sample and sample[self.action_key] is not None:
+            if self.action_mask_key not in sample:
+                raise KeyError(
+                    f'Missing action mask key: {self.action_mask_key!r}')
+            actions, masks = self._prepare_actions_and_masks(
+                sample[self.action_key], sample[self.action_mask_key])
+            outputs[self.action_key] = actions
+            outputs[self.action_mask_key] = masks
+        return outputs
+
+
+@TRANSFORMS.register_module()
 class ProcessOBSInputs():
     """Process inputs for OBS dataset.
     This transform processes the inputs from the OBS dataset
