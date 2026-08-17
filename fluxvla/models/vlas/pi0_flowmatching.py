@@ -14,6 +14,7 @@
 
 import contextlib
 import math
+from functools import partial
 from typing import Callable, Dict, List, Optional, Union
 
 import torch
