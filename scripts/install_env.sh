@@ -55,6 +55,7 @@ DOWNLOAD_RETRIES="${DOWNLOAD_RETRIES:-5}"
 DOWNLOAD_CONNECTIONS="${DOWNLOAD_CONNECTIONS:-8}"
 FLUXVLA_DOWNLOADER="${FLUXVLA_DOWNLOADER:-auto}"
 FLUXVLA_AV_INSTALLER="${FLUXVLA_AV_INSTALLER:-auto}"
+FLUXVLA_AV_VERSION="${FLUXVLA_AV_VERSION:-14.2.0}"
 FLASH_ATTN_VERSION="${FLASH_ATTN_VERSION:-2.8.3.post1}"
 FLASH_ATTN_RELEASE_TAG="${FLASH_ATTN_RELEASE_TAG:-v${FLASH_ATTN_VERSION}}"
 FLASH_ATTN_WHEEL_FILE="${FLASH_ATTN_WHEEL_FILE:-}"
@@ -153,6 +154,8 @@ Environment variables:
   FLUXVLA_AV_INSTALLER
                       av installer: auto, pip, or conda. Default: auto
                       (pip wheel first, then conda fallback).
+  FLUXVLA_AV_VERSION  PyAV version installed by either backend. Default:
+                      14.2.0.
   TORCH_INDEX_URLS    Space-separated PyTorch wheel indexes. Defaults to the
                       official index for the selected CUDA profile.
   GH_PROXY            Override the GitHub release proxy used for the
@@ -1515,13 +1518,15 @@ install_av() {
 
   case "${FLUXVLA_AV_INSTALLER}" in
     pip)
-      pip_install_with_mirrors --only-binary=:all: av==14.4.0
+      pip_install_with_mirrors --only-binary=:all: \
+        "av==${FLUXVLA_AV_VERSION}"
       ;;
     conda)
       install_av_with_conda
       ;;
     auto)
-      if pip_install_with_mirrors --only-binary=:all: av==14.4.0; then
+      if pip_install_with_mirrors --only-binary=:all: \
+          "av==${FLUXVLA_AV_VERSION}"; then
         return
       fi
       echo "pip av wheel install failed or timed out; falling back to conda." >&2
@@ -1541,13 +1546,16 @@ install_av_with_conda() {
   fi
 
   if "${conda_bin}" install --help 2>/dev/null | grep -q -- '--solver'; then
-    if run_conda_with_timeout "${conda_bin}" install -y -p "${conda_prefix}" -c conda-forge --solver=libmamba av=14.4.0; then
+    if run_conda_with_timeout "${conda_bin}" install -y \
+        -p "${conda_prefix}" -c conda-forge --solver=libmamba \
+        "av=${FLUXVLA_AV_VERSION}"; then
       return
     fi
     echo "conda av install with libmamba failed or timed out; trying default solver." >&2
   fi
 
-  run_conda_with_timeout "${conda_bin}" install -y -p "${conda_prefix}" -c conda-forge av=14.4.0
+  run_conda_with_timeout "${conda_bin}" install -y \
+    -p "${conda_prefix}" -c conda-forge "av=${FLUXVLA_AV_VERSION}"
 }
 
 install_torchcodec() {

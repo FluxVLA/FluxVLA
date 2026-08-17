@@ -29,8 +29,7 @@ else
   PYTHON_BIN="python"
 fi
 
-TRANSFORMERS_VERSION="${TRANSFORMERS_VERSION:-5.3.0}"
-DATASETS_VERSION="${DATASETS_VERSION:-4.0.0}"
+FLUXVLA_AV_VERSION="${FLUXVLA_AV_VERSION:-14.2.0}"
 MUJOCO_VERSION="${MUJOCO_VERSION:-3.2.6}"
 BDDL_VERSION="${BDDL_VERSION:-1.0.1}"
 HYDRA_CORE_VERSION="${HYDRA_CORE_VERSION:-1.2.0}"
@@ -58,8 +57,11 @@ Environment variables:
                   when available, otherwise python.
   PIP_INDEX_URLS  Optional space-separated pip indexes retried in order.
   GIT_PULL_ARGS   Arguments passed to git pull. Default: --ff-only.
+  FLUXVLA_AV_VERSION
+                   PyAV wheel version. Default: 14.2.0.
 
-This updater intentionally does not reinstall PyTorch or FlashAttention.
+This updater installs the unified requirements-base.txt dependency set, but
+intentionally does not reinstall PyTorch or FlashAttention.
 EOF
 }
 
@@ -167,9 +169,8 @@ if [[ "${SKIP_PULL}" -eq 0 ]]; then
   run git pull ${GIT_PULL_ARGS}
 fi
 
-pip_install --upgrade \
-  "transformers==${TRANSFORMERS_VERSION}" \
-  "datasets==${DATASETS_VERSION}"
+pip_install --upgrade -r "${PROJECT_ROOT}/requirements-base.txt"
+pip_install --upgrade --only-binary=:all: "av==${FLUXVLA_AV_VERSION}"
 
 pip_install \
   "mujoco==${MUJOCO_VERSION}" \
@@ -188,4 +189,4 @@ if [[ "${SKIP_PROJECT}" -eq 0 ]]; then
 fi
 
 run "${PYTHON_BIN}" -c \
-  'import transformers; print("transformers", transformers.__version__)'
+  'import av, diffusers, peft, transformers; from diffusers import Cosmos2_5_PredictBasePipeline; print("av", av.__version__, "diffusers", diffusers.__version__, "peft", peft.__version__, "transformers", transformers.__version__)'

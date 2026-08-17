@@ -38,9 +38,14 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 | FluxVLA(PI0)                |   [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_spatial_full_finetune_bs64)   |   [98.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_object_full_finetune_bs64)    |   [96.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_goal_full_finetune_bs64)    |   [93.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_libero_10_full_finetune_bs64)    |                                                    96.85                                                     |
 | FluxVLA(Cosmos3-Nano)       |                                                          96.0                                                           |                                                          99.6                                                           |                                                         94.0                                                          |                                                        98.0                                                         | [96.9](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_libero_full_finetune_bs2048) |
 | FluxVLA(FastWAM)            |                                                          97.3                                                           |                                                          99.8                                                           |                                                         97.4                                                          |                                                        94.6                                                         |    [97.26](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_libero_full_finetune_bs16)    |
+| FluxVLA(DiT4DiT)            |                                                          96.20                                                          |                                                          99.60                                                          |                                                         99.20                                                         |                                                        99.60                                                        | [98.65](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_libero_all_full_finetune_bc071270ff2_bs256) |
 | FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |                                                    97.95                                                     |
 
 *带链接的分数可跳转到对应 checkpoint。*
+
+DiT4DiT 结果对应 commit `5aa9288838aad86a19245c2797de96a2bcfb789d`、配置
+`configs/dit4dit/dit4dit_libero_all_full_finetune.py` 和 checkpoint
+`step-120000-epoch-147-loss=0.0439.safetensors`。
 
 #### RoboCasa GR1
 
@@ -171,18 +176,20 @@ bash scripts/update_env.sh
 ```
 
 如果你已经手动更新了代码，可传入 `--skip-pull`；如果不想重新以 editable 模式安装 FluxVLA，可传入 `--skip-project`。
+更新脚本会刷新完整的统一基础依赖，包括兼容 DiT4DiT 的 Diffusers revision、`peft==0.19.1` 和 `av==14.2.0`。
 
 <details>
 <summary><b>等价的手动命令</b></summary>
 
 ```bash
 git pull
-python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
+python -m pip install --upgrade -r requirements-base.txt
+python -m pip install --upgrade --only-binary=:all: "av==14.2.0"
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
 python -m pip install --no-build-isolation -e .
-python -c "import transformers; print(transformers.__version__)"
+python -c "import av, diffusers, peft, transformers; from diffusers import Cosmos2_5_PredictBasePipeline; print(av.__version__, diffusers.__version__, peft.__version__, transformers.__version__)"
 ```
 
 </details>
@@ -261,7 +268,7 @@ FlashAttention wheel 与已安装的 Python、PyTorch、CUDA 和 C++ ABI 强绑�
 <summary><b>4. 安装 av</b></summary>
 
 ```bash
-conda install -c conda-forge av=14.4.0
+conda install -c conda-forge av=14.2.0
 ```
 
 </details>
@@ -712,6 +719,7 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 | GR00T N1.5                | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                             |
 | OpenVLA                   | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                         |
 | FastWAM_base              | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                          |
+| Cosmos-Predict2.5-2B      | 2B   | [🤗 Hugging Face](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B)                                                                          |
 | PI0_base                  | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                              |
 | PI05_base                 | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                             |
 | PI05_libero               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                           |
@@ -724,6 +732,35 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 hf download limxdynamics/FluxVLAEngine \
   --include "pi05_paligemma_robocasa_full_data_full_finetune_bs256/*" \
   --local-dir ./checkpoints
+```
+
+DiT4DiT 运行时必须使用
+[Cosmos-Predict2.5-2B](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B)
+的 Diffusers checkpoint。按
+`configs/dit4dit/dit4dit_libero_all_full_finetune.py` 预期的 revision 和目录结构下载：
+
+```bash
+hf download nvidia/Cosmos-Predict2.5-2B \
+  --revision diffusers/base/post-trained \
+  --local-dir ./checkpoints/Cosmos-Predict2.5-2B
+```
+
+下载性能表中链接的 FluxVLA DiT4DiT LIBERO checkpoint：
+
+```bash
+hf download limxdynamics/FluxVLAEngine \
+  --include "dit4dit_libero_all_full_finetune_bc071270ff2_bs256/*" \
+  --local-dir ./checkpoints
+```
+
+默认的从 Cosmos 开始训练配置不强制需要
+[官方 DiT4DiT LIBERO checkpoint](https://huggingface.co/mondo-robotics/dit4dit-model/tree/main/dit4dit_libero)。仅在复现官方模型，或将
+`model.pretrained_name_or_path` 设置为 `_official_dit4dit_ckpt` 时下载：
+
+```bash
+hf download mondo-robotics/dit4dit-model \
+  --include "dit4dit_libero/*" \
+  --local-dir ./checkpoints/dit4dit-model
 ```
 
 </details>
@@ -785,7 +822,7 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 <details>
 <summary><b>支持不同 VLA 模型</b></summary>
 
-- 支持 OpenVLA、LlavaVLA、Gr00t、Pi0、Pi0.5 与 FastWAM。
+- 支持 OpenVLA、LlavaVLA、Gr00t、Pi0、Pi0.5、FastWAM 与 DiT4DiT。
 
 </details>
 
@@ -985,7 +1022,7 @@ export HF_ENDPOINT="https://hf-mirror.com"
 A：可使用 `libmamba` 求解器加速依赖解析：
 
 ```bash
-conda install -c conda-forge av=14.4.0 --solver=libmamba
+conda install -c conda-forge av=14.2.0 --solver=libmamba
 ```
 
 </details>

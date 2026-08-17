@@ -23,6 +23,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from mmengine.utils import digit_version
 
 from fluxvla.engines import VLM_BACKBONES
 from fluxvla.engines.utils.name_map import str_to_dtype
@@ -164,12 +165,29 @@ class Cosmos25Backbone(nn.Module):
         del pipe
 
     def _build_pipeline(self, safety_checker):
+        minimum_version = '0.37.0.dev0'
+        maximum_version = '0.38.0'
+        install_hint = ('Install the unified FluxVLA dependencies with '
+                        '`pip install --upgrade -r requirements-base.txt`.')
+        try:
+            import diffusers
+        except Exception as exc:
+            raise ImportError(
+                'Cosmos25Backbone requires the DiT4DiT-compatible diffusers '
+                f'build. {install_hint}') from exc
+
+        version = getattr(diffusers, '__version__', '0.0.0')
+        if not (digit_version(version) >= digit_version(minimum_version)
+                and digit_version(version) < digit_version(maximum_version)):
+            raise ImportError(
+                f'Cosmos25Backbone requires diffusers>={minimum_version}, '
+                f'<{maximum_version}, but found {version}. Install the '
+                f'DiT4DiT-compatible build. {install_hint}')
+
         try:
             from diffusers import Cosmos2_5_PredictBasePipeline
         except Exception as exc:
             try:
-                import diffusers
-
                 diffusers_version = getattr(diffusers, '__version__',
                                             'unknown')
             except Exception:
@@ -177,11 +195,7 @@ class Cosmos25Backbone(nn.Module):
             raise ImportError(
                 'Cosmos25Backbone requires a diffusers build that provides '
                 '`Cosmos2_5_PredictBasePipeline`. Installed diffusers: '
-                f'{diffusers_version}. Install the DiT4DiT-compatible build '
-                'with: pip install --upgrade '
-                '"diffusers @ git+https://github.com/huggingface/'
-                'diffusers.git@3996788b602eaae4da41a1d45726b62e662b73cf"'
-            ) from exc
+                f'{diffusers_version}. {install_hint}') from exc
 
         if safety_checker is None:
             safety_checker = _DefaultDummySafetyChecker()
