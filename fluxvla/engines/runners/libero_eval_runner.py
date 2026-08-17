@@ -65,9 +65,6 @@ class LiberoEvalRunner(BaseEvalRunner):
         denormalize_action (Dict): Configuration for denormalizing actions.
         eval_chunk_size (int): Size of the chunks for evaluation.
             Default is 1.
-        truncate_action_chunk_at_horizon (bool): Whether to trim the final
-            predicted action chunk so execution stops at the LIBERO horizon.
-            Default is false, preserving the runner's existing behavior.
         resize_size (int): Size to which images will be resized.
             Default is 224.
         num_trials_per_task (int): Number of trials per task in the evaluation.
@@ -279,12 +276,6 @@ class LiberoEvalRunner(BaseEvalRunner):
         return list(initial_states) * repeats
 
     @staticmethod
-    def _truncate_action_chunk(actions, current_step: int, step_limit: int):
-        """Trim an action chunk to the remaining rollout horizon."""
-        remaining = max(0, int(step_limit) - int(current_step))
-        return actions[:remaining]
-
-    @staticmethod
     def _build_run_id(task_suite_name: str,
                       model_family: str,
                       run_timestamp: str,
@@ -391,7 +382,6 @@ class LiberoEvalRunner(BaseEvalRunner):
                  norm_stats_key: str = None,
                  dataset_stats_path: str = None,
                  eval_chunk_size: int = 1,
-                 truncate_action_chunk_at_horizon: bool = False,
                  resize_size: int = 224,
                  num_trials_per_task: int = 50,
                  task_ids=None,
@@ -481,8 +471,6 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.dataset = build_dataset_from_cfg(dataset)
         self.denormalize_action = build_transform_from_cfg(denormalize_action)
         self.eval_chunk_size = eval_chunk_size
-        self.truncate_action_chunk_at_horizon = bool(
-            truncate_action_chunk_at_horizon)
         self.model_family = model_family
         self.task_suite_name = task_suite_name
         self.resize_size = resize_size
@@ -746,12 +734,6 @@ class LiberoEvalRunner(BaseEvalRunner):
                         assert len(actions.shape) == 2, \
                             f'Unexpected action shape: {actions.shape}'
                         actions = actions[0, None, :].float().cpu().numpy()
-                    if self.truncate_action_chunk_at_horizon:
-                        actions = self._truncate_action_chunk(
-                            actions,
-                            current_step=t,
-                            step_limit=max_steps + self.num_steps_wait,
-                        )
                     for action in actions:
                         inputs = dict(
                             action=action,
