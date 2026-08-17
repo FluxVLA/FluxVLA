@@ -14,7 +14,6 @@
 """Qwen-VL action-prediction input transforms."""
 
 from __future__ import annotations
-import re
 from typing import Any, Dict, Optional
 
 import albumentations as A
@@ -292,13 +291,6 @@ def stack_n17_vlm_images(image_keys: list[str], images: Dict[str, Any],
                         dim=1).flatten(0, 1).numpy())
 
 
-def build_qwen_vl_chat_text(images_chw: np.ndarray, language: str) -> str:
-    """Build the single-user Qwen3-VL prompt without loading a processor."""
-    image_content = ('<|vision_start|><|image_pad|><|vision_end|>' *
-                     len(images_chw))
-    return f'<|im_start|>user\n{image_content}{language}<|im_end|>\n'
-
-
 @TRANSFORMS.register_module()
 class GrootN17ImageAugmentation:
     """Apply the native GR00T N1.7 multi-view image augmentation.
@@ -367,47 +359,4 @@ class GrootN17ImageAugmentation:
 
         outputs = dict(sample)
         outputs[self.output_image_key] = images_chw
-        return outputs
-
-
-@TRANSFORMS.register_module()
-class BuildQwenVLChatImageContent(GrootN17ImageAugmentation):
-    """Build Qwen-VL chat text and N1.7-augmented CHW images."""
-
-    def __init__(
-        self,
-        processor_path: Optional[str] = None,
-        embodiment_tag: str = 'LIBERO_PANDA',
-        image_key: str = 'images',
-        text_key: str = 'task_description',
-        output_image_key: str = 'images',
-        output_text_key: str = 'text',
-        train_mode: bool = True,
-        processor_kwargs: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        super().__init__(
-            processor_path=processor_path,
-            embodiment_tag=embodiment_tag,
-            image_key=image_key,
-            output_image_key=output_image_key,
-            train_mode=train_mode,
-            processor_kwargs=processor_kwargs,
-        )
-        self.text_key = text_key
-        self.output_text_key = output_text_key
-        metadata = resolve_groot_n17_metadata(
-            processor_path,
-            embodiment_tag=embodiment_tag,
-            **dict(processor_kwargs or {}))
-        self.formalize_language = metadata['processor_kwargs'].get(
-            'formalize_language', True)
-
-    def __call__(self, sample: Dict[str, Any]) -> Dict[str, Any]:
-        outputs = super().__call__(sample)
-        language = sample.get(self.text_key, '')
-        if self.formalize_language:
-            language = re.sub(r'[^\w\s]', '', str(language).lower())
-        text = build_qwen_vl_chat_text(outputs[self.output_image_key],
-                                       language)
-        outputs[self.output_text_key] = text
         return outputs
