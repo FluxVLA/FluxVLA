@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Qwen3-VL compatibility shims for GR00T N1.7 on transformers 5.3.
 
 The official GR00T N1.7 checkpoint was validated with transformers 4.57.3.
@@ -20,17 +19,19 @@ and attention dispatch have changed. This module is the single place where we
 make the 5.3 runtime look like the 4.57 runtime for the official
 ``gr00t.model.modules.qwen3_backbone`` code path.
 
-This first layer is intentionally conservative: it restores the interfaces the
-official Qwen3Backbone directly consumes and records which patches were applied.
+This first layer is intentionally conservative: it restores the interfaces
+the official Qwen3Backbone directly consumes and records which patches were
+applied.
 Numerical compatibility is verified separately by the tensor diff tools.
 """
 
 from __future__ import annotations
-
 import importlib
 from typing import Any, Dict
 
 import torch
+
+_Compat = Dict[str, Any]
 
 
 def _flash_attention_forward_457(
@@ -54,7 +55,8 @@ def _flash_attention_forward_457(
     use_top_left_mask = getattr(flash_integration, '_use_top_left_mask')
     flash_forward = getattr(flash_utils, '_flash_attention_forward')
 
-    if kwargs.get('output_attentions', False) or kwargs.get('head_mask') is not None:
+    if kwargs.get('output_attentions',
+                  False) or kwargs.get('head_mask') is not None:
         logger.warning_once(
             '`flash_attention_2` does not support `output_attentions=True` '
             'or `head_mask`. Please set your attention to `eager` if you '
@@ -123,8 +125,7 @@ def _patch_attention_interface() -> Dict[str, Any]:
     return {
         'previous_flash_attention_2':
         f'{previous.__module__}.{previous.__name__}',
-        'new_flash_attention_2':
-        f'{_flash_attention_forward_457.__module__}.'
+        'new_flash_attention_2': f'{_flash_attention_forward_457.__module__}.'
         f'{_flash_attention_forward_457.__name__}',
         'patched_flash_attention_3': patched_fa3,
     }
@@ -165,8 +166,8 @@ def _get_rope_index_457(
         image_index, video_index = 0, 0
         attention_mask = attention_mask.to(total_input_ids.device)
         for batch_idx, current_input_ids in enumerate(total_input_ids):
-            current_input_ids = current_input_ids[
-                attention_mask[batch_idx] == 1]
+            current_input_ids = current_input_ids[attention_mask[batch_idx] ==
+                                                  1]
             vision_start_indices = torch.argwhere(
                 current_input_ids == vision_start_token_id).squeeze(1)
             vision_tokens = current_input_ids[vision_start_indices + 1]
@@ -211,11 +212,11 @@ def _get_rope_index_457(
                     w.item() // spatial_merge_size,
                 )
                 text_len = ed - st
-                st_idx = (llm_pos_ids_list[-1].max() +
-                          1 if len(llm_pos_ids_list) > 0 else 0)
+                st_idx = (
+                    llm_pos_ids_list[-1].max() +
+                    1 if len(llm_pos_ids_list) > 0 else 0)
                 llm_pos_ids_list.append(
-                    torch.arange(text_len).view(1, -1).expand(3, -1) +
-                    st_idx)
+                    torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
                 t_index = torch.arange(llm_grid_t).view(-1, 1).expand(
                     -1, llm_grid_h * llm_grid_w).flatten()
@@ -229,19 +230,19 @@ def _get_rope_index_457(
                 st = ed + llm_grid_t * llm_grid_h * llm_grid_w
 
             if st < len(input_tokens):
-                st_idx = (llm_pos_ids_list[-1].max() +
-                          1 if len(llm_pos_ids_list) > 0 else 0)
+                st_idx = (
+                    llm_pos_ids_list[-1].max() +
+                    1 if len(llm_pos_ids_list) > 0 else 0)
                 text_len = len(input_tokens) - st
                 llm_pos_ids_list.append(
-                    torch.arange(text_len).view(1, -1).expand(3, -1) +
-                    st_idx)
+                    torch.arange(text_len).view(1, -1).expand(3, -1) + st_idx)
 
             llm_positions = torch.cat(llm_pos_ids_list, dim=1).reshape(3, -1)
             position_ids[..., batch_idx,
                          attention_mask[batch_idx] == 1] = llm_positions.to(
                              position_ids.device)
-            mrope_position_deltas.append(
-                llm_positions.max() + 1 - len(total_input_ids[batch_idx]))
+            mrope_position_deltas.append(llm_positions.max() + 1 -
+                                         len(total_input_ids[batch_idx]))
         mrope_position_deltas = torch.tensor(
             mrope_position_deltas, device=input_ids.device).unsqueeze(1)
         return position_ids, mrope_position_deltas
@@ -251,13 +252,15 @@ def _get_rope_index_457(
         position_ids.masked_fill_(attention_mask == 0, 1)
         position_ids = position_ids.unsqueeze(0).expand(3, -1, -1).to(
             attention_mask.device)
-        max_position_ids = position_ids.max(0, keepdim=False)[0].max(
-            -1, keepdim=True)[0]
+        max_position_ids = position_ids.max(
+            0, keepdim=False)[0].max(
+                -1, keepdim=True)[0]
         mrope_position_deltas = max_position_ids + 1 - attention_mask.shape[-1]
     else:
         position_ids = torch.arange(
-            input_ids.shape[1], device=input_ids.device).view(
-                1, 1, -1).expand(3, input_ids.shape[0], -1)
+            input_ids.shape[1],
+            device=input_ids.device).view(1, 1,
+                                          -1).expand(3, input_ids.shape[0], -1)
         mrope_position_deltas = torch.zeros(
             [input_ids.shape[0], 1],
             device=input_ids.device,
@@ -280,9 +283,10 @@ def _compute_3d_position_ids_457(
     if input_ids is None:
         return None
 
-    past_key_values_length = (
-        0 if past_key_values is None else past_key_values.get_seq_length())
-    can_compute_mrope = image_grid_thw is not None or video_grid_thw is not None
+    past_key_values_length = (0 if past_key_values is None else
+                              past_key_values.get_seq_length())
+    can_compute_mrope = (
+        image_grid_thw is not None or video_grid_thw is not None)
     if can_compute_mrope and (self.rope_deltas is None
                               or past_key_values_length == 0):
         position_ids, rope_deltas = self.get_rope_index(
@@ -307,8 +311,8 @@ def _compute_3d_position_ids_457(
                 past_key_values_length + seq_length,
                 device=inputs_embeds.device,
             )
-            position_ids = position_ids.view(1, 1, -1).expand(
-                3, batch_size, -1)
+            position_ids = position_ids.view(1, 1,
+                                             -1).expand(3, batch_size, -1)
         delta = self.rope_deltas.repeat_interleave(
             batch_size // self.rope_deltas.shape[0], dim=0)
         return position_ids + delta.to(device=inputs_embeds.device)
@@ -396,7 +400,8 @@ def _patch_rope_position_logic(modeling_module) -> Dict[str, Any]:
         'qwen3vl_model_compute_3d_position_ids':
         (f'{previous_compute.__module__}.{previous_compute.__name__}'
          if previous_compute is not None else None),
-        'qwen3vl_text_forward_bridge': True,
+        'qwen3vl_text_forward_bridge':
+        True,
         'qwen3vl_conditional_forward_bridge':
         f'{previous_cond_forward.__module__}.{previous_cond_forward.__name__}',
     }
@@ -409,7 +414,8 @@ def _patch_public_backbone_properties(qwen_cls: type) -> Dict[str, Any]:
         'visual': False,
     }
     if not hasattr(qwen_cls, 'language_model'):
-        qwen_cls.language_model = property(lambda self: self.model.language_model)
+        qwen_cls.language_model = property(
+            lambda self: self.model.language_model)
         patched['language_model'] = True
     if not hasattr(qwen_cls, 'visual'):
         qwen_cls.visual = property(lambda self: self.model.visual)
@@ -426,22 +432,24 @@ def _patch_transformers_qwen3vl_class() -> tuple[type, Dict[str, Any]]:
     return qwen_cls, patched
 
 
-def apply_qwen3vl_457_compat(
-    patch_gr00t_backbone: bool = True,
-) -> Dict[str, Any]:
+def apply_qwen3vl_457_compat(patch_gr00t_backbone: bool = True) -> _Compat:
     """Apply the current Qwen3-VL 4.57 compatibility layer.
 
-    Returns a structured summary so probes and debug JSON can show exactly which
-    compat hooks were active for a run.
+    Returns a structured summary so probes and debug JSON can show exactly
+    which compat hooks were active for a run.
     """
     qwen_cls, class_patches = _patch_transformers_qwen3vl_class()
     summary: Dict[str, Any] = {
-        'runtime': 'compat_457',
-        'transformers_qwen3vl_class': (
-            f'{qwen_cls.__module__}.{qwen_cls.__name__}'),
-        'class_patches': class_patches,
-        'attention_patches': _patch_attention_interface(),
-        'gr00t_qwen3_backbone_patched': False,
+        'runtime':
+        'compat_457',
+        'transformers_qwen3vl_class':
+        (f'{qwen_cls.__module__}.{qwen_cls.__name__}'),
+        'class_patches':
+        class_patches,
+        'attention_patches':
+        _patch_attention_interface(),
+        'gr00t_qwen3_backbone_patched':
+        False,
     }
     if not patch_gr00t_backbone:
         summary['gr00t_qwen3_backbone_skipped'] = True

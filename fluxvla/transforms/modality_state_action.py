@@ -101,31 +101,6 @@ def resolve_groot_n17_metadata(
     return selected
 
 
-def resolve_groot_n17_flat_slices(
-        modality_config: Dict[str, Any],
-        statistics: Dict[str, Any],
-        embodiment_key: str,
-        modality: str,
-        flat_layout: str = 'auto') -> Dict[str, tuple[int, int]]:
-    """Resolve flat slices from checkpoint statistics for validated layouts."""
-    layout = str(flat_layout).lower()
-    if layout != 'auto':
-        raise ValueError(
-            f'Unsupported N1.7 flat layout: {flat_layout!r}. Expected '
-            "'auto'.")
-    if embodiment_key != 'libero_sim':
-        raise ValueError('Automatic flat N1.7 layout is validated only for '
-                         f"'libero_sim', got {embodiment_key!r}.")
-
-    start = 0
-    slices = {}
-    for key in modality_config[modality]['modality_keys']:
-        dim = _normalization_dim(statistics[modality][key])
-        slices[key] = (start, start + dim)
-        start += dim
-    return slices
-
-
 def normalize_tag_value(tag: Any) -> str:
     if hasattr(tag, 'value'):
         return str(tag.value)
@@ -139,33 +114,12 @@ def _normalization_dim(stats: Dict[str, Any]) -> int:
     raise KeyError(f'No supported statistics fields in {sorted(stats)}')
 
 
-def _apply_sin_cos_encoding(values: np.ndarray) -> np.ndarray:
-    return np.concatenate([np.sin(values), np.cos(values)], axis=-1)
-
-
-def _normalize_minmax(values: np.ndarray,
-                      params: Dict[str, np.ndarray]) -> np.ndarray:
-    min_vals = params['min']
-    max_vals = params['max']
-    normalized = np.zeros_like(values)
-    mask = ~np.isclose(max_vals, min_vals)
-    normalized[..., mask] = (values[..., mask] - min_vals[..., mask]) / (
-        max_vals[..., mask] - min_vals[..., mask])
-    normalized[..., mask] = 2 * normalized[..., mask] - 1
-    return normalized
-
-
 def _unnormalize_minmax(values: np.ndarray,
                         params: Dict[str, np.ndarray]) -> np.ndarray:
     min_vals = params['min']
     max_vals = params['max']
     return (np.clip(values, -1.0, 1.0) + 1.0) / 2.0 * (max_vals -
                                                        min_vals) + min_vals
-
-
-def _normalize_meanstd(values: np.ndarray,
-                       params: Dict[str, np.ndarray]) -> np.ndarray:
-    return (values - params['mean']) / params['std']
 
 
 def _unnormalize_meanstd(values: np.ndarray,
@@ -179,12 +133,7 @@ def _action_config_value(config: Dict[str, Any], key: str,
 
 
 class ModalityStateActionCodec:
-    """Per-modality state/action codec for metadata-driven VLA transforms.
-
-    This owns normalization, relative action conversion, sin/cos state
-    encoding, and eval-time action decode. It is intentionally independent
-    from the legacy N1.7 processor facade.
-    """
+    """Decode model actions using checkpoint-owned modality metadata."""
 
     def __init__(self,
                  modality_configs: Dict[str, Any],
@@ -193,22 +142,20 @@ class ModalityStateActionCodec:
                  clip_outliers: bool = True,
                  apply_sincos_state_encoding: bool = False,
                  use_relative_action: bool = False):
+        # Kept for compatibility with GrootN17VLA while its codec construction
+        # still passes the former training-side options.
+        del clip_outliers, apply_sincos_state_encoding
         self.modality_configs = deepcopy(modality_configs)
         self.statistics: Dict[str, Any] = {}
         self.use_percentiles = use_percentiles
-        self.clip_outliers = clip_outliers
-        self.apply_sincos_state_encoding = apply_sincos_state_encoding
         self.use_relative_action = use_relative_action
         self.norm_params: Dict[str, Any] = {}
-        self.training = True
         if statistics is not None:
             self.set_statistics(statistics)
 
-    def train(self):
-        self.training = True
-
     def eval(self):
-        self.training = False
+        """Retain the evaluator-facing codec interface."""
+        return self
 
     def set_statistics(self,
                        statistics: Dict[str, Any],
@@ -221,23 +168,18 @@ class ModalityStateActionCodec:
     def _compute_normalization_parameters(self) -> None:
         self.norm_params = {}
         for embodiment_tag, emb_stats in self.statistics.items():
-            self.norm_params[embodiment_tag] = {}
-            for modality in ('state', 'action'):
-                if modality not in emb_stats:
-                    continue
-                self.norm_params[embodiment_tag][modality] = {}
-                for key, stats in emb_stats[modality].items():
-                    low_field, high_field = (('q01', 'q99')
-                                             if self.use_percentiles else
-                                             ('min', 'max'))
-                    params = {
-                        'min': np.asarray(stats[low_field]),
-                        'max': np.asarray(stats[high_field]),
-                        'mean': np.asarray(stats['mean']),
-                        'std': np.asarray(stats['std']),
-                        'dim': np.array(_normalization_dim(stats)),
-                    }
-                    self.norm_params[embodiment_tag][modality][key] = params
+            self.norm_params[embodiment_tag] = {'action': {}}
+            for key, stats in emb_stats.get('action', {}).items():
+                low_field, high_field = (('q01',
+                                          'q99') if self.use_percentiles else
+                                         ('min', 'max'))
+                self.norm_params[embodiment_tag]['action'][key] = {
+                    'min': np.asarray(stats[low_field]),
+                    'max': np.asarray(stats[high_field]),
+                    'mean': np.asarray(stats['mean']),
+                    'std': np.asarray(stats['std']),
+                    'dim': np.array(_normalization_dim(stats)),
+                }
             action_cfg = self.modality_configs.get(embodiment_tag,
                                                    {}).get('action', {})
             for key, cfg in zip(
@@ -262,17 +204,6 @@ class ModalityStateActionCodec:
         keys = cfg.get('mean_std_embedding_keys')
         return bool(keys and key in keys)
 
-    def _normalize(self, values: np.ndarray, embodiment_tag: str,
-                   modality: str, key: str) -> np.ndarray:
-        params = self.norm_params[embodiment_tag][modality][key]
-        if self._use_mean_std(embodiment_tag, modality, key):
-            normalized = _normalize_meanstd(values, params)
-        else:
-            normalized = _normalize_minmax(values, params)
-        if self.clip_outliers:
-            normalized = np.clip(normalized, -1.0, 1.0)
-        return normalized
-
     def _unnormalize(self, values: np.ndarray, embodiment_tag: str,
                      modality: str, key: str) -> np.ndarray:
         params = self.norm_params[embodiment_tag][modality][key]
@@ -280,22 +211,9 @@ class ModalityStateActionCodec:
             return _unnormalize_meanstd(values, params)
         return _unnormalize_minmax(values, params)
 
-    def apply_state(self, state: Dict[str, np.ndarray],
-                    embodiment_tag: str) -> Dict[str, np.ndarray]:
-        cfg = self.modality_configs[embodiment_tag]['state']
-        sincos_keys = set(cfg.get('sin_cos_embedding_keys') or [])
-        result = {}
-        for key in cfg['modality_keys']:
-            if self.apply_sincos_state_encoding and key in sincos_keys:
-                result[key] = _apply_sin_cos_encoding(state[key])
-            else:
-                result[key] = self._normalize(state[key], embodiment_tag,
-                                              'state', key)
-        return result
-
-    def _relative(self, action: np.ndarray, reference_state: np.ndarray,
-                  action_config: Dict[str,
-                                      Any], to_absolute: bool) -> np.ndarray:
+    def _relative_to_absolute(self, action: np.ndarray,
+                              reference_state: np.ndarray,
+                              action_config: Dict[str, Any]) -> np.ndarray:
         action_type = _action_config_value(action_config, 'type', 'NON_EEF')
         action_format = _action_config_value(action_config, 'format',
                                              'DEFAULT')
@@ -305,34 +223,16 @@ class ModalityStateActionCodec:
                 f'relative actions only, got {action_type}/{action_format}.')
         action = action.astype(np.float64)
         reference_state = reference_state.astype(np.float64)
-        if to_absolute:
-            return action + reference_state
-        return action - reference_state
+        return action + reference_state
 
     def _maybe_relative(self, values: np.ndarray, state: Dict[str, np.ndarray],
-                        key: str, action_config: Dict[str, Any],
-                        to_absolute: bool) -> np.ndarray:
+                        key: str, action_config: Dict[str, Any]) -> np.ndarray:
         if (not self.use_relative_action or
                 _action_config_value(action_config, 'rep', '') != 'RELATIVE'):
             return values
         state_key = action_config.get('state_key') or key
         reference = np.asarray(state[state_key])[-1]
-        return self._relative(values, reference, action_config, to_absolute)
-
-    def apply_action(self, action: Dict[str, np.ndarray], embodiment_tag: str,
-                     state: Dict[str, np.ndarray]) -> Dict[str, np.ndarray]:
-        cfg = self.modality_configs[embodiment_tag]['action']
-        action_configs = cfg.get('action_configs') or [
-            {} for _ in cfg['modality_keys']
-        ]
-        result = {}
-        for key, action_config in zip(cfg['modality_keys'], action_configs):
-            values = deepcopy(action[key])
-            values = self._maybe_relative(
-                values, state, key, action_config, to_absolute=False)
-            result[key] = self._normalize(values, embodiment_tag, 'action',
-                                          key)
-        return result
+        return self._relative_to_absolute(values, reference, action_config)
 
     def unapply_action(
         self,
@@ -352,8 +252,8 @@ class ModalityStateActionCodec:
                     action_config, 'rep', '') == 'RELATIVE'):
                 if state is None:
                     raise ValueError(f'State is required to decode {key!r}.')
-                values = self._maybe_relative(
-                    values, state, key, action_config, to_absolute=True)
+                values = self._maybe_relative(values, state, key,
+                                              action_config)
             result[key] = values
         return result
 
@@ -374,24 +274,6 @@ class ModalityStateActionCodec:
             decoded[key] = action[..., :horizon, start_idx:start_idx + dim]
             start_idx += dim
         return self.unapply_action(decoded, embodiment_key, state=state)
-
-    def apply(self, state: Dict[str, np.ndarray],
-              action: Dict[str, np.ndarray], embodiment_tag: str):
-        processed_state = self.apply_state(state, embodiment_tag)
-        if action:
-            processed_action = self.apply_action(action, embodiment_tag, state)
-        else:
-            assert not self.training, 'Action is required in training mode'
-            processed_action = {}
-        return processed_state, processed_action
-
-    def get_action_dim(self, embodiment_tag: str) -> int:
-        total = 0
-        for key in self.modality_configs[embodiment_tag]['action'][
-                'modality_keys']:
-            total += int(
-                self.norm_params[embodiment_tag]['action'][key]['dim'])
-        return total
 
 
 def load_groot_n17_metadata(
@@ -450,7 +332,3 @@ def load_groot_n17_metadata(
         if key in kwargs and kwargs[key] is not None:
             processor_kwargs[key] = kwargs[key]
     return processor_kwargs
-
-
-# Backward-compatible aliases while the old processor facade remains as a
-# golden-reference path.
