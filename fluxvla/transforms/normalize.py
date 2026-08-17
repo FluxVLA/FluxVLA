@@ -436,6 +436,11 @@ class NormalizeStatesAndActions:
             that contains the state information.
         action_key (str | None): The key in the data dictionary
             that contains the action information. If None, actions are skipped.
+        valid_action_dim (int | None): Number of non-padding action dimensions
+            used when constructing a per-dimension action mask.
+        mark_all_action_steps_valid (bool): Replace the temporal action mask
+            with a mask that enables ``valid_action_dim`` dimensions at every
+            action step. Defaults to False.
     """
 
     def __init__(self,
@@ -458,6 +463,8 @@ class NormalizeStatesAndActions:
                  pad_invalid_action_delta_dims: bool = False,
                  delta_action_dim_mask: List[bool] = None,
                  action_pad_mask_key: str = 'action_masks',
+                 valid_action_dim: int = None,
+                 mark_all_action_steps_valid: bool = False,
                  output_dtype: Optional[str] = None,
                  *args,
                  **kwargs):
@@ -480,9 +487,10 @@ class NormalizeStatesAndActions:
             raise ValueError(
                 f'output_dtype must be a floating dtype, got {output_dtype!r}')
         if action_norm_mask is not None:
-            if action_dim is not None:
-                assert len(action_norm_mask) == action_dim, \
-                    f'Action norm mask must be of length {action_dim}'
+            if (action_dim is not None and len(action_norm_mask) > action_dim):
+                raise ValueError(
+                    'Action norm mask cannot be wider than the target action '
+                    f'dimension {action_dim}, got {len(action_norm_mask)}.')
             self.action_norm_mask = action_norm_mask
         else:
             self.action_norm_mask = None
@@ -493,6 +501,17 @@ class NormalizeStatesAndActions:
         self.discrete_norm_type = discrete_norm_type
         self.pad_invalid_action_delta_dims = pad_invalid_action_delta_dims
         self.action_pad_mask_key = action_pad_mask_key
+        self.valid_action_dim = (
+            int(valid_action_dim) if valid_action_dim is not None else None)
+        self.mark_all_action_steps_valid = bool(mark_all_action_steps_valid)
+        if self.mark_all_action_steps_valid:
+            if self.action_dim is None or self.valid_action_dim is None:
+                raise ValueError('`action_dim` and `valid_action_dim` are '
+                                 'required when '
+                                 '`mark_all_action_steps_valid=True`.')
+            if not 0 < self.valid_action_dim <= self.action_dim:
+                raise ValueError('`valid_action_dim` must be in '
+                                 '(0, action_dim].')
         if delta_action_dim_mask is not None:
             assert len(delta_action_dim_mask) == action_dim, \
                 f'Delta action dim mask must be of length {action_dim}'
@@ -506,6 +525,12 @@ class NormalizeStatesAndActions:
         actions = None
         if self.action_key is not None and 'actions' in data:
             actions = np.asarray(data['actions'], dtype=np.float32)
+            if (self.action_norm_mask is not None
+                    and len(self.action_norm_mask) != actions.shape[-1]):
+                raise ValueError(
+                    'Action norm mask must match the unpadded action '
+                    f'dimension {actions.shape[-1]}, got '
+                    f'{len(self.action_norm_mask)}.')
             actions = self._zero_padded_delta_action_dims(data, actions)
 
         needs_state_stats = (
@@ -550,6 +575,11 @@ class NormalizeStatesAndActions:
             if actions is not None:
                 data['actions'] = np.asarray(data['actions']).astype(
                     self.output_dtype, copy=False)
+        if actions is not None and self.mark_all_action_steps_valid:
+            action_masks = np.zeros(
+                np.asarray(data['actions']).shape, dtype=np.float32)
+            action_masks[..., :self.valid_action_dim] = 1.0
+            data[self.action_pad_mask_key] = action_masks
         return data
 
     def _zero_padded_delta_action_dims(self, data: Dict,
@@ -683,6 +713,8 @@ class SinCosKeys:
 
     This is useful for source datasets that encode each scalar state dimension
     as ``[sin(x), cos(x)]`` before concatenating the final proprio vector.
+    ``expand_axis`` can add a preserved singleton/token dimension after the
+    encoding without requiring a model-specific reshape transform.
     """
 
     def __init__(self,
@@ -691,7 +723,8 @@ class SinCosKeys:
                  interleave: bool = True,
                  backend: str = 'numpy',
                  dtype: str = 'float32',
-                 pad_value: float = 0.0) -> None:
+                 pad_value: float = 0.0,
+                 expand_axis: Optional[int] = None) -> None:
         if isinstance(keys, str):
             keys = [keys]
         self.keys = keys
@@ -702,6 +735,7 @@ class SinCosKeys:
             raise ValueError("SinCosKeys backend must be 'numpy' or 'torch'.")
         self.dtype = np.dtype(dtype)
         self.pad_value = pad_value
+        self.expand_axis = expand_axis
 
     def __call__(self, data: Dict) -> Dict:
         for key in self.keys:
@@ -743,6 +777,8 @@ class SinCosKeys:
         target_dim = self._target_dim(key)
         if target_dim is not None:
             encoded = self._pad_or_truncate_last_dim(encoded, int(target_dim))
+        if self.expand_axis is not None:
+            encoded = np.expand_dims(encoded, axis=self.expand_axis)
 
         if is_tensor:
             dtype = tensor_dtype if tensor_dtype.is_floating_point else None

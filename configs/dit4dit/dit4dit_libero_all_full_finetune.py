@@ -320,10 +320,15 @@ _dit4dit_train_transforms = [
         keep_time_dim=True,
     ),
     dict(
+        type='PrepareVideo',
+        input_layout='tchw',
+    ),
+    dict(
         type='SinCosKeys',
         keys=['states'],
         target_dims={'states': _state_dim},
         interleave=True,
+        expand_axis=0,
         # The source StateActionSinCosTransform uses torch.float32 kernels.
         backend='torch',
     ),
@@ -331,7 +336,7 @@ _dit4dit_train_transforms = [
         type='NormalizeStatesAndActions',
         state_key='proprio',
         action_key='action',
-        action_dim=None,
+        action_dim=_action_dim,
         state_dim=None,
         state_norm_type='none',
         action_norm_type='min_max',
@@ -341,22 +346,11 @@ _dit4dit_train_transforms = [
         # The source torch normalizer divides by (max - min) exactly.
         normalization_epsilon=0.0,
         preserve_input_dtype=True,
+        valid_action_dim=_ori_action_dim,
+        mark_all_action_steps_valid=True,
         # The source casts normalized actions and sin/cos states to float16
         # before padding and collation.
         output_dtype='float16',
-    ),
-    dict(
-        type='PadActionsAndActionMasks',
-        action_dim=_action_dim,
-        valid_action_dim=_ori_action_dim,
-    ),
-    dict(
-        type='PrepareDiT4DiTInputs',
-        state_dim=_state_dim,
-        action_horizon=_action_horizon,
-        action_dim=_action_dim,
-        valid_action_dim=_ori_action_dim,
-        mark_all_action_steps_valid=True,
     ),
 ]
 
@@ -503,9 +497,36 @@ eval = dict(
                 remove_input_key=True,
             ),
             dict(
-                type='ProcessDiT4DiTLiberoEvalInputs',
+                type='ProcessLiberoEvalInputs',
                 img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
-                image_size=_image_size,
+                use_pil=False,
+            ),
+            dict(
+                type='ResizeImages',
+                key='pixel_values',
+                height=_image_size,
+                width=_image_size,
+                backend='cv2',
+                interpolation='area',
+                output_layout='nchw',
+            ),
+            dict(
+                type='ConcatImagesHorizontally',
+                key='pixel_values',
+                num_views=2,
+                views_first=True,
+                keep_time_dim=True,
+                preserve_mask_container=True,
+            ),
+            dict(
+                type='SimpleNormalizeImages',
+                key='pixel_values',
+                preserve_leading_dims=True,
+                output_type='torch',
+            ),
+            dict(
+                type='PrepareVideo',
+                input_layout='tchw',
             ),
             dict(
                 type='LiberoProprioFromInputs',
@@ -521,12 +542,7 @@ eval = dict(
                 keys=['states'],
                 target_dims={'states': _state_dim},
                 interleave=True,
-            ),
-            dict(
-                type='PrepareDiT4DiTInputs',
-                image_key='pixel_values',
-                state_dim=_state_dim,
-                require_actions=False,
+                expand_axis=0,
             ),
         ],
     ),
