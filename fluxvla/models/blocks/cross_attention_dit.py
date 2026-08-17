@@ -217,9 +217,8 @@ class BasicTransformerBlock(nn.Module):
         attn_output = self.attn1(
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states,
-            attention_mask=(encoder_attention_mask
-                            if encoder_hidden_states is not None else
-                            attention_mask),
+            attention_mask=(encoder_attention_mask if encoder_hidden_states
+                            is not None else attention_mask),
         )
         if self.final_dropout:
             attn_output = self.final_dropout(attn_output)

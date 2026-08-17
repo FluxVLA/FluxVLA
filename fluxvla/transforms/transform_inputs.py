@@ -14,7 +14,6 @@
 
 import os
 import random
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import av

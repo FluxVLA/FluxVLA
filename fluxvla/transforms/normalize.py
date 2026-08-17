@@ -556,7 +556,7 @@ class NormalizeStatesAndActions:
             actions is not None and self.action_norm_type != 'none')
         if needs_state_stats or needs_action_stats:
             assert self.statistics_key in data, (
-                f"Input data must contain {self.statistics_key!r} key")
+                f'Input data must contain {self.statistics_key!r} key')
             statistics = data[self.statistics_key]
 
         if needs_state_stats:
