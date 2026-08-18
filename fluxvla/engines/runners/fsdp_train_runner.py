@@ -67,6 +67,8 @@ class FSDPTrainRunner(BaseTrainRunner):
         keep_params_fp32 (bool, optional): Keep master parameters and floating
             batch inputs in FP32 while autocast controls compute precision.
             Defaults to False.
+        deterministic_algorithms (bool, optional): Require deterministic
+            PyTorch/CUDA kernels, including SDPA backward. Defaults to False.
         sharding_strategy (str, optional): Sharding strategy for FSDP.
             Defaults to 'hybrid-shard'.
         fsdp_wrap_policy (str, optional): FSDP auto-wrap granularity. ``model``
@@ -94,7 +96,7 @@ class FSDPTrainRunner(BaseTrainRunner):
                  mixed_precision_dtype: str = 'bf16',
                  keep_params_fp32: bool = False,
                  grad_accumulation_steps: int = 1,
-                 target_global_batch_size: Optional[int] = None,
+                 deterministic_algorithms: bool = False,
                  ema_decay: Optional[float] = None,
                  seed: Optional[int] = None,
                  evaluator: Optional[Dict] = None,
@@ -129,7 +131,7 @@ class FSDPTrainRunner(BaseTrainRunner):
             mixed_precision_dtype=mixed_precision_dtype,
             keep_params_fp32=keep_params_fp32,
             grad_accumulation_steps=grad_accumulation_steps,
-            target_global_batch_size=target_global_batch_size,
+            deterministic_algorithms=deterministic_algorithms,
             ema_decay=ema_decay,
             seed=seed,
             evaluator=evaluator,
@@ -534,6 +536,7 @@ class FSDPTrainRunner(BaseTrainRunner):
             f'         |-> Distributed World Size = {overwatch.world_size()}\n'  # noqa: E221, E501
             f'         |-> Gradient Accumulation Steps = {self.grad_accumulation_steps}\n\n'  # noqa: E221, E501
             f'         |-> LLM Backbone FSDP Gradient Checkpointing = {self.enable_gradient_checkpointing}\n'  # noqa: E221, E501
+            f'         |-> Deterministic Algorithms = {self.deterministic_algorithms}\n'  # noqa: E221, E501
             f'         |-> Use FSDP Mixed Precision = {self.enable_mixed_precision_training}\n'  # noqa: E221, E501
             f'                 |-> Parameter Precision = {fsdp_precision_policy.param_dtype}\n'  # noqa: E221, E501
             f'                 |-> Reduction Precision = {fsdp_precision_policy.reduce_dtype}\n'  # noqa: E221, E501

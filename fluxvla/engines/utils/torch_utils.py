@@ -22,6 +22,41 @@ import torch
 # === Randomness ===
 
 DEFAULT_INFERENCE_SDPA_BACKENDS = None
+_DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS = frozenset({':16:8', ':4096:8'})
+
+
+def configure_deterministic_training(enabled: bool,
+                                     cublas_workspace_config: str = ':4096:8'
+                                     ) -> None:
+    """Enable deterministic CUDA training before the first CUDA matmul.
+
+    PyTorch's deterministic SDPA backward path also requires a deterministic
+    cuBLAS workspace configuration. Keeping both switches behind one runner
+    option avoids a partially configured run that still diverges after the
+    first optimizer update.
+    """
+    if not enabled:
+        return
+
+    cublas_workspace_config = str(cublas_workspace_config)
+    if cublas_workspace_config not in \
+            _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS:
+        raise ValueError(
+            'cublas_workspace_config must be one of '
+            f'{sorted(_DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS)}, got '
+            f'{cublas_workspace_config!r}.')
+
+    configured_workspace = os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG',
+                                                 cublas_workspace_config)
+    if configured_workspace not in _DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS:
+        raise ValueError(
+            'Deterministic training requires CUBLAS_WORKSPACE_CONFIG to be '
+            f'one of {sorted(_DETERMINISTIC_CUBLAS_WORKSPACE_CONFIGS)}, got '
+            f'{configured_workspace!r}.')
+
+    torch.use_deterministic_algorithms(True)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def configure_sdpa_backends_from_env(default: str = None) -> None:

@@ -116,7 +116,7 @@ class DDPTrainRunner(BaseTrainRunner):
                  mixed_precision_dtype: str = 'bf16',
                  keep_params_fp32: bool = False,
                  grad_accumulation_steps: int = 1,
-                 target_global_batch_size: Optional[int] = None,
+                 deterministic_algorithms: bool = False,
                  ema_decay: Optional[float] = None,
                  seed: Optional[int] = None,
                  evaluator: Optional[Dict] = None,
@@ -149,7 +149,7 @@ class DDPTrainRunner(BaseTrainRunner):
             mixed_precision_dtype=mixed_precision_dtype,
             keep_params_fp32=keep_params_fp32,
             grad_accumulation_steps=grad_accumulation_steps,
-            target_global_batch_size=target_global_batch_size,
+            deterministic_algorithms=deterministic_algorithms,
             ema_decay=ema_decay,
             seed=seed,
             evaluator=evaluator,
@@ -311,6 +311,7 @@ class DDPTrainRunner(BaseTrainRunner):
                 f'|-> Distributed World Size = {overwatch.world_size()}\n'
                 f'|-> Gradient Accumulation Steps = {self.grad_accumulation_steps}\n\n'  # noqa: E501
                 f'|-> Gradient Checkpointing = {self.enable_gradient_checkpointing}\n'  # noqa: E501
+                f'|-> Deterministic Algorithms = {self.deterministic_algorithms}\n'  # noqa: E501
                 f'|-> DDP Static Graph = {self.static_graph}\n'
                 f'|-> Mixed Precision Training = {self.enable_mixed_precision_training}\n'  # noqa: E501
                 f'|-> Mixed Precision Dtype = {self.mixed_precision_dtype}\n')

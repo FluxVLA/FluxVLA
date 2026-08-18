@@ -31,7 +31,8 @@ from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from fluxvla.engines.utils import check_bloat16_supported
 from fluxvla.engines.utils.name_map import str_to_dtype
-from fluxvla.engines.utils.torch_utils import worker_init_function
+from fluxvla.engines.utils.torch_utils import (
+    configure_deterministic_training, worker_init_function)
 from ..utils import (build_evaluator_from_cfg, build_lr_scheduler_from_cfg,
                      build_tokenizer_from_cfg, initialize_overwatch)
 
@@ -69,6 +70,8 @@ class BaseTrainRunner(ABC):
         keep_params_fp32 (bool, optional): Keep model parameters and floating
             batch inputs in FP32 while autocast controls compute precision.
             Defaults to False.
+        deterministic_algorithms (bool, optional): Require deterministic
+            PyTorch/CUDA kernels, including SDPA backward. Defaults to False.
         sharding_strategy (str, optional): Sharding strategy for
             distributed training. Defaults to 'full-shard'.
     """
@@ -92,7 +95,7 @@ class BaseTrainRunner(ABC):
                  mixed_precision_dtype: str = 'bf16',
                  keep_params_fp32: bool = False,
                  grad_accumulation_steps: int = 1,
-                 target_global_batch_size: Optional[int] = None,
+                 deterministic_algorithms: bool = False,
                  ema_decay: Optional[float] = None,
                  seed: Optional[int] = None,
                  evaluator: Optional[Dict] = None,
@@ -101,20 +104,9 @@ class BaseTrainRunner(ABC):
         from ..utils.builder import (build_collator_from_cfg,
                                      build_metric_from_cfg, build_vla_from_cfg)
 
+        configure_deterministic_training(deterministic_algorithms)
+
         per_device_batch_size = cfg.train_dataloader.per_device_batch_size
-        if target_global_batch_size is not None:
-            target_global_batch_size = int(target_global_batch_size)
-            data_parallel_batch = (
-                per_device_batch_size * overwatch.world_size())
-            if (target_global_batch_size < data_parallel_batch
-                    or target_global_batch_size % data_parallel_batch != 0):
-                raise ValueError(
-                    'target_global_batch_size must be a positive multiple of '
-                    'per_device_batch_size * world_size, got '
-                    f'{target_global_batch_size} versus '
-                    f'{per_device_batch_size} * {overwatch.world_size()}.')
-            grad_accumulation_steps = (
-                target_global_batch_size // data_parallel_batch)
         grad_accumulation_steps = int(grad_accumulation_steps)
         assert grad_accumulation_steps >= 1, \
             'Gradient accumulation steps must be >= 1!'
@@ -163,8 +155,8 @@ class BaseTrainRunner(ABC):
         self.reduce_in_full_precision = reduce_in_full_precision
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
         self.keep_params_fp32 = bool(keep_params_fp32)
+        self.deterministic_algorithms = bool(deterministic_algorithms)
         self.per_device_batch_size = per_device_batch_size
-        self.target_global_batch_size = target_global_batch_size
         self.grad_accumulation_steps = grad_accumulation_steps
         if ema_decay is not None and not 0.0 < float(ema_decay) < 1.0:
             raise ValueError('ema_decay must be in (0, 1) when provided.')
