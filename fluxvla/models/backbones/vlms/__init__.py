@@ -25,7 +25,9 @@ import_heterogeneous_runtime_symbols(
         'qwen2_5_vl': ['QWen2_5VL'],
         'smolvlm': ['SmolVLMBackbone'],
         'qwen3_vl': ['Qwen3VL'],
-        'wan_backbone': ['WanBackbone'],
+        'wan_backbone': ['WanBaseBackbone'],
+        'wan21_backbone': ['Wan21Backbone'],
+        'wan22_backbone': ['Wan22Backbone'],
     },
     runtime_missing_names=['transformers.models.qwen3_vl'],
 )

@@ -155,7 +155,6 @@ runner = dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
         run_dir='work_dirs',
-        grad_accumulation_steps=1,
         window_size=1),
     lr_scheduler=dict(type='constant'),
     enable_gradient_checkpointing=False,

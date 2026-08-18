@@ -369,7 +369,8 @@ class LiberoPromptFromInputs:
                  prompt_suffix: str = '',
                  use_conversation: bool = True,
                  negative_prompt: str = None,
-                 add_new_line: bool = False) -> None:
+                 add_new_line: bool = False,
+                 prompt_template: str = None) -> None:
         from fluxvla.engines import build_tokenizer_from_cfg
         if model_path is not None:
             tokenizer['model_path'] = os.path.join(model_path, 'tokenizer')
@@ -380,6 +381,7 @@ class LiberoPromptFromInputs:
         self.use_conversation = use_conversation
         self.negative_prompt = negative_prompt
         self.add_new_line = add_new_line
+        self.prompt_template = prompt_template
 
     def _tokenize_single_prompt(self, prompt: str):
         token_ids = self.tokenizer(prompt)['input_ids']
@@ -397,7 +399,9 @@ class LiberoPromptFromInputs:
     def __call__(self, inputs: Dict) -> Dict:
         assert 'task_description' in inputs, "inputs must contain 'task_description'"  # noqa: E501
         task_description = inputs['task_description']
-        if self.use_conversation:
+        if self.prompt_template is not None:
+            prompt = self.prompt_template.format(task=task_description)
+        elif self.use_conversation:
             prompt = ('In: What action should the robot take to ' +
                       str(task_description).lower() + '?\nOut:' +
                       self.prompt_suffix)

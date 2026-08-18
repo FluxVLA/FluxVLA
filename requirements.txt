@@ -1,5 +1,6 @@
 # Full FluxVLA dependency set.
 # Install CUDA PyTorch first, or use scripts/install_env.sh.
+# TorchCodec is optional and installed version-aware by the environment scripts.
 -r requirements-base.txt
 -r requirements-sim.txt
 -r requirements-real.txt

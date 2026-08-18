@@ -14,8 +14,8 @@
 """Shared LeRobot video path resolution and frame decoding."""
 
 from __future__ import annotations
-import importlib.util
 import os
+from functools import lru_cache
 from pathlib import Path
 from typing import Dict, List, Mapping, Optional, Union
 
@@ -25,6 +25,29 @@ import torchvision
 from fluxvla.engines import initialize_overwatch
 
 overwatch = initialize_overwatch(__name__)
+
+
+@lru_cache(maxsize=1)
+def _probe_torchcodec_video_decoder():
+    """Retain the result of the native TorchCodec import probe."""
+    try:
+        from torchcodec.decoders import VideoDecoder
+    except Exception as err:  # noqa: BLE001
+        return None, err
+    return VideoDecoder, None
+
+
+def _get_torchcodec_video_decoder():
+    """Return the decoder class or raise an actionable import error."""
+    decoder_class, import_error = _probe_torchcodec_video_decoder()
+    if import_error is not None:
+        raise RuntimeError(
+            'TorchCodec could not be imported. Run '
+            '`bash scripts/update_env.sh --skip-pull`, or install a version '
+            'matching PyTorch (torch 2.8: torchcodec 0.7.0; torch 2.6: '
+            'torchcodec 0.2.1) and make sure FFmpeg shared libraries are '
+            'available.') from import_error
+    return decoder_class
 
 
 def build_lerobot_video_path(
@@ -138,7 +161,7 @@ def decode_video_frames_torchcodec(
     log_loaded_timestamps: bool = False,
 ) -> torch.Tensor:
     """Decode frames at ``timestamps`` with torchcodec."""
-    from torchcodec.decoders import VideoDecoder
+    VideoDecoder = _get_torchcodec_video_decoder()
 
     decoder = VideoDecoder(
         str(video_path), device=device, seek_mode='approximate')
@@ -160,20 +183,24 @@ def decode_video_frames_torchcodec(
     min_dist, argmin = dist.min(1)
 
     is_within_tol = min_dist < tolerance_s
-    assert is_within_tol.all(), (
-        'One or several query timestamps unexpectedly violate the '
-        f'tolerance ({min_dist[~is_within_tol]} > {tolerance_s=}).'
-        '\nqueried timestamps: '
-        f'{query_ts}'
-        '\nloaded timestamps: '
-        f'{loaded_ts}'
-        f'\nvideo: {video_path}')
+    if not is_within_tol.all():
+        raise ValueError(
+            'One or several query timestamps unexpectedly violate the '
+            f'tolerance ({min_dist[~is_within_tol]} > {tolerance_s=}).'
+            '\nqueried timestamps: '
+            f'{query_ts}'
+            '\nloaded timestamps: '
+            f'{loaded_ts}'
+            f'\nvideo: {video_path}')
 
     closest_frames = torch.stack([loaded_frames[idx] for idx in argmin])
     if log_loaded_timestamps:
         overwatch.info('closest_ts=%s', loaded_ts[argmin])
 
-    assert len(timestamps) == len(closest_frames)
+    if len(timestamps) != len(closest_frames):
+        raise ValueError(
+            'TorchCodec returned an unexpected number of frames: '
+            f'{len(closest_frames)} != {len(timestamps)} for {video_path}')
     return closest_frames
 
 
@@ -186,13 +213,7 @@ def decode_video_frames(
 ) -> torch.Tensor:
     """Decode frames at ``timestamps`` using the requested backend."""
     if backend is None:
-        if importlib.util.find_spec('torchcodec') is not None:
-            backend = 'torchcodec'
-        else:
-            overwatch.warning(
-                "'torchcodec' is not available in your platform, falling back "
-                "to 'pyav' as a default decoder")
-            backend = 'pyav'
+        backend = 'pyav'
 
     if backend == 'torchcodec':
         try:
@@ -202,16 +223,12 @@ def decode_video_frames(
                 tolerance_s=tolerance_s,
                 log_loaded_timestamps=log_loaded_timestamps)
         except Exception as err:  # noqa: BLE001
-            overwatch.warning(
-                'torchcodec video decode failed (%s: %s); falling back to '
-                'torchvision/pyav.',
-                type(err).__name__, err)
-            return decode_video_frames_torchvision(
-                video_path,
-                timestamps,
-                tolerance_s=tolerance_s,
-                backend='pyav',
-                log_loaded_timestamps=log_loaded_timestamps)
+            raise RuntimeError(
+                'The explicitly requested TorchCodec backend failed for '
+                f'video={str(video_path)!r}, timestamps={timestamps!r}, '
+                f'tolerance_s={tolerance_s}. No fallback was attempted. '
+                'Run `bash scripts/update_env.sh --skip-pull` if the '
+                'dependency is missing or incompatible.') from err
 
     if backend in ('pyav', 'video_reader'):
         return decode_video_frames_torchvision(

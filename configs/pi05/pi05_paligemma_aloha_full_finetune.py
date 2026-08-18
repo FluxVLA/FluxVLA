@@ -208,7 +208,6 @@ runner = dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
         run_dir='work_dirs',
-        grad_accumulation_steps=1,
         window_size=1),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,

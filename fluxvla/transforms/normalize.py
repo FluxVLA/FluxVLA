@@ -394,6 +394,9 @@ class NormalizeStatesAndActions:
                  discrete_action_dims: List[int] = None,
                  discrete_state_dims: List[int] = None,
                  discrete_norm_type: str = 'min_max',
+                 pad_invalid_action_delta_dims: bool = False,
+                 delta_action_dim_mask: List[bool] = None,
+                 action_pad_mask_key: str = 'action_masks',
                  *args,
                  **kwargs):
         self.state_key = state_key
@@ -418,12 +421,22 @@ class NormalizeStatesAndActions:
         self.discrete_state_dims = (
             list(discrete_state_dims) if discrete_state_dims else None)
         self.discrete_norm_type = discrete_norm_type
+        self.pad_invalid_action_delta_dims = pad_invalid_action_delta_dims
+        self.action_pad_mask_key = action_pad_mask_key
+        if delta_action_dim_mask is not None:
+            assert len(delta_action_dim_mask) == action_dim, \
+                f'Delta action dim mask must be of length {action_dim}'
+            self.delta_action_dim_mask = np.asarray(
+                delta_action_dim_mask, dtype=bool)
+        else:
+            self.delta_action_dim_mask = None
 
     def __call__(self, data: Dict) -> Dict:
         states = np.asarray(data['states'], dtype=np.float32)
         actions = None
         if self.action_key is not None and 'actions' in data:
             actions = np.asarray(data['actions'], dtype=np.float32)
+            actions = self._zero_padded_delta_action_dims(data, actions)
 
         needs_state_stats = (
             self.normalize_states and self.state_norm_type != 'none')
@@ -458,6 +471,32 @@ class NormalizeStatesAndActions:
             data['actions'] = self._pad_or_truncate_last_dim(
                 actions, self.action_dim)
         return data
+
+    def _zero_padded_delta_action_dims(self, data: Dict,
+                                       actions: np.ndarray) -> np.ndarray:
+        if (not self.pad_invalid_action_delta_dims
+                or self.delta_action_dim_mask is None
+                or self.action_pad_mask_key not in data):
+            return actions
+        action_valid = np.asarray(data[self.action_pad_mask_key]).astype(bool)
+        if action_valid.ndim != 1:
+            action_valid = action_valid.reshape(-1)
+        if action_valid.shape[0] != actions.shape[0]:
+            raise ValueError(
+                f'{self.action_pad_mask_key} length {action_valid.shape[0]} '
+                f'does not match actions length {actions.shape[0]}.')
+        if self.delta_action_dim_mask.shape[0] != actions.shape[-1]:
+            raise ValueError(
+                f'Delta action dim mask length '
+                f'{self.delta_action_dim_mask.shape[0]} does not match '
+                f'action dim {actions.shape[-1]}.')
+        invalid_delta = (
+            ~action_valid)[:, None] & self.delta_action_dim_mask[None, :]
+        if not invalid_delta.any():
+            return actions
+        actions = actions.copy()
+        actions[invalid_delta] = 0.0
+        return actions
 
     def _pad_or_truncate_last_dim(self, values: np.ndarray,
                                   target_dim: int) -> np.ndarray:
@@ -569,7 +608,12 @@ class LiberoProprioFromInputs:
                  quat_key: str = 'robot0_eef_quat',
                  gripper_key: str = 'robot0_gripper_qpos',
                  stat_key: str = 'proprio',
-                 out_key: str = 'states') -> None:
+                 out_key: str = 'states',
+                 stat_field: str = 'state',
+                 stat_subkey: str = 'default',
+                 prefix: str = 'global',
+                 linear_mode: str = 'min/max',
+                 clamp: float = 5.0) -> None:
         self.norm_type = norm_type
         self.state_dim = state_dim
         self.pos_key = pos_key
@@ -577,6 +621,11 @@ class LiberoProprioFromInputs:
         self.gripper_key = gripper_key
         self.out_key = out_key
         self.stat_key = stat_key
+        self.stat_field = stat_field
+        self.stat_subkey = stat_subkey
+        self.prefix = prefix
+        self.linear_mode = linear_mode
+        self.clamp = float(clamp)
 
     def __call__(self, data: Dict) -> Dict:
         assert self.pos_key in data and self.quat_key in \
@@ -592,13 +641,22 @@ class LiberoProprioFromInputs:
             robot0_gripper_qpos,
         ))
 
-        stats = data['norm_stats'][self.stat_key]
-        if self.norm_type == 'quantile':
-            state = self._normalize_quantile(state, stats)
-        elif self.norm_type == 'min_max':
-            state = self._normalize_min_max(state, stats)
-        else:  # norm_type == 'mean_std'
-            state = self._normalize(state, stats)
+        if self.norm_type == 'linear':
+            raw = data['norm_stats'][self.stat_field][self.stat_subkey]
+            lin_stats = _select_prefixed_stats(raw, self.prefix)
+            scale, offset = _linear_norm_scale_offset(lin_stats,
+                                                      self.linear_mode)
+            state_t = torch.as_tensor(state, dtype=torch.float32)
+            state = torch.clamp(state_t * scale + offset, -self.clamp,
+                                self.clamp).numpy()
+        else:
+            stats = data['norm_stats'][self.stat_key]
+            if self.norm_type == 'quantile':
+                state = self._normalize_quantile(state, stats)
+            elif self.norm_type == 'min_max':
+                state = self._normalize_min_max(state, stats)
+            else:  # norm_type == 'mean_std'
+                state = self._normalize(state, stats)
 
         out = dict(data)
         if self.state_dim is not None:
@@ -656,3 +714,51 @@ class LiberoProprioFromInputs:
                 2 * (normalized_states - state_low) /
                 (state_high - state_low + 1e-8) - 1, -1, 1), normalized_states)
         return states
+
+
+def _select_prefixed_stats(raw: Dict, prefix: Optional[str]) -> Dict:
+    """Strip a ``{prefix}_`` prefix from flat ``dataset_stats`` keys.
+
+    Some statistics files store multiple families such as ``global_*`` and
+    ``stepwise_*`` per field. This selects one family and drops the prefix.
+    With ``prefix=None`` the stats are returned unchanged.
+    """
+    if not prefix:
+        return dict(raw)
+    token = prefix + '_'
+    return {k[len(token):]: v for k, v in raw.items() if k.startswith(token)}
+
+
+def _linear_norm_scale_offset(stats: Dict, mode: str):
+    """Return ``(scale, offset)`` for ``clamp(x * scale + offset)``."""
+    std_reg = 1e-8
+    range_tol = 1e-4
+    output_max = 1.0
+    output_min = -1.0
+
+    if mode == 'z-score':
+        input_mean = torch.as_tensor(stats['mean'], dtype=torch.float32)
+        input_std = torch.as_tensor(stats['std'], dtype=torch.float32)
+        scale = 1.0 / (input_std + std_reg)
+        offset = -input_mean / (input_std + std_reg)
+        return scale, offset
+
+    if mode == 'min/max':
+        input_min = torch.as_tensor(stats['min'], dtype=torch.float32)
+        input_max = torch.as_tensor(stats['max'], dtype=torch.float32)
+    elif mode == 'q01/q99':
+        input_min = torch.as_tensor(stats['q01'], dtype=torch.float32)
+        input_max = torch.as_tensor(stats['q99'], dtype=torch.float32)
+    else:
+        lo, hi = map(float, mode.split('/'))
+        ref = torch.as_tensor(stats['min'], dtype=torch.float32)
+        input_min = torch.full_like(ref, lo)
+        input_max = torch.full_like(ref, hi)
+
+    input_range = (input_max - input_min).clone()
+    ignore_dim = input_range < range_tol
+    input_range[ignore_dim] = output_max - output_min
+    scale = (output_max - output_min) / input_range
+    offset = output_min - scale * input_min
+    offset[ignore_dim] = (output_max + output_min) / 2 - input_min[ignore_dim]
+    return scale, offset

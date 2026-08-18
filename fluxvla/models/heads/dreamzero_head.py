@@ -65,7 +65,7 @@ class DreamZeroHead(nn.Module):
     Wan 2.1 DiT backbone.
 
     This head contains the DiT diffusion model and flow-matching scheduler.
-    Encoding (T5, CLIP, VAE) is handled by ``WanBackbone`` and the encoded
+    Encoding (T5, CLIP, VAE) is handled by ``Wan21Backbone`` and the encoded
     tensors are passed in by ``DreamZeroVLA``.
 
     Args:

@@ -1579,6 +1579,46 @@ install_av_with_conda() {
   run_conda_with_timeout "${conda_bin}" install -y -p "${conda_prefix}" -c conda-forge av=14.4.0
 }
 
+install_torchcodec() {
+  local selected="$1"
+  local platform torch_version torchcodec_spec
+  platform="$(platform_tag)"
+  if [[ "${platform}" != "linux_x86_64" ]]; then
+    echo "Skipping optional TorchCodec on ${platform}; video decoding will use PyAV."
+    return
+  fi
+
+  torch_version="$(profile_torch_version "${selected}")"
+  case "${torch_version}" in
+    2.6)
+      torchcodec_spec="torchcodec==0.2.1"
+      ;;
+    2.8)
+      torchcodec_spec="torchcodec==0.7.0"
+      ;;
+    *)
+      echo "Skipping optional TorchCodec for unsupported torch ${torch_version}; video decoding will use PyAV." >&2
+      return
+      ;;
+  esac
+
+  if ! pip_install_with_mirrors "${torchcodec_spec}"; then
+    echo "Warning: failed to install optional ${torchcodec_spec}; video decoding will use PyAV." >&2
+    return
+  fi
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "+ verify TorchCodec import"
+    return
+  fi
+  if ! "${PYTHON_BIN}" - <<'PY'
+from torchcodec.decoders import VideoDecoder  # noqa: F401
+print("TorchCodec import verified")
+PY
+  then
+    echo "Warning: TorchCodec was installed but cannot be imported; video decoding will use PyAV unless torchcodec is requested explicitly." >&2
+  fi
+}
+
 install_requirements() {
   pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-base.txt"
 
@@ -2119,6 +2159,7 @@ main() {
   verify_torch_install "${selected}"
   install_av
   install_requirements
+  install_torchcodec "${selected}"
   install_libero_plus_system_packages
   download_libero_plus_assets
   install_robocasa_sources

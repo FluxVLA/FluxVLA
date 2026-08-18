@@ -121,6 +121,49 @@ pip_install() {
   return 1
 }
 
+install_torchcodec() {
+  local machine torch_version torchcodec_spec
+  machine="$(uname -m)"
+  case "${machine}" in
+    x86_64|amd64)
+      ;;
+    *)
+      echo "Skipping optional TorchCodec on ${machine}; video decoding will use PyAV."
+      return
+      ;;
+  esac
+
+  if ! torch_version="$("${PYTHON_BIN}" -c 'import torch; print(".".join(torch.__version__.split("+", 1)[0].split(".")[:2]))')"; then
+    echo "Warning: unable to detect PyTorch; skipping optional TorchCodec." >&2
+    return
+  fi
+  case "${torch_version}" in
+    2.6)
+      torchcodec_spec="torchcodec==0.2.1"
+      ;;
+    2.8)
+      torchcodec_spec="torchcodec==0.7.0"
+      ;;
+    *)
+      echo "Warning: torch ${torch_version} has no pinned TorchCodec version; keeping the PyAV fallback." >&2
+      return
+      ;;
+  esac
+
+  if ! pip_install "${torchcodec_spec}"; then
+    echo "Warning: failed to install optional ${torchcodec_spec}; video decoding will use PyAV." >&2
+    return
+  fi
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    echo "+ verify TorchCodec import"
+    return
+  fi
+  if ! "${PYTHON_BIN}" -c \
+      'from torchcodec.decoders import VideoDecoder; print("TorchCodec import verified")'; then
+    echo "Warning: TorchCodec was installed but cannot be imported; video decoding will use PyAV unless torchcodec is requested explicitly." >&2
+  fi
+}
+
 cd "${PROJECT_ROOT}"
 
 if [[ "${SKIP_PULL}" -eq 0 ]]; then
@@ -146,6 +189,7 @@ pip_install \
 pip_install --force-reinstall --no-deps "${LIBERO_SPEC}"
 pip_install --force-reinstall --no-deps -e "${LIBERO_PLUS_SPEC}"
 pip_install --force-reinstall --no-deps "${ROBOSUITE_SPEC}"
+install_torchcodec
 
 if [[ "${DRY_RUN}" -eq 1 ]]; then
   echo "+ ${PYTHON_BIN} ${PROJECT_ROOT}/scripts/download_libero_plus_assets.py --validate-only"

@@ -91,7 +91,6 @@ runner = dict(
         type='VLAMetric',
         active_trackers=('jsonl', ),
         run_dir='work_dirs',
-        grad_accumulation_steps=1,
         window_size=20,
     ),
     lr_scheduler=dict(

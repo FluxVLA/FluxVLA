@@ -213,7 +213,8 @@ def get_libero_env(task,
                 'environment with:\n'
                 '  bash scripts/update_env.sh --skip-pull')
         raise ModuleNotFoundError(
-            f'{package} is required for simulation evaluation. Install it with '
+            f'{package} is required for simulation evaluation. '
+            'Install it with '
             '`bash scripts/install_env.sh sim-only` or '
             '`bash scripts/install_env.sh full`.') from exc
 

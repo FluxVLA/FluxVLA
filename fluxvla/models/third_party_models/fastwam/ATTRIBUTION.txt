@@ -1,0 +1,28 @@
+Third-Party Attribution for fastwam
+
+Source projects:
+- Fast-WAM (FastWAM)
+  Paper: Fast-WAM: Do World Action Models Need Test-time Future Imagination?
+  arXiv: https://arxiv.org/abs/2603.16666
+  License: Apache-2.0
+  Note: The numerical kernels under ``modules/`` are derived from the FastWAM
+  ``src/fastwam/models/wan22`` package. FluxVLA retains only the components
+  required by its split ``FastWAMVLA``/``FastWAMHead`` integration; the
+  upstream monolithic model wrappers are intentionally omitted. Adaptations
+  to the retained files include:
+    * the logger import, redirected from ``fastwam.utils.logging_config`` to
+      the local ``._logging`` shim where used;
+    * removal of code unreachable from the supported FluxVLA runtime and
+      complete-checkpoint loading path.
+  The retained numerical paths and checkpoint parameter names are unchanged.
+
+- Alibaba Wan Video (Wan 2.2 TI2V-5B)
+  Upstream location: https://github.com/Wan-Video/Wan2.2
+  License: Apache-2.0
+
+License notes:
+- Please preserve upstream license headers/terms for redistributed files.
+- These files are vendored to keep the FastWAM numerical core importable from
+  FluxVLA without modifying the upstream environment.
+- For release/legal review, verify final compatibility with repository
+  distribution policy.
