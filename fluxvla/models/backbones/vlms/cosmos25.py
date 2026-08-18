@@ -56,16 +56,18 @@ class Cosmos25Backbone(nn.Module):
     The backbone runs the Cosmos2.5 video transformer for one or more denoising
     steps, captures a selected transformer block output, and exposes it as
     ``hidden_states=[Tensor[B, S, D]]`` for an action head. Its primary input
-    is Cosmos-tokenized ``lang_tokens`` from the dataset transform. Raw text
-    prompts remain supported as a compatibility path.
+    is Cosmos-tokenized ``lang_tokens`` from the dataset transform. Language
+    tokenization is intentionally kept out of the model.
 
     Args:
         model_id_or_path: Local path or HF id for Cosmos-Predict2.5.
         revision: HF revision. DiT4DiT uses ``diffusers/base/post-trained``.
         torch_dtype: dtype used to load Cosmos modules.
         local_files_only: Passed to ``from_pretrained``.
+        load_pretrained_weights: Load Cosmos model weights during
+            construction. Set to ``False`` only when a complete FluxVLA
+            checkpoint will be assigned immediately afterwards.
         extract_layer: Transformer block index to hook.
-        max_sequence_length: Text prompt max sequence length.
         trainable: Whether to leave Cosmos parameters trainable.
         split_future_frames: If ``images`` contains a temporal dimension,
             use frame 0 as conditioning and the remaining frames only to infer
@@ -84,8 +86,8 @@ class Cosmos25Backbone(nn.Module):
         revision: str = 'diffusers/base/post-trained',
         torch_dtype: Union[str, torch.dtype] = 'bf16',
         local_files_only: bool = True,
+        load_pretrained_weights: bool = True,
         extract_layer: int = 17,
-        max_sequence_length: int = 512,
         trainable: bool = False,
         frozen_submodules: Optional[Sequence[str]] = None,
         split_future_frames: bool = True,
@@ -116,8 +118,8 @@ class Cosmos25Backbone(nn.Module):
         self.revision = revision
         self.torch_dtype = torch_dtype
         self.local_files_only = local_files_only
+        self.load_pretrained_weights = bool(load_pretrained_weights)
         self.extract_layer = int(extract_layer)
-        self.max_sequence_length = int(max_sequence_length)
         self.trainable = bool(trainable)
         self.frozen_submodules = tuple(frozen_submodules or ())
         self.split_future_frames = bool(split_future_frames)
@@ -142,7 +144,6 @@ class Cosmos25Backbone(nn.Module):
 
         pipe = self._build_pipeline(safety_checker)
         self.text_encoder = pipe.text_encoder
-        self.tokenizer = pipe.tokenizer
         self.transformer = pipe.transformer
         self.vae = pipe.vae
         self.scheduler = pipe.scheduler
@@ -200,11 +201,69 @@ class Cosmos25Backbone(nn.Module):
         if safety_checker is None:
             safety_checker = _DefaultDummySafetyChecker()
 
-        return Cosmos2_5_PredictBasePipeline.from_pretrained(
-            self.model_id_or_path,
+        if self.load_pretrained_weights:
+            return Cosmos2_5_PredictBasePipeline.from_pretrained(
+                self.model_id_or_path,
+                revision=self.revision,
+                torch_dtype=self.torch_dtype,
+                local_files_only=self.local_files_only,
+                safety_checker=safety_checker,
+            )
+        return self._build_empty_pipeline(Cosmos2_5_PredictBasePipeline,
+                                          safety_checker)
+
+    def _build_empty_pipeline(self, pipeline_cls, safety_checker):
+        """Build Cosmos architecture on meta tensors without model weights."""
+        try:
+            from accelerate import init_empty_weights
+            from diffusers import (AutoencoderKLWan, CosmosTransformer3DModel,
+                                   UniPCMultistepScheduler)
+            from transformers import (AutoConfig,
+                                      Qwen2_5_VLForConditionalGeneration)
+        except Exception as exc:
+            raise ImportError(
+                'Architecture-only Cosmos construction requires accelerate, '
+                'diffusers, and transformers.') from exc
+
+        common_kwargs = dict(
             revision=self.revision,
-            torch_dtype=self.torch_dtype,
             local_files_only=self.local_files_only,
+        )
+        transformer_config = CosmosTransformer3DModel.load_config(
+            self.model_id_or_path,
+            subfolder='transformer',
+            **common_kwargs,
+        )
+        vae_config = AutoencoderKLWan.load_config(
+            self.model_id_or_path,
+            subfolder='vae',
+            **common_kwargs,
+        )
+        text_config = AutoConfig.from_pretrained(
+            self.model_id_or_path,
+            subfolder='text_encoder',
+            **common_kwargs,
+        )
+        scheduler = UniPCMultistepScheduler.from_pretrained(
+            self.model_id_or_path,
+            subfolder='scheduler',
+            **common_kwargs,
+        )
+
+        with init_empty_weights():
+            transformer = CosmosTransformer3DModel.from_config(
+                transformer_config).to(dtype=self.torch_dtype)
+            vae = AutoencoderKLWan.from_config(vae_config).to(
+                dtype=self.torch_dtype)
+            text_encoder = Qwen2_5_VLForConditionalGeneration(text_config).to(
+                dtype=self.torch_dtype)
+
+        return pipeline_cls(
+            text_encoder=text_encoder,
+            tokenizer=None,
+            transformer=transformer,
+            vae=vae,
+            scheduler=scheduler,
             safety_checker=safety_checker,
         )
 
@@ -489,165 +548,18 @@ class Cosmos25Backbone(nn.Module):
 
         return bcthw, future
 
-    def build_cosmos_inputs(
+    def _encode_lang_tokens(
         self,
-        images: Union[torch.Tensor, Sequence[Any]],
-        instructions: Sequence[str],
-        **kwargs,
-    ) -> dict:
-        """Build the same input dict used by DiT4DiT's Cosmos interface."""
-        if isinstance(instructions, str):
-            instructions = [instructions]
-
-        if torch.is_tensor(images):
-            batch_size = images.shape[0]
-            if batch_size != len(instructions):
-                raise ValueError(
-                    '`images` and `instructions` must have the same batch '
-                    f'size, got {batch_size} and {len(instructions)}.')
-            condition_video, future_videos = self._normalize_videos(images)
-            videos = condition_video.permute(0, 2, 1, 3, 4).contiguous()
-        else:
-            if len(images) != len(instructions):
-                raise ValueError(
-                    '`images` and `instructions` must have the same batch '
-                    f'size, got {len(images)} and {len(instructions)}.')
-
-            all_cond = []
-            all_future = []
-            for sample in images:
-                frames = sample if isinstance(sample,
-                                              (list, tuple)) else [sample]
-                if len(frames) == 0:
-                    raise ValueError(
-                        'Each sample must provide at least one image frame.')
-                chw_frames = [
-                    self._image_to_chw_float(frame) for frame in frames
-                ]
-                all_cond.append(chw_frames[0])
-                if len(chw_frames) > 1:
-                    all_future.append(torch.stack(chw_frames[1:], dim=0))
-
-            videos = torch.stack(all_cond, dim=0).unsqueeze(1)
-            if all_future and len(all_future) != len(all_cond):
-                raise ValueError(
-                    'Future frames must be present for every sample or for '
-                    'no samples in a batch.')
-            future_videos = (
-                torch.stack(all_future, dim=0) if all_future else None)
-
-        height = int(videos.shape[-2])
-        width = int(videos.shape[-1])
-        out = {
-            'prompts': list(instructions),
-            'videos': videos,
-            'height': height,
-            'width': width,
-            'future_videos': future_videos,
-        }
-        out.update(kwargs)
-        return out
-
-    def _resolve_prompts(
-        self,
-        batch_size: int,
-        prompts: Optional[Union[str, Sequence[str]]] = None,
-        task_description: Optional[Union[str, Sequence[str]]] = None,
-        **kwargs,
-    ) -> list[str]:
-        prompts = prompts if prompts is not None else task_description
-        prompts = prompts if prompts is not None else kwargs.get('prompt')
-        prompts = prompts if prompts is not None else kwargs.get('instruction')
-        prompts = prompts if prompts is not None else kwargs.get(
-            'instructions')
-        prompts = prompts if prompts is not None else kwargs.get('lang')
-
-        if prompts is None:
-            raise ValueError(
-                'Cosmos25Backbone requires Cosmos `lang_tokens` or raw text '
-                'via `prompts`, `task_description`, `prompt`, '
-                '`instruction`, `instructions`, or `lang`.')
-
-        if isinstance(prompts, str):
-            prompts = [prompts] * batch_size
-        else:
-            prompts = list(prompts)
-
-        if len(prompts) != batch_size:
-            raise ValueError(
-                f'Prompt batch size {len(prompts)} does not match video '
-                f'batch size {batch_size}.')
-        return [str(prompt) for prompt in prompts]
-
-    def _get_prompt_embeds(
-        self,
-        prompts: Optional[list[str]],
+        input_ids: torch.Tensor,
         device: torch.device,
         dtype: torch.dtype,
-        input_ids: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-        if input_ids is None:
-            if prompts is None:
-                raise ValueError('Cosmos prompt text or lang_tokens is '
-                                 'required to encode language.')
-            token_sequences = []
-            for prompt in prompts:
-                conversations = [
-                    {
-                        'role':
-                        'system',
-                        'content': [{
-                            'type':
-                            'text',
-                            'text':
-                            'You are a helpful assistant who will provide prompts to an image generator.',  # noqa: E501
-                        }],
-                    },
-                    {
-                        'role': 'user',
-                        'content': [{
-                            'type': 'text',
-                            'text': prompt
-                        }]
-                    },
-                ]
-                ids = self.tokenizer.apply_chat_template(
-                    conversations,
-                    tokenize=True,
-                    add_generation_prompt=False,
-                    add_vision_id=False,
-                    max_length=self.max_sequence_length,
-                    truncation=True,
-                    padding='max_length',
-                )
-                if isinstance(ids, str):
-                    ids = self.tokenizer(
-                        ids,
-                        add_special_tokens=False,
-                        max_length=self.max_sequence_length,
-                        truncation=True,
-                        padding='max_length',
-                    )
-                if isinstance(ids, dict):
-                    ids = ids['input_ids']
-                elif hasattr(ids, 'input_ids'):
-                    ids = ids.input_ids
-                ids = torch.as_tensor(ids, dtype=torch.long)
-                if ids.ndim == 2 and ids.shape[0] == 1:
-                    ids = ids.squeeze(0)
-                if ids.ndim != 1:
-                    raise ValueError(
-                        'Cosmos tokenizer must return one input-id sequence '
-                        f'per prompt, got shape {tuple(ids.shape)}.')
-                token_sequences.append(ids)
-            input_ids = torch.stack(token_sequences, dim=0)
-        else:
-            input_ids = torch.as_tensor(input_ids, dtype=torch.long)
-            if input_ids.ndim == 1:
-                input_ids = input_ids.unsqueeze(0)
-            if input_ids.ndim != 2:
-                raise ValueError('Cosmos lang_tokens must have shape [B, L], '
-                                 f'got {tuple(input_ids.shape)}.')
+        input_ids = torch.as_tensor(input_ids, dtype=torch.long)
+        if input_ids.ndim == 1:
+            input_ids = input_ids.unsqueeze(0)
+        if input_ids.ndim != 2:
+            raise ValueError('Cosmos lang_tokens must have shape [B, L], '
+                             f'got {tuple(input_ids.shape)}.')
 
         input_ids = input_ids.to(device=device, dtype=torch.long)
         # ``ForConditionalGeneration.forward`` also projects all 512 tokens to
@@ -968,8 +880,6 @@ class Cosmos25Backbone(nn.Module):
         self,
         images: Optional[Union[torch.Tensor, Sequence[Any]]] = None,
         videos: Optional[Union[torch.Tensor, Sequence[Any]]] = None,
-        prompts: Optional[Union[str, Sequence[str]]] = None,
-        task_description: Optional[Union[str, Sequence[str]]] = None,
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
         future_videos: Optional[torch.Tensor] = None,
@@ -978,7 +888,6 @@ class Cosmos25Backbone(nn.Module):
         conditional_frame_timestep: Optional[float] = None,
         output_hidden_states: bool = True,
         return_dict: bool = True,
-        **kwargs,
     ) -> Cosmos25BackboneOutput:
         _ = output_hidden_states, return_dict
         source_video = videos if videos is not None else images
@@ -991,30 +900,25 @@ class Cosmos25Backbone(nn.Module):
             future_videos = inferred_future
 
         batch_size = condition_video.shape[0]
-        prompt_list = None
         if lang_tokens is None:
-            prompt_list = self._resolve_prompts(
-                batch_size,
-                prompts=prompts,
-                task_description=task_description,
-                **kwargs,
-            )
-        else:
-            lang_tokens = torch.as_tensor(lang_tokens, dtype=torch.long)
-            if lang_tokens.ndim == 1:
-                lang_tokens = lang_tokens.unsqueeze(0)
-            if lang_tokens.ndim != 2 or lang_tokens.shape[0] != batch_size:
-                raise ValueError(
-                    'Cosmos lang_tokens must have shape [B, L] matching the '
-                    f'video batch; got {tuple(lang_tokens.shape)} for B='
-                    f'{batch_size}.')
-            if lang_masks is not None:
-                lang_masks = torch.as_tensor(lang_masks)
-                if lang_masks.shape != lang_tokens.shape:
-                    raise ValueError(
-                        'Cosmos lang_masks must match lang_tokens, got '
-                        f'{tuple(lang_masks.shape)} and '
-                        f'{tuple(lang_tokens.shape)}.')
+            raise ValueError(
+                'Cosmos25Backbone requires dataset-tokenized `lang_tokens`.')
+        lang_tokens = torch.as_tensor(lang_tokens, dtype=torch.long)
+        if lang_tokens.ndim == 1:
+            lang_tokens = lang_tokens.unsqueeze(0)
+        if lang_tokens.ndim != 2 or lang_tokens.shape[0] != batch_size:
+            raise ValueError(
+                'Cosmos lang_tokens must have shape [B, L] matching the '
+                f'video batch; got {tuple(lang_tokens.shape)} for B='
+                f'{batch_size}.')
+        if lang_masks is None:
+            raise ValueError(
+                'Cosmos25Backbone requires dataset-provided `lang_masks`.')
+        lang_masks = torch.as_tensor(lang_masks)
+        if lang_masks.shape != lang_tokens.shape:
+            raise ValueError('Cosmos lang_masks must match lang_tokens, got '
+                             f'{tuple(lang_masks.shape)} and '
+                             f'{tuple(lang_tokens.shape)}.')
         condition_video = condition_video.to(self.device)
         height = int(condition_video.shape[-2])
         width = int(condition_video.shape[-1])
@@ -1027,11 +931,10 @@ class Cosmos25Backbone(nn.Module):
             self.set_frozen_modules_to_eval_mode()
 
         transformer_dtype = getattr(self.transformer, 'dtype', self.dtype)
-        prompt_embeds = self._get_prompt_embeds(
-            prompt_list,
+        prompt_embeds = self._encode_lang_tokens(
+            lang_tokens,
             device=self.device,
             dtype=transformer_dtype,
-            input_ids=lang_tokens,
         )
         if num_frames_out is None:
             num_frames_out = self.num_frames_out

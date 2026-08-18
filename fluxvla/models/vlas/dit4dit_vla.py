@@ -49,17 +49,24 @@ class DiT4DiTVLA(BaseVLA):
         name_mapping: Dict = None,
         strict_mapping: bool = False,
         freeze_vlm_backbone: bool = True,
+        init_empty_weights: bool = False,
         *args,
         **kwargs,
     ) -> None:
-        super().__init__(
-            vlm_backbone=vlm_backbone,
-            vla_head=vla_head,
-            pretrained_name_or_path=pretrained_name_or_path,
-            name_mapping=name_mapping,
-            strict_mapping=strict_mapping,
-            freeze_vlm_backbone=freeze_vlm_backbone,
-        )
+        if init_empty_weights:
+            from accelerate import init_empty_weights as empty_weights_context
+            build_context = empty_weights_context()
+        else:
+            build_context = nullcontext()
+        with build_context:
+            super().__init__(
+                vlm_backbone=vlm_backbone,
+                vla_head=vla_head,
+                pretrained_name_or_path=pretrained_name_or_path,
+                name_mapping=name_mapping,
+                strict_mapping=strict_mapping,
+                freeze_vlm_backbone=freeze_vlm_backbone,
+            )
         if self.vlm_backbone is None:
             raise ValueError('DiT4DiTVLA requires `vlm_backbone`.')
         if self.vla_head is None:
@@ -67,6 +74,32 @@ class DiT4DiTVLA(BaseVLA):
 
         self.repeated_diffusion_steps = int(repeated_diffusion_steps)
         self.all_module_keys = ['vlm_backbone', 'vla_head']
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign=False):
+        """Materialize architecture-only inference models from checkpoints."""
+        has_meta_parameters = any(param.is_meta for param in self.parameters())
+        if has_meta_parameters:
+            target_state = super().state_dict()
+            original_state = state_dict
+            state_dict = state_dict.copy()
+            if hasattr(original_state, '_metadata'):
+                state_dict._metadata = original_state._metadata
+            for key, value in state_dict.items():
+                target = target_state.get(key)
+                if (torch.is_tensor(value) and torch.is_tensor(target)
+                        and value.dtype != target.dtype):
+                    state_dict[key] = value.to(dtype=target.dtype)
+        incompatible = super().load_state_dict(
+            state_dict,
+            strict=strict,
+            assign=assign or has_meta_parameters,
+        )
+        if has_meta_parameters:
+            tie_weights = getattr(self.vlm_backbone.text_encoder,
+                                  'tie_weights', None)
+            if callable(tie_weights):
+                tie_weights()
+        return incompatible
 
     @property
     def config(self):

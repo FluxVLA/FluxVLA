@@ -102,17 +102,8 @@ def _robocasa_task_env(task_name):
 
 model = dict(
     type='DiT4DiTVLA',
-    # Train the action head from the Cosmos base model. A FluxVLA-trained
-    # checkpoint can be supplied through the training command when resuming.
-    pretrained_name_or_path=None,
-    name_mapping={
-        'vlm_backbone.text_encoder':
-        'backbone_interface.extractor.text_encoder',  # noqa: E501
-        'vlm_backbone.transformer': 'backbone_interface.extractor.transformer',
-        'vlm_backbone.vae': 'backbone_interface.extractor.vae',
-        'vla_head': 'action_model',
-    },
-    strict_mapping=False,
+    # Train from the Cosmos base model rather than a released DiT4DiT policy
+    # checkpoint. Training resume is handled by the runner.
     # The source trainer repeats each sample four times with independently
     # sampled action diffusion noise.
     repeated_diffusion_steps=4,
@@ -123,7 +114,6 @@ model = dict(
         torch_dtype='bf16',
         local_files_only=True,
         extract_layer=17,
-        max_sequence_length=512,
         trainable=True,
         frozen_submodules=['text_encoder', 'vae'],
         split_future_frames=True,
@@ -169,11 +159,16 @@ model = dict(
     freeze_vlm_backbone=False,
 )
 
-inference_model = model.copy()
-inference_model.update(
-    pretrained_name_or_path=None,
-    name_mapping=None,
-    strict_mapping=False,
+# The saved FluxVLA checkpoint contains the full model. Construct inference on
+# meta tensors without reading pretrained model weights, then assign the eval
+# checkpoint in the runner.
+inference_model = dict(
+    model,
+    init_empty_weights=True,
+    vlm_backbone=dict(
+        model['vlm_backbone'],
+        load_pretrained_weights=False,
+    ),
 )
 
 _dit4dit_train_transforms = [

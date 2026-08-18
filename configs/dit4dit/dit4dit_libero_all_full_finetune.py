@@ -20,8 +20,6 @@ _cosmos_tokenizer = dict(
     model_path=_cosmos_base_model + '/tokenizer',
     model_max_length=512,
 )
-_official_dit4dit_ckpt = (
-    _ckpt_root + '/dit4dit-model/dit4dit_libero/final_model/pytorch_model.pt')
 _official_dataset_statistics = dict(
     franka=dict(
         action=dict(
@@ -188,17 +186,8 @@ official_eval_task_suites = [
 
 model = dict(
     type='DiT4DiTVLA',
-    # Keep None for official train-from-Cosmos behavior. Set this to
-    # _official_dit4dit_ckpt to initialize from the released DiT4DiT weights.
-    pretrained_name_or_path=None,
-    name_mapping={
-        'vlm_backbone.text_encoder':
-        'backbone_interface.extractor.text_encoder',  # noqa: E501
-        'vlm_backbone.transformer': 'backbone_interface.extractor.transformer',
-        'vlm_backbone.vae': 'backbone_interface.extractor.vae',
-        'vla_head': 'action_model',
-    },
-    strict_mapping=False,
+    # Match the released training recipe: initialize the backbone from Cosmos,
+    # but do not initialize from a released DiT4DiT policy checkpoint.
     repeated_diffusion_steps=4,
     vlm_backbone=dict(
         type='Cosmos25Backbone',
@@ -207,7 +196,6 @@ model = dict(
         torch_dtype='bf16',
         local_files_only=True,
         extract_layer=17,
-        max_sequence_length=512,
         trainable=True,
         frozen_submodules=['text_encoder', 'vae'],
         split_future_frames=True,
@@ -255,11 +243,17 @@ model = dict(
     freeze_vlm_backbone=False,
 )
 
-inference_model = model.copy()
-inference_model.update(
-    pretrained_name_or_path=None,
-    name_mapping=None,
-    strict_mapping=False,
+# Evaluation checkpoints contain the complete Cosmos + action-head state.
+# Build only the architecture on meta tensors, then let the eval runner assign
+# the requested FluxVLA checkpoint. This avoids loading any pretrained model
+# weights while constructing inference_model.
+inference_model = dict(
+    model,
+    init_empty_weights=True,
+    vlm_backbone=dict(
+        model['vlm_backbone'],
+        load_pretrained_weights=False,
+    ),
 )
 
 _dit4dit_train_transforms = [
@@ -482,7 +476,6 @@ eval = dict(
     dataset=dict(
         type='LiberoParquetEvalDataset',
         img_buffer_len=1,
-        require_lang_tokens=True,
         transforms=[
             dict(
                 type='CanonicalizePrompt',
