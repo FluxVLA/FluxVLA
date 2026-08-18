@@ -1,0 +1,21 @@
+{
+  "checkpoint": "checkpoints/Cosmos3-Nano",
+  "vision_asset": "assets/example_action_id_av_0_input.mp4",
+  "generator": "scripts/cosmos3_fluxvla_infer.py",
+  "model_mode": "inverse_dynamics",
+  "name": "cosmos3_nano_action_id_minimal",
+  "prompt": "You are an autonomous vehicle planning system.",
+  "embodiment_id": 1,
+  "raw_action_dim": 9,
+  "action_chunk_size": 4,
+  "width": 832,
+  "height": 480,
+  "fps": 10,
+  "num_steps": 1,
+  "shift": 10.0,
+  "seed": 2026,
+  "dtype": "bf16",
+  "expected_action_shape": [4, 9],
+  "atol": 0.00001,
+  "rtol": 0.0001
+}
