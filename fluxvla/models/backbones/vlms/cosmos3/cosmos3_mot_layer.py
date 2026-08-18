@@ -2,11 +2,11 @@
 # SPDX-License-Identifier: OpenMDW-1.1
 # flake8: noqa
 
+from typing import Any, Callable, Type
+
 import torch
 from torch import nn
 # Qwen3-VL imports
-from transformers.models.qwen3_vl.configuration_qwen3_vl import \
-    Qwen3VLTextConfig
 from transformers.models.qwen3_vl.modeling_qwen3_vl import (
     ALL_ATTENTION_FUNCTIONS, Qwen3VLTextMLP, Qwen3VLTextRMSNorm)
 from transformers.models.qwen3_vl.modeling_qwen3_vl import \
@@ -28,17 +28,19 @@ class Cosmos3TextAttention(nn.Module):
     Dual-pathway packed attention for MoT architectures.
     Implements understanding and generation pathways with separate projections.
 
-    This FluxVLA variant is specialized to the dense Qwen3-VL text layers used
-    by Cosmos3 Nano/Super.
+    This FluxVLA variant supports the dense Qwen3-VL layers used by Nano/Super
+    and the dense Nemotron layers used by Edge.
     """
 
     def __init__(
         self,
-        config: Qwen3VLTextConfig,
+        config: Any,
         layer_idx: int,
         *,
         qk_norm_for_text: bool,
         qk_norm_for_diffusion: bool,
+        rms_norm_cls: Type[nn.Module] = Qwen3VLTextRMSNorm,
+        apply_rotary_pos_emb: Callable = qwen3_vl_apply_rotary_pos_emb,
     ):
         super().__init__()
         self.layer_type = config.layer_types[layer_idx] if hasattr(
@@ -56,6 +58,7 @@ class Cosmos3TextAttention(nn.Module):
         self.scaling = self.head_dim**-0.5
         self.attention_dropout = config.attention_dropout
         self.is_causal = True
+        self.apply_rotary_pos_emb = apply_rotary_pos_emb
 
         eps = config.rms_norm_eps
 
@@ -79,19 +82,29 @@ class Cosmos3TextAttention(nn.Module):
 
         # Understanding pathway QK norm
         if qk_norm_for_text:
-            self.q_norm = Qwen3VLTextRMSNorm(self.head_dim, eps=eps)
-            self.k_norm = Qwen3VLTextRMSNorm(self.head_dim, eps=eps)
+            self.q_norm = rms_norm_cls(self.head_dim, eps=eps)
+            self.k_norm = rms_norm_cls(self.head_dim, eps=eps)
         else:
             self.q_norm = nn.Identity()
             self.k_norm = nn.Identity()
 
         # Generation pathway QK norm
         if qk_norm_for_diffusion:
-            self.q_norm_moe_gen = Qwen3VLTextRMSNorm(self.head_dim, eps=eps)
-            self.k_norm_moe_gen = Qwen3VLTextRMSNorm(self.head_dim, eps=eps)
+            self.q_norm_moe_gen = rms_norm_cls(self.head_dim, eps=eps)
+            self.k_norm_moe_gen = rms_norm_cls(self.head_dim, eps=eps)
         else:
             self.q_norm_moe_gen = nn.Identity()
             self.k_norm_moe_gen = nn.Identity()
+
+        # Edge applies a separate RMSNorm to understanding keys when they are
+        # consumed by generation queries. This cannot be folded into k_norm:
+        # reasoner queries must continue to see the unmodified key path.
+        self.use_und_k_norm_for_gen = bool(
+            getattr(config, 'use_und_k_norm_for_gen', False))
+        if self.use_und_k_norm_for_gen:
+            self.k_norm_und_for_gen = rms_norm_cls(self.head_dim, eps=eps)
+        else:
+            self.k_norm_und_for_gen = nn.Identity()
 
         # Generation pathway linear projections
         self.q_proj_moe_gen = nn.Linear(
@@ -135,7 +148,7 @@ class Cosmos3TextAttention(nn.Module):
             1, 2)
 
         cos, sin = position_embeddings
-        query_states, key_states = qwen3_vl_apply_rotary_pos_emb(
+        query_states, key_states = self.apply_rotary_pos_emb(
             query_states, key_states, cos, sin)
 
         if past_key_values is not None:
@@ -195,8 +208,9 @@ class Cosmos3TextAttention(nn.Module):
 
         q_und = q_und_in.view(-1, self.num_attention_heads,
                               self.head_dim)  # [N_und,num_heads,head_dim]
-        k_und = k_und_in.view(-1, self.num_key_value_heads,
-                              self.head_dim)  # [N_und,num_kv_heads,head_dim]
+        k_und_raw = k_und_in.view(
+            -1, self.num_key_value_heads,
+            self.head_dim)  # [N_und,num_kv_heads,head_dim]
         v_und = v_und_in.view(-1, self.num_key_value_heads,
                               self.head_dim)  # [N_und,num_kv_heads,head_dim]
 
@@ -208,7 +222,9 @@ class Cosmos3TextAttention(nn.Module):
                               self.head_dim)  # [N_gen,num_kv_heads,head_dim]
 
         q_und = self.q_norm(q_und)  # [N_und,num_heads,head_dim]
-        k_und = self.k_norm(k_und)  # [N_und,num_kv_heads,head_dim]
+        k_und = self.k_norm(k_und_raw)  # [N_und,num_kv_heads,head_dim]
+        k_und_for_gen = self.k_norm_und_for_gen(
+            k_und_raw)  # [N_und,num_kv_heads,head_dim]
 
         q_gen = self.q_norm_moe_gen(q_gen)  # [N_gen,num_heads,head_dim]
         k_gen = self.k_norm_moe_gen(k_gen)  # [N_gen,num_kv_heads,head_dim]
@@ -216,20 +232,31 @@ class Cosmos3TextAttention(nn.Module):
         packed_cos = packed_position_embeddings[0]
         packed_sin = packed_position_embeddings[1]
 
-        q_und_, k_und_ = qwen3_vl_apply_rotary_pos_emb(
+        q_und_, k_und_ = self.apply_rotary_pos_emb(
             q_und,
             k_und,
             get_und_seq(packed_cos),
             get_und_seq(packed_sin),
             unsqueeze_dim=1,
         )  # q_und_: [N_und,num_heads,head_dim], k_und_: [N_und,num_kv_heads,head_dim]
-        q_gen_, k_gen_ = qwen3_vl_apply_rotary_pos_emb(
+        q_gen_, k_gen_ = self.apply_rotary_pos_emb(
             q_gen,
             k_gen,
             get_gen_seq(packed_cos),
             get_gen_seq(packed_sin),
             unsqueeze_dim=1,
         )  # q_gen_: [N_gen,num_heads,head_dim], k_gen_: [N_gen,num_kv_heads,head_dim]
+        packed_key_states_normalized_ = None
+        if self.use_und_k_norm_for_gen:
+            _, k_und_for_gen_ = self.apply_rotary_pos_emb(
+                q_und,
+                k_und_for_gen,
+                get_und_seq(packed_cos),
+                get_und_seq(packed_sin),
+                unsqueeze_dim=1,
+            )
+            packed_key_states_normalized_ = from_und_gen_splits(
+                k_und_for_gen_, k_gen_, pack)
 
         packed_query_states_ = from_und_gen_splits(
             q_und_, q_gen_, pack)  # [N_und+N_gen,num_heads,head_dim]
@@ -248,6 +275,7 @@ class Cosmos3TextAttention(nn.Module):
             packed_key_states_,
             packed_value_states_,
             backend=self.attention_backend,
+            packed_key_states_normalized=packed_key_states_normalized_,
         )
 
         # Apply projections directly to get final results
@@ -276,16 +304,20 @@ class Cosmos3TextDecoderLayer(nn.Module):
     Unified MoT (Mixture of Transformers) decoder layer.
     Features dual-pathway attention for understanding vs generation.
 
-    This is the dense Qwen3VL variant used by Cosmos3-Nano/Super.
+    Sub-layer types are injectable so Nano/Super retain Qwen3-VL modules while
+    Edge supplies Nemotron RMSNorm, ReLU2 MLP, and partial RoPE.
     """
 
     def __init__(
         self,
-        config: Qwen3VLTextConfig,
+        config: Any,
         layer_idx: int,
         *,
         qk_norm_for_text: bool,
         qk_norm_for_diffusion: bool,
+        mlp_cls: Type[nn.Module] = Qwen3VLTextMLP,
+        rms_norm_cls: Type[nn.Module] = Qwen3VLTextRMSNorm,
+        apply_rotary_pos_emb: Callable = qwen3_vl_apply_rotary_pos_emb,
     ):
         super().__init__()
         self.hidden_size = config.hidden_size
@@ -294,18 +326,20 @@ class Cosmos3TextDecoderLayer(nn.Module):
             layer_idx=layer_idx,
             qk_norm_for_text=qk_norm_for_text,
             qk_norm_for_diffusion=qk_norm_for_diffusion,
+            rms_norm_cls=rms_norm_cls,
+            apply_rotary_pos_emb=apply_rotary_pos_emb,
         )
 
-        self.mlp = Qwen3VLTextMLP(config)
-        self.mlp_moe_gen = Qwen3VLTextMLP(config)
+        self.mlp = mlp_cls(config)
+        self.mlp_moe_gen = mlp_cls(config)
 
-        self.input_layernorm = Qwen3VLTextRMSNorm(
+        self.input_layernorm = rms_norm_cls(
             config.hidden_size, eps=config.rms_norm_eps)
-        self.input_layernorm_moe_gen = Qwen3VLTextRMSNorm(
+        self.input_layernorm_moe_gen = rms_norm_cls(
             config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm = Qwen3VLTextRMSNorm(
+        self.post_attention_layernorm = rms_norm_cls(
             config.hidden_size, eps=config.rms_norm_eps)
-        self.post_attention_layernorm_moe_gen = Qwen3VLTextRMSNorm(
+        self.post_attention_layernorm_moe_gen = rms_norm_cls(
             config.hidden_size, eps=config.rms_norm_eps)
 
     def forward(

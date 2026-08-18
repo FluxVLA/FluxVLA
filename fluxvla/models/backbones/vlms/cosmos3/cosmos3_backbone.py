@@ -34,6 +34,9 @@ from fluxvla.engines import VLM_BACKBONES, initialize_overwatch
 from ....third_party_models.cosmos3.data.vfm.sequence_packing import (
     FactoredSequencePack, from_joint, get_device_and_dtype, get_gen_seq,
     get_und_seq, set_gen_seq, set_und_seq, zeros_like)
+from ....third_party_models.cosmos3.nemotron_3_dense_vl import (
+    MultiModalRotaryEmbedding, Nemotron3DenseVLMLP, Nemotron3DenseVLRMSNorm,
+    Nemotron3DenseVLTextConfig, apply_rotary_pos_emb_partial)
 from .cosmos3_mot_layer import \
     Cosmos3TextDecoderLayer as _Cosmos3TextDecoderLayer
 
@@ -163,6 +166,76 @@ class _Cosmos3TextModel(Qwen3VLTextModel):
         self.embed_tokens = value
 
 
+class _Cosmos3NemotronTextDecoderLayer(_Cosmos3TextDecoderLayer):
+    """Nemotron dense dual-pathway MoT layer selected by model config."""
+
+    def __init__(
+        self,
+        config: Nemotron3DenseVLTextConfig,
+        layer_idx: int,
+        *,
+        qk_norm_for_text: bool = False,
+        qk_norm_for_diffusion: bool = True,
+    ) -> None:
+        super().__init__(
+            config,
+            layer_idx,
+            qk_norm_for_text=qk_norm_for_text,
+            qk_norm_for_diffusion=qk_norm_for_diffusion,
+            mlp_cls=Nemotron3DenseVLMLP,
+            rms_norm_cls=Nemotron3DenseVLRMSNorm,
+            apply_rotary_pos_emb=apply_rotary_pos_emb_partial,
+        )
+
+
+class _Cosmos3NemotronTextModel(nn.Module):
+
+    def __init__(self, config: Nemotron3DenseVLTextConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+        self.embed_tokens = nn.Embedding(config.vocab_size, config.hidden_size,
+                                         self.padding_idx)
+        self.layers = nn.ModuleList([
+            _Cosmos3NemotronTextDecoderLayer(config, layer_idx)
+            for layer_idx in range(config.num_hidden_layers)
+        ])
+        self.norm = Nemotron3DenseVLRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps)
+        self.norm_moe_gen = Nemotron3DenseVLRMSNorm(
+            config.hidden_size, eps=config.rms_norm_eps)
+        self.rotary_emb = MultiModalRotaryEmbedding(config)
+
+    def forward_packed(
+        self,
+        pack: FactoredSequencePack,
+        attention_mask,
+        position_ids: torch.Tensor,
+    ) -> tuple[FactoredSequencePack, dict[str, Any]]:
+        device, dtype = get_device_and_dtype(pack)
+        meta_tensor = torch.tensor([], dtype=dtype, device=device)
+        rope_ids = (
+            position_ids.unsqueeze(0)
+            if position_ids.ndim == 1 else position_ids.unsqueeze(1))
+        cos, sin = self.rotary_emb(meta_tensor, position_ids=rope_ids)
+        position_embeddings = (from_joint(cos.squeeze(0), pack),
+                               from_joint(sin.squeeze(0), pack))
+
+        hidden_states = pack
+        for decoder_layer in self.layers:
+            hidden_states = decoder_layer(
+                packed_sequence=hidden_states,
+                packed_position_embeddings=position_embeddings,
+                packed_attention_mask=attention_mask,
+            )
+
+        output = zeros_like(hidden_states)
+        set_und_seq(output, self.norm(get_und_seq(hidden_states)))
+        set_gen_seq(output, self.norm_moe_gen(get_gen_seq(hidden_states)))
+        return output, {}
+
+
 class _Cosmos3Model(Qwen3VLModel):
     """Qwen3-VL multimodal model with Cosmos3 MoT text layers."""
 
@@ -186,6 +259,99 @@ class _Cosmos3Model(Qwen3VLModel):
         self.post_init()
 
 
+class _Cosmos3NemotronModel(nn.Module):
+
+    architecture_family = 'edge_nemotron'
+    transformer_layer_cls = _Cosmos3NemotronTextDecoderLayer
+
+    def __init__(self, config: Nemotron3DenseVLTextConfig) -> None:
+        super().__init__()
+        self.config = config
+        self.language_model = _Cosmos3NemotronTextModel(config)
+
+    @staticmethod
+    def matches_config(config_dict: Mapping[str, Any]) -> bool:
+        nested = config_dict.get('text_config')
+        text_config = nested if isinstance(nested, Mapping) else config_dict
+        return (text_config.get('model_type') ==
+                Nemotron3DenseVLTextConfig.model_type)
+
+    @classmethod
+    def build_backbone_components(
+        cls,
+        config_dict: Mapping[str, Any],
+        *,
+        include_visual: bool,
+        packed_attention_backend: str,
+        text_config_overrides: Mapping[str, Any] | None,
+        vision_encoder_path: str | Path | None,
+        skip_init_weights: bool,
+    ) -> tuple[_Cosmos3NemotronModel, nn.Linear]:
+        if include_visual:
+            raise NotImplementedError(
+                'Cosmos3-Edge currently supports the Nemotron generator '
+                'tower without the SigLIP2 reasoner.')
+        if vision_encoder_path is not None:
+            raise ValueError(
+                'vision_encoder_path is only valid with include_visual=True.')
+
+        nested = config_dict.get('text_config')
+        text_dict = dict(nested) if isinstance(nested,
+                                               Mapping) else dict(config_dict)
+        text_dict['packed_attention_backend'] = packed_attention_backend
+        if text_config_overrides:
+            text_dict.update(dict(text_config_overrides))
+        if text_dict.get('num_hidden_layers') == 56:
+            text_dict['num_hidden_layers'] = 28
+        text_dict['tie_word_embeddings'] = False
+        text_config = Nemotron3DenseVLTextConfig(**text_dict)
+
+        parameter_dtype = cls._parameter_dtype(text_config.torch_dtype)
+        with cls._temporary_default_dtype(parameter_dtype):
+            if skip_init_weights:
+                with no_init_weights():
+                    return cls._build_components(text_config)
+            return cls._build_components(text_config)
+
+    @classmethod
+    def _build_components(
+        cls, text_config: Nemotron3DenseVLTextConfig
+    ) -> tuple[_Cosmos3NemotronModel, nn.Linear]:
+        model = cls(text_config)
+        lm_head = nn.Linear(
+            text_config.hidden_size, text_config.vocab_size, bias=False)
+        return model, lm_head
+
+    @staticmethod
+    def _parameter_dtype(value: str | torch.dtype | None) -> torch.dtype:
+        if isinstance(value, torch.dtype):
+            return value
+        if value is None:
+            return torch.get_default_dtype()
+        names = {
+            'bfloat16': torch.bfloat16,
+            'bf16': torch.bfloat16,
+            'float16': torch.float16,
+            'fp16': torch.float16,
+            'float32': torch.float32,
+            'fp32': torch.float32,
+        }
+        name = str(value).lower()
+        if name not in names:
+            raise ValueError(f'Unsupported parameter dtype: {value!r}.')
+        return names[name]
+
+    @staticmethod
+    @contextmanager
+    def _temporary_default_dtype(dtype: torch.dtype):
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(dtype)
+        try:
+            yield
+        finally:
+            torch.set_default_dtype(previous)
+
+
 @contextmanager
 def _cosmos3_no_init_weights():
     original_qwen_init_weights = Qwen3VLPreTrainedModel.init_weights
@@ -203,11 +369,7 @@ def _cosmos3_no_init_weights():
 
 @VLM_BACKBONES.register_module()
 class Cosmos3MoTBackbone(Qwen3VLForConditionalGeneration):
-    """FluxVLA-facing wrapper for the Cosmos3 Qwen3-VL MoT tower.
-
-    The class keeps the public HuggingFace ``Qwen3VLForConditionalGeneration``
-    interface while replacing the text tower with Cosmos3 MoT layers.
-    """
+    """FluxVLA Cosmos3 MoT tower selected by ``vlm_config.model_type``."""
 
     _tied_weights_keys = ['lm_head.weight']
 
@@ -222,17 +384,35 @@ class Cosmos3MoTBackbone(Qwen3VLForConditionalGeneration):
         skip_init_weights: bool = False,
     ) -> None:
         config_dict = self._load_vlm_config(vlm_config)
-        backbone_config = self._build_backbone_config(
-            vlm_config=config_dict,
-            include_visual=include_visual,
-            packed_attention_backend=packed_attention_backend,
-            text_config_overrides=text_config_overrides,
-        )
-        if skip_init_weights:
-            with _cosmos3_no_init_weights():
-                self._init_from_backbone_config(backbone_config)
+        is_nemotron = _Cosmos3NemotronModel.matches_config(config_dict)
+        if is_nemotron:
+            nn.Module.__init__(self)
+            self.model, self.lm_head = (
+                _Cosmos3NemotronModel.build_backbone_components(
+                    config_dict,
+                    include_visual=include_visual,
+                    packed_attention_backend=packed_attention_backend,
+                    text_config_overrides=text_config_overrides,
+                    vision_encoder_path=vision_encoder_path,
+                    skip_init_weights=skip_init_weights,
+                ))
+            self.config = self.model.config
+            self.architecture_family = self.model.architecture_family
+            self._transformer_layer_cls = self.model.transformer_layer_cls
         else:
-            self._init_from_backbone_config(backbone_config)
+            backbone_config = self._build_backbone_config(
+                vlm_config=config_dict,
+                include_visual=include_visual,
+                packed_attention_backend=packed_attention_backend,
+                text_config_overrides=text_config_overrides,
+            )
+            if skip_init_weights:
+                with _cosmos3_no_init_weights():
+                    self._init_from_backbone_config(backbone_config)
+            else:
+                self._init_from_backbone_config(backbone_config)
+            self.architecture_family = 'qwen3_vl'
+            self._transformer_layer_cls = _Cosmos3TextDecoderLayer
 
         self.vlm_config_dict = config_dict
         self.include_visual = include_visual
@@ -240,7 +420,8 @@ class Cosmos3MoTBackbone(Qwen3VLForConditionalGeneration):
         self.text_config_overrides = self._build_text_config_overrides(
             text_config_overrides)
         self.vision_encoder_path = vision_encoder_path
-        if include_visual and vision_encoder_path is not None:
+        if (not is_nemotron and include_visual
+                and vision_encoder_path is not None):
             self.load_visual_encoder_pretrained(vision_encoder_path)
 
     def load_visual_encoder_pretrained(self, path: str | Path) -> None:
@@ -333,7 +514,7 @@ class Cosmos3MoTBackbone(Qwen3VLForConditionalGeneration):
 
     @property
     def transformer_layer_cls(self) -> Type[nn.Module]:
-        return _Cosmos3TextDecoderLayer
+        return self._transformer_layer_cls
 
     def embed_text_ids(self, text_ids):
         return self.token_embedding(text_ids)
@@ -346,9 +527,21 @@ class Cosmos3MoTBackbone(Qwen3VLForConditionalGeneration):
             position_ids=position_ids,
         )
 
-    @classmethod
-    def fsdp_transformer_layer_cls(cls):
-        return {_Cosmos3TextDecoderLayer}
+    def fsdp_transformer_layer_cls(self):
+        return {self.transformer_layer_cls}
+
+    def forward(self, *args, **kwargs):
+        if self.architecture_family == 'edge_nemotron':
+            raise NotImplementedError(
+                'Edge Nemotron backbone only supports packed forward; use '
+                'forward_packed().')
+        return super().forward(*args, **kwargs)
+
+    def generate(self, *args, **kwargs):
+        if self.architecture_family == 'edge_nemotron':
+            raise NotImplementedError(
+                'Autoregressive Edge reasoner generation is not supported.')
+        return super().generate(*args, **kwargs)
 
 
 __all__ = [

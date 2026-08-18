@@ -57,6 +57,11 @@ the native backbone can own its interface, but retain NVIDIA's OpenMDW-1.1
 SPDX notices. `cosmos3_backbone.py` is FluxVLA-native orchestration code and
 uses the repository Apache-2.0 header.
 
+The Edge `nemotron_3_dense_vl.py` adaptation derives its configuration,
+RMSNorm, ReLU2 MLP, and multimodal RoPE from
+`cosmos_framework/model/vfm/vlm/nemotron_3_dense_vl/` and
+`cosmos_framework/model/vfm/mot/unified_mot.py`.
+
 Excluded upstream content
 -------------------------
 
