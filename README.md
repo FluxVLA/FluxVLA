@@ -28,6 +28,8 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## Performance
 
+#### LIBERO
+
 | Codebase                    |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     |                                             Libero-Average                                             |
 | --------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------: |
 | FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |                                                  84.7                                                  |
@@ -40,11 +42,27 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 *Linked scores point to the corresponding checkpoints.*
 
+#### LIBERO-Plus
+
+|             Model              | Camera | Robot | Language | Light | Background | Noise | Layout | Total |
+| :----------------------------: | :----: | :---: | :------: | :---: | :--------: | :---: | :----: | :---: |
+|       FluxVLA (SmolVLA)        |  4.69  | 1.81  |  17.44   | 44.40 |   39.50    | 2.19  | 26.30  | 17.34 |
+|       FluxVLA (FastWAM)        | 12.88  | 55.61 |  75.93   | 85.03 |   58.27    | 34.73 | 71.48  | 54.63 |
+| FluxVLA (Qwen3VL 0.6B + GR00T) | 42.34  | 50.06 |  78.14   | 83.36 |   76.12    | 84.76 | 73.25  | 68.78 |
+|      FluxVLA (DreamZero)       | 67.42  | 58.06 |  85.43   | 86.43 |   74.91    | 74.58 | 76.39  | 74.21 |
+|         FluxVLA(PI0.5)         | 57.72  | 81.10 |  89.39   | 49.74 |   59.20    | 86.63 | 85.44  | 74.27 |
+|          FluxVLA(PI0)          | 69.11  | 44.90 |  79.90   | 92.64 |   88.66    | 87.26 | 78.69  | 76.15 |
+|        FluxVLA (GR00T)         | 55.47  | 61.68 |  84.58   | 90.37 |   89.50    | 89.94 | 77.64  | 77.39 |
+
+All models above are evaluated zero-shot on LIBERO-Plus using their original
+weights trained only on standard LIBERO; none are fine-tuned on LIBERO-Plus.
+All values are success rates (%).
+
 #### RoboCasa GR1
 
-| Model          | Training Data      | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
-| -------------- | ------------------ | ------- | ------ | --------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| FluxVLA(GR00T) | 24 tasks, 30 demos | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+|     Model      |   Training Data    | Cabinet | Drawer | Microwave | Generalization |                                                            Average                                                             |
+| :------------: | :----------------: | :-----: | :----: | :-------: | :------------: | :----------------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(GR00T) | 24 tasks, 30 demos |  22.7%  | 35.7%  |   32.5%   |     48.9%      | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### Notes
 
@@ -112,10 +130,17 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>If the installer has issues: check modes and CUDA profile selection</b></summary>
 
-`sim-only` installs simulation / LIBERO / RoboCasa runtime dependencies plus
-the pinned RoboCasa source checkouts under `./src`, `real-only` installs
-real-robot and remote-inference dependencies, and `full` installs both. Pass
+`sim-only` installs simulation / LIBERO / LIBERO-Plus / RoboCasa runtime
+dependencies plus the pinned RoboCasa source checkouts under `./src`;
+`real-only` installs real-robot and remote-inference dependencies, and `full`
+installs both. `requirements-sim.txt` installs standard LIBERO as the `libero`
+distribution / Python namespace and the compatible LIBERO-Plus fork as the
+separate `libero-plus` distribution / `libero_plus` namespace. Both coexist in
+the same environment; existing evaluation commands select `libero`, while
+`scripts/eval_libero_plus_manager.sh` selects `libero_plus`. Pass
 `--skip-robocasa` if you do not need the RoboCasa checkouts.
+The installer also downloads and validates the LIBERO-Plus benchmark assets by
+default. Use `--skip-libero-plus-assets` to defer that 6.4 GB download.
 RoboCasa simulator assets are downloaded by default whenever the installer
 installs the RoboCasa source checkouts (`sim-only`, `full`, or `real-only --with-robocasa`). The installer calls `scripts/download_robocasa_assets.py`
 and uses `FLUXVLA_ROBOCASA_ASSET_ENDPOINT` (default: `HF_ENDPOINT`, then
@@ -204,9 +229,11 @@ Use `--skip-pull` if you already updated the checkout yourself, and
 ```bash
 git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
-python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install "numpy==1.26.4" "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0 "Wand==0.7.2" "scikit-image==0.25.2"
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
+python -m pip install --no-deps -e "git+https://github.com/hqr-robotic/LIBERO-plus.git@d7c160eca38bf268d5965aef6d4c6dca12d5537c#egg=libero-plus"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
+python scripts/download_libero_plus_assets.py
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -321,6 +348,12 @@ pip install --no-build-isolation -e .
 > must match PyTorch. For a manual x86_64 install, use
 > `torchcodec==0.7.0` with Torch 2.8 or `torchcodec==0.2.1` with Torch 2.6.
 > Linux aarch64 uses the PyAV fallback.
+
+> **LIBERO-Plus**: `requirements-sim.txt` installs both `libero` and the pinned
+> `libero-plus` fork, plus `Wand` / `scikit-image`, in the current FluxVLA
+> environment. Their Python namespaces are `libero` and `libero_plus`, so they
+> do not overwrite each other. Do not install the upstream LIBERO-Plus
+> `requirements.txt`, because its older pins would replace the FluxVLA stack.
 
 </details>
 
@@ -558,6 +591,8 @@ ARM training reads the `progress` column directly from this dataset. For RA-BC /
 <details>
 <summary><b>Prepare assets</b></summary>
 
+#### RoboCasa GR1
+
 Use the FluxVLA asset downloader below as the supported path for RoboCasa GR1
 tabletop tasks. The table lists the upstream archives used by the script;
 manually downloading and extracting those archives is not sufficient for this
@@ -591,6 +626,27 @@ python scripts/download_robocasa_assets.py --normalize-only
 ```
 
 Symlinks are not required; they are only a convenience when the assets already live on another local disk or shared storage.
+
+#### LIBERO-Plus
+
+`scripts/install_env.sh sim-only` and `scripts/install_env.sh full` install the
+pinned `libero-plus` package and download its official 6.4 GB benchmark assets
+by default. If installation used `--skip-libero-plus-assets`, download them
+later from the repository root:
+
+```bash
+python scripts/download_libero_plus_assets.py
+```
+
+Validate an existing installation without downloading:
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+```
+
+The downloader verifies and extracts the required objects, scenes, and
+textures, then writes the configuration used automatically by the LIBERO-Plus
+evaluation manager. Standard LIBERO commands keep their separate configuration.
 
 </details>
 
@@ -808,7 +864,9 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 <summary><b>Evaluation and inference capabilities</b></summary>
 
 - Supports multi-GPU evaluating libero on devices without ray tracing.
-- Supports uploading LIBERO and RoboCasa evaluation summaries to Feishu Sheets; see [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md).
+- Supports persistent, resumable LIBERO-Plus evaluation and strict aggregation
+  across all 10,030 robustness tasks.
+- Supports uploading LIBERO, LIBERO-Plus, and RoboCasa evaluation summaries to Feishu Sheets; see [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md).
 - Supports remote inference infrastructure with ZMQ-based server/client architecture, enabling GPU-offloaded inference for resource-constrained edge devices. See [Remote Inference Serving](docs/remote_inference_serving.md).
 - Supports [RTC (Real-Time Chunking)](docs/rtc.md) to improve cross-chunk trajectory continuity.
 - Supports accelerated inference for GR00T and PI0.5; see [Inference Acceleration](docs/inference_acceleration.md), including Triton fused kernels, CUDA Graph capture, and CUDA custom operators.
@@ -859,6 +917,8 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
 <details>
 <summary><b>Local evaluation</b></summary>
 
+#### Standard LIBERO
+
 ```
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node [NUM_GPUS] scripts/eval.py --config [CONFIG_PATH] --ckpt-path [CKPT_PATH] --cfg-options [CFG_OPTIONS]
 ```
@@ -870,7 +930,9 @@ export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --ckpt-path checkpoints/pi05_paligemma_libero_10_full_finetune_bs64/checkpoints/step-028548-epoch-18-loss=0.0111.safetensors
 ```
 
-RoboCasa GR00T evaluation example:
+#### RoboCasa GR1
+
+GR00T evaluation example:
 
 ```bash
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
@@ -889,6 +951,40 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 sampling seeds during evaluation. `PYTHONHASHSEED` is independent and must be
 set before Python starts; using the same value is recommended when reproducing
 reported RoboCasa results.
+
+#### LIBERO-Plus
+
+LIBERO-Plus evaluates 10,030 robustness tasks with exactly one trial per task.
+Validate the assets, then launch one suite per manager invocation:
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+
+export OUTPUT_DIR=work_dirs/libero_plus_pi05
+export CUDA_VISIBLE_DEVICES=0,1
+export WORKERS_PER_GPU=1
+export RESUME=1
+export WANDB_MODE=disabled
+
+CONFIG=configs/pi05/pi05_paligemma_libero_spatial_full_finetune.py \
+CKPT=/path/to/pi05-libero-spatial-checkpoint.safetensors \
+SUITE=libero_spatial \
+bash scripts/eval_libero_plus_manager.sh
+```
+
+Repeat with the matching config and checkpoint for `libero_object`,
+`libero_goal`, and `libero_10`, using the same `OUTPUT_DIR`. The manager forces
+the official protocol and resumes completed tasks when rerun with `RESUME=1`.
+For a smoke test, set `TASK_IDS=0,1,2`.
+
+After all four suites finish, generate the strict leaderboard summary:
+
+```bash
+python tools/summarize_libero_plus_results.py \
+  --run-root "$OUTPUT_DIR" \
+  --output-dir "$OUTPUT_DIR" \
+  --title PI0.5
+```
 
 </details>
 

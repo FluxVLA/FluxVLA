@@ -14,6 +14,7 @@
 
 import csv
 import gc
+import importlib
 import json
 import math
 import os
@@ -39,11 +40,21 @@ LIBERO_TASK_SHARDING_ALLOWED_ENV = 'FLUXVLA_ALLOW_LIBERO_TASK_SHARDING'
 
 
 def _get_libero_benchmark():
+    package = os.environ.get('FLUXVLA_LIBERO_PACKAGE', 'libero')
     try:
-        from libero.libero import benchmark
-    except ModuleNotFoundError as exc:
+        benchmark = importlib.import_module(f'{package}.libero.benchmark')
+    except ImportError as exc:
+        if package == 'libero_plus':
+            missing_dependency = getattr(exc, 'name', None) or str(exc)
+            assert False, (
+                'LIBERO-Plus cannot be loaded because dependency '
+                f'{missing_dependency!r} is missing or unavailable. Update '
+                'the existing FluxVLA '
+                'environment with:\n'
+                '  bash scripts/update_env.sh --skip-pull')
         raise ModuleNotFoundError(
-            'LIBERO is required for simulation evaluation. Install it with '
+            f'{package} is required for simulation evaluation. '
+            'Install it with '
             '`bash scripts/install_env.sh sim-only` or '
             '`bash scripts/install_env.sh full`.') from exc
     return benchmark
@@ -115,6 +126,8 @@ class LiberoEvalRunner(BaseEvalRunner):
             mirrored to
             ``<result_output_dir>/<suite>/gpu{gpu_id}_task{task_id}_results.json``.
         result_gpu_id (int): GPU id written to mirrored result filenames.
+        result_storage_mode (str): ``per_task`` writes normal run artifacts;
+            ``per_worker`` rewrites one growing JSON per worker.
         mixed_precision_dtype (str): Data type for mixed precision training.
             Default is 'bf16'.
         enable_mixed_precision_training (bool): Whether to enable mixed
@@ -227,6 +240,83 @@ class LiberoEvalRunner(BaseEvalRunner):
             json.dump(
                 dict(rank=rank, episodes=episodes, successes=successes), f)
         os.replace(tmp_path, progress_path)
+
+    def _write_incremental_task_result(self, task_suite, task_id: int,
+                                       task_successes, task_episodes,
+                                       task_durations, trial_success_grid,
+                                       task_start_time: float) -> None:
+        """Persist a completed task before the worker advances to the next."""
+        if self.result_output_dir is None:
+            return
+
+        episodes = int(task_episodes[task_id].item())
+        if episodes < self.num_trials_per_task:
+            return
+        successes = int(task_successes[task_id].item())
+        duration = float(task_durations[task_id].item())
+        description = task_suite.get_task(task_id).language
+        success_episodes = []
+        failure_episodes = []
+        for trial_id in range(self.num_trials_per_task):
+            outcome = int(trial_success_grid[task_id, trial_id].item())
+            if outcome == 1:
+                success_episodes.append(trial_id)
+            elif outcome == 0:
+                failure_episodes.append(trial_id)
+
+        start_time = (
+            time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(task_start_time))
+            if task_start_time != float('inf') else '')
+        result = {
+            'task_suite': self.task_suite_name,
+            'task_id': task_id,
+            'task_description': description,
+            'successes': successes,
+            'total_episodes': episodes,
+            'success_episodes': success_episodes,
+            'failure_episodes': failure_episodes,
+            'start_time': start_time,
+            'duration': duration,
+            'gpu_id': self.result_gpu_id,
+        }
+
+        if self.result_storage_mode == 'per_worker':
+            checkpoint_dir = os.path.join(self.result_output_dir,
+                                          self.task_suite_name,
+                                          'worker_results')
+            os.makedirs(checkpoint_dir, exist_ok=True)
+            checkpoint_path = os.path.join(
+                checkpoint_dir, f'worker{self.result_gpu_id}_results.json')
+            if self._worker_results is None:
+                self._worker_results = {}
+                if os.path.isfile(checkpoint_path):
+                    with open(checkpoint_path, encoding='utf-8') as source:
+                        checkpoint = json.load(source)
+                    if checkpoint.get('task_suite') != self.task_suite_name:
+                        raise ValueError(f'Per-worker result suite mismatch: '
+                                         f'{checkpoint_path}')
+                    self._worker_results.update(checkpoint.get('results', {}))
+            self._worker_results[str(task_id)] = result
+            checkpoint = {
+                'schema_version': 1,
+                'task_suite': self.task_suite_name,
+                'worker_id': self.result_gpu_id,
+                'results': self._worker_results,
+            }
+            tmp_path = f'{checkpoint_path}.tmp.{os.getpid()}'
+            with open(tmp_path, 'w', encoding='utf-8') as output:
+                json.dump(checkpoint, output, indent=2)
+            os.replace(tmp_path, checkpoint_path)
+            return
+
+        suite_dir = os.path.join(self.result_output_dir, self.task_suite_name)
+        os.makedirs(suite_dir, exist_ok=True)
+        result_path = os.path.join(
+            suite_dir, f'gpu{self.result_gpu_id}_task{task_id}_results.json')
+        tmp_path = f'{result_path}.tmp.{os.getpid()}'
+        with open(tmp_path, 'w', encoding='utf-8') as result_file:
+            json.dump(result, result_file, indent=4)
+        os.replace(tmp_path, result_path)
 
     @staticmethod
     def _read_rank_progress(progress_dir: str) -> tuple:
@@ -401,6 +491,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  run_id_suffix: str = None,
                  result_output_dir: str = None,
                  result_gpu_id: int = None,
+                 result_storage_mode: str = 'per_task',
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
         from fluxvla.engines import (build_dataset_from_cfg,
@@ -499,6 +590,12 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.result_output_dir = result_output_dir
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
+        self.result_storage_mode = str(result_storage_mode).lower()
+        if self.result_storage_mode not in {'per_task', 'per_worker'}:
+            raise ValueError(
+                f'Unsupported result_storage_mode: {result_storage_mode}. '
+                "Expected one of: ['per_task', 'per_worker'].")
+        self._worker_results = None
 
         if os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
@@ -584,7 +681,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         run_timestamp = (
             time.strftime('%Y_%m_%d-%H_%M_%S') if rank == 0 else None)
         run_timestamp_holder = [run_timestamp]
-        dist.broadcast_object_list(run_timestamp_holder, src=0)
+        if world_size > 1:
+            dist.broadcast_object_list(run_timestamp_holder, src=0)
         run_timestamp = run_timestamp_holder[0]
         run_id = self._build_run_id(
             self.task_suite_name,
@@ -835,6 +933,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                                f'({rank_success_rate:.1f}%)\n')
                 log_file.write(success_log)
                 log_file.flush()
+                if trial_id == self.num_trials_per_task - 1:
+                    self._write_incremental_task_result(
+                        task_suite, task_id, task_successes, task_episodes,
+                        task_durations, trial_success_grid,
+                        task_start_times[task_id])
         finally:
             if env is not None:
                 env.close()
@@ -844,16 +947,17 @@ class LiberoEvalRunner(BaseEvalRunner):
         global_episodes = total_episodes.clone()
         global_successes = total_successes.clone()
         task_start_times = torch.tensor(task_start_times, device=cuda_dev)
-        dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
-        # Each (task, trial) is run by exactly one rank under the configured
-        # sharding, so MAX recovers that rank's 0/1 outcome (unrun cells stay
-        # ``-1``); MIN recovers the earliest per-task start time.
-        dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
-        dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
+        if world_size > 1:
+            dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
+            # Each (task, trial) is run by exactly one rank under the
+            # configured sharding, so MAX recovers that rank's 0/1 outcome
+            # and MIN recovers the earliest per-task start time.
+            dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
+            dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
         global_episode_count = int(global_episodes[0].item())
         global_success_count = int(global_successes[0].item())
         global_success_rate = (
@@ -862,39 +966,34 @@ class LiberoEvalRunner(BaseEvalRunner):
             overwatch.info(f'# episodes completed: {global_episode_count}')
             overwatch.info(f'# successes: {global_success_count} '
                            f'({global_success_rate:.1f}%)')
-            summary_path = os.path.join(self.run_dir, 'summary.txt')
-            with open(summary_path, 'w') as sf:
-                sf.write(f'task_suite: {self.task_suite_name}\n')
-                sf.write(f'model_family: {self.model_family}\n')
-                sf.write(f'task_ids: {task_ids}\n')
-                sf.write(f'num_trials_per_task: {self.num_trials_per_task}\n')
-                sf.write(f'eval_chunk_size: {self.eval_chunk_size}\n')
-                sf.write(f'num_steps_wait: {self.num_steps_wait}\n')
-                sf.write(f'num_inference_steps: {self.num_inference_steps}\n')
-                sf.write(f'max_steps: {self.max_steps}\n')
-                sf.write(f'eval_shard_strategy: {self.eval_shard_strategy}\n')
-                sf.write(
-                    f'preprocess_every_step: {self.preprocess_every_step}\n')
-                sf.write(f'save_rollout_videos: '
-                         f'{self.save_rollout_videos}\n')
-                sf.write(f'save_failed_rollout_videos: '
-                         f'{self.save_failed_rollout_videos}\n')
-                sf.write(f'save_multi_view_rollout_videos: '
-                         f'{self.save_multi_view_rollout_videos}\n')
-                sf.write(f'rollout_dir: {self.rollout_dir}\n')
-                sf.write(f'seed: {self.seed}\n')
-                sf.write(f'# successes: {global_success_count} / '
-                         f'{global_episode_count} '
-                         f'({global_success_rate:.1f}%)\n')  # noqa: E231
-            overwatch.info(f'[*] Wrote eval summary to {summary_path}')
-            self._write_libero_summary_artifacts(task_suite, num_tasks,
-                                                 task_successes.cpu(),
-                                                 task_episodes.cpu(),
-                                                 task_durations.cpu(),
-                                                 trial_success_grid.cpu(),
-                                                 task_start_times.cpu())
+            if self.result_storage_mode == 'per_task':
+                summary_path = os.path.join(self.run_dir, 'summary.txt')
+                with open(summary_path, 'w') as sf:
+                    sf.write(f'task_suite: {self.task_suite_name}\n')
+                    sf.write(f'model_family: {self.model_family}\n')
+                    sf.write(f'task_ids: {task_ids}\n')
+                    sf.write(f'num_trials_per_task: '
+                             f'{self.num_trials_per_task}\n')
+                    sf.write(f'eval_chunk_size: {self.eval_chunk_size}\n')
+                    sf.write(f'num_steps_wait: {self.num_steps_wait}\n')
+                    sf.write(f'num_inference_steps: '
+                             f'{self.num_inference_steps}\n')
+                    sf.write(f'max_steps: {self.max_steps}\n')
+                    sf.write(f'eval_shard_strategy: '
+                             f'{self.eval_shard_strategy}\n')
+                    sf.write(f'# successes: {global_success_count} / '
+                             f'{global_episode_count} '
+                             f'({global_success_rate:.1f}%)\n')
+                overwatch.info(f'[*] Wrote eval summary to {summary_path}')
+                self._write_libero_summary_artifacts(task_suite, num_tasks,
+                                                     task_successes.cpu(),
+                                                     task_episodes.cpu(),
+                                                     task_durations.cpu(),
+                                                     trial_success_grid.cpu(),
+                                                     task_start_times.cpu())
         log_file.close()
-        dist.barrier()
+        if world_size > 1:
+            dist.barrier()
         return
 
     @staticmethod
@@ -927,13 +1026,14 @@ class LiberoEvalRunner(BaseEvalRunner):
         total_trials = 0
         total_time = 0.0
         max_time = 0.0
-        # Per-task result JSONs live under a per-suite subdirectory.
+        write_per_task_files = self.result_storage_mode == 'per_task'
         suite_dir = os.path.join(self.run_dir, suite)
-        os.makedirs(suite_dir, exist_ok=True)
         status_dir = os.path.join(self.run_dir, 'task_status')
-        os.makedirs(status_dir, exist_ok=True)
+        if write_per_task_files:
+            os.makedirs(suite_dir, exist_ok=True)
+            os.makedirs(status_dir, exist_ok=True)
         manager_suite_dir = None
-        if self.result_output_dir is not None:
+        if self.result_output_dir is not None and write_per_task_files:
             manager_suite_dir = os.path.join(self.result_output_dir, suite)
             os.makedirs(manager_suite_dir, exist_ok=True)
         for task_id in range(num_tasks):
@@ -980,23 +1080,25 @@ class LiberoEvalRunner(BaseEvalRunner):
                 'duration': dur,
                 'gpu_id': self.result_gpu_id,
             }
-            with open(
-                    os.path.join(suite_dir, f'task{task_id}_results.json'),
-                    'w') as jf:
-                json.dump(per_task, jf, indent=4)
-            if manager_suite_dir is not None:
-                manager_result_path = os.path.join(
-                    manager_suite_dir,
-                    f'gpu{self.result_gpu_id}_task{task_id}_results.json')
-                with open(manager_result_path, 'w') as jf:
+            if write_per_task_files:
+                with open(
+                        os.path.join(suite_dir, f'task{task_id}_results.json'),
+                        'w') as jf:
                     json.dump(per_task, jf, indent=4)
-            # task_status/<suite>_task{id}.status -- ``STATE|succ|total|ts``.
-            with open(
-                    os.path.join(status_dir, f'{suite}_task{task_id}.status'),
-                    'w') as stf:
-                stf.write(f'SUCCESS|{succ}|{eps}|{int(start_ts)}'
-                          if start_ts != float('inf') else f'SUCCESS|{succ}|'
-                          f'{eps}|0')
+                if manager_suite_dir is not None:
+                    manager_result_path = os.path.join(
+                        manager_suite_dir,
+                        f'gpu{self.result_gpu_id}_task{task_id}_results.json')
+                    with open(manager_result_path, 'w') as jf:
+                        json.dump(per_task, jf, indent=4)
+                # ``STATE|succ|total|ts``.
+                with open(
+                        os.path.join(status_dir,
+                                     f'{suite}_task{task_id}.status'),
+                        'w') as stf:
+                    stf.write(f'SUCCESS|{succ}|{eps}|{int(start_ts)}'
+                              if start_ts != float('inf') else
+                              f'SUCCESS|{succ}|{eps}|0')
             overwatch.info(f'Task {task_id} completed: {succ}/{eps} successes')
             overwatch.info(f'Time taken: {dur:.2f} seconds')
             ordered_task_ids.append(task_id)

@@ -13,11 +13,10 @@
 # limitations under the License.
 """Aggregate FluxVLA LIBERO eval outputs into cross-suite summaries.
 
-Each ``LiberoEvalRunner`` run evaluates a single suite and writes per-task
-``<run_dir>/<suite>/task{id}_results.json``. This tool scans one or more such
-run directories, groups the per-task JSONs by suite, and emits a combined
-multi-suite ``summary.csv`` (with an ``Overall`` column), ``summary.txt`` and
-``summary.json`` for downstream comparison and reporting.
+Each ``LiberoEvalRunner`` run evaluates a single suite and writes either
+per-task JSON files or persistent per-worker result files. This tool scans one
+or more run directories, deduplicates results by suite and task ID, and emits
+combined ``summary.csv``, ``summary.txt`` and ``summary.json`` artifacts.
 """
 
 from __future__ import annotations
@@ -64,15 +63,31 @@ def format_time(seconds: float) -> str:
     return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'
 
 
-def _iter_result_files(root: str):
-    """Yield ``*_results.json`` paths under per-suite subdirs of ``root``."""
+def _iter_results(root: str):
+    """Yield task results and their sources under suite directories."""
     for suite in SUITE_ORDER:
         suite_dir = os.path.join(root, suite)
         if not os.path.isdir(suite_dir):
             continue
         for name in sorted(os.listdir(suite_dir)):
             if name.endswith('_results.json'):
-                yield suite, os.path.join(suite_dir, name)
+                path = os.path.join(suite_dir, name)
+                with open(path, 'r', encoding='utf-8') as result_file:
+                    yield suite, json.load(result_file), path
+
+        checkpoint_dir = os.path.join(suite_dir, 'worker_results')
+        if not os.path.isdir(checkpoint_dir):
+            continue
+        for name in sorted(os.listdir(checkpoint_dir)):
+            if not name.endswith('_results.json'):
+                continue
+            path = os.path.join(checkpoint_dir, name)
+            with open(path, 'r', encoding='utf-8') as checkpoint_file:
+                checkpoint = json.load(checkpoint_file)
+            if checkpoint.get('task_suite') != suite:
+                continue
+            for task_key, result in checkpoint.get('results', {}).items():
+                yield suite, result, f'{path}:results[{task_key!r}]'
 
 
 def _collect_run_dirs(args: argparse.Namespace) -> List[str]:
@@ -89,8 +104,16 @@ def _collect_run_dirs(args: argparse.Namespace) -> List[str]:
     return run_dirs
 
 
-def summarize(run_dirs: List[str]) -> Dict:
-    """Aggregate per-task JSONs across run dirs into per-suite statistics."""
+def summarize(run_dirs: List[str], reject_duplicates: bool = False) -> Dict:
+    """Aggregate task results across run dirs into per-suite statistics.
+
+    Args:
+        run_dirs: Run roots containing one directory per LIBERO suite.
+        reject_duplicates: Fail when the same suite/task pair occurs more
+            than once. Standard LIBERO aggregation keeps its historical
+            last-result-wins behavior; official LIBERO-Plus reporting enables
+            strict duplicate rejection.
+    """
     suite_stats = defaultdict(
         lambda: {
             'total_tasks': 0,
@@ -99,35 +122,57 @@ def summarize(run_dirs: List[str]) -> Dict:
             'total_time': 0.0,
             'max_time': 0.0,
         })
-    task_results: Dict[str, Dict] = {}
+    raw_results = {}
+    result_sources = {}
     for run_dir in run_dirs:
-        for suite, path in _iter_result_files(run_dir):
-            with open(path, 'r', encoding='utf-8') as f:
-                result = json.load(f)
+        for suite, result, source in _iter_results(run_dir):
+            result_suite = result.get('task_suite')
+            if result_suite is not None and result_suite != suite:
+                raise SystemExit(
+                    f'Result suite mismatch in {source}: directory={suite}, '
+                    f'payload={result_suite}.')
             task_id = int(result['task_id'])
-            task_key = f'{suite}_{task_id}'
-            eps = int(result['total_episodes'])
-            if eps == 0:
-                continue
-            succ = int(result['successes'])
-            dur = float(result.get('duration', 0.0))
-            stats = suite_stats[suite]
-            stats['total_tasks'] += 1
-            stats['total_trials'] += eps
-            stats['total_successes'] += succ
-            stats['total_time'] += dur
-            stats['max_time'] = max(stats['max_time'], dur)
-            task_results[task_key] = {
-                'success_rate': succ / eps * 100,
-                'duration': dur,
-                'total_episodes': eps,
-                'successes': succ,
-                'task_description': result.get('task_description', ''),
-            }
+            result_key = (suite, task_id)
+            if reject_duplicates and result_key in raw_results:
+                raise SystemExit(
+                    f'Duplicate LIBERO result for {suite} task {task_id}: '
+                    f'{result_sources[result_key]} and {source}.')
+            raw_results[result_key] = result
+            result_sources[result_key] = source
+
+    task_results: Dict[str, Dict] = {}
+    for (suite, task_id), result in sorted(raw_results.items()):
+        task_key = f'{suite}_{task_id}'
+        eps = int(result['total_episodes'])
+        succ = int(result['successes'])
+        if eps < 0 or succ < 0 or succ > eps:
+            raise SystemExit(
+                f'Invalid result counts for {task_key}: {succ}/{eps}.')
+        if eps == 0:
+            continue
+        dur = float(result.get('duration', 0.0))
+        stats = suite_stats[suite]
+        stats['total_tasks'] += 1
+        stats['total_trials'] += eps
+        stats['total_successes'] += succ
+        stats['total_time'] += dur
+        stats['max_time'] = max(stats['max_time'], dur)
+        task_results[task_key] = {
+            'success_rate': succ / eps * 100,
+            'duration': dur,
+            'total_episodes': eps,
+            'successes': succ,
+            'task_description': result.get('task_description', ''),
+        }
     return {'suite_stats': dict(suite_stats), 'task_results': task_results}
 
 
-def write_summaries(summary: Dict, output_dir: str, title: str) -> str:
+def write_summaries(summary: Dict,
+                    output_dir: str,
+                    title: str,
+                    config: str = None,
+                    ckpt: str = None,
+                    print_task_rows: bool = True) -> str:
     """Write combined ``summary.{csv,txt,json}`` to ``output_dir``."""
     os.makedirs(output_dir, exist_ok=True)
     suite_stats = summary['suite_stats']
@@ -140,7 +185,8 @@ def write_summaries(summary: Dict, output_dir: str, title: str) -> str:
         '=== Evaluation Results Summary ===', '',
         'Statistics for each task suite:'
     ]
-    total_success_rate = 0.0
+    total_successes = 0
+    total_trials = 0
     total_time = 0.0
     total_tasks = 0
     overall_max_time = 0.0
@@ -164,7 +210,8 @@ def write_summaries(summary: Dict, output_dir: str, title: str) -> str:
             f'- Average time per task: {format_time(avg_time)}',
             f"- Longest task time: {format_time(stats['max_time'])}",
         ]
-        total_success_rate += rate
+        total_successes += stats['total_successes']
+        total_trials += stats['total_trials']
         total_time += stats['total_time']
         total_tasks += stats['total_tasks']
         overall_max_time = max(overall_max_time, stats['max_time'])
@@ -172,7 +219,7 @@ def write_summaries(summary: Dict, output_dir: str, title: str) -> str:
     num_suites = len(columns)
     if num_suites == 0:
         raise SystemExit('No completed tasks found in the given run dirs.')
-    overall_rate = total_success_rate / num_suites
+    overall_rate = total_successes / total_trials * 100
     overall_avg_time = total_time / total_tasks if total_tasks else 0.0
     columns.append('Overall')
     rows['Success Rate (%)'].append(f'{overall_rate:.2f}')
@@ -219,20 +266,27 @@ def write_summaries(summary: Dict, output_dir: str, title: str) -> str:
                 writer.writerow(row)
 
     summary_json = os.path.join(output_dir, 'summary.json')
+    resolved_config = (
+        os.environ.get('CONFIG', '') if config is None else str(config))
+    resolved_ckpt = (os.environ.get('CKPT', '') if ckpt is None else str(ckpt))
     with open(summary_json, 'w') as f:
         json.dump(
             {
                 'run_id': os.path.basename(output_dir),
-                'ckpt': os.environ.get('CKPT', ''),
-                'config': os.environ.get('CONFIG', ''),
+                'ckpt': resolved_ckpt,
+                'config': resolved_config,
                 'suite_stats':
                 {suite: suite_stats[suite]
                  for suite in ordered_suites},
                 'task_results': task_results,
                 'overall': {
                     'average_success_rate': overall_rate,
+                    'success_rate': overall_rate,
+                    'total_episodes': total_trials,
+                    'successes': total_successes,
                     'total_time': total_time,
                     'average_task_time': overall_avg_time,
+                    'max_time': overall_max_time,
                 },
             },
             f,
@@ -244,10 +298,11 @@ def write_summaries(summary: Dict, output_dir: str, title: str) -> str:
     print(f'Summary file: {summary_json}')
     print(f'Summary CSV: {summary_csv}')
     print(f'Task success rates CSV: {task_csv}')
-    print('\n=== Task Success Rates ===')
-    print('Task,Description,Success Rate (%)')
-    for row in task_rows:
-        print(','.join(str(item) for item in row))
+    if print_task_rows:
+        print('\n=== Task Success Rates ===')
+        print('Task,Description,Success Rate (%)')
+        for row in task_rows:
+            print(','.join(str(item) for item in row))
     print('\n=== Results Table ===')
     print(','.join([''] + columns))
     for metric in ('Success Rate (%)', 'Average Time (s)', 'Max Time (s)'):
@@ -276,6 +331,14 @@ def parse_args() -> argparse.Namespace:
         default='Results',
         help='Title line written at the top of summary.csv.')
     parser.add_argument(
+        '--config',
+        default=os.environ.get('CONFIG', ''),
+        help='Config path saved into summary.json and Feishu.')
+    parser.add_argument(
+        '--ckpt',
+        default=os.environ.get('CKPT', ''),
+        help='Checkpoint path saved into summary.json.')
+    parser.add_argument(
         '--feishu-sheet-url',
         default=os.environ.get('FEISHU_SHEET_URL', ''),
         help='Optional Feishu Sheets URL for uploading LIBERO results.')
@@ -299,7 +362,12 @@ def main() -> None:
     args = parse_args()
     run_dirs = _collect_run_dirs(args)
     summary = summarize(run_dirs)
-    summary_json = write_summaries(summary, args.output_dir, args.title)
+    summary_json = write_summaries(
+        summary,
+        args.output_dir,
+        args.title,
+        config=args.config,
+        ckpt=args.ckpt)
     if args.feishu_sheet_url or args.feishu_app_id or args.feishu_app_secret:
         maybe_report_summary_to_feishu = _load_feishu_reporter()
         maybe_report_summary_to_feishu(

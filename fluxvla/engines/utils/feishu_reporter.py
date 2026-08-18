@@ -38,6 +38,16 @@ ROBOCASA_RESULT_COLUMNS = [
     'Generalization',
     'all',
 ]
+LIBERO_PLUS_RESULT_COLUMNS = [
+    'Camera',
+    'Robot',
+    'Language',
+    'Light',
+    'Background',
+    'Noise',
+    'Layout',
+    'Total',
+]
 
 REPORT_SPECS = {
     'libero': {
@@ -51,6 +61,12 @@ REPORT_SPECS = {
         'robocasa',
         'headers':
         ['id', 'commit id', 'config', 'ckpt_path'] + ROBOCASA_RESULT_COLUMNS,
+    },
+    'libero_plus': {
+        'sheet_title':
+        'libero_plus',
+        'headers': ['id', 'commit id', 'config', 'ckpt_path'] +
+        LIBERO_PLUS_RESULT_COLUMNS,
     },
 }
 
@@ -255,7 +271,7 @@ def build_report_row(summary: Dict[str, Any],
             for suite in LIBERO_RESULT_COLUMNS[:-1]
         ]
         values.append(_format_rate(_weighted_rate(suite_stats.values())))
-    else:
+    elif report_kind == 'robocasa':
         group_stats = summary.get('group_stats') or summary.get(
             'suite_stats', {})
         lower_stats = _lower_keyed_stats(group_stats)
@@ -268,6 +284,14 @@ def build_report_row(summary: Dict[str, Any],
             overall = _safe_float(
                 summary.get('overall', {}).get('success_rate'))
         values.append(_format_rate(overall))
+    else:
+        overall = summary.get('overall', {})
+        categories = overall.get('categories', {})
+        values = [
+            _format_rate(_rate_from_stats(categories.get(column)))
+            for column in LIBERO_PLUS_RESULT_COLUMNS[:-1]
+        ]
+        values.append(_format_rate(_rate_from_stats(overall.get('total'))))
 
     return [commit, cfg, ckpt_path] + values
 

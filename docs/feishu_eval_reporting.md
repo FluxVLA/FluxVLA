@@ -1,6 +1,6 @@
 # Feishu Evaluation Reporting
 
-FluxVLA can upload LIBERO and RoboCasa evaluation summaries to a Feishu
+FluxVLA can upload LIBERO, LIBERO-Plus, and RoboCasa evaluation summaries to a Feishu
 spreadsheet. The upload is best-effort: evaluation results are still written
 locally even when Feishu reporting is not configured or the Feishu API rejects
 the write.
@@ -13,6 +13,7 @@ This feature works with:
 - `scripts/train.sh ... --eval-after-train`
 - `tools/summarize_libero_eval_results.py`
 - `scripts/ros_inference_server.sh` with FluxThemis `ReportEvaluation`
+- `tools/summarize_libero_plus_results.py`
 
 ## FluxThemis ROS Evaluation Reporting
 
@@ -83,6 +84,12 @@ LIBERO uses this header:
 id, commit id, config, ckpt_path, libero_10, libero_goal, libero_object, libero_spatial, all
 ```
 
+LIBERO-Plus uses this header:
+
+```text
+id, commit id, config, ckpt_path, Camera, Robot, Language, Light, Background, Noise, Layout, Total
+```
+
 RoboCasa uses this header:
 
 ```text
@@ -98,6 +105,8 @@ Column behavior:
 - Suite/group columns are formatted as percentages, for example `50.00%`.
 - `all` is computed from total successes and total trials when those counts
   are present.
+- LIBERO-Plus `Total` is micro-averaged over all 10,030 task trials, not the
+  arithmetic mean of its seven perturbation columns.
 
 If the target worksheet is empty, FluxVLA writes the header and the first
 result row. If the worksheet is non-empty, the first row must exactly match the
@@ -167,17 +176,18 @@ export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>?sheet=<sheet_i
 ```
 
 This is useful when you want to write to an existing tab such as `Sheet4` even
-if its title is not `libero` or `robocasa`.
+if its title is not `libero`, `libero_plus`, or `robocasa`.
 
 If the URL does not include `sheet=`, FluxVLA chooses a worksheet by report
 kind:
 
 - LIBERO writes to a worksheet named `libero`.
+- LIBERO-Plus writes to a worksheet named `libero_plus`.
 - RoboCasa writes to a worksheet named `robocasa`.
 - If the worksheet does not exist, FluxVLA creates it.
 
 Use the spreadsheet-level URL when you want one document with separate
-`libero` and `robocasa` tabs:
+`libero`, `libero_plus`, and `robocasa` tabs:
 
 ```bash
 export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>'
@@ -198,8 +208,8 @@ Successful logs include the actual target:
 ```
 
 `selection=url sheet` means the `sheet=` query selected the worksheet.
-`selection=report kind sheet` means FluxVLA selected `libero` or `robocasa`
-from the report kind.
+`selection=report kind sheet` means FluxVLA selected `libero`, `libero_plus`,
+or `robocasa` from the report kind.
 
 ## RoboCasa With `scripts/eval.sh`
 
@@ -254,6 +264,34 @@ bash scripts/eval.sh \
 When LIBERO evaluates multiple suites in one run, `scripts/eval.py` combines
 the per-suite summaries and writes one Feishu row containing
 `libero_10`, `libero_goal`, `libero_object`, `libero_spatial`, and `all`.
+
+## LIBERO-Plus With `scripts/eval_libero_plus_manager.sh`
+
+LIBERO-Plus evaluates one suite per manager invocation and uploads only after a
+strict, complete four-suite summary is available. Partial summaries are always
+kept local and are never uploaded.
+
+Run the four suites with `scripts/eval_libero_plus_manager.sh` as documented in
+the main README, then aggregate the shared run root with Feishu variables set:
+
+```bash
+cd /path/to/FluxVLA
+
+export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>'
+export FEISHU_APP_ID='cli_xxx'
+export FEISHU_APP_SECRET='xxx'
+
+python tools/summarize_libero_plus_results.py \
+  --run-root work_dirs/libero_plus_pi05 \
+  --output-dir work_dirs/libero_plus_pi05 \
+  --title PI0.5 \
+  --config configs/pi05 \
+  --ckpt /path/to/checkpoints
+```
+
+Do not pass `--allow-incomplete` for a report intended for comparison. The
+summarizer rejects duplicate tasks, missing official tasks, unknown task IDs,
+and results containing anything other than one trial per task before upload.
 
 ## Eval After Train
 

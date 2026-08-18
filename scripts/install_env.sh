@@ -63,6 +63,10 @@ FLASH_ATTN_WHEEL_BASE_URLS="${FLASH_ATTN_WHEEL_BASE_URLS:-}"
 FLUXVLA_EGL_SETUP="${FLUXVLA_EGL_SETUP:-auto}"
 FLUXVLA_EGL_VENDOR_FILE="${FLUXVLA_EGL_VENDOR_FILE:-/usr/share/glvnd/egl_vendor.d/10_nvidia.json}"
 FLUXVLA_EGL_APT_PACKAGES="${FLUXVLA_EGL_APT_PACKAGES:-libegl1 libglvnd0 libopengl0 libegl-dev libgl1-mesa-dev libx11-dev libglew-dev libosmesa6-dev}"
+FLUXVLA_LIBERO_PLUS_ASSETS="${FLUXVLA_LIBERO_PLUS_ASSETS:-always}"
+FLUXVLA_LIBERO_PLUS_ASSET_ENDPOINT="${FLUXVLA_LIBERO_PLUS_ASSET_ENDPOINT:-${HF_ENDPOINT:-https://huggingface.co}}"
+FLUXVLA_LIBERO_PLUS_ASSET_CACHE="${FLUXVLA_LIBERO_PLUS_ASSET_CACHE:-${PROJECT_ROOT}/src/libero-plus-assets}"
+FLUXVLA_LIBERO_PLUS_APT_PACKAGES="${FLUXVLA_LIBERO_PLUS_APT_PACKAGES:-libexpat1 libfontconfig1-dev libpython3-stdlib libmagickwand-dev unzip}"
 FLUXVLA_ROBOCASA_INSTALL="${FLUXVLA_ROBOCASA_INSTALL:-auto}"
 FLUXVLA_ROBOCASA_SRC_ROOT="${FLUXVLA_ROBOCASA_SRC_ROOT:-${PROJECT_ROOT}/src}"
 FLUXVLA_GROOT_REPO="${FLUXVLA_GROOT_REPO:-https://github.com/NVIDIA/Isaac-GR00T.git}"
@@ -100,6 +104,7 @@ Options:
   --skip-project              Skip editable FluxVLA installation.
   --skip-build-tools          Skip cmake/ninja preflight check.
   --skip-egl-setup            Skip LIBERO / MuJoCo EGL system setup.
+  --skip-libero-plus-assets   Skip the LIBERO-Plus benchmark asset download.
   --with-robocasa             Install RoboCasa source checkouts even in
                               real-only mode.
   --skip-robocasa             Skip Isaac-GR00T / RoboCasa GR1 source checkout
@@ -191,6 +196,17 @@ Environment variables:
                       /usr/share/glvnd/egl_vendor.d/10_nvidia.json.
   FLUXVLA_EGL_APT_PACKAGES
                       Space-separated apt packages for EGL / OSMesa setup.
+  FLUXVLA_LIBERO_PLUS_ASSETS
+                      LIBERO-Plus asset download mode: always or never.
+                      Default: always for sim-only/full installs.
+  FLUXVLA_LIBERO_PLUS_ASSET_ENDPOINT
+                      Hugging Face endpoint for LIBERO-Plus assets. Default:
+                      HF_ENDPOINT if set, otherwise huggingface.co.
+  FLUXVLA_LIBERO_PLUS_ASSET_CACHE
+                      Local LIBERO-Plus assets.zip cache. Default:
+                      ./src/libero-plus-assets.
+  FLUXVLA_LIBERO_PLUS_APT_PACKAGES
+                      Space-separated LIBERO-Plus system packages.
   FLUXVLA_ROBOCASA_INSTALL
                       RoboCasa source checkout mode: auto, always, or never.
                       auto installs for sim-only/full and skips real-only.
@@ -306,6 +322,10 @@ while [[ $# -gt 0 ]]; do
       SKIP_EGL_SETUP=1
       shift
       ;;
+    --skip-libero-plus-assets)
+      FLUXVLA_LIBERO_PLUS_ASSETS="never"
+      shift
+      ;;
     --with-robocasa)
       FLUXVLA_ROBOCASA_INSTALL="always"
       shift
@@ -375,6 +395,15 @@ case "${FLUXVLA_EGL_SETUP}" in
     ;;
   *)
     echo "FLUXVLA_EGL_SETUP must be one of: auto, always, never" >&2
+    exit 1
+    ;;
+esac
+
+case "${FLUXVLA_LIBERO_PLUS_ASSETS}" in
+  always|never)
+    ;;
+  *)
+    echo "FLUXVLA_LIBERO_PLUS_ASSETS must be one of: always, never" >&2
     exit 1
     ;;
 esac
@@ -578,8 +607,8 @@ ensure_git_available() {
     return 0
   fi
 
-  echo "Error: git is required to install RoboCasa source checkouts." >&2
-  echo "       Install git or rerun with --skip-robocasa." >&2
+  echo "Error: git is required to install simulation source checkouts." >&2
+  echo "       Install git before running a sim-only/full setup." >&2
   exit 1
 }
 
@@ -1609,6 +1638,45 @@ install_requirements() {
   esac
 }
 
+install_libero_plus_system_packages() {
+  if ! needs_sim_runtime; then
+    return
+  fi
+  if ldconfig -p 2>/dev/null | grep -q 'libMagickWand'; then
+    return
+  fi
+  if ! command -v apt-get >/dev/null 2>&1; then
+    echo "Error: install LIBERO-Plus system packages manually: ${FLUXVLA_LIBERO_PLUS_APT_PACKAGES}" >&2
+    exit 1
+  fi
+  echo "Installing LIBERO-Plus system packages."
+  run_privileged apt-get update
+  # shellcheck disable=SC2086
+  run_privileged apt-get install -y ${FLUXVLA_LIBERO_PLUS_APT_PACKAGES}
+}
+
+download_libero_plus_assets() {
+  if ! needs_sim_runtime || [[ "${FLUXVLA_LIBERO_PLUS_ASSETS}" != "always" ]]; then
+    return
+  fi
+
+  local asset_downloader="${PROJECT_ROOT}/scripts/download_libero_plus_assets.py"
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "+ ${PYTHON_BIN} ${asset_downloader} --cache-dir ${FLUXVLA_LIBERO_PLUS_ASSET_CACHE} --endpoint ${FLUXVLA_LIBERO_PLUS_ASSET_ENDPOINT}"
+    return
+  fi
+
+  if [[ ! -f "${asset_downloader}" ]]; then
+    echo "Error: LIBERO-Plus asset downloader not found: ${asset_downloader}" >&2
+    exit 1
+  fi
+
+  echo "Downloading and configuring LIBERO-Plus benchmark assets."
+  "${PYTHON_BIN}" "${asset_downloader}" \
+    --cache-dir "${FLUXVLA_LIBERO_PLUS_ASSET_CACHE}" \
+    --endpoint "${FLUXVLA_LIBERO_PLUS_ASSET_ENDPOINT}"
+}
+
 download_robocasa_assets() {
   if [[ "${FLUXVLA_ROBOCASA_ASSETS}" != "always" ]]; then
     return
@@ -2080,6 +2148,9 @@ main() {
     echo "RoboCasa asset download: never (RoboCasa source checkout skipped)"
   fi
   echo "RoboCasa source root: ${FLUXVLA_ROBOCASA_SRC_ROOT}"
+  if needs_sim_runtime; then
+    echo "LIBERO-Plus asset download: ${FLUXVLA_LIBERO_PLUS_ASSETS}"
+  fi
 
   ensure_build_tools
   ensure_pip
@@ -2089,6 +2160,8 @@ main() {
   install_av
   install_requirements
   install_torchcodec "${selected}"
+  install_libero_plus_system_packages
+  download_libero_plus_assets
   install_robocasa_sources
   configure_libero_egl_runtime
   install_flash_attn "${selected}"

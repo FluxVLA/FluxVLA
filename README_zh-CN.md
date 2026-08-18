@@ -28,6 +28,8 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 性能
 
+#### LIBERO
+
 | Codebase                    |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                     Libero-Long                                                     |                                             Libero-Average                                             |
 | --------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-----------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------: |
 | FluxVLA(SmolVLA)            |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |      [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)       |                                                  84.7                                                  |
@@ -40,11 +42,26 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 *带链接的分数可跳转到对应 checkpoint。*
 
+#### LIBERO-Plus
+
+|             Model              | Camera | Robot | Language | Light | Background | Noise | Layout | Total |
+| :----------------------------: | :----: | :---: | :------: | :---: | :--------: | :---: | :----: | :---: |
+|       FluxVLA (SmolVLA)        |  4.69  | 1.81  |  17.44   | 44.40 |   39.50    | 2.19  | 26.30  | 17.34 |
+|       FluxVLA (FastWAM)        | 12.88  | 55.61 |  75.93   | 85.03 |   58.27    | 34.73 | 71.48  | 54.63 |
+| FluxVLA (Qwen3VL 0.6B + GR00T) | 42.34  | 50.06 |  78.14   | 83.36 |   76.12    | 84.76 | 73.25  | 68.78 |
+|      FluxVLA (DreamZero)       | 67.42  | 58.06 |  85.43   | 86.43 |   74.91    | 74.58 | 76.39  | 74.21 |
+|         FluxVLA(PI0.5)         | 57.72  | 81.10 |  89.39   | 49.74 |   59.20    | 86.63 | 85.44  | 74.27 |
+|          FluxVLA(PI0)          | 69.11  | 44.90 |  79.90   | 92.64 |   88.66    | 87.26 | 78.69  | 76.15 |
+|        FluxVLA (GR00T)         | 55.47  | 61.68 |  84.58   | 90.37 |   89.50    | 89.94 | 77.64  | 77.39 |
+
+以上所有模型均直接使用仅在标准 LIBERO 上训练的原始权重，在 LIBERO-Plus 上进行
+zero-shot 评测；所有模型均未在 LIBERO-Plus 上微调。
+
 #### RoboCasa GR1
 
-| 模型           | 训练数据             | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
-| -------------- | -------------------- | ------- | ------ | --------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| FluxVLA(GR00T) | 24 个任务，30 条演示 | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+|      模型      |       训练数据       | Cabinet | Drawer | Microwave | Generalization |                                                            Average                                                             |
+| :------------: | :------------------: | :-----: | :----: | :-------: | :------------: | :----------------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(GR00T) | 24 个任务，30 条演示 |  22.7%  | 35.7%  |   32.5%   |     48.9%      | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
 
 #### 说明
 
@@ -109,7 +126,7 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>如果安装脚本遇到问题：检查安装模式和 CUDA profile 选择</b></summary>
 
-`sim-only` 会安装仿真 / LIBERO / RoboCasa 运行时依赖，并把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 会安装真机和远程推理依赖；`full` 会同时安装两类依赖。如果不需要 RoboCasa checkout，可传入 `--skip-robocasa`。
+`sim-only` 安装仿真 / LIBERO / LIBERO-Plus / RoboCasa 相关依赖，并默认把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 安装真机和远程推理依赖，`full` 两者都安装。`requirements-sim.txt` 将标准 LIBERO 安装为 distribution / Python namespace `libero`，将兼容版 LIBERO-Plus 安装为独立的 distribution `libero-plus` 和 namespace `libero_plus`。二者可在同一个 Conda 环境中共存：普通评测命令使用 `libero`，`scripts/eval_libero_plus_manager.sh` 使用 `libero_plus`。如果不需要 RoboCasa checkout，可以加 `--skip-robocasa`。安装器默认还会下载并校验 LIBERO-Plus 的 6.4 GB benchmark 资产；如需延后下载，可传 `--skip-libero-plus-assets`。
 
 只要安装器安装 RoboCasa 源码 checkout（`sim-only`、`full` 或 `real-only --with-robocasa`），默认也会下载 RoboCasa 仿真资产。安装器会调用 `scripts/download_robocasa_assets.py`，并使用 `FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（默认依次取 `HF_ENDPOINT`、`https://hf-mirror.com`）。如只想跳过资产下载，可使用 `--skip-robocasa-assets`；如需同时跳过源码 checkout 和资产，可使用 `--skip-robocasa`。
 
@@ -173,9 +190,11 @@ bash scripts/update_env.sh
 ```bash
 git pull
 python -m pip install --upgrade "transformers==5.3.0" "datasets==4.0.0"
-python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
+python -m pip install "numpy==1.26.4" "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0 "Wand==0.7.2" "scikit-image==0.25.2"
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
+python -m pip install --no-deps -e "git+https://github.com/hqr-robotic/LIBERO-plus.git@d7c160eca38bf268d5965aef6d4c6dca12d5537c#egg=libero-plus"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
+python scripts/download_libero_plus_assets.py
 python -m pip install --no-build-isolation -e .
 python -c "import transformers; print(transformers.__version__)"
 ```
@@ -273,6 +292,11 @@ pip install --no-build-isolation -e .
 > TorchCodec 也由环境脚本安装，因为其版本必须与 PyTorch 匹配。x86_64
 > 手动安装时，Torch 2.8 使用 `torchcodec==0.7.0`，Torch 2.6 使用
 > `torchcodec==0.2.1`；Linux aarch64 保持使用 PyAV 回退。
+
+> **LIBERO-Plus**：`requirements-sim.txt` 会在当前 FluxVLA 环境中同时安装
+> `libero`、固定版本的 `libero-plus`，以及 `Wand` / `scikit-image`。两者的
+> Python namespace 分别为 `libero` 与 `libero_plus`，不会互相覆盖。不要安装
+> LIBERO-Plus 上游的 `requirements.txt`，否则其旧版本依赖会覆盖 FluxVLA 栈。
 
 </details>
 
@@ -506,6 +530,8 @@ ARM 训练会直接读取该数据集中的 `progress` 列。若需要在没有 
 <details>
 <summary><b>准备资产</b></summary>
 
+#### RoboCasa GR1
+
 请使用下面的 FluxVLA 资产下载器作为 RoboCasa GR1 tabletop tasks 的受支持路径。表中列出了脚本使用的上游压缩包；仅手动下载和解压这些压缩包并不足够，因为脚本还会修正目录布局，并为固定版本的 RoboCasa GR1 checkout 规范化 Objaverse XML 元数据。
 
 | 资产压缩包                                                 | 下载链接                                                                                                         | 本地目录                                                   |
@@ -527,6 +553,25 @@ python scripts/download_robocasa_assets.py --normalize-only
 ```
 
 软链接不是必须的；只有当资产已经位于其他本地磁盘或共享存储时，软链接才是一种便利手段。
+
+#### LIBERO-Plus
+
+`scripts/install_env.sh sim-only` 和 `scripts/install_env.sh full` 默认安装固定的
+`libero-plus` 包并下载官方 6.4 GB benchmark 资产。如果安装时使用了
+`--skip-libero-plus-assets`，可在仓库根目录补充下载：
+
+```bash
+python scripts/download_libero_plus_assets.py
+```
+
+仅校验已有资产而不下载：
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+```
+
+下载器会校验并解压所需物体、场景与纹理，同时写入 LIBERO-Plus manager 自动使用的
+配置；标准 LIBERO 命令继续使用独立配置。
 
 </details>
 
@@ -739,7 +784,8 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 <summary><b>评估与推理能力</b></summary>
 
 - 支持多 GPU 在无光追设备上评估 libero。
-- 支持将 LIBERO 和 RoboCasa 评估汇总自动写入飞书电子表格。详见 [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md)。
+- 支持可持久化、可恢复的 LIBERO-Plus 评测，并对全部 10,030 个鲁棒性任务执行严格聚合。
+- 支持将 LIBERO、LIBERO-Plus 和 RoboCasa 评估汇总自动写入飞书电子表格。详见 [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md)。
 - 支持基于 ZMQ 通信框架的远程推理设施，利用 server/client 架构将模型推理负载装卸到服务器端，适用于算力受限的边缘设备部署。详见 [远程推理服务](docs/remote_inference_serving.md)。
 - 支持 [RTC (Real-Time Chunking)](docs/rtc.md)，提升跨 chunk 轨迹连续性。
 - 支持 GR00T 与 PI0.5 推理加速；详见 [Inference Acceleration](docs/inference_acceleration.md)，包含 Triton 融合核、CUDA Graph 捕获与 CUDA 自定义算子。
@@ -790,6 +836,8 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
 <details>
 <summary><b>本地评估</b></summary>
 
+#### 标准 LIBERO
+
 ```
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node [NUM_GPUS] scripts/eval.py --config [CONFIG_PATH] --ckpt-path [CKPT_PATH] --cfg-options [CFG_OPTIONS]
 ```
@@ -801,7 +849,9 @@ export WANDB_MODE=disabled
 /root/miniconda3/envs/fluxvla/bin/torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py --config configs/pi05/pi05_paligemma_libero_10_full_finetune.py --ckpt-path checkpoints/pi05_paligemma_libero_10_full_finetune_bs64/checkpoints/step-028548-epoch-18-loss=0.0111.safetensors
 ```
 
-RoboCasa GR00T 评估示例：
+#### RoboCasa GR1
+
+GR00T 评估示例：
 
 ```bash
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
@@ -817,6 +867,40 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 ```
 
 `eval.seed` 控制 RoboCasa episode seeds 以及评估过程中 GR00T 随机 action sampling seeds。`PYTHONHASHSEED` 与其相互独立，必须在 Python 启动前设置；复现已报告的 RoboCasa 结果时，建议使用相同数值。
+
+#### LIBERO-Plus
+
+LIBERO-Plus 包含 10,030 个鲁棒性任务，每个任务固定评测一次。确认资产完整后，
+每次通过 manager 启动一个 suite：
+
+```bash
+python scripts/download_libero_plus_assets.py --validate-only
+
+export OUTPUT_DIR=work_dirs/libero_plus_pi05
+export CUDA_VISIBLE_DEVICES=0,1
+export WORKERS_PER_GPU=1
+export RESUME=1
+export WANDB_MODE=disabled
+
+CONFIG=configs/pi05/pi05_paligemma_libero_spatial_full_finetune.py \
+CKPT=/path/to/pi05-libero-spatial-checkpoint.safetensors \
+SUITE=libero_spatial \
+bash scripts/eval_libero_plus_manager.sh
+```
+
+使用同一个 `OUTPUT_DIR`，分别用匹配的 config 与 checkpoint 继续运行
+`libero_object`、`libero_goal` 和 `libero_10`。manager 会强制执行官方的
+每任务一次试验协议，并在 `RESUME=1` 时跳过已完成任务。冒烟测试可设置
+`TASK_IDS=0,1,2`。
+
+四个 suite 全部结束后，生成严格的 leaderboard 汇总：
+
+```bash
+python tools/summarize_libero_plus_results.py \
+  --run-root "$OUTPUT_DIR" \
+  --output-dir "$OUTPUT_DIR" \
+  --title PI0.5
+```
 
 </details>
 
