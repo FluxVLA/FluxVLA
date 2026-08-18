@@ -79,15 +79,6 @@ _ROBOCASA_TASK_DIRS = [
     'PosttrainPnPNovelFromTrayToTieredshelfSplitA',
 ]
 
-_prompt_input_keys = [
-    'prompt',
-    'task_description',
-    'lang',
-    'instruction',
-    'instructions',
-    'text',
-]
-
 seed = 42
 eval_seed = 7
 
@@ -196,15 +187,9 @@ _dit4dit_train_transforms = [
     # action statistics before min-max normalization.
     dict(type='RobocasaGR1N15Bridge', expand_state_axis=0),
     dict(
-        type='CanonicalizePrompt',
-        output_key='prompt',
-        input_keys=_prompt_input_keys,
-        remove_source_keys=True,
-    ),
-    dict(
         type='ProcessCosmos25Prompt',
         tokenizer=_cosmos_tokenizer,
-        input_key='prompt',
+        input_key='task_description',
         remove_input_key=True,
     ),
     # DiT4DiT's RoboCasa loader converts to float CHW / 255 and then performs
@@ -370,15 +355,9 @@ eval = dict(
             ),
             dict(type='RobocasaGR1N15Bridge', expand_state_axis=0),
             dict(
-                type='CanonicalizePrompt',
-                output_key='prompt',
-                input_keys=_prompt_input_keys,
-                remove_source_keys=True,
-            ),
-            dict(
                 type='ProcessCosmos25Prompt',
                 tokenizer=_cosmos_tokenizer,
-                input_key='prompt',
+                input_key='task_description',
                 remove_input_key=True,
             ),
             dict(

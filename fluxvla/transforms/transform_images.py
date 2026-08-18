@@ -1432,123 +1432,6 @@ class SimpleNormalizeImages:
 
 
 @TRANSFORMS.register_module()
-class ConcatImagesHorizontally:
-    """Concat camera views width-wise while preserving temporal frames.
-
-    FluxVLA parquet loading stores frames view-first:
-    ``[view0_t0, view0_t1, ..., view1_t0, view1_t1, ...]``. DiT4DiT's
-    LIBERO preprocessing resizes each view and concatenates primary + wrist
-    images horizontally for each timestep.
-    """
-
-    def __init__(self,
-                 key: str = 'images',
-                 num_views: int = 2,
-                 frame_stride: int = 1,
-                 views_first: bool = True,
-                 keep_time_dim: bool = True,
-                 mask_key: str = 'img_masks',
-                 preserve_mask_container: bool = False) -> None:
-        self.key = key
-        self.num_views = int(num_views)
-        self.frame_stride = int(frame_stride)
-        self.views_first = views_first
-        self.keep_time_dim = keep_time_dim
-        self.mask_key = mask_key
-        self.preserve_mask_container = bool(preserve_mask_container)
-
-    def __call__(self, data: dict):
-        if self.key not in data:
-            raise KeyError(f"Image key '{self.key}' is missing.")
-        items, is_tensor, device, dtype = self._to_items(data[self.key])
-        if items.shape[0] % self.num_views != 0:
-            raise ValueError(f'Cannot split {items.shape[0]} images into '
-                             f'{self.num_views} views.')
-
-        num_frames = items.shape[0] // self.num_views
-        view_time = self._reshape_view_time(items, num_frames, is_tensor)
-        view_time = view_time[:, ::self.frame_stride]
-        num_frames = view_time.shape[1]
-
-        frames = []
-        for frame_idx in range(num_frames):
-            views = [
-                view_time[view_idx, frame_idx]
-                for view_idx in range(self.num_views)
-            ]
-            if is_tensor:
-                frames.append(torch.cat(views, dim=-1))
-            else:
-                frames.append(np.concatenate(views, axis=-1))
-
-        output = torch.stack(
-            frames, dim=0) if is_tensor else np.stack(
-                frames, axis=0)
-        if not self.keep_time_dim and output.shape[0] == 1:
-            output = output[0]
-        if is_tensor:
-            output = output.to(device=device, dtype=dtype)
-        data[self.key] = output
-
-        if self.mask_key is not None and self.mask_key in data:
-            data[self.mask_key] = self._concat_masks(data[self.mask_key],
-                                                     num_frames)
-        return data
-
-    def _to_items(self, images):
-        is_tensor = isinstance(images, torch.Tensor)
-        device = images.device if is_tensor else None
-        dtype = images.dtype if is_tensor else None
-        if is_tensor:
-            arr = images
-        else:
-            arr = np.asarray(images)
-
-        if arr.ndim == 3:
-            channels, height, width = arr.shape
-            if channels % 3 != 0:
-                raise ValueError(
-                    f'Expected flattened CHW images, got {arr.shape}.')
-            arr = arr.reshape(channels // 3, 3, height, width)
-        elif arr.ndim != 4 or arr.shape[1] != 3:
-            raise ValueError(
-                f'Expected [N, 3, H, W] or [N*3, H, W], got {arr.shape}.')
-        return arr, is_tensor, device, dtype
-
-    def _reshape_view_time(self, items, num_frames: int, is_tensor: bool):
-        shape = (self.num_views, num_frames, 3, items.shape[-2],
-                 items.shape[-1])
-        if self.views_first:
-            return items.reshape(shape)
-        items = items.reshape(num_frames, self.num_views, 3, items.shape[-2],
-                              items.shape[-1])
-        return items.permute(1, 0, 2, 3, 4) if is_tensor else items.transpose(
-            1, 0, 2, 3, 4)
-
-    def _concat_masks(self, masks, num_frames: int):
-        mask_array = np.asarray(masks).astype(bool)
-        if mask_array.ndim != 1:
-            return masks
-        total = mask_array.shape[0]
-        if total % self.num_views != 0:
-            return masks
-
-        source_frames = total // self.num_views
-        if self.views_first:
-            view_time = mask_array.reshape(self.num_views, source_frames)
-        else:
-            view_time = mask_array.reshape(source_frames,
-                                           self.num_views).transpose(1, 0)
-        view_time = view_time[:, ::self.frame_stride]
-        combined = view_time.all(axis=0)[:num_frames]
-        if self.preserve_mask_container and isinstance(masks, list):
-            return combined.tolist()
-        if self.preserve_mask_container and isinstance(masks, tuple):
-            return tuple(combined.tolist())
-        return combined.astype(bool)
-
-
-@TRANSFORMS.register_module()
 class TransformImage:
     """Image processor for Prismatic models.
     This class applies a series of transformations to images,
@@ -1952,7 +1835,13 @@ class ResizeAndReflectPad:
 
 @TRANSFORMS.register_module()
 class PrepareVideo:
-    """Reshape multi-view / temporal image arrays into ``[C, T, H, W]``.
+    """Reshape multi-view / temporal image arrays into the video layout
+    expected by video backbones: ``[C, T, H, W]`` per sample. Multiple camera
+    views can be tiled vertically or horizontally before batching.
+
+    This transform should be placed **after** ``SimpleNormalizeImages`` (or any
+    other pixel-level transform) so that the spatial content is final before
+    rearrangement.
 
     Args:
         num_views (int): Number of camera views. Default: 2.
@@ -1962,6 +1851,8 @@ class PrepareVideo:
         top_view (int): Full-size top view for ``"top_bottom_pair"``.
         bottom_views (Tuple[int, int]): View indexes tiled left-to-right under
             the top view for ``"top_bottom_pair"``.
+        combine_view_masks (bool): Collapse one mask per view into one mask
+            per tiled video frame. Disabled by default for compatibility.
         input_layout (str): Layout for an already composed 4D video. ``tchw``
             converts it to CTHW, ``cthw`` leaves it unchanged, and ``auto``
             infers the channel axis. Defaults to ``auto``.
@@ -1974,6 +1865,8 @@ class PrepareVideo:
                  top_view: int = 0,
                  bottom_views: Tuple[int, int] = (1, 2),
                  bottom_height_ratio: float = 0.5,
+                 combine_view_masks: bool = False,
+                 mask_key: str = 'img_masks',
                  input_layout: str = 'auto',
                  *args,
                  **kwargs):
@@ -1985,6 +1878,8 @@ class PrepareVideo:
         self.num_views = num_views
         self.frame_window_size = frame_window_size
         self.tile_direction = tile_direction
+        self.combine_view_masks = bool(combine_view_masks)
+        self.mask_key = mask_key
         self.input_layout = input_layout
         self.top_view = int(top_view)
         self.bottom_views = tuple(int(view) for view in bottom_views)
@@ -2028,6 +1923,32 @@ class PrepareVideo:
             frames.append(concat([top, concat([left, right], 2)], 1))
         return (torch.stack(frames, dim=1) if is_tensor else np.stack(
             frames, axis=1))
+
+    def _combine_masks(self, data: dict, num_frames: int) -> None:
+        if (not self.combine_view_masks or self.mask_key is None
+                or self.mask_key not in data):
+            return
+
+        masks = data[self.mask_key]
+        if torch.is_tensor(masks):
+            if masks.ndim != 1 or masks.numel() != self.num_views * num_frames:
+                return
+            data[self.mask_key] = masks.to(dtype=torch.bool).reshape(
+                self.num_views, num_frames).all(dim=0)
+            return
+
+        mask_array = np.asarray(masks)
+        if (mask_array.ndim != 1
+                or mask_array.size != self.num_views * num_frames):
+            return
+        combined = mask_array.astype(bool).reshape(self.num_views,
+                                                   num_frames).all(axis=0)
+        if isinstance(masks, list):
+            data[self.mask_key] = combined.tolist()
+        elif isinstance(masks, tuple):
+            data[self.mask_key] = tuple(combined.tolist())
+        else:
+            data[self.mask_key] = combined
 
     def __call__(self, data: dict):
         # Support both 'images' (training) and 'pixel_values' (eval) keys
@@ -2084,9 +2005,12 @@ class PrepareVideo:
             else:
                 axes = (2, 1, 0, 3, 4)  # -> [C, T, V, H, W]
                 out_shape = (c, t, v * h, w)
-            data[img_key] = (
-                images.permute(*axes).reshape(*out_shape) if is_tensor else
-                np.transpose(images, axes).reshape(*out_shape))
+            if is_tensor:
+                images = images.permute(*axes).reshape(*out_shape)
+            else:
+                images = np.transpose(images, axes).reshape(*out_shape)
+            data[img_key] = images
+            self._combine_masks(data, t)
             return data
 
         if images.ndim == 3:
@@ -2109,10 +2033,13 @@ class PrepareVideo:
                     else:
                         axes = (2, 1, 0, 3, 4)  # -> [3, T, V, H, W]
                         out_shape = (3, T, V * h, w)
-                    images = (
-                        images.permute(
-                            *axes) if is_tensor else images.transpose(*axes))
-                    data[img_key] = images.reshape(*out_shape)
+                    if is_tensor:
+                        images = images.permute(*axes)
+                    else:
+                        images = images.transpose(*axes)
+                    images = images.reshape(*out_shape)
+                    data[img_key] = images
+                    self._combine_masks(data, T)
                     return data
 
                 images = images.reshape(n_items, 3, h, w)
@@ -2130,6 +2057,7 @@ class PrepareVideo:
                     tiled = np.concatenate([images[i] for i in range(n_items)],
                                            axis=cat_dim)
                     data[img_key] = tiled[:, np.newaxis, :, :]
+                self._combine_masks(data, 1)
                 return data
 
             data[img_key] = (

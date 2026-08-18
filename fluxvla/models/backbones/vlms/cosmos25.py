@@ -26,6 +26,9 @@ import torch.nn.functional as F
 from mmengine.utils import digit_version
 
 from fluxvla.engines import VLM_BACKBONES
+from fluxvla.engines.utils.fsdp_wrapping import (build_combined_wrap_policy,
+                                                 build_module_wrap_policy,
+                                                 build_size_based_wrap_policy)
 from fluxvla.engines.utils.name_map import str_to_dtype
 
 
@@ -375,12 +378,6 @@ class Cosmos25Backbone(nn.Module):
         return ignored
 
     def get_fsdp_wrapping_policy(self):
-        from functools import partial
-
-        from torch.distributed.fsdp.wrap import (_module_wrap_policy,
-                                                 _or_policy,
-                                                 size_based_auto_wrap_policy)
-
         module_classes = set()
         if self.transformer_layer_cls is not nn.Module:
             module_classes.add(self.transformer_layer_cls)
@@ -410,25 +407,15 @@ class Cosmos25Backbone(nn.Module):
 
         policies = []
         if module_classes:
-            policies.append(
-                partial(
-                    _module_wrap_policy,
-                    module_classes=module_classes,
-                ))
+            policies.append(build_module_wrap_policy(module_classes))
         if self.fsdp_min_num_params > 0:
             policies.append(
-                partial(
-                    size_based_auto_wrap_policy,
-                    min_num_params=self.fsdp_min_num_params,
-                ))
+                build_size_based_wrap_policy(self.fsdp_min_num_params))
         if not policies:
             return None
         if len(policies) == 1:
             return policies[0]
-        return partial(
-            _or_policy,
-            policies=policies,
-        )
+        return build_combined_wrap_policy(policies)
 
     def _register_hidden_hook(self) -> None:
         blocks = getattr(self.transformer, 'transformer_blocks', None)

@@ -16,16 +16,15 @@
 # DiT4DiT/model/modules/action_model/ActionDiT.py
 
 from __future__ import annotations
-from functools import partial
 from typing import Callable, Dict, Optional, Type
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributed.fsdp.wrap import _module_wrap_policy
 from torch.distributions import Beta
 
 from fluxvla.engines import HEADS
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from fluxvla.models.blocks.cross_attention_dit import (BasicTransformerBlock,
                                                        DiT)
 from fluxvla.models.heads.flow_matching_head import (
@@ -321,10 +320,7 @@ class DiT4DiTActionHead(nn.Module):
         return actions
 
     def get_fsdp_wrapping_policy(self) -> Callable:
-        return partial(
-            _module_wrap_policy,
-            module_classes={self.transformer_layer_cls},
-        )
+        return build_module_wrap_policy({self.transformer_layer_cls})
 
 
 __all__ = ['DiT4DiTActionHead']

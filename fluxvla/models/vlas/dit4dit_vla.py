@@ -17,14 +17,13 @@
 
 from __future__ import annotations
 from contextlib import nullcontext
-from functools import partial
 from typing import Callable, Dict, Optional
 
 import torch
-from torch.distributed.fsdp.wrap import _or_policy
 from transformers import PretrainedConfig
 
 from fluxvla.engines import VLAS
+from fluxvla.engines.utils.fsdp_wrapping import build_combined_wrap_policy
 from .base_vla import BaseVLA
 
 
@@ -331,7 +330,7 @@ class DiT4DiTVLA(BaseVLA):
             return None
         if len(wrapping_policies) == 1:
             return wrapping_policies[0]
-        return partial(_or_policy, policies=wrapping_policies)
+        return build_combined_wrap_policy(wrapping_policies)
 
     def get_fsdp_ignored_modules(self) -> list[torch.nn.Module]:
         """Keep configured frozen Cosmos modules resident in BF16.

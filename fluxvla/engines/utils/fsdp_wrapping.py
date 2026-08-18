@@ -20,10 +20,13 @@ try:
         _module_wrap_policy as _torch_module_wrap_policy
     from torch.distributed.fsdp.wrap import _or_policy as _torch_or_policy
     from torch.distributed.fsdp.wrap import \
+        size_based_auto_wrap_policy as _torch_size_based_auto_wrap_policy
+    from torch.distributed.fsdp.wrap import \
         transformer_auto_wrap_policy as _torch_transformer_auto_wrap_policy
 except ModuleNotFoundError as exc:
     _torch_module_wrap_policy = None
     _torch_or_policy = None
+    _torch_size_based_auto_wrap_policy = None
     _torch_transformer_auto_wrap_policy = None
     _FSDP_WRAP_IMPORT_ERROR = exc
 else:
@@ -50,6 +53,16 @@ def build_combined_wrap_policy(policies: Iterable[Callable]) -> Callable:
     require_fsdp_wrap_support()
     assert _torch_or_policy is not None
     return partial(_torch_or_policy, policies=policies)
+
+
+def build_size_based_wrap_policy(min_num_params: int) -> Callable:
+    """Build an FSDP policy that wraps modules above a parameter threshold."""
+    require_fsdp_wrap_support()
+    assert _torch_size_based_auto_wrap_policy is not None
+    return partial(
+        _torch_size_based_auto_wrap_policy,
+        min_num_params=min_num_params,
+    )
 
 
 def build_transformer_layer_wrap_policy(

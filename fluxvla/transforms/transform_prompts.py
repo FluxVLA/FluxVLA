@@ -22,60 +22,6 @@ from fluxvla.engines import TRANSFORMS
 
 
 @TRANSFORMS.register_module()
-class CanonicalizePrompt:
-    """Resolve raw-text aliases to one canonical sample-level prompt key.
-
-    Field-name compatibility belongs to the data pipeline. Model wrappers can
-    therefore consume one stable key without knowing dataset-specific names.
-    """
-
-    DEFAULT_INPUT_KEYS = (
-        'task_description',
-        'prompt',
-        'lang',
-        'instruction',
-        'instructions',
-        'text',
-    )
-
-    def __init__(self,
-                 output_key: str = 'prompt',
-                 input_keys: Optional[List[str]] = None,
-                 remove_source_keys: bool = False) -> None:
-        self.output_key = output_key
-        self.input_keys = tuple(input_keys or self.DEFAULT_INPUT_KEYS)
-        self.remove_source_keys = bool(remove_source_keys)
-        if not self.input_keys:
-            raise ValueError('CanonicalizePrompt requires input keys.')
-
-    def __call__(self, inputs: Dict) -> Dict:
-        source_key = None
-        prompt = None
-        for key in self.input_keys:
-            if key in inputs and inputs[key] is not None:
-                source_key = key
-                prompt = inputs[key]
-                break
-        if source_key is None:
-            raise KeyError('No raw text prompt found. Expected one of '
-                           f'{self.input_keys}.')
-
-        if isinstance(prompt, (list, tuple)):
-            if len(prompt) != 1:
-                raise ValueError(
-                    'CanonicalizePrompt operates on individual samples and '
-                    f'expected one prompt, got {len(prompt)}.')
-            prompt = prompt[0]
-        inputs[self.output_key] = str(prompt)
-
-        if self.remove_source_keys:
-            for key in self.input_keys:
-                if key != self.output_key:
-                    inputs.pop(key, None)
-        return inputs
-
-
-@TRANSFORMS.register_module()
 class ProcessCosmos25Prompt:
     """Tokenize one raw prompt with the Cosmos 2.5 chat template.
 

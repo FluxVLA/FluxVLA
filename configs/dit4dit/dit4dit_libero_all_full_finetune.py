@@ -151,6 +151,7 @@ _state_dim = 16
 _action_horizon = 8
 _frame_window_size = 9
 _image_frame_stride = 2
+_num_video_frames = (_frame_window_size - 1) // _image_frame_stride + 1
 _image_size = 224
 
 _action_norm_mask = [True, True, True, True, True, True, False]
@@ -163,15 +164,6 @@ _libero_data_roots = [
     './datasets/libero_spatial_no_noops_lerobotv2.1',
     './datasets/libero_10_no_noops_lerobotv2.1',
 ]
-_prompt_input_keys = [
-    'prompt',
-    'task_description',
-    'lang',
-    'instruction',
-    'instructions',
-    'text',
-]
-
 # Match the source training RNG and its equal-weight mixture sampler.
 seed = 42
 
@@ -199,7 +191,7 @@ model = dict(
         trainable=True,
         frozen_submodules=['text_encoder', 'vae'],
         split_future_frames=True,
-        num_frames_out=5,
+        num_frames_out=_num_video_frames,
         fixed_seed=None,
         num_inference_steps=1,
         conditional_frame_timestep=0.0001,
@@ -282,15 +274,9 @@ _dit4dit_train_transforms = [
         frame_stride=_image_frame_stride,
     ),
     dict(
-        type='CanonicalizePrompt',
-        output_key='prompt',
-        input_keys=_prompt_input_keys,
-        remove_source_keys=True,
-    ),
-    dict(
         type='ProcessCosmos25Prompt',
         tokenizer=_cosmos_tokenizer,
-        input_key='prompt',
+        input_key='task_description',
         remove_input_key=True,
     ),
     # Match the source loader: float CHW / 255 first, then torch bilinear
@@ -302,20 +288,14 @@ _dit4dit_train_transforms = [
         width=_image_size,
         backend='torch',
         scale_divisor=255.0,
-        output_layout='nchw',
-    ),
-    dict(
-        type='ConcatImagesHorizontally',
-        key='images',
-        num_views=2,
-        # Temporal striding already happened before video decode above.
-        frame_stride=1,
-        views_first=True,
-        keep_time_dim=True,
+        output_layout='flattened_chw',
     ),
     dict(
         type='PrepareVideo',
-        input_layout='tchw',
+        num_views=2,
+        frame_window_size=_num_video_frames,
+        tile_direction='horizontal',
+        combine_view_masks=True,
     ),
     dict(
         type='SinCosKeys',
@@ -478,15 +458,9 @@ eval = dict(
         img_buffer_len=1,
         transforms=[
             dict(
-                type='CanonicalizePrompt',
-                output_key='prompt',
-                input_keys=_prompt_input_keys,
-                remove_source_keys=True,
-            ),
-            dict(
                 type='ProcessCosmos25Prompt',
                 tokenizer=_cosmos_tokenizer,
-                input_key='prompt',
+                input_key='task_description',
                 remove_input_key=True,
             ),
             dict(
@@ -501,15 +475,7 @@ eval = dict(
                 width=_image_size,
                 backend='cv2',
                 interpolation='area',
-                output_layout='nchw',
-            ),
-            dict(
-                type='ConcatImagesHorizontally',
-                key='pixel_values',
-                num_views=2,
-                views_first=True,
-                keep_time_dim=True,
-                preserve_mask_container=True,
+                output_layout='flattened_chw',
             ),
             dict(
                 type='SimpleNormalizeImages',
@@ -519,7 +485,10 @@ eval = dict(
             ),
             dict(
                 type='PrepareVideo',
-                input_layout='tchw',
+                num_views=2,
+                frame_window_size=1,
+                tile_direction='horizontal',
+                combine_view_masks=True,
             ),
             dict(
                 type='LiberoProprioFromInputs',

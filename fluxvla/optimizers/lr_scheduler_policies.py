@@ -453,7 +453,7 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
             param_groups = strategy(
                 learning_rate=optimizer_cfg['lr'],
                 lr_coef=self.lr_coef,
-                weight_decay=getattr(runner, 'weight_decay', None),
+                weight_decay=weight_decay,
                 canonicalize_param_name=self._canonicalize_param_name,
             )
             if param_groups is not None:
