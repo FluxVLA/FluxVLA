@@ -102,6 +102,8 @@ class RobocasaGR1N15Bridge:
         action_key: Key containing the action window in the sample dict.
         stats_action_key: Action statistics key in ``data['stats']``.
         apply_state_sincos: If True, encode states as sin/cos features.
+        expand_state_axis: Optional singleton axis inserted after state
+            conversion. DiT4DiT uses axis 0 to preserve one proprio token.
         reorder_actions: If True, reorder action vectors to N1.5 order.
         reorder_action_stats: If True, reorder flat action statistics to N1.5
             order so normalization matches reordered action dimensions.
@@ -113,6 +115,7 @@ class RobocasaGR1N15Bridge:
                  action_key: str = 'actions',
                  stats_action_key: str = 'action',
                  apply_state_sincos: bool = True,
+                 expand_state_axis: Optional[int] = None,
                  reorder_actions: bool = True,
                  reorder_action_stats: bool = True):
         if source_order != 'fluxvla':
@@ -123,6 +126,7 @@ class RobocasaGR1N15Bridge:
         self.action_key = action_key
         self.stats_action_key = stats_action_key
         self.apply_state_sincos = apply_state_sincos
+        self.expand_state_axis = expand_state_axis
         self.reorder_actions = reorder_actions
         self.reorder_action_stats = reorder_action_stats
         self.permutation = np.array(
@@ -174,6 +178,9 @@ class RobocasaGR1N15Bridge:
                     data[self.state_key])
             else:
                 data[self.state_key] = self._reorder_flat(data[self.state_key])
+            if self.expand_state_axis is not None:
+                data[self.state_key] = np.expand_dims(
+                    data[self.state_key], axis=self.expand_state_axis)
 
         if self.reorder_actions and self.action_key in data:
             data[self.action_key] = self._reorder_flat(data[self.action_key])
