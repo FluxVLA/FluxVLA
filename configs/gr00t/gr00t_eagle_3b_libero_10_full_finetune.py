@@ -29,6 +29,11 @@ model = dict(
         num_inference_timesteps=4,
         noise_beta_alpha=1.0,
         noise_beta_beta=1.5,
+        # Preserve the pre-Orin GR00T training recipe: padding-dimension noise
+        # acts as training-time regularization, while the shared default stays
+        # unchanged for Orin and other recipes.
+        zero_padded_action_dims=False,
+        clamp_sample_time=False,
         action_dim=32,
         ori_action_dim=7),
     freeze_vlm_backbone=False,
@@ -52,6 +57,12 @@ inference_model = dict(
         hidden_size=1024,
         input_embedding_dim=1536,
         num_inference_timesteps=4,
+        # Suppress unsupervised padding dimensions at inference.  This keeps
+        # the executed 7-D action unchanged while removing nuisance inputs to
+        # the action encoder; unlike reducing eval_chunk_size, it improves the
+        # hard LIBERO-10 tasks in same-checkpoint A/B evaluation.
+        zero_padded_action_dims=True,
+        clamp_sample_time=False,
         action_dim=32,
         ori_action_dim=7,
         diffusion_model_cfg=dict(
@@ -174,8 +185,8 @@ eval = dict(
     resize_size=224,
     num_trials_per_task=50,
     num_steps_wait=10,
-    # Fixed action noise for repeatable evaluation.
-    inference_seed=7,
+    # Keep the historical RNG stream: seed once at eval setup rather than
+    # resetting action noise to the same value on every prediction call.
     seed=7,
     dataset=dict(
         type='LiberoParquetEvalDataset',

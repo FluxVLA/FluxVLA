@@ -141,15 +141,31 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                      output_dim=1024,
                      positional_embeddings=None),
                  ori_action_dim=None,
-                 max_input_seq_len: int = 600):
-        super().__init__(hidden_size, state_dim, input_embedding_dim,
-                         action_dim, num_inference_timesteps,
-                         max_num_embodiments, use_vlln,
-                         num_target_vision_tokens, backbone_embedding_dim,
-                         vl_self_attention_cfg, add_positional_embeddings,
-                         max_seq_len, num_timestep_buckets, noise_s,
-                         noise_beta_alpha, noise_beta_beta, num_steps,
-                         diffusion_model_cfg, ori_action_dim)
+                 max_input_seq_len: int = 600,
+                 zero_padded_action_dims: bool = True,
+                 clamp_sample_time: bool = True):
+        super().__init__(
+            hidden_size,
+            state_dim,
+            input_embedding_dim,
+            action_dim,
+            num_inference_timesteps,
+            max_num_embodiments,
+            use_vlln,
+            num_target_vision_tokens,
+            backbone_embedding_dim,
+            vl_self_attention_cfg,
+            add_positional_embeddings,
+            max_seq_len,
+            num_timestep_buckets,
+            noise_s,
+            noise_beta_alpha,
+            noise_beta_beta,
+            num_steps,
+            diffusion_model_cfg,
+            ori_action_dim,
+            zero_padded_action_dims=zero_padded_action_dims,
+            clamp_sample_time=clamp_sample_time)
 
         # ---- Derived hyperparameters ----
         E = max_num_embodiments
@@ -624,9 +640,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
             # before encoding (inpainting). No-op when prefill_mask is zero.
             actions = (
                 actions * prefill_inv_mask + prefill_actions * prefill_mask)
-            if (self.ori_action_dim is not None
-                    and self.ori_action_dim < self.action_dim):
-                actions[..., self.ori_action_dim:] = 0
+            self._zero_padded_dims_(actions)
 
             # RTC: per-step encoder timestep. Prefix steps are treated as
             # fully denoised (``num_timestep_buckets``) so the action encoder
@@ -737,16 +751,12 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
 
             pred_velocity = pred[:, -self.num_steps:]
             actions = actions + dt * pred_velocity
-            if (self.ori_action_dim is not None
-                    and self.ori_action_dim < self.action_dim):
-                actions[..., self.ori_action_dim:] = 0
+            self._zero_padded_dims_(actions)
 
         # RTC: re-pin the prefix one last time so the returned chunk exactly
         # matches the previously executed actions. No-op for plain inference.
         actions = (actions * prefill_inv_mask + prefill_actions * prefill_mask)
-        if (self.ori_action_dim is not None
-                and self.ori_action_dim < self.action_dim):
-            actions[..., self.ori_action_dim:] = 0
+        self._zero_padded_dims_(actions)
         self.buffers['actions'].copy_(actions)
 
     def _prepare_prefill(self, prev_actions, prefix_len, rtc_config):
@@ -790,9 +800,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
             prev = torch.cat([prev, pad], dim=-1)
         elif cur_dim > self.action_dim:
             prev = prev[..., :self.action_dim]
-        if (self.ori_action_dim is not None
-                and self.ori_action_dim < self.action_dim):
-            prev[..., self.ori_action_dim:] = 0
+        self._zero_padded_dims_(prev)
 
         n = min(int(prefix_len), self.num_steps, prev.shape[1])
         if n <= 0:
@@ -834,9 +842,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
             # encoder step already sees clean prefix values.
             init_actions[:, :n_prefix] = self.buffers[
                 'prefill_actions'][:, :n_prefix].to(init_actions.dtype)
-        if (self.ori_action_dim is not None
-                and self.ori_action_dim < self.action_dim):
-            init_actions[..., self.ori_action_dim:] = 0
+        self._zero_padded_dims_(init_actions)
         self.buffers['actions'].copy_(init_actions)
 
         self.graph.replay()

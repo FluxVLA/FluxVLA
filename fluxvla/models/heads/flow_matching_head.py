@@ -230,7 +230,9 @@ class FlowMatchingHead(nn.Module):
                      output_dim=1024,
                      positional_embeddings=None),
                  ori_action_dim=None,
-                 rtc_training_config=None):
+                 rtc_training_config=None,
+                 zero_padded_action_dims: bool = True,
+                 clamp_sample_time: bool = True):
         super().__init__()
         self.rtc_training_config = rtc_training_config
         self.hidden_size = hidden_size
@@ -275,6 +277,18 @@ class FlowMatchingHead(nn.Module):
                                                    self.input_embedding_dim)
             nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
         self.ori_action_dim = ori_action_dim
+        # The Orin-optimized policy masks padding dimensions so that the
+        # action encoder never attends to padding-only noise. Older GR00T
+        # checkpoints were trained before that behavior was introduced, so
+        # configs can disable it without changing the default used by main.
+        self.zero_padded_action_dims = bool(zero_padded_action_dims)
+        self.clamp_sample_time = bool(clamp_sample_time)
+
+    def _zero_padded_dims_(self, values: torch.Tensor) -> torch.Tensor:
+        if (self.zero_padded_action_dims and self.ori_action_dim is not None
+                and self.ori_action_dim < values.shape[-1]):
+            values[..., self.ori_action_dim:] = 0
+        return values
 
     def forward(self, input_features: torch.Tensor, states: torch.Tensor,
                 attention_mask: torch.Tensor, embodiment_ids: torch.Tensor,
@@ -286,11 +300,9 @@ class FlowMatchingHead(nn.Module):
         noise = torch.randn(
             actions.shape, device=actions.device, dtype=actions.dtype)
         # Padding action dims [ori_action_dim:action_dim] are zeros in the
-        # dataset. Keep their noise at zero too, otherwise the action encoder
-        # attends over pure padding noise while the loss only supervises valid
-        # leading dims.
-        if self.ori_action_dim is not None:
-            noise[..., self.ori_action_dim:] = 0
+        # dataset. Mask their noise in the default Orin path; legacy GR00T
+        # recipes can retain it as training-time regularization.
+        self._zero_padded_dims_(noise)
         t_scalar = self.sample_time(
             actions.shape[0], device=actions.device, dtype=actions.dtype)
         T = actions.shape[1]
@@ -419,8 +431,7 @@ class FlowMatchingHead(nn.Module):
                                   device=device)
             v = denoise(actions, t_global)
             actions = actions + dt * v
-            if self.ori_action_dim is not None:
-                actions[..., self.ori_action_dim:] = 0
+            self._zero_padded_dims_(actions)
         return actions
 
     def _predict_action_prefix_rtc(self, actions, denoise, batch_size, device,
@@ -440,12 +451,10 @@ class FlowMatchingHead(nn.Module):
             t_enc[:, :prefix_len] = self.num_timestep_buckets
             v = denoise(actions, t_global, t_enc)
             actions = actions + dt * v
-            if self.ori_action_dim is not None:
-                actions[..., self.ori_action_dim:] = 0
+            self._zero_padded_dims_(actions)
 
         actions[:, :prefix_len] = prev_actions[:, :prefix_len]
-        if self.ori_action_dim is not None:
-            actions[..., self.ori_action_dim:] = 0
+        self._zero_padded_dims_(actions)
         return actions
 
     def _predict_action_guidance_rtc(self, actions, denoise, batch_size,
@@ -478,8 +487,7 @@ class FlowMatchingHead(nn.Module):
                 max_gw,
                 use_vjp=use_vjp)
             actions = actions + dt * v
-            if self.ori_action_dim is not None:
-                actions[..., self.ori_action_dim:] = 0
+            self._zero_padded_dims_(actions)
         return actions
 
     @staticmethod
@@ -511,8 +519,7 @@ class FlowMatchingHead(nn.Module):
             device=input_features.device,
             generator=self._seeded_generator(input_features.device, seed),
         )
-        if self.ori_action_dim is not None:
-            actions[..., self.ori_action_dim:] = 0
+        self._zero_padded_dims_(actions)
         dt = 1.0 / self.num_inference_timesteps
 
         if (prev_actions is not None and self.ori_action_dim is not None
@@ -562,7 +569,10 @@ class FlowMatchingHead(nn.Module):
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
-        return ((self.noise_s - sample) / self.noise_s).clamp_(0.0, 1.0)
+        time = (self.noise_s - sample) / self.noise_s
+        if self.clamp_sample_time:
+            time = time.clamp_(0.0, 1.0)
+        return time
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """
