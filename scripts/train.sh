@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # Unified launcher for single-node or multi-node distributed training.
 # Auto-detects common distributed environment variable conventions:
 #   - Standard torchrun / ali-style: NPROC_PER_NODE, WORLD_SIZE, RANK,
@@ -7,8 +7,19 @@
 #     MLP_WORKER_0_HOST, MLP_WORKER_0_PORT
 # Falls back to a sensible single-node default when none are set.
 
+set -euo pipefail
+
 CONFIG=${1:-"configs/gr00t/gr00t_eagle_3b_libero_10_full_finetune.py"}
 WORK_DIR=${2:-"work_dirs/gr00t_eagle_3b_libero_10_full_finetune"}
+EXTRA_ARGS=("${@:3}")
+
+mkdir -p "${WORK_DIR}"
+WORK_DIR="$(cd "${WORK_DIR}" && pwd -P)"
+if [[ ! -w "${WORK_DIR}" ]]; then
+  echo "Error: work directory is not writable: ${WORK_DIR}" >&2
+  exit 1
+fi
+echo "Resolved work directory: ${WORK_DIR}"
 
 NPROC_PER_NODE="${NPROC_PER_NODE:-${MLP_WORKER_GPU:-1}}"
 WORLD_SIZE="${WORLD_SIZE:-${MLP_WORKER_NUM:-1}}"
@@ -25,4 +36,4 @@ torchrun \
   "scripts/train.py" \
   --config "${CONFIG}" \
   --work-dir "${WORK_DIR}" \
-  ${@:3}
+  "${EXTRA_ARGS[@]}"

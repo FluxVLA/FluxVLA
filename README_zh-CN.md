@@ -129,6 +129,14 @@ PyTorch 安装完成后，FlashAttention wheel 会根据实际 Python tag、PyTo
 
 `av` 默认优先从 pip wheel 安装，以避免 conda 依赖解析过慢；如果没有可用 wheel，安装器会回退到 conda。如需强制使用 conda-forge 包，可设置 `FLUXVLA_AV_INSTALLER=conda`。
 
+在 Linux x86_64 上，安装器还会在安装 TorchCodec 前通过 conda-forge 安装 `ffmpeg=7`。TorchCodec 需要 `libavutil.so.59` 等 FFmpeg 动态库；`imageio-ffmpeg` 提供的独立可执行文件和 PyAV wheel 都不能替代这些动态库。已有 Torch 2.8 环境可用以下命令修复：
+
+```bash
+conda install -y -c conda-forge "ffmpeg=7"
+python -m pip install --force-reinstall "torchcodec==0.7.0"
+python -c "from torchcodec.decoders import VideoDecoder; print('TorchCodec OK')"
+```
+
 真机 runner 仍然依赖系统 ROS 安装本身。在 ROS Noetic 机器上，启动推理前请先 source ROS：
 
 ```bash
@@ -183,8 +191,10 @@ bash scripts/update_env.sh
 
 ```bash
 git pull
+conda install -y -c conda-forge "ffmpeg=7"
 python -m pip install --upgrade -r requirements-base.txt
 python -m pip install --upgrade --only-binary=:all: "av==14.2.0"
+python -m pip install --upgrade "torchcodec==0.7.0"  # Torch 2.8；Torch 2.6 使用 0.2.1
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
@@ -265,10 +275,10 @@ FlashAttention wheel 与已安装的 Python、PyTorch、CUDA 和 C++ ABI 强绑�
 </details>
 
 <details>
-<summary><b>4. 安装 av</b></summary>
+<summary><b>4. 安装 FFmpeg 和 av</b></summary>
 
 ```bash
-conda install -c conda-forge av=14.2.0
+conda install -c conda-forge "ffmpeg=7" av=14.2.0
 ```
 
 </details>
@@ -284,7 +294,9 @@ pip install --no-build-isolation -e .
 > **说明**：`requirements.txt` 现在组合了 `requirements-base.txt`、`requirements-sim.txt` 和 `requirements-real.txt`，不再安装 PyTorch。请先安装 CUDA 版 PyTorch，或直接使用 `scripts/install_env.sh`。
 > TorchCodec 也由环境脚本安装，因为其版本必须与 PyTorch 匹配。x86_64
 > 手动安装时，Torch 2.8 使用 `torchcodec==0.7.0`，Torch 2.6 使用
-> `torchcodec==0.2.1`；Linux aarch64 保持使用 PyAV 回退。
+> `torchcodec==0.2.1`。TorchCodec 还需要 conda / 系统提供的 FFmpeg
+> 动态库，仅安装 PyAV 或 `imageio-ffmpeg` 不够；Linux aarch64 保持使用
+> PyAV 回退。
 
 </details>
 

@@ -811,6 +811,7 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
                        prev_actions: torch.Tensor = None,
                        prefix_len: int = 0,
                        rtc_config: dict = None,
+                       seed: int = None,
                        *args,
                        **kwargs):
         if not self.loaded_weights:
@@ -826,7 +827,8 @@ class FlowMatchingInferenceHead(FlowMatchingHead):
         init_actions = torch.randn(
             size=(1, self.num_steps, self.action_dim),
             dtype=input_features.dtype,
-            device=input_features.device)
+            device=input_features.device,
+            generator=self._seeded_generator(input_features.device, seed))
         if n_prefix > 0:
             # Seed the prefix with the previous actions so the very first
             # encoder step already sees clean prefix values.

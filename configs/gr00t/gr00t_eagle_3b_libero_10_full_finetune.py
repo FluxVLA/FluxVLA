@@ -174,7 +174,8 @@ eval = dict(
     resize_size=224,
     num_trials_per_task=50,
     num_steps_wait=10,
-    # inference_seed=7,
+    # Fixed action noise for repeatable evaluation.
+    inference_seed=7,
     seed=7,
     dataset=dict(
         type='LiberoParquetEvalDataset',

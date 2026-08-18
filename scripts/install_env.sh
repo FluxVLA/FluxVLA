@@ -56,6 +56,7 @@ DOWNLOAD_CONNECTIONS="${DOWNLOAD_CONNECTIONS:-8}"
 FLUXVLA_DOWNLOADER="${FLUXVLA_DOWNLOADER:-auto}"
 FLUXVLA_AV_INSTALLER="${FLUXVLA_AV_INSTALLER:-auto}"
 FLUXVLA_AV_VERSION="${FLUXVLA_AV_VERSION:-14.2.0}"
+FLUXVLA_FFMPEG_VERSION="${FLUXVLA_FFMPEG_VERSION:-7}"
 FLASH_ATTN_VERSION="${FLASH_ATTN_VERSION:-2.8.3.post1}"
 FLASH_ATTN_RELEASE_TAG="${FLASH_ATTN_RELEASE_TAG:-v${FLASH_ATTN_VERSION}}"
 FLASH_ATTN_WHEEL_FILE="${FLASH_ATTN_WHEEL_FILE:-}"
@@ -156,6 +157,9 @@ Environment variables:
                       (pip wheel first, then conda fallback).
   FLUXVLA_AV_VERSION  PyAV version installed by either backend. Default:
                       14.2.0.
+  FLUXVLA_FFMPEG_VERSION
+                      conda-forge FFmpeg major version used by TorchCodec.
+                      Default: 7.
   TORCH_INDEX_URLS    Space-separated PyTorch wheel indexes. Defaults to the
                       official index for the selected CUDA profile.
   GH_PROXY            Override the GitHub release proxy used for the
@@ -1059,10 +1063,10 @@ PY
 conda_env_prefix() {
   local prefix=""
   prefix="$(python_prefix)"
-  if [[ -n "${CONDA_PREFIX:-}" && -d "${CONDA_PREFIX}/conda-meta" ]]; then
-    echo "${CONDA_PREFIX}"
-  elif [[ -n "${prefix}" && -d "${prefix}/conda-meta" ]]; then
+  if [[ -n "${prefix}" && -d "${prefix}/conda-meta" ]]; then
     echo "${prefix}"
+  elif [[ -n "${CONDA_PREFIX:-}" && -d "${CONDA_PREFIX}/conda-meta" ]]; then
+    echo "${CONDA_PREFIX}"
   fi
 }
 
@@ -1556,6 +1560,35 @@ install_av_with_conda() {
 
   run_conda_with_timeout "${conda_bin}" install -y \
     -p "${conda_prefix}" -c conda-forge "av=${FLUXVLA_AV_VERSION}"
+}
+
+install_ffmpeg_runtime() {
+  local platform conda_prefix="" conda_bin="" ffmpeg_spec
+  platform="$(platform_tag)"
+  if [[ "${platform}" != "linux_x86_64" ]]; then
+    return
+  fi
+
+  conda_prefix="$(conda_env_prefix)"
+  conda_bin="$(find_conda_bin || true)"
+  ffmpeg_spec="ffmpeg=${FLUXVLA_FFMPEG_VERSION}"
+  if [[ -z "${conda_bin}" || -z "${conda_prefix}" ]]; then
+    echo "Warning: no active conda environment was found; relying on system FFmpeg shared libraries for TorchCodec." >&2
+    return
+  fi
+
+  echo "Installing TorchCodec FFmpeg runtime via conda-forge: ${ffmpeg_spec}"
+  if "${conda_bin}" install --help 2>/dev/null | grep -q -- '--solver'; then
+    if run_conda_with_timeout "${conda_bin}" install -y \
+        -p "${conda_prefix}" -c conda-forge --solver=libmamba \
+        "${ffmpeg_spec}"; then
+      return
+    fi
+    echo "conda FFmpeg install with libmamba failed or timed out; trying default solver." >&2
+  fi
+
+  run_conda_with_timeout "${conda_bin}" install -y \
+    -p "${conda_prefix}" -c conda-forge "${ffmpeg_spec}"
 }
 
 install_torchcodec() {
@@ -2081,6 +2114,7 @@ main() {
   echo "pip index probe timeout: ${PIP_INDEX_PROBE_TIMEOUT}s"
   echo "conda command timeout: ${CONDA_INSTALL_TIMEOUT}s"
   echo "av installer: ${FLUXVLA_AV_INSTALLER}"
+  echo "FFmpeg runtime version: ${FLUXVLA_FFMPEG_VERSION}"
   echo "RoboCasa source install: ${FLUXVLA_ROBOCASA_INSTALL}"
   if needs_robocasa_sources; then
     echo "RoboCasa asset download: ${FLUXVLA_ROBOCASA_ASSETS}"
@@ -2096,6 +2130,7 @@ main() {
   verify_torch_install "${selected}"
   install_av
   install_requirements
+  install_ffmpeg_runtime
   install_torchcodec "${selected}"
   install_robocasa_sources
   configure_libero_egl_runtime

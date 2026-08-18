@@ -129,6 +129,14 @@ PyTorch のインストール後、FlashAttention wheel は実際の Python tag�
 
 `av` は、conda の依存解決が遅くなるのを避けるため、デフォルトでまず pip wheel からインストールされます。利用可能な wheel がない場合は conda にフォールバックします。conda-forge パッケージを明示的に使いたい場合は `FLUXVLA_AV_INSTALLER=conda` を設定してください。
 
+Linux x86_64 では、TorchCodec の前に conda-forge から `ffmpeg=7` もインストールされます。TorchCodec には `libavutil.so.59` などの FFmpeg 共有ライブラリが必要です。`imageio-ffmpeg` の単体実行ファイルや PyAV wheel は、その共有ライブラリの代わりにはなりません。既存の Torch 2.8 環境は次のコマンドで修復できます：
+
+```bash
+conda install -y -c conda-forge "ffmpeg=7"
+python -m pip install --force-reinstall "torchcodec==0.7.0"
+python -c "from torchcodec.decoders import VideoDecoder; print('TorchCodec OK')"
+```
+
 実機 runner では、システム側の ROS インストール自体は引き続き必要です。ROS Noetic マシンでは、推論を起動する前に ROS を source してください：
 
 ```bash
@@ -183,8 +191,10 @@ bash scripts/update_env.sh
 
 ```bash
 git pull
+conda install -y -c conda-forge "ffmpeg=7"
 python -m pip install --upgrade -r requirements-base.txt
 python -m pip install --upgrade --only-binary=:all: "av==14.2.0"
+python -m pip install --upgrade "torchcodec==0.7.0"  # Torch 2.8。Torch 2.6 は 0.2.1
 python -m pip install "mujoco==3.2.6" gymnasium lxml bddl==1.0.1 hydra-core==1.2.0 robomimic==0.2.0
 python -m pip install --force-reinstall --no-deps "libero @ git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0"
 python -m pip install --force-reinstall --no-deps "robosuite @ git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049"
@@ -265,10 +275,10 @@ FlashAttention wheel は、インストール済みの Python、PyTorch、CUDA�
 </details>
 
 <details>
-<summary><b>4. av をインストールする</b></summary>
+<summary><b>4. FFmpeg と av をインストールする</b></summary>
 
 ```bash
-conda install -c conda-forge av=14.2.0
+conda install -c conda-forge "ffmpeg=7" av=14.2.0
 ```
 
 </details>
@@ -284,7 +294,9 @@ pip install --no-build-isolation -e .
 > **補足**：`requirements.txt` は `requirements-base.txt`、`requirements-sim.txt`、`requirements-real.txt` をまとめるファイルになりました。PyTorch はインストールしないため、先に CUDA 版 PyTorch を入れるか、`scripts/install_env.sh` を使用してください。
 > TorchCodec は PyTorch とバージョンを合わせる必要があるため、環境スクリプトが別途インストールします。x86_64
 > の手動インストールでは、Torch 2.8 に `torchcodec==0.7.0`、Torch 2.6 に
-> `torchcodec==0.2.1` を使用します。Linux aarch64 は PyAV fallback を使用します。
+> `torchcodec==0.2.1` を使用します。TorchCodec には conda / システムの
+> FFmpeg 共有ライブラリも必要であり、PyAV や `imageio-ffmpeg` だけでは
+> 不十分です。Linux aarch64 は PyAV fallback を使用します。
 
 </details>
 

@@ -30,6 +30,8 @@ else
 fi
 
 FLUXVLA_AV_VERSION="${FLUXVLA_AV_VERSION:-14.2.0}"
+FLUXVLA_FFMPEG_VERSION="${FLUXVLA_FFMPEG_VERSION:-7}"
+CONDA_INSTALL_TIMEOUT="${CONDA_INSTALL_TIMEOUT:-3600}"
 MUJOCO_VERSION="${MUJOCO_VERSION:-3.2.6}"
 BDDL_VERSION="${BDDL_VERSION:-1.0.1}"
 HYDRA_CORE_VERSION="${HYDRA_CORE_VERSION:-1.2.0}"
@@ -59,6 +61,11 @@ Environment variables:
   GIT_PULL_ARGS   Arguments passed to git pull. Default: --ff-only.
   FLUXVLA_AV_VERSION
                    PyAV wheel version. Default: 14.2.0.
+  FLUXVLA_FFMPEG_VERSION
+                   conda-forge FFmpeg major version used by TorchCodec.
+                   Default: 7.
+  CONDA_INSTALL_TIMEOUT
+                   Per conda command timeout in seconds. Default: 3600.
 
 This updater installs the unified requirements-base.txt dependency set, but
 intentionally does not reinstall PyTorch or FlashAttention.
@@ -96,6 +103,65 @@ run() {
   fi
 }
 
+run_conda_with_timeout() {
+  echo "+ $*"
+  if [[ "${DRY_RUN}" -eq 1 ]]; then
+    return
+  fi
+  if command -v timeout >/dev/null 2>&1; then
+    timeout "${CONDA_INSTALL_TIMEOUT}" "$@"
+  else
+    "$@"
+  fi
+}
+
+python_prefix() {
+  "${PYTHON_BIN}" - <<'PY'
+import sys
+print(sys.prefix)
+PY
+}
+
+conda_env_prefix() {
+  local prefix=""
+  prefix="$(python_prefix)"
+  if [[ -n "${prefix}" && -d "${prefix}/conda-meta" ]]; then
+    echo "${prefix}"
+  elif [[ -n "${CONDA_PREFIX:-}" && -d "${CONDA_PREFIX}/conda-meta" ]]; then
+    echo "${CONDA_PREFIX}"
+  fi
+}
+
+find_conda_bin() {
+  local candidate prefix base_prefix
+  local -a candidates=()
+
+  if [[ -n "${CONDA_EXE:-}" ]]; then
+    candidates+=("${CONDA_EXE}")
+  fi
+  if candidate="$(command -v conda 2>/dev/null)"; then
+    candidates+=("${candidate}")
+  fi
+
+  prefix="$(conda_env_prefix)"
+  if [[ -n "${prefix}" ]]; then
+    if [[ "${prefix}" == */envs/* ]]; then
+      base_prefix="${prefix%%/envs/*}"
+      candidates+=("${base_prefix}/bin/conda")
+    fi
+    candidates+=("${prefix}/bin/conda")
+  fi
+  candidates+=("/root/miniconda3/bin/conda" "/opt/conda/bin/conda")
+
+  for candidate in "${candidates[@]}"; do
+    if [[ -n "${candidate}" && -x "${candidate}" ]]; then
+      echo "${candidate}"
+      return 0
+    fi
+  done
+  return 1
+}
+
 pip_install() {
   if [[ -z "${PIP_INDEX_URLS}" ]]; then
     run "${PYTHON_BIN}" -m pip install "$@"
@@ -117,6 +183,39 @@ pip_install() {
     return
   fi
   return 1
+}
+
+install_ffmpeg_runtime() {
+  local machine conda_prefix="" conda_bin="" ffmpeg_spec
+  machine="$(uname -m)"
+  case "${machine}" in
+    x86_64|amd64)
+      ;;
+    *)
+      return
+      ;;
+  esac
+
+  conda_prefix="$(conda_env_prefix)"
+  conda_bin="$(find_conda_bin || true)"
+  ffmpeg_spec="ffmpeg=${FLUXVLA_FFMPEG_VERSION}"
+  if [[ -z "${conda_bin}" || -z "${conda_prefix}" ]]; then
+    echo "Warning: no active conda environment was found; relying on system FFmpeg shared libraries for TorchCodec." >&2
+    return
+  fi
+
+  echo "Installing TorchCodec FFmpeg runtime via conda-forge: ${ffmpeg_spec}"
+  if "${conda_bin}" install --help 2>/dev/null | grep -q -- '--solver'; then
+    if run_conda_with_timeout "${conda_bin}" install -y \
+        -p "${conda_prefix}" -c conda-forge --solver=libmamba \
+        "${ffmpeg_spec}"; then
+      return
+    fi
+    echo "conda FFmpeg install with libmamba failed or timed out; trying default solver." >&2
+  fi
+
+  run_conda_with_timeout "${conda_bin}" install -y \
+    -p "${conda_prefix}" -c conda-forge "${ffmpeg_spec}"
 }
 
 install_torchcodec() {
@@ -182,6 +281,7 @@ pip_install \
 
 pip_install --force-reinstall --no-deps "${LIBERO_SPEC}"
 pip_install --force-reinstall --no-deps "${ROBOSUITE_SPEC}"
+install_ffmpeg_runtime
 install_torchcodec
 
 if [[ "${SKIP_PROJECT}" -eq 0 ]]; then

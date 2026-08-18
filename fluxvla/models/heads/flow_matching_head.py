@@ -482,6 +482,14 @@ class FlowMatchingHead(nn.Module):
                 actions[..., self.ori_action_dim:] = 0
         return actions
 
+    @staticmethod
+    def _seeded_generator(device: torch.device, seed: int = None):
+        if seed is None:
+            return None
+        generator = torch.Generator(device=device)
+        generator.manual_seed(int(seed))
+        return generator
+
     def predict_action(self,
                        input_features: torch.Tensor,
                        states: torch.Tensor,
@@ -489,7 +497,8 @@ class FlowMatchingHead(nn.Module):
                        embodiment_ids: torch.Tensor,
                        prev_actions=None,
                        prefix_len: int = 0,
-                       rtc_config: dict = None):
+                       rtc_config: dict = None,
+                       seed: int = None):
         device = input_features.device
         input_features = self.vlln(input_features)
         input_features = self.vl_self_attention(input_features)
@@ -500,6 +509,7 @@ class FlowMatchingHead(nn.Module):
             size=(batch_size, self.num_steps, self.action_dim),
             dtype=input_features.dtype,
             device=input_features.device,
+            generator=self._seeded_generator(input_features.device, seed),
         )
         if self.ori_action_dim is not None:
             actions[..., self.ori_action_dim:] = 0

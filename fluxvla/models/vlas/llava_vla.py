@@ -182,6 +182,7 @@ class LlavaVLA(OpenVLA):
                        prev_actions: Optional[torch.Tensor] = None,
                        prefix_len: int = 0,
                        rtc_config: Optional[Dict] = None,
+                       seed: Optional[int] = None,
                        *args,
                        **kwargs):
         if hasattr(self, 'vlm_backbone') and self.vlm_backbone is not None:
@@ -202,7 +203,7 @@ class LlavaVLA(OpenVLA):
                 assert 'last_hidden_state' in output, \
                     'Output must contain either hidden_states or last_hidden_state.'  # noqa: E501
                 last_hidden_state = output['last_hidden_state']
-        pred_actions = self.vla_head.predict_action(
+        predict_kwargs = dict(
             input_features=last_hidden_state,
             states=states,
             attention_mask=fused_attention_mask,
@@ -210,4 +211,7 @@ class LlavaVLA(OpenVLA):
             prev_actions=prev_actions,
             prefix_len=prefix_len,
             rtc_config=rtc_config)
+        if seed is not None:
+            predict_kwargs['seed'] = seed
+        pred_actions = self.vla_head.predict_action(**predict_kwargs)
         return pred_actions.float()
