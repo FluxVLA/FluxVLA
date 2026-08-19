@@ -110,8 +110,6 @@ class ProcessParquetInputs():
             selecting ``'torchcodec'`` is strict and raises instead of falling
             back. The TorchCodec path decodes by frame index
             (``round(ts * average_fps)``).
-        frame_stride (int): Select every Nth temporal timestamp before video
-            frames are materialized. Defaults to 1.
     """
 
     def __init__(self,
@@ -122,8 +120,7 @@ class ProcessParquetInputs():
                  embodiment_dim: int = None,
                  num_padding_imgs: int = 0,
                  dataset_name: str = None,
-                 video_backend: str = None,
-                 frame_stride: int = 1):
+                 video_backend: str = None):
         self.parquet_keys = parquet_keys
         self.video_keys = video_keys
         self.name_mappings = name_mappings
@@ -132,9 +129,6 @@ class ProcessParquetInputs():
         self.num_padding_imgs = num_padding_imgs
         self.dataset_name = dataset_name
         self.video_backend = video_backend
-        self.frame_stride = int(frame_stride)
-        if self.frame_stride < 1:
-            raise ValueError('`frame_stride` must be a positive integer.')
 
     def __call__(self, data):
         assert 'info' in data, "Input data must contain 'info' key"
@@ -171,7 +165,6 @@ class ProcessParquetInputs():
         images = list()
         img_masks = list()
         timestamps = data.get('frame_timestamps', [data['timestamp']])
-        timestamps = list(timestamps)[::self.frame_stride]
         for video_key in self.video_keys:
             episode_chunk = data['episode_index'] // data['info'][
                 'chunks_size']  # noqa: E501
@@ -210,8 +203,7 @@ class ProcessParquetInputs():
         if self.embodiment_id is not None:
             inputs['embodiment_ids'] = np.array(self.embodiment_id)
         if 'frame_masks' in data:
-            inputs['frame_masks'] = np.asarray(
-                data['frame_masks'])[::self.frame_stride]
+            inputs['frame_masks'] = data['frame_masks']
         if 'sample_weight' in data:
             inputs['sample_weight'] = np.asarray(
                 data['sample_weight'], dtype=np.float32)

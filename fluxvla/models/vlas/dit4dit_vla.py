@@ -23,7 +23,7 @@ import torch
 from transformers import PretrainedConfig
 
 from fluxvla.engines import VLAS
-from fluxvla.engines.utils.fsdp_wrapping import build_combined_wrap_policy
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
 from .base_vla import BaseVLA
 
 
@@ -130,6 +130,9 @@ class DiT4DiTVLA(BaseVLA):
             raise ValueError('DiT4DiTVLA expects canonical images shaped '
                              '[B, 3, T, H, W], got '
                              f'{tuple(images.shape)}.')
+        if not images.dtype.is_floating_point:
+            raise TypeError('DiT4DiTVLA expects floating-point images from '
+                            f'the dataset transforms, got {images.dtype}.')
         return images
 
     def _validate_language(
@@ -315,22 +318,15 @@ class DiT4DiTVLA(BaseVLA):
         return actions
 
     def get_fsdp_wrapping_policy(self) -> Callable:
-        wrapping_policies = []
-        if (self.vlm_backbone is not None
-                and hasattr(self.vlm_backbone, 'get_fsdp_wrapping_policy')):
-            policy = self.vlm_backbone.get_fsdp_wrapping_policy()
-            if policy is not None:
-                wrapping_policies.append(policy)
-        if self.vla_head is not None and hasattr(self.vla_head,
-                                                 'get_fsdp_wrapping_policy'):
-            policy = self.vla_head.get_fsdp_wrapping_policy()
-            if policy is not None:
-                wrapping_policies.append(policy)
-        if not wrapping_policies:
-            return None
-        if len(wrapping_policies) == 1:
-            return wrapping_policies[0]
-        return build_combined_wrap_policy(wrapping_policies)
+        module_classes = {
+            self.vlm_backbone.transformer_layer_cls,
+            self.vla_head.transformer_layer_cls,
+        }
+        module_classes.discard(torch.nn.Module)
+        if not module_classes:
+            raise ValueError(
+                'DiT4DiTVLA could not resolve any FSDP wrapper classes.')
+        return build_module_wrap_policy(module_classes)
 
     def get_fsdp_ignored_modules(self) -> list[torch.nn.Module]:
         """Keep configured frozen Cosmos modules resident in BF16.

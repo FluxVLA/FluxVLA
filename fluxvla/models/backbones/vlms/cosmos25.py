@@ -19,7 +19,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, List, Optional, Sequence, Type, Union
 
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -463,71 +462,25 @@ class Cosmos25Backbone(nn.Module):
             tensor = tensor.to(device=device, dtype=dtype)
         return tensor
 
-    @staticmethod
-    def _image_to_chw_float(image: Any) -> torch.Tensor:
-        if torch.is_tensor(image):
-            tensor = image.detach()
-            if tensor.ndim != 3:
-                raise ValueError(
-                    f'Expected 3D image tensor, got {tuple(tensor.shape)}.')
-            if tensor.shape[0] in (1, 3, 4):
-                tensor = tensor[:3]
-            elif tensor.shape[-1] in (1, 3, 4):
-                tensor = tensor[..., :3].permute(2, 0, 1).contiguous()
-            else:
-                raise ValueError(f'Cannot infer channel dimension for image '
-                                 f'{tuple(tensor.shape)}.')
-            tensor = tensor.float()
-            return tensor / 255.0 if tensor.max() > 1.0 else tensor
-
-        arr = np.asarray(image)
-        if arr.ndim == 2:
-            arr = np.repeat(arr[:, :, None], 3, axis=2)
-        if arr.ndim != 3 or arr.shape[-1] not in (1, 3, 4):
-            raise ValueError(f'Expected HWC image array, got {arr.shape}.')
-        arr = arr[..., :3]
-        tensor = torch.from_numpy(arr).permute(2, 0, 1).contiguous().float()
-        return tensor / 255.0 if tensor.max() > 1.0 else tensor
-
-    def _normalize_videos(
+    def _split_video_frames(
         self,
-        images: Union[torch.Tensor, Sequence[Any]],
+        images: torch.Tensor,
     ) -> tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """Return condition video B,C,T,H,W and optional future B,T,C,H,W."""
-        if torch.is_tensor(images):
-            videos = images
-            if videos.ndim == 4:
-                # B,C,H,W -> B,C,1,H,W
-                videos = videos.unsqueeze(2)
-            elif videos.ndim != 5:
-                raise ValueError(
-                    '`images` must be 4D/5D tensor or a sequence of images. '
-                    f'got shape {tuple(videos.shape)}.')
+        """Split canonical BCTHW transform output into condition and future."""
+        if not torch.is_tensor(images):
+            raise TypeError(
+                'Cosmos25Backbone requires dataset-preprocessed video as a '
+                f'torch.Tensor, got {type(images)!r}.')
+        if images.ndim != 5 or images.shape[1] != 3:
+            raise ValueError(
+                'Cosmos25Backbone expects dataset-preprocessed video shaped '
+                f'[B, 3, T, H, W], got {tuple(images.shape)}.')
+        if not images.dtype.is_floating_point:
+            raise TypeError(
+                'Cosmos25Backbone expects floating-point video values from '
+                f'the dataset transforms, got {images.dtype}.')
 
-            if videos.shape[1] == 3:
-                bcthw = videos.float()
-            elif videos.shape[2] == 3:
-                bcthw = videos.permute(0, 2, 1, 3, 4).contiguous().float()
-            else:
-                raise ValueError(
-                    'Could not infer channel dimension for video tensor '
-                    f'{tuple(videos.shape)}.')
-        else:
-            samples = []
-            for sample in images:
-                frames = sample if isinstance(sample,
-                                              (list, tuple)) else [sample]
-                samples.append(
-                    torch.stack(
-                        [self._image_to_chw_float(frame) for frame in frames],
-                        dim=0))
-            # B,T,C,H,W -> B,C,T,H,W
-            bcthw = torch.stack(
-                samples, dim=0).permute(0, 2, 1, 3, 4).contiguous()
-
-        if bcthw.max() > 1.0:
-            bcthw = bcthw / 255.0
-
+        bcthw = images
         future = None
         if self.split_future_frames and bcthw.shape[2] > 1:
             future = bcthw[:, :, 1:].permute(0, 2, 1, 3, 4).contiguous()
@@ -865,8 +818,8 @@ class Cosmos25Backbone(nn.Module):
 
     def forward(
         self,
-        images: Optional[Union[torch.Tensor, Sequence[Any]]] = None,
-        videos: Optional[Union[torch.Tensor, Sequence[Any]]] = None,
+        images: Optional[torch.Tensor] = None,
+        videos: Optional[torch.Tensor] = None,
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
         future_videos: Optional[torch.Tensor] = None,
@@ -882,7 +835,8 @@ class Cosmos25Backbone(nn.Module):
             raise ValueError('Cosmos25Backbone.forward requires `images` or '
                              '`videos`.')
 
-        condition_video, inferred_future = self._normalize_videos(source_video)
+        condition_video, inferred_future = self._split_video_frames(
+            source_video)
         if future_videos is None:
             future_videos = inferred_future
 

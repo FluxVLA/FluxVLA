@@ -38,9 +38,8 @@ _action_dim = 32
 _ori_action_dim = 29
 _state_dim = 64
 _action_horizon = 16
-_frame_window_size = 17
+_frame_window_size = 9
 _image_frame_stride = 2
-_num_video_frames = 9
 _image_size = 224
 
 _ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_30ep'
@@ -109,7 +108,7 @@ model = dict(
         frozen_submodules=['text_encoder', 'vae'],
         split_future_frames=True,
         # video_delta_indices=0..16 with action_video_freq_ratio=2.
-        num_frames_out=_num_video_frames,
+        num_frames_out=_frame_window_size,
         fixed_seed=42,
         num_inference_steps=1,
         conditional_frame_timestep=0.0001,
@@ -178,8 +177,6 @@ _dit4dit_train_transforms = [
             'observation.state': ['states'],
             'actions': ['actions'],
         },
-        # Decode frames 0,2,...,16 from the 17-row temporal window.
-        frame_stride=_image_frame_stride,
     ),
     # Converted data is left_arm,left_hand,right_arm,right_hand,waist. The
     # source DiT4DiT recipe is left_arm,right_arm,left_hand,right_hand,waist.
@@ -234,6 +231,7 @@ _dit4dit_parquet_dataset = dict(
     statistic_name=_ROBOCASA_STATISTIC_NAME,
     window_start_idx=0,
     frame_window_size=_frame_window_size,
+    frame_sample_stride=_image_frame_stride,
 )
 
 train_dataloader = dict(

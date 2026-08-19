@@ -149,9 +149,8 @@ _action_dim = 8
 _ori_action_dim = 7
 _state_dim = 16
 _action_horizon = 8
-_frame_window_size = 9
+_frame_window_size = 5
 _image_frame_stride = 2
-_num_video_frames = (_frame_window_size - 1) // _image_frame_stride + 1
 _image_size = 224
 
 _action_norm_mask = [True, True, True, True, True, True, False]
@@ -191,7 +190,7 @@ model = dict(
         trainable=True,
         frozen_submodules=['text_encoder', 'vae'],
         split_future_frames=True,
-        num_frames_out=_num_video_frames,
+        num_frames_out=_frame_window_size,
         fixed_seed=None,
         num_inference_steps=1,
         conditional_frame_timestep=0.0001,
@@ -267,11 +266,6 @@ _dit4dit_train_transforms = [
             'observation.state': ['states'],
             'actions': ['actions'],
         },
-        # Select the source recipe's 0,2,4,6,8 frames before video decode.
-        # Keeping a 9-row Parquet window preserves its exact episode-boundary
-        # padding while avoiding decode/resize/normalize work for discarded
-        # frames.
-        frame_stride=_image_frame_stride,
     ),
     dict(
         type='ProcessCosmos25Prompt',
@@ -293,7 +287,7 @@ _dit4dit_train_transforms = [
     dict(
         type='PrepareVideo',
         num_views=2,
-        frame_window_size=_num_video_frames,
+        frame_window_size=_frame_window_size,
         tile_direction='horizontal',
         combine_view_masks=True,
     ),
@@ -337,6 +331,7 @@ _dit4dit_parquet_dataset = dict(
     statistic_name='franka',
     window_start_idx=0,
     frame_window_size=_frame_window_size,
+    frame_sample_stride=_image_frame_stride,
 )
 
 train_dataloader = dict(
