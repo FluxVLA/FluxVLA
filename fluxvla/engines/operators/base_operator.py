@@ -35,7 +35,8 @@ class BaseOperator:
                  sync_warning_target_hz=30.0,
                  sync_warning_window=2.0,
                  sync_warning_min_hz_ratio=0.9,
-                 sync_warning_warmup=3.0):
+                 sync_warning_warmup=3.0,
+                 image_encoding='passthrough'):
         self.sync_slop = float(sync_slop)
         self.sync_queue_size = int(sync_queue_size)
         self.synced_frame_queue_size = int(synced_frame_queue_size)
@@ -44,6 +45,10 @@ class BaseOperator:
         self.sync_warning_window = float(sync_warning_window)
         self.sync_warning_min_hz_ratio = float(sync_warning_min_hz_ratio)
         self.sync_warning_warmup = float(sync_warning_warmup)
+        if image_encoding not in ('rgb8', 'bgr8', 'passthrough'):
+            raise ValueError('image_encoding must be rgb8, bgr8, or '
+                             'passthrough')
+        self.image_encoding = image_encoding
 
         self._init_base_runtime()
 
@@ -184,21 +189,24 @@ class BaseOperator:
             if name == 'stamps':
                 formatted[name] = value
             elif name in self._sync_image_names:
-                formatted[name] = self._to_optional_cv_image(value)
+                encoding = ('passthrough' if 'depth' in name.lower() else
+                            self.image_encoding)
+                formatted[name] = self._to_optional_cv_image(
+                    value, encoding=encoding)
             else:
                 formatted[name] = value
         return formatted
 
-    def _to_cv_image(self, msg):
+    def _to_cv_image(self, msg, encoding=None):
         if self.bridge is None:
             from cv_bridge import CvBridge
             self.bridge = CvBridge()
-        return self.bridge.imgmsg_to_cv2(msg, 'passthrough')
+        return self.bridge.imgmsg_to_cv2(msg, encoding or self.image_encoding)
 
-    def _to_optional_cv_image(self, msg):
+    def _to_optional_cv_image(self, msg, encoding=None):
         if msg is None:
             return None
-        return self._to_cv_image(msg)
+        return self._to_cv_image(msg, encoding=encoding)
 
     def _record_sync_output(self):
         if (not self.sync_warning_enabled or self.sync_warning_target_hz <= 0.0

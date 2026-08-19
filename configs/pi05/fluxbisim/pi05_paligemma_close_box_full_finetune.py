@@ -260,6 +260,7 @@ inference = dict(
     ),
     operator=dict(
         type='AlohaOperatorSim',
+        image_encoding='rgb8',
         img_front_topic='/camera_f/color/image_raw',
         img_left_topic='/camera_l/color/image_raw',
         img_right_topic='/camera_r/color/image_raw',

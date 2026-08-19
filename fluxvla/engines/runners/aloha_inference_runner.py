@@ -48,8 +48,6 @@ class AlohaInferenceRunner(BaseInferenceRunner):
                  prepare_pose: List[float] = None,
                  async_execution: bool = False,
                  execute_horizon: int = None,
-                 gripper_state_range=None,
-                 gripper_command_range=None,
                  gripper_closed_value: float = -0.01,
                  *args,
                  **kwargs):
@@ -79,14 +77,6 @@ class AlohaInferenceRunner(BaseInferenceRunner):
                 'robot_base_topic': '/odom_raw',
                 'robot_base_cmd_topic': '/cmd_vel',
             }
-        if isinstance(kwargs['operator'], dict):
-            if gripper_state_range is not None:
-                kwargs['operator'].setdefault('gripper_state_range',
-                                              gripper_state_range)
-            if gripper_command_range is not None:
-                kwargs['operator'].setdefault('gripper_command_range',
-                                              gripper_command_range)
-
         # Initialize Aloha-specific task descriptions
         if 'task_descriptions' not in kwargs or kwargs[
                 'task_descriptions'] is None:
@@ -216,13 +206,8 @@ class AlohaInferenceRunner(BaseInferenceRunner):
         img_right = self._apply_jpeg_compression(img_right)
 
         # Combine joint positions from both arms
-        normalize_gripper = getattr(self.ros_operator,
-                                    'normalize_gripper_state', None)
-        if normalize_gripper is None:
-            normalize_gripper = lambda value: np.asarray(  # noqa: E731
-                value, dtype=np.float32)
-        left_qpos = normalize_gripper(puppet_arm_left.position)
-        right_qpos = normalize_gripper(puppet_arm_right.position)
+        left_qpos = np.asarray(puppet_arm_left.position, dtype=np.float32)
+        right_qpos = np.asarray(puppet_arm_right.position, dtype=np.float32)
         qpos = np.concatenate((left_qpos, right_qpos), axis=0)
 
         # Create observation dictionary

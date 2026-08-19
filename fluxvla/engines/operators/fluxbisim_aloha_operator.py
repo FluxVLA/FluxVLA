@@ -43,7 +43,8 @@ class AlohaOperatorSim:
                  use_depth_image=False,
                  use_robot_base=False,
                  arm_steps_length=None,
-                 publish_rate=30):
+                 publish_rate=30,
+                 image_encoding='passthrough'):
         """Initialize AlohaOperatorSim with ROS topics configuration.
 
          Args:
@@ -68,6 +69,7 @@ class AlohaOperatorSim:
                 [0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02].
             publish_rate (int, optional): Publishing rate in Hz.
                 Defaults to 30.
+            image_encoding (str): Desired cv_bridge encoding for RGB images.
         """
         self.img_left_topic = img_left_topic
         self.img_right_topic = img_right_topic
@@ -88,6 +90,10 @@ class AlohaOperatorSim:
             arm_steps_length = [0.02, 0.02, 0.02, 0.02, 0.02, 0.02, 0.02]
         self.arm_steps_length = arm_steps_length
         self.publish_rate = publish_rate
+        if image_encoding not in ('rgb8', 'bgr8', 'passthrough'):
+            raise ValueError('image_encoding must be rgb8, bgr8, or '
+                             'passthrough')
+        self.image_encoding = image_encoding
 
         # Latest sensor readings (replaces deque buffering)
         self._img_left_msg = None
@@ -313,9 +319,12 @@ class AlohaOperatorSim:
                 return False
 
         bridge = CvBridge()
-        img_left = bridge.imgmsg_to_cv2(self._img_left_msg, 'passthrough')
-        img_right = bridge.imgmsg_to_cv2(self._img_right_msg, 'passthrough')
-        img_front = bridge.imgmsg_to_cv2(self._img_front_msg, 'passthrough')
+        img_left = bridge.imgmsg_to_cv2(self._img_left_msg,
+                                        self.image_encoding)
+        img_right = bridge.imgmsg_to_cv2(self._img_right_msg,
+                                         self.image_encoding)
+        img_front = bridge.imgmsg_to_cv2(self._img_front_msg,
+                                         self.image_encoding)
 
         # Process depth images if enabled
         img_left_depth = None

@@ -103,6 +103,7 @@ class FrankaDualOperator(BaseOperator):
             gripper_left_topic='/left_arm/franka_gripper/move/goal',
             gripper_right_topic='/right_arm/franka_gripper/move/goal',
             gripper_control_mode='move',
+            image_encoding='passthrough',
             **unused_kwargs):
         """Configure dual-arm ROS topics, sync settings, and controllers.
 
@@ -145,6 +146,7 @@ class FrankaDualOperator(BaseOperator):
                 either 'move' (default; publish continuous width every step) or
                 'grasp' (binarize width and only act on per-side open/close
                 transitions, using the franka_gripper grasp/move actions).
+            image_encoding (str): Desired cv_bridge encoding for RGB images.
             **unused_kwargs: Extra config keys accepted for compatibility.
         """
         self.img_left_topic = img_left_topic
@@ -169,7 +171,8 @@ class FrankaDualOperator(BaseOperator):
             sync_warning_target_hz=sync_warning_target_hz,
             sync_warning_window=SYNC_WARNING_WINDOW,
             sync_warning_min_hz_ratio=SYNC_WARNING_MIN_HZ_RATIO,
-            sync_warning_warmup=SYNC_WARNING_WARMUP)
+            sync_warning_warmup=SYNC_WARNING_WARMUP,
+            image_encoding=image_encoding)
 
         if command_mode not in {'joint', 'cartesian'}:
             raise ValueError(

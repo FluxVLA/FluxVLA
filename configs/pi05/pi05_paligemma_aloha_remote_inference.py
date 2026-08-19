@@ -25,9 +25,10 @@ inference = dict(
         enable_profiling=True,
     ),
     seed=7,
-    gripper_state_range=(-0.01, 0.08),
-    gripper_command_range=(-0.01, 0.08),
-    gripper_closed_value=0.0,
+    # The server-side transforms return commands in hardware units.
+    # -0.0055 is equivalent to 0.05 in standardized [0, 1] space.
+    gripper_threshold=-0.0055,
+    gripper_closed_value=-0.01,
     action_chunk=50,
     publish_rate=50,
     max_publish_step=10000,

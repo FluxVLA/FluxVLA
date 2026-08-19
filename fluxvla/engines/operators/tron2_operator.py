@@ -70,6 +70,7 @@ class Tron2Operator:
             # Options
             use_depth_image: bool = False,
             arm_steps_length: Optional[List[float]] = None,
+            image_encoding: str = 'passthrough',
             # WebSocket options
             robot_ip: str = '10.192.1.2',
             ws_port: int = 5000,
@@ -94,6 +95,7 @@ class Tron2Operator:
             ee_pose_right_topic: ROS topic for right end-effector pose
             use_depth_image: Whether to use depth images. Defaults to False.
             arm_steps_length: Step sizes for each arm joint (14 DOF).
+            image_encoding: Desired cv_bridge encoding for RGB images.
             robot_ip: Robot IP address for WebSocket connection.
             ws_port: WebSocket port. Defaults to 5000.
             ws_accid: WebSocket account ID (required for robot control).
@@ -123,6 +125,10 @@ class Tron2Operator:
         self.use_depth_image = use_depth_image
         self.enable_base_control = enable_base_control
         self.trajectory_exec_mode = trajectory_exec_mode
+        if image_encoding not in ('rgb8', 'bgr8', 'passthrough'):
+            raise ValueError('image_encoding must be rgb8, bgr8, or '
+                             'passthrough')
+        self.image_encoding = image_encoding
 
         # WebSocket configuration
         self.robot_ip = robot_ip
@@ -842,17 +848,17 @@ class Tron2Operator:
         while self.img_left_deque[0].header.stamp.to_sec() < frame_time:
             self.img_left_deque.popleft()
         img_left = self.bridge.imgmsg_to_cv2(self.img_left_deque.popleft(),
-                                             'passthrough')
+                                             self.image_encoding)
 
         while self.img_right_deque[0].header.stamp.to_sec() < frame_time:
             self.img_right_deque.popleft()
         img_right = self.bridge.imgmsg_to_cv2(self.img_right_deque.popleft(),
-                                              'passthrough')
+                                              self.image_encoding)
 
         while self.img_top_deque[0].header.stamp.to_sec() < frame_time:
             self.img_top_deque.popleft()
         img_top = self.bridge.imgmsg_to_cv2(self.img_top_deque.popleft(),
-                                            'passthrough')
+                                            self.image_encoding)
 
         # Extract from merged joint_state_deque (16 DOF: 14 arm + 2 head)
         while self.joint_state_deque[0].header.stamp.to_sec() < frame_time:

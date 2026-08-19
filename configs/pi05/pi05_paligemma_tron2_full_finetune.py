@@ -288,6 +288,7 @@ inference = dict(
     action_chunk=32,
     operator=dict(
         type='Tron2Operator',
+        image_encoding='rgb8',
         img_left_topic='/camera/left/color/image_rect_raw',
         img_right_topic='/camera/right/color/image_rect_raw',
         img_top_topic='/camera/top/color/image_raw',

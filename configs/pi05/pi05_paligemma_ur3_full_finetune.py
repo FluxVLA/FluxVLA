@@ -302,6 +302,7 @@ inference = dict(
     action_chunk=50,
     operator=dict(
         type='UROperator',
+        image_encoding='rgb8',
         command_mode='joint',
         img_left_topic='/wrist_camera/color/image_raw',
         img_front_topic='/front_camera/color/image_raw',

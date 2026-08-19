@@ -47,9 +47,7 @@ class AlohaOperator:
                  use_robot_base=False,
                  arm_steps_length=None,
                  publish_rate=30,
-                 image_encoding='passthrough',
-                 gripper_state_range=None,
-                 gripper_command_range=None):
+                 image_encoding='passthrough'):
         """Initialize AlohaOperator with ROS topics configuration.
 
         Args:
@@ -100,38 +98,10 @@ class AlohaOperator:
             raise ValueError('image_encoding must be rgb8, bgr8, or '
                              'passthrough')
         self.image_encoding = image_encoding
-        self.gripper_state_range = self._validate_gripper_range(
-            gripper_state_range, 'gripper_state_range')
-        self.gripper_command_range = self._validate_gripper_range(
-            gripper_command_range, 'gripper_command_range')
 
         # Initialize components
         self._init()
         self._init_ros()
-
-    @staticmethod
-    def _validate_gripper_range(value, name):
-        if value is None:
-            return None
-        if len(value) != 2 or float(value[1]) <= float(value[0]):
-            raise ValueError(f'{name} must be an increasing (low, high) pair.')
-        return float(value[0]), float(value[1])
-
-    def normalize_gripper_state(self, positions):
-        """Convert a hardware gripper state to OpenPI's [0, 1] space."""
-        positions = np.asarray(positions, dtype=np.float32).copy()
-        if self.gripper_state_range is not None:
-            low, high = self.gripper_state_range
-            positions[-1] = (positions[-1] - low) / (high - low)
-        return positions
-
-    def _convert_gripper_command(self, positions):
-        """Convert an OpenPI gripper command to configured hardware units."""
-        positions = np.asarray(positions, dtype=np.float32).copy()
-        if self.gripper_command_range is not None:
-            low, high = self.gripper_command_range
-            positions[-1] = positions[-1] * (high - low) + low
-        return positions.tolist()
 
     def _init(self):
         """Initialize internal data structures and OpenCV bridge."""
@@ -537,7 +507,7 @@ class AlohaOperator:
             base_velocity (list, optional): Base velocity
                 [linear_x, angular_z].
         """
-        self._send_joints(left, right, model_action=True)
+        self._send_joints(left, right)
         if base_velocity is not None:
             self._send_base_velocity(base_velocity)
 
@@ -657,7 +627,7 @@ class AlohaOperator:
             print(f'move_to_joints: step {step}')
             rate.sleep()
 
-    def _send_joints(self, left, right, model_action=False):
+    def _send_joints(self, left, right):
         """Publish joint commands to both puppet arms."""
         import rospy
         from sensor_msgs.msg import JointState
@@ -670,10 +640,6 @@ class AlohaOperator:
             'joint0', 'joint1', 'joint2', 'joint3', 'joint4', 'joint5',
             'joint6'
         ]
-
-        if model_action:
-            left = self._convert_gripper_command(left)
-            right = self._convert_gripper_command(right)
 
         # Publish left arm command
         joint_state_msg.position = left
@@ -715,10 +681,7 @@ class AlohaOperator:
         for i in range(len(left_traj)):
             if rospy.is_shutdown() or stop.is_set():
                 break
-            self._send_joints(
-                left_traj[i].tolist(),
-                right_traj[i].tolist(),
-                model_action=True)
+            self._send_joints(left_traj[i].tolist(), right_traj[i].tolist())
             if base_vel is not None:
                 self._send_base_velocity(base_vel[i])
             rate.sleep()

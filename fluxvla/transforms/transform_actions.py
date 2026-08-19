@@ -239,6 +239,7 @@ class JointSignTransform:
 
 
 _ALOHA_DELTA_MASK = np.array([True] * 6 + [False] + [True] * 6 + [False])
+_ALOHA_GRIPPER_INDICES = [6, 13]
 
 
 def _normalize_range(x, min_value, max_value):
@@ -247,6 +248,32 @@ def _normalize_range(x, min_value, max_value):
 
 def _unnormalize_range(x, min_value, max_value):
     return x * (max_value - min_value) + min_value
+
+
+def _validate_range(value, name):
+    if value is None:
+        return None
+    if len(value) != 2 or value[1] <= value[0]:
+        raise ValueError(f'{name} must be an increasing pair.')
+    return tuple(map(float, value))
+
+
+def _standardize_aloha_grippers(value, gripper_range):
+    value = np.asarray(value, dtype=np.float32).copy()
+    if gripper_range is not None:
+        low, high = gripper_range
+        value[..., _ALOHA_GRIPPER_INDICES] = _normalize_range(
+            value[..., _ALOHA_GRIPPER_INDICES], low, high)
+    return value
+
+
+def _restore_aloha_grippers(value, gripper_range):
+    value = np.asarray(value, dtype=np.float32).copy()
+    if gripper_range is not None:
+        low, high = gripper_range
+        value[..., _ALOHA_GRIPPER_INDICES] = _unnormalize_range(
+            value[..., _ALOHA_GRIPPER_INDICES], low, high)
+    return value
 
 
 def _aloha_gripper_to_angular(value):
@@ -292,6 +319,9 @@ def _aloha_action_gripper_from_pi(action):
 class OpenPIAlohaGripperCoordinates:
     """Convert only ALOHA grippers to OpenPI's internal coordinates.
 
+    ``gripper_input_range`` first maps hardware units linearly to the ALOHA
+    ``[0, 1]`` contract. Values are not clipped.
+
     Joint signs, delta actions, and normalization deliberately remain in the
     generic ``JointSignTransform``, ``DeltaActions``, and
     ``NormalizeStatesAndActions`` stages.
@@ -303,20 +333,11 @@ class OpenPIAlohaGripperCoordinates:
                  *args,
                  **kwargs):
         self.adapt_to_pi = adapt_to_pi
-        if gripper_input_range is not None:
-            if (len(gripper_input_range) != 2
-                    or gripper_input_range[1] <= gripper_input_range[0]):
-                raise ValueError(
-                    'gripper_input_range must be an increasing pair.')
-            gripper_input_range = tuple(map(float, gripper_input_range))
-        self.gripper_input_range = gripper_input_range
+        self.gripper_input_range = _validate_range(gripper_input_range,
+                                                   'gripper_input_range')
 
     def _standardize_grippers(self, value):
-        value = np.asarray(value, dtype=np.float32).copy()
-        if self.gripper_input_range is not None:
-            low, high = self.gripper_input_range
-            value[..., [6, 13]] = (value[..., [6, 13]] - low) / (high - low)
-        return value
+        return _standardize_aloha_grippers(value, self.gripper_input_range)
 
     def __call__(self, data: Dict) -> Dict:
         states = self._standardize_grippers(data['states'])
@@ -344,7 +365,12 @@ class OpenPIAlohaGripperCoordinates:
 
 @TRANSFORMS.register_module()
 class OpenPIAlohaActionPostprocess:
-    """Invert PI0.5 ALOHA quantile, delta, and coordinate transforms."""
+    """Invert PI0.5 ALOHA quantile, delta, and coordinate transforms.
+
+    The current state is mapped from ``gripper_input_range`` before delta
+    inversion, and predicted grippers are mapped to ``gripper_output_range``
+    before returning hardware commands. Values are not clipped.
+    """
 
     def __init__(self,
                  norm_stats: Optional[Dict | str] = None,
@@ -352,6 +378,8 @@ class OpenPIAlohaActionPostprocess:
                  action_dim: int = 14,
                  adapt_to_pi: bool = True,
                  use_delta_joint_actions: bool = True,
+                 gripper_input_range=None,
+                 gripper_output_range=None,
                  *args,
                  **kwargs):
         source = openpi_norm_stats or norm_stats
@@ -366,6 +394,10 @@ class OpenPIAlohaActionPostprocess:
         self.action_dim = action_dim
         self.adapt_to_pi = adapt_to_pi
         self.use_delta_joint_actions = use_delta_joint_actions
+        self.gripper_input_range = _validate_range(gripper_input_range,
+                                                   'gripper_input_range')
+        self.gripper_output_range = _validate_range(gripper_output_range,
+                                                    'gripper_output_range')
         joint_signs = [
             1,
             -1,
@@ -409,6 +441,7 @@ class OpenPIAlohaActionPostprocess:
         if state.shape[-1] != self.action_dim:
             raise ValueError('A 14-dimensional current ALOHA state is '
                              'required to invert delta actions.')
+        state = _standardize_aloha_grippers(state, self.gripper_input_range)
         if self.adapt_to_pi:
             state = self.state_joint_signs({'state': state})['state']
             state = _aloha_state_gripper_to_pi(state)
@@ -420,6 +453,7 @@ class OpenPIAlohaActionPostprocess:
         if self.adapt_to_pi:
             actions = self.action_joint_signs({'action': actions})['action']
             actions = _aloha_action_gripper_from_pi(actions)
+        actions = _restore_aloha_grippers(actions, self.gripper_output_range)
         return actions.astype(np.float32, copy=False)
 
 

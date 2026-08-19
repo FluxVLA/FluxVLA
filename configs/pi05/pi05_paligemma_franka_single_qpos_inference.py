@@ -299,6 +299,7 @@ inference = dict(
     action_chunk=50,
     operator=dict(
         type='FrankaOperator',
+        image_encoding='rgb8',
         command_mode='joint',
         img_left_topic='/camera_left_wrist/color/image_raw',
         img_front_topic='/camera_front/color/image_raw',

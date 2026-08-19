@@ -61,7 +61,8 @@ class UROperator(BaseOperator):
                  cartesian_cmd_topic='/cmd/servol',
                  gripper_cmd_topic='/cmd/gripper',
                  joint_names=None,
-                 gripper_open_position=GRIPPER_OPEN_POSITION):
+                 gripper_open_position=GRIPPER_OPEN_POSITION,
+                 image_encoding='passthrough'):
         """Configure UR observation topics, sync settings, and publishers."""
         self.img_left_topic = img_left_topic
         self.img_front_topic = img_front_topic
@@ -80,7 +81,8 @@ class UROperator(BaseOperator):
             sync_warning_target_hz=sync_warning_target_hz,
             sync_warning_window=SYNC_WARNING_WINDOW,
             sync_warning_min_hz_ratio=SYNC_WARNING_MIN_HZ_RATIO,
-            sync_warning_warmup=SYNC_WARNING_WARMUP)
+            sync_warning_warmup=SYNC_WARNING_WARMUP,
+            image_encoding=image_encoding)
 
         if (self.use_depth_image
                 and (not img_left_depth_topic or not img_front_depth_topic)):

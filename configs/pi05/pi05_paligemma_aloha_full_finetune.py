@@ -284,7 +284,9 @@ inference = dict(
             dict(
                 type='JointSignTransform',
                 signs=[1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1]),
-            dict(type='OpenPIAlohaGripperCoordinates'),
+            dict(
+                type='OpenPIAlohaGripperCoordinates',
+                gripper_input_range=(-0.01, 0.08)),
             dict(
                 type='NormalizeStatesAndActions',
                 state_dim=32,
@@ -318,14 +320,16 @@ inference = dict(
         openpi_norm_stats=(
             'configs/pi05/assets/openpi_trossen_norm_stats.json'),
         action_dim=14,
+        gripper_input_range=(-0.01, 0.08),
+        gripper_output_range=(-0.01, 0.08),
     ),
-    gripper_closed_value=0.0,
+    # Equivalent to threshold=0.05 in the standardized [0, 1] space.
+    gripper_threshold=-0.0055,
+    gripper_closed_value=-0.01,
     action_chunk=50,
     operator=dict(
         type='AlohaOperator',
         image_encoding='rgb8',
-        gripper_state_range=(-0.01, 0.08),
-        gripper_command_range=(-0.01, 0.08),
         img_front_topic='/camera_h/color/image_raw',
         img_left_topic='/camera_l/color/image_raw',
         img_right_topic='/camera_r/color/image_raw',

@@ -298,6 +298,7 @@ inference = dict(
     action_chunk=50,
     operator=dict(
         type='FrankaDualOperator',
+        image_encoding='rgb8',
         command_mode='cartesian',
         img_left_topic='/camera_left_wrist/color/image_raw',
         img_right_topic='/camera_right_wrist/color/image_raw',
