@@ -374,7 +374,6 @@ class OpenPIAlohaActionPostprocess:
 
     def __init__(self,
                  norm_stats: Optional[Dict | str] = None,
-                 openpi_norm_stats: Optional[Dict | str] = None,
                  action_dim: int = 14,
                  adapt_to_pi: bool = True,
                  use_delta_joint_actions: bool = True,
@@ -382,15 +381,17 @@ class OpenPIAlohaActionPostprocess:
                  gripper_output_range=None,
                  *args,
                  **kwargs):
-        source = openpi_norm_stats or norm_stats
+        source = norm_stats
         if isinstance(source, str):
             with open(source, 'r', encoding='utf-8') as f:
                 source = json.load(f)
         if isinstance(source, dict) and 'norm_stats' in source:
             source = source['norm_stats']
-        if source is None or 'actions' not in source:
+        if isinstance(source, dict) and 'private' in source:
+            source = source['private']
+        if source is None or not ({'action', 'actions'} & set(source)):
             raise ValueError('OpenPI ALOHA action statistics are required.')
-        self.action_stats = source['actions']
+        self.action_stats = source.get('action', source.get('actions'))
         self.action_dim = action_dim
         self.adapt_to_pi = adapt_to_pi
         self.use_delta_joint_actions = use_delta_joint_actions

@@ -12,6 +12,78 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+_OPENPI_TROSSEN_STATS = dict(
+    private=dict(
+        proprio=dict(
+            q01=[
+                -0.6704075932502747,
+                -0.6177270412445068,
+                -1.522469162940979,
+                -0.6341525316238403,
+                -0.8928096890449524,
+                -1.5814738273620605,
+                0.0,
+                -0.8636345863342285,
+                -0.6874108910560608,
+                -1.5326769351959229,
+                -1.034820795059204,
+                -0.8360550999641418,
+                -1.0564064979553223,
+                0.0,
+            ],
+            q99=[
+                0.8586598634719849,
+                1.590164303779602,
+                0.7191675901412964,
+                0.9492101669311523,
+                1.5009204149246216,
+                0.8487868309020996,
+                0.9817999601364136,
+                0.7189610004425049,
+                1.5828449726104736,
+                0.8221372365951538,
+                0.7584788799285889,
+                1.5071386098861694,
+                1.8782553672790527,
+                0.9801999926567078,
+            ],
+        ),
+        action=dict(
+            q01=[
+                -0.39002883434295654,
+                -0.599197506904602,
+                -0.4757695198059082,
+                -0.43423962593078613,
+                -0.5667507648468018,
+                -0.5542984008789062,
+                0.0,
+                -0.3953317403793335,
+                -0.6448438167572021,
+                -0.551342248916626,
+                -0.5082261562347412,
+                -0.616692066192627,
+                -0.655325174331665,
+                0.0,
+            ],
+            q99=[
+                0.37967371940612793,
+                0.5793416500091553,
+                0.5515646934509277,
+                0.43433713912963867,
+                0.5904843807220459,
+                0.5451817512512207,
+                0.9997999668121338,
+                0.41405534744262695,
+                0.6312341690063477,
+                0.611086368560791,
+                0.5029127597808838,
+                0.639925479888916,
+                0.6665832996368408,
+                0.9997999668121338,
+            ],
+        ),
+    ))
+
 model = dict(
     type='PI05FlowMatching',
     llm_backbone=dict(
@@ -138,6 +210,7 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
+        statistics_overrides=dict(aloha=_OPENPI_TROSSEN_STATS),
         name_mappings={'observation.state': ['proprio', 'action']},
         statistic_keys=[
             'observation.state', 'observation.eepose', 'timestamp'
@@ -184,12 +257,7 @@ train_dataloader = dict(
                             state_dim=32,
                             state_key='proprio',
                             action_key='action',
-                            norm_type='quantile',
-                            output_dtype='float32',
-                            norm_stats=('configs/pi05/assets/'
-                                        'openpi_trossen_norm_stats.json'),
-                            state_stats_key='state',
-                            action_stats_key='actions'),
+                            norm_type='quantile'),
                         dict(type='PreparePromptWithState'),
                         dict[str, str | dict[str, str]](
                             type='ProcessPrompts',
@@ -211,6 +279,7 @@ train_dataloader = dict(
                             base_camera_indices=(0, )),
                     ],
                     action_window_size=50,
+                    window_start_idx=0,
                     supervise_terminal_padding=True)
             ],
             ur3=[
@@ -242,8 +311,7 @@ train_dataloader = dict(
                             state_dim=32,
                             state_key='proprio',
                             action_key='action',
-                            norm_type='quantile',
-                            output_dtype='float32'),
+                            norm_type='quantile'),
                         dict(type='PreparePromptWithState'),
                         dict[str, str | dict[str, str]](
                             type='ProcessPrompts',
@@ -265,6 +333,7 @@ train_dataloader = dict(
                             base_camera_indices=(0, )),
                     ],
                     action_window_size=50,
+                    window_start_idx=0,
                     supervise_terminal_padding=True)
             ])))
 

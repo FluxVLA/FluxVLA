@@ -56,8 +56,9 @@ class DistributedRepeatingDataset(IterableDataset):
         dim (int, optional): Target dimension for padding/copying data.
             If provided, data will be padded/copied to be an integer
             multiple of this dimension. Defaults to None.
-        statistics_overrides (dict, optional): Nested statistic values to
-            override after collecting dataset statistics.
+        statistics_overrides (dict, optional): Nested statistic values used to
+            override collected statistics. For grouped datasets, the outer
+            keys may select individual dataset groups.
     """
 
     def __init__(self,
@@ -201,13 +202,7 @@ class DistributedRepeatingDataset(IterableDataset):
             self.is_list = False
 
         if statistics_overrides is not None:
-            if self.is_grouped:
-                for stats in self.grouped_dataset_statistics.values():
-                    self._apply_statistics_overrides(stats,
-                                                     statistics_overrides)
-            else:
-                self._apply_statistics_overrides(self.dataset_statistics,
-                                                 statistics_overrides)
+            self._apply_configured_statistics_overrides(statistics_overrides)
 
         # Get the rank and world size from the overwatch
         self.rank = overwatch.rank()
@@ -222,6 +217,23 @@ class DistributedRepeatingDataset(IterableDataset):
                 self._apply_statistics_overrides(statistics[key], value)
             else:
                 statistics[key] = value
+
+    def _apply_configured_statistics_overrides(self, overrides: Dict) -> None:
+        if not self.is_grouped:
+            self._apply_statistics_overrides(self.dataset_statistics,
+                                             overrides)
+            return
+
+        group_names = set(self.grouped_dataset_statistics)
+        if set(overrides).issubset(group_names):
+            for group_name, group_overrides in overrides.items():
+                self._apply_statistics_overrides(
+                    self.grouped_dataset_statistics[group_name],
+                    group_overrides)
+            return
+
+        for statistics in self.grouped_dataset_statistics.values():
+            self._apply_statistics_overrides(statistics, overrides)
 
     def _get_item_from_global_idx(self, global_idx):
         """Get item from global index, handling single, list,

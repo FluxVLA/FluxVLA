@@ -170,8 +170,7 @@ train_dataloader = dict(
                         state_dim=32,
                         state_key='proprio',
                         action_key='action',
-                        norm_type='quantile',
-                        output_dtype='float32'),
+                        norm_type='quantile'),
                     dict(type='PreparePromptWithState'),
                     dict[str, str | dict[str, str]](
                         type='ProcessPrompts',
@@ -191,6 +190,7 @@ train_dataloader = dict(
                     dict(type='OpenPIImageAugment', base_camera_indices=(0, )),
                 ],
                 action_window_size=50,
+                window_start_idx=0,
                 supervise_terminal_padding=True)
         ]))
 
@@ -275,8 +275,7 @@ inference = dict(
                 state_dim=32,
                 state_key='proprio',
                 action_key='action',
-                norm_type='quantile',
-                output_dtype='float32'),
+                norm_type='quantile'),
             dict(type='PreparePromptWithState'),
             dict[str, str | dict[str, str]](
                 type='ProcessPrompts',
