@@ -239,6 +239,8 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
+        # OpenPI rebuilds its shuffled DataLoader iterator after every pass.
+        reshuffle_each_epoch=True,
         dataset_statistics=_PI05_ALOHA_STATS,
         name_mappings={'observation.state': ['proprio', 'action']},
         statistic_keys=[
@@ -352,7 +354,8 @@ runner = dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
         run_dir='work_dirs',
-        window_size=1),
+        # OpenPI reports the mean of each 100-step logging interval.
+        window_size=100),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',

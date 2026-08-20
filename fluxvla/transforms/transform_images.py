@@ -451,10 +451,14 @@ class OpenPIImageAugment:
             ((width - 1) / 2.0, (height - 1) / 2.0), angle, 1.0)
         rotated = cv2.warpAffine(
             resized,
-            matrix, (width, height),
+            matrix,
+            (width, height),
             flags=cv2.INTER_LINEAR,
             borderMode=cv2.BORDER_CONSTANT,
-            borderValue=0)
+            # OpenPI augments images in [0, 1] with a black border, then maps
+            # them back to [-1, 1]. Use -1 in every RGB channel here because
+            # this transform receives images that are already normalized.
+            borderValue=(-1.0, -1.0, -1.0))
         return rotated.transpose(2, 0, 1)
 
     def _color_augment(self, image):
