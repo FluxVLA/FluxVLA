@@ -474,8 +474,12 @@ class GrootN17VLA(LlavaVLA):
                 'trainable_params_fp32': config.backbone_trainable_params_fp32,
                 'qwen3_runtime': self.qwen3_runtime,
             })
+        backbone_state_dict = self._load_prefixed_state_dict('backbone.')
+        if hasattr(backbone, 'remap_checkpoint_state_dict'):
+            backbone_state_dict = backbone.remap_checkpoint_state_dict(
+                backbone_state_dict)
         backbone_load = backbone.load_state_dict(
-            self._load_prefixed_state_dict('backbone.'),
+            backbone_state_dict,
             strict=True,
             assign=True,
         )
