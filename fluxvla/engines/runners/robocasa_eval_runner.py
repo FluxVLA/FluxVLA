@@ -402,11 +402,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
     def _format_duration(seconds: float) -> str:
         seconds = int(round(seconds))
         if seconds < 60:
-            return f'{seconds:02d}s'
+            return '{:02d}s'.format(seconds)
         if seconds < 3600:
-            return f'{seconds // 60:02d}m{seconds % 60:02d}s'
+            return '{:02d}m{:02d}s'.format(seconds // 60, seconds % 60)
         hours, rem = divmod(seconds, 3600)
-        return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'
+        return '{:02d}h{:02d}m{:02d}s'.format(hours, rem // 60, rem % 60)
 
     @staticmethod
     def _robocasa_group_name(env_name: str) -> str:
@@ -469,7 +469,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                              f'{resolved}')
         invalid = [task for task in resolved if task < 0 or task >= num_tasks]
         if invalid:
-            raise ValueError(f'Invalid task ids {invalid}; expected range [0, '
+            raise ValueError(f'Invalid task ids {invalid}. Expected range [0, '
                              f'{num_tasks - 1}].')
         return resolved
 
@@ -620,14 +620,14 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 if stats['total_trials'] > 0:
                     rate = stats['total_successes'] / \
                         max(stats['total_trials'], 1) * 100
-                    group_rates.append(f'{rate:.2f}')
+                    group_rates.append('{:.2f}'.format(rate))
                 else:
                     group_rates.append('')
             writer.writerow([''] + group_order + ['all'])
             writer.writerow([
                 'Success Rate (%)',
                 *group_rates,
-                f'{overall_rate:.2f}',
+                '{:.2f}'.format(overall_rate),
             ])
             writer.writerow([
                 'Episodes',
@@ -662,16 +662,16 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 rate = (
                     stats['total_successes'] / max(stats['total_trials'], 1) *
                     100 if stats['total_trials'] > 0 else 0.0)
-                f.write(f'\n{group}:\n')
+                f.write('\n{}:\n'.format(group))
                 f.write(f"- Tasks completed: {stats['total_tasks']}\n")
                 f.write(f"- Total attempts: {stats['total_trials']}\n")
                 f.write(f'- Successful attempts: '
                         f"{stats['total_successes']}\n")
-                f.write(f'- Success rate: {rate:.2f}%\n')
+                f.write('- Success rate: {:.2f}%\n'.format(rate))
                 f.write(f'- Total time: '
                         f"{self._format_duration(stats['total_time'])}\n")
             f.write('\nOverall statistics:\n')
-            f.write(f'- Success rate: {overall_rate:.2f}%\n')
+            f.write('- Success rate: {:.2f}%\n'.format(overall_rate))
             f.write(f'- Total attempts: {total_trials}\n')
             f.write(f'- Successful attempts: {total_successes}\n')
             f.write(f'- Total time: {self._format_duration(total_time)}\n')
@@ -763,7 +763,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
         log_filepath = os.path.join(self.run_dir, f'rank{rank}.txt')
         log_file = open(log_filepath, 'w', encoding='utf-8', buffering=1)
         log_file.write(f'Rank {rank}/{world_size}, seed={self.seed}\n')
-        log_file.write(f'PYTHONHASHSEED={os.environ.get("PYTHONHASHSEED")}\n')
+        log_file.write('PYTHONHASHSEED={}\n'.format(
+            os.environ.get('PYTHONHASHSEED')))
         log_file.write(f'Deterministic env: {self.deterministic_env}, '
                        f'deterministic action sampling: '
                        f'{self.deterministic_action_sampling}\n')
@@ -905,6 +906,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
                             action=action,
                             task_suite_name=self.unnorm_key,
                         )
+                        raw_state = getattr(self.dataset, 'last_raw_state',
+                                            None)
+                        if raw_state is not None:
+                            denorm_input['state'] = raw_state
                         action_denormed = self._active_denorm(denorm_input)
 
                         if t == 0:
@@ -1019,9 +1024,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
             n_succ = int(global_successes[0].item())
             rate = n_succ / max(n_ep, 1) * 100
             overwatch.info(f'Robocasa final: {n_succ}/{n_ep} '
-                           f'({rate:.2f}%)')
+                           '({:.2f}%)'.format(rate))
             log_file.write(f'Robocasa final: {n_succ}/{n_ep} '
-                           f'({rate:.2f}%)\n')
+                           '({:.2f}%)\n'.format(rate))
             summary_json = self._write_robocasa_summary_artifacts(
                 Path(self.run_dir),
                 run_id,

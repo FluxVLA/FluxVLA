@@ -33,6 +33,24 @@ ROBOCASA_STATE_KEYS = [
     'state.waist',  # 3D -> [26:29]
 ]
 
+
+def flatten_robocasa_state(data: Dict) -> np.ndarray:
+    """Return the native 29D GR1 state used by RoboCasa actions."""
+    expected_dims = (7, 6, 7, 6, 3)
+    parts = []
+    for key, expected_dim in zip(ROBOCASA_STATE_KEYS, expected_dims):
+        if key not in data:
+            raise ValueError(f'State key {key!r} is missing. Available keys: '
+                             f'{list(data.keys())}')
+        value = np.asarray(data[key], dtype=np.float32).reshape(-1)
+        if value.shape[0] != expected_dim:
+            raise ValueError(
+                f'State key {key!r} must contain {expected_dim} values, '
+                f'got shape {value.shape}.')
+        parts.append(value)
+    return np.concatenate(parts)
+
+
 ROBOCASA_GR1_FLUXVLA_ORDER = {
     'left_arm': (0, 7),
     'left_hand': (7, 13),
@@ -265,16 +283,7 @@ class ProcessRobocasaEvalInputs:
                              f'Available keys: {list(data.keys())}')
 
         # State extraction: concatenate the 29 active joint dimensions.
-        state_parts = []
-        for key in ROBOCASA_STATE_KEYS:
-            val = data.get(key, None)
-            if val is not None:
-                state_parts.append(np.array(val, dtype=np.float64))
-        if state_parts:
-            result['states'] = np.concatenate(state_parts)  # (29,)
-        else:
-            raise ValueError(f'State keys are missing from obs. '
-                             f'Available keys: {list(data.keys())}')
+        result['states'] = flatten_robocasa_state(data)
 
         # Task description.
         result['task_description'] = data.get('task_description', '')
@@ -407,6 +416,37 @@ class DenormalizeRobocasaAction:
         return 0.5 * (action + 1) * (high - low) + low
 
 
+@TRANSFORMS.register_module()
+class DenormalizeRobocasaDeltaAction(DenormalizeRobocasaAction):
+    """Restore selected state-relative RoboCasa joints to absolute targets."""
+
+    def __init__(self, delta_action_mask: List[bool], *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.delta_action_mask = np.asarray(delta_action_mask, dtype=bool)
+        if self.delta_action_mask.ndim != 1:
+            raise ValueError('delta_action_mask must be one-dimensional')
+        if len(self.delta_action_mask) != self.action_dim:
+            raise ValueError(
+                f'delta_action_mask must contain {self.action_dim} values, '
+                f'got {len(self.delta_action_mask)}.')
+
+    def __call__(self, data: Dict) -> np.ndarray:
+        action = np.asarray(super().__call__(data), dtype=np.float32)
+        state = data.get('state')
+        if state is None:
+            raise ValueError(
+                'Current raw RoboCasa state is required to restore delta '
+                'actions.')
+        state = np.asarray(state, dtype=np.float32)
+        if state.ndim == 2 and state.shape[0] == 1:
+            state = state[0]
+        if state.ndim != 1 or state.shape[0] < self.action_dim:
+            raise ValueError(f'Current RoboCasa state must have shape '
+                             f'[{self.action_dim}], got {state.shape}.')
+        action[..., self.delta_action_mask] += state[self.delta_action_mask]
+        return action
+
+
 @DATASETS.register_module()
 class RobocasaEvalDataset:
     """RoboCasa eval dataset wrapper.
@@ -432,6 +472,7 @@ class RobocasaEvalDataset:
         self.unnorm_key = unnorm_key
         # In grouped evaluation this is set per task by RobocasaEvalRunner.
         self._active_stats_blob: Optional[Dict] = None
+        self.last_raw_state: Optional[np.ndarray] = None
         self.last_debug: Dict[str, Any] = {}
 
         if isinstance(norm_stats, str) and norm_stats:
@@ -458,6 +499,7 @@ class RobocasaEvalDataset:
             (batch_dict, replay_img)
         """
         data = dict(inputs)
+        self.last_raw_state = flatten_robocasa_state(data)
 
         # Inject statistics required by NormalizeStatesAndActions.
         if self._active_stats_blob is not None:

@@ -27,7 +27,7 @@ import time
 from collections.abc import Mapping, Sequence
 from contextlib import contextmanager, nullcontext
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 
 import numpy as np
 import torch
@@ -200,8 +200,15 @@ class FluxVLAROSPolicy:
             if self.device.type == 'cuda':
                 torch.cuda.synchronize(self.device)
             inference_time_s = time.perf_counter() - started
+            request_context = {}
+            raw_state = getattr(self.dataset, 'last_raw_state', None)
+            if raw_state is not None:
+                request_context['state'] = np.asarray(
+                    raw_state, dtype=np.float32).copy()
             actions = self._to_environment_actions(
-                raw_actions, unnorm_key=unnorm_key)
+                raw_actions,
+                unnorm_key=unnorm_key,
+                request_context=request_context)
         return actions, inference_time_s
 
     @contextmanager
@@ -239,14 +246,17 @@ class FluxVLAROSPolicy:
         return torch.autocast(
             device_type='cuda', dtype=self.mixed_precision_dtype)
 
-    def _to_environment_actions(self,
-                                raw_actions: Any,
-                                unnorm_key: str = '') -> np.ndarray:
+    def _to_environment_actions(
+            self,
+            raw_actions: Any,
+            unnorm_key: str = '',
+            request_context: Optional[Mapping[str, Any]] = None) -> np.ndarray:
         raw_array = self._as_numpy(raw_actions)
         if self.model_outputs_environment_actions:
             return self._canonicalize_actions(raw_array)
 
         context = dict(self.denormalize_context)
+        context.update(request_context or {})
         if unnorm_key:
             context.setdefault('unnorm_key', unnorm_key)
             context.setdefault('norm_stats_key', unnorm_key)
@@ -502,8 +512,8 @@ class FluxVLAROSServer:
             response.inference_time_s = 0.0
             logerr = getattr(self._rospy, 'logerr', None)
             if callable(logerr):
-                logerr(f'FluxVLA ROS request {request_id or "<missing>"} '
-                       f'failed: {response.error}')
+                logerr('FluxVLA ROS request {} failed: {}'.format(
+                    request_id or '<missing>', response.error))
         return response
 
     def handle_report_request(self, request: Any, response: Any = None) -> Any:
@@ -556,9 +566,8 @@ class FluxVLAROSServer:
         if not response.accepted:
             logerr = getattr(self._rospy, 'logerr', None)
             if callable(logerr):
-                logerr('FluxVLA evaluation report '
-                       f'{request_id or "<missing>"} rejected: '
-                       f'{response.error}')
+                logerr('FluxVLA evaluation report {} rejected: {}'.format(
+                    request_id or '<missing>', response.error))
         return response
 
     def close(self) -> None:
@@ -1297,7 +1306,7 @@ def _validate_denormalization_stats(transform: Any,
         return
     if stats_key not in norm_stats:
         raise KeyError(
-            f'Normalization statistics key {stats_key!r} is missing; '
+            f'Normalization statistics key {stats_key!r} is missing. '
             f'available keys: {list(norm_stats)}')
     stats = norm_stats[stats_key]
     if not isinstance(stats, Mapping) or 'action' not in stats:
