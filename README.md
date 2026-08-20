@@ -542,6 +542,57 @@ For full-data RoboCasa GR1 training, replace the include pattern with
 </details>
 
 <details>
+<summary><b>Compute PI0.5 normalization statistics</b></summary>
+
+Recompute normalization statistics whenever the PI0.5 training data, robot
+action semantics, action horizon, or terminal-padding policy changes. Run the
+tool from the FluxVLA repository root in the project environment:
+
+```bash
+conda activate fluxvla
+
+# ALOHA: relative joints and absolute grippers.
+python tools/compute_pi05_norm_stats.py /path/to/aloha \
+  --profile aloha --action-key observation.state \
+  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
+  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
+
+# UR3: six relative joints and an absolute gripper.
+python tools/compute_pi05_norm_stats.py /path/to/ur3 \
+  --profile ur3 --action-horizon 50 \
+  --variable-name _PI05_UR3_STATS --output /tmp/ur3_stats.py
+
+# Dual Franka joint-position actions: relative joints and absolute grippers.
+python tools/compute_pi05_norm_stats.py /path/to/franka \
+  --profile franka-qpos --action-horizon 50 \
+  --variable-name _PI05_FRANKA_QPOS_STATS \
+  --output /tmp/franka_qpos_stats.py
+
+# Dual Franka Cartesian poses: fully absolute actions.
+python tools/compute_pi05_norm_stats.py /path/to/franka \
+  --profile franka-eepose --action-horizon 50 \
+  --variable-name _PI05_FRANKA_EEPOSE_STATS \
+  --output /tmp/franka_eepose_stats.py
+```
+
+The tool applies the robot coordinate/sign transform first, converts the
+selected action dimensions to deltas second, and computes statistics last. Its
+default output is a Python literal containing `mean`, `std`, `min`, `max`,
+`q01`, and `q99`; paste it into the corresponding config and pass it as
+`dataset_statistics`. PI0.5 uses `q01`/`q99` quantile normalization.
+
+Terminal padding is included by default. Add `--exclude-terminal-padding` if
+the config masks padded actions from the loss. The default action-window start
+is `0`; set `--window-start-index` only when the config intentionally uses a
+different offset. For large datasets, use `--temp-dir /path/with/free-space`
+to place temporary memory-mapped files on a disk with sufficient capacity.
+
+See [PI0.5 OpenPI/JAX Alignment](docs/pi05_openpi_jax_alignment.md) for profile
+semantics, custom dataset keys, and inference requirements.
+
+</details>
+
+<details>
 <summary><b>ARM datasets</b></summary>
 
 The built-in ARM example config `configs/arm/arm_clip_aloha_example.py` expects a progress-labeled LeRobot v3.x dataset at `./datasets/ARM_manual_test_10Episodes_lerobotv3.0`.

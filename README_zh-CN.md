@@ -490,6 +490,54 @@ huggingface-cli download limxdynamics/FluxVLAData \
 </details>
 
 <details>
+<summary><b>计算 PI0.5 归一化统计量</b></summary>
+
+当 PI0.5 的训练数据、机器人动作语义、动作窗口长度或末尾 padding
+策略发生变化时，需要重新计算归一化统计量。请在 FluxVLA 仓库根目录下进入项目环境后运行：
+
+```bash
+conda activate fluxvla
+
+# ALOHA：关节使用相对动作，夹爪使用绝对动作。
+python tools/compute_pi05_norm_stats.py /path/to/aloha \
+  --profile aloha --action-key observation.state \
+  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
+  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
+
+# UR3：六个关节使用相对动作，夹爪使用绝对动作。
+python tools/compute_pi05_norm_stats.py /path/to/ur3 \
+  --profile ur3 --action-horizon 50 \
+  --variable-name _PI05_UR3_STATS --output /tmp/ur3_stats.py
+
+# 双臂 Franka 关节位置：关节使用相对动作，夹爪使用绝对动作。
+python tools/compute_pi05_norm_stats.py /path/to/franka \
+  --profile franka-qpos --action-horizon 50 \
+  --variable-name _PI05_FRANKA_QPOS_STATS \
+  --output /tmp/franka_qpos_stats.py
+
+# 双臂 Franka 笛卡尔位姿：全部使用绝对动作。
+python tools/compute_pi05_norm_stats.py /path/to/franka \
+  --profile franka-eepose --action-horizon 50 \
+  --variable-name _PI05_FRANKA_EEPOSE_STATS \
+  --output /tmp/franka_eepose_stats.py
+```
+
+脚本会依次执行机器人坐标系/符号转换、对指定动作维度进行相对动作转换，然后计算统计量。默认输出是包含
+`mean`、`std`、`min`、`max`、`q01` 和 `q99` 的 Python
+字面量；将其复制到对应配置中，并通过 `dataset_statistics` 传入。PI0.5 使用
+`q01`/`q99` 分位数归一化。
+
+默认会包含末尾 padding。若配置在 loss 中屏蔽了 padding 动作，请添加
+`--exclude-terminal-padding`。动作窗口起点默认为 `0`；只有配置有意使用其他偏移时才需要设置
+`--window-start-index`。处理大型数据集时，可使用
+`--temp-dir /path/with/free-space` 将临时内存映射文件放到空间充足的磁盘。
+
+各 profile 的具体语义、自定义数据字段和推理要求见
+[PI0.5 OpenPI/JAX 对齐说明](docs/pi05_openpi_jax_alignment.md)。
+
+</details>
+
+<details>
 <summary><b>ARM 数据集</b></summary>
 
 内置 ARM 示例配置 `configs/arm/arm_clip_aloha_example.py` 期望带有 progress 标签的 LeRobot v3.x 数据位于 `./datasets/ARM_manual_test_10Episodes_lerobotv3.0`。

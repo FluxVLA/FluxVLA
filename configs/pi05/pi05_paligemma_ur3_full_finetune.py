@@ -12,6 +12,82 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Generated from the exact public UR3 training root with
+# tools/compute_pi05_norm_stats.py --profile ur3 --action-horizon 50.
+_PI05_UR3_STATS = {
+    'private': {
+        'proprio': {
+            'mean': [
+                2.213891562041228, -1.146068345987145, 1.8378754831134279,
+                -0.5472157642562395, 1.613148540031348, -16.314661306586263,
+                0.05312007080067731
+            ],
+            'std': [
+                0.2822995855233247, 0.2072167553046764, 0.23309314554950533,
+                0.31093025921182793, 0.33109578539076306, 0.9226800624579906,
+                0.02689326094579461
+            ],
+            'min': [
+                1.1280282735824585, -1.7424181699752808, 0.7033090591430664,
+                -1.2837251424789429, 0.3301444351673126, -19.335296630859375,
+                -0.000755555578507483
+            ],
+            'max': [
+                2.844182014465332, -0.4741995930671692, 2.5310754776000977,
+                0.6727584600448608, 2.595930814743042, -14.142454147338867,
+                0.08500000089406967
+            ],
+            'q01': [
+                1.6391980624198914, -1.5296040773391724, 1.250722885131836,
+                -1.1007641553878784, 0.9565344452857971, -19.021053314208984,
+                0.018511110916733742
+            ],
+            'q99': [
+                2.716620922088623, -0.6704939007759094, 2.308546781539917,
+                0.21426940202713057, 2.3859515190124516, -15.575098991394043,
+                0.08500000089406967
+            ],
+            'count':
+            454399
+        },
+        'action': {
+            'mean': [
+                0.0005744935383314744, 0.0007012029769310706,
+                -0.00406603877288496, 0.004694296859852407,
+                0.0008757888517878657, 0.00034939136929789993,
+                0.05311527956356201
+            ],
+            'std': [
+                0.1816805987242161, 0.22574904137814236, 0.18047391314357283,
+                0.259316402918052, 0.21112530286352307, 0.6471547949438314,
+                0.02689518614989837
+            ],
+            'min': [
+                -1.056949496269226, -0.9997649788856506, -0.9319472312927246,
+                -1.5237574577331543, -1.221016526222229, -3.4817466735839844,
+                -0.000755555578507483
+            ],
+            'max': [
+                1.167319655418396, 0.9107947945594788, 1.0913081169128418,
+                1.1523866653442383, 1.2049565315246582, 3.5261144638061523,
+                0.08500000089406967
+            ],
+            'q01': [
+                -0.5255912566184997, -0.5997524952888489, -0.48659229278564453,
+                -0.8802174949645996, -0.6779408526420594, -2.2499771118164062,
+                0.018511110916733742
+            ],
+            'q99': [
+                0.6191222178936022, 0.5783210396766663, 0.5120596885681152,
+                0.5673046416044236, 0.6233372128009802, 2.4934840488433885,
+                0.08500000089406967
+            ],
+            'count':
+            22719950
+        }
+    }
+}
+
 model = dict(
     type='PI05FlowMatching',
     llm_backbone=dict(
@@ -138,9 +214,13 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
-        name_mappings={'observation.state': ['proprio', 'action']},
+        dataset_statistics=_PI05_UR3_STATS,
+        name_mappings={
+            'observation.state': ['proprio'],
+            'action': ['action'],
+        },
         statistic_keys=[
-            'observation.state', 'observation.eepose', 'timestamp'
+            'observation.state', 'action', 'observation.eepose', 'timestamp'
         ],
         datasets=[
             dict(
@@ -149,6 +229,7 @@ train_dataloader = dict(
                 [
                     './datasets/RealRobot_UR3_Chem_lerobot_v2/ur3_example',  # noqa: E501
                 ],
+                action_key='action',
                 transforms=[
                     dict(
                         type='ProcessParquetInputs',
@@ -164,6 +245,7 @@ train_dataloader = dict(
                             'observation.state': ['states'],
                             'actions': ['actions']
                         }),
+                    dict(type='DeltaActions', mask=[True] * 6 + [False]),
                     dict(
                         type='NormalizeStatesAndActions',
                         action_dim=32,
@@ -294,9 +376,10 @@ inference = dict(
             dict(type='SimpleNormalizeImages'),
         ]),
     denormalize_action=dict(
-        type='DenormalizePrivateAction',
+        type='DenormalizeDeltaAction',
         norm_type='quantile',
         action_dim=7,
+        delta_action_mask=[True] * 6 + [False],
     ),
     action_chunk=50,
     operator=dict(

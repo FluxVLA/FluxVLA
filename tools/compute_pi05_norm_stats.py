@@ -444,6 +444,12 @@ def compute_statistics(dataset_paths: Sequence[Path],
                 'action': _stats(action_values),
             }
         }
+        # Close the mmap handles before TemporaryDirectory removes the files.
+        # Local filesystems permit unlinking open files, but NFS/CPFS may keep
+        # them as .nfs* entries and make cleanup fail with "Directory not
+        # empty".
+        del state_values
+        del action_values
 
     metadata = {
         'dataset_roots': [str(root) for root in roots],

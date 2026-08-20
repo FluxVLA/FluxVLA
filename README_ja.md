@@ -490,6 +490,56 @@ huggingface-cli download limxdynamics/FluxVLAData \
 </details>
 
 <details>
+<summary><b>PI0.5 正規化統計量の計算</b></summary>
+
+PI0.5 の学習データ、ロボットのアクション定義、アクションホライズン、または終端
+padding の方針を変更した場合は、正規化統計量を再計算してください。FluxVLA
+リポジトリのルートでプロジェクト環境を有効にしてから実行します：
+
+```bash
+conda activate fluxvla
+
+# ALOHA：関節は相対アクション、グリッパーは絶対アクション。
+python tools/compute_pi05_norm_stats.py /path/to/aloha \
+  --profile aloha --action-key observation.state \
+  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
+  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
+
+# UR3：6 関節は相対アクション、グリッパーは絶対アクション。
+python tools/compute_pi05_norm_stats.py /path/to/ur3 \
+  --profile ur3 --action-horizon 50 \
+  --variable-name _PI05_UR3_STATS --output /tmp/ur3_stats.py
+
+# 双腕 Franka の関節位置：関節は相対アクション、グリッパーは絶対アクション。
+python tools/compute_pi05_norm_stats.py /path/to/franka \
+  --profile franka-qpos --action-horizon 50 \
+  --variable-name _PI05_FRANKA_QPOS_STATS \
+  --output /tmp/franka_qpos_stats.py
+
+# 双腕 Franka のデカルト姿勢：すべて絶対アクション。
+python tools/compute_pi05_norm_stats.py /path/to/franka \
+  --profile franka-eepose --action-horizon 50 \
+  --variable-name _PI05_FRANKA_EEPOSE_STATS \
+  --output /tmp/franka_eepose_stats.py
+```
+
+このツールは、ロボット座標系／符号の変換、指定したアクション次元の相対化、統計量の計算、という順序で処理します。デフォルト出力は
+`mean`、`std`、`min`、`max`、`q01`、`q99` を含む Python
+リテラルです。対応する設定へ貼り付け、`dataset_statistics` として渡してください。PI0.5
+は `q01`/`q99` 分位点正規化を使用します。
+
+終端 padding はデフォルトで統計に含まれます。設定が padding アクションを loss
+から除外する場合は `--exclude-terminal-padding` を追加してください。アクションウィンドウの開始位置はデフォルトで
+`0` です。設定で意図的に別のオフセットを使う場合にのみ `--window-start-index`
+を指定します。大規模データセットでは、`--temp-dir /path/with/free-space`
+を使い、一時メモリマップファイルを十分な空き容量のあるディスクに配置してください。
+
+各 profile の詳細な定義、カスタムデータキー、推論時の要件については
+[PI0.5 OpenPI/JAX Alignment](docs/pi05_openpi_jax_alignment.md) を参照してください。
+
+</details>
+
+<details>
 <summary><b>ARM データセット</b></summary>
 
 組み込みの ARM サンプル設定 `configs/arm/arm_clip_aloha_example.py` は、progress ラベル付きの LeRobot v3.x データセットが `./datasets/ARM_manual_test_10Episodes_lerobotv3.0` にあることを前提にしています。
