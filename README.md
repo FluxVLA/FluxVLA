@@ -573,6 +573,13 @@ python tools/compute_pi05_norm_stats.py /path/to/franka \
   --profile franka-eepose --action-horizon 50 \
   --variable-name _PI05_FRANKA_EEPOSE_STATS \
   --output /tmp/franka_eepose_stats.py
+
+# RoboCasa GR1: relative arm/waist joints and absolute Fourier-hand commands.
+python tools/compute_pi05_norm_stats.py /path/to/robocasa_lerobot_V2.1 \
+  --profile robocasa-joint-delta --action-horizon 16 \
+  --statistic-name robocasa_gr1_24tasks_joint_delta \
+  --variable-name _PI05_ROBOCASA_STATS \
+  --output /tmp/pi05_robocasa_joint_delta_stats.py
 ```
 
 The tool applies the robot coordinate/sign transform first, converts the

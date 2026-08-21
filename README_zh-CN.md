@@ -520,6 +520,13 @@ python tools/compute_pi05_norm_stats.py /path/to/franka \
   --profile franka-eepose --action-horizon 50 \
   --variable-name _PI05_FRANKA_EEPOSE_STATS \
   --output /tmp/franka_eepose_stats.py
+
+# RoboCasa GR1：双臂和腰部关节使用相对动作，Fourier 手部命令保持绝对值。
+python tools/compute_pi05_norm_stats.py /path/to/robocasa_lerobot_V2.1 \
+  --profile robocasa-joint-delta --action-horizon 16 \
+  --statistic-name robocasa_gr1_24tasks_joint_delta \
+  --variable-name _PI05_ROBOCASA_STATS \
+  --output /tmp/pi05_robocasa_joint_delta_stats.py
 ```
 
 脚本会依次执行机器人坐标系/符号转换、对指定动作维度进行相对动作转换，然后计算统计量。默认输出是包含

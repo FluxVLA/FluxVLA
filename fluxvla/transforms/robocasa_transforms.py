@@ -416,37 +416,6 @@ class DenormalizeRobocasaAction:
         return 0.5 * (action + 1) * (high - low) + low
 
 
-@TRANSFORMS.register_module()
-class DenormalizeRobocasaDeltaAction(DenormalizeRobocasaAction):
-    """Restore selected state-relative RoboCasa joints to absolute targets."""
-
-    def __init__(self, delta_action_mask: List[bool], *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.delta_action_mask = np.asarray(delta_action_mask, dtype=bool)
-        if self.delta_action_mask.ndim != 1:
-            raise ValueError('delta_action_mask must be one-dimensional')
-        if len(self.delta_action_mask) != self.action_dim:
-            raise ValueError(
-                f'delta_action_mask must contain {self.action_dim} values, '
-                f'got {len(self.delta_action_mask)}.')
-
-    def __call__(self, data: Dict) -> np.ndarray:
-        action = np.asarray(super().__call__(data), dtype=np.float32)
-        state = data.get('state')
-        if state is None:
-            raise ValueError(
-                'Current raw RoboCasa state is required to restore delta '
-                'actions.')
-        state = np.asarray(state, dtype=np.float32)
-        if state.ndim == 2 and state.shape[0] == 1:
-            state = state[0]
-        if state.ndim != 1 or state.shape[0] < self.action_dim:
-            raise ValueError(f'Current RoboCasa state must have shape '
-                             f'[{self.action_dim}], got {state.shape}.')
-        action[..., self.delta_action_mask] += state[self.delta_action_mask]
-        return action
-
-
 @DATASETS.register_module()
 class RobocasaEvalDataset:
     """RoboCasa eval dataset wrapper.

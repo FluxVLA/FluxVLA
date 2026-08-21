@@ -23,10 +23,12 @@ and larger sample budget are transferred. The optimizer schedule follows the
 RLinf/OpenPI values. Hybrid SHARD_GRAD_OP uses BF16 forward/backward compute
 with FP32 master parameters, reductions, and buffers sharded within each node.
 
-The converted dataset uses a single ego-view camera, 29-dimensional joint
-states and absolute joint-position actions, q01/q99 quantile normalization,
-and a 16-step action horizon. Set ``ROBOCASA_DATA_ROOT`` when the converted
-LeRobot dataset is not in one of the checked default locations.
+The converted dataset uses a single ego-view camera and 29-dimensional robot
+vectors. Both 7D arm targets and the 3D waist target are relative to the
+current state; the two 6D Fourier-hand commands remain absolute. Statistics
+use q01/q99 quantile normalization over the resulting 16-step action chunks.
+Set ``ROBOCASA_DATA_ROOT`` when the converted LeRobot dataset is not in one of
+the checked default locations.
 
 Expected topology: 32 H100 GPUs, for example 4 nodes x 8 GPUs. Per-device
 batch 8 without accumulation gives an effective global batch 256.
@@ -47,7 +49,7 @@ import os
 # Generated from the exact default 24-task, 1000-episode-per-task
 # training data with tools/compute_pi05_norm_stats.py.
 _PI05_ROBOCASA_STATS = {
-    'robocasa_gr1_24tasks_full': {
+    'robocasa_gr1_24tasks_joint_delta': {
         'proprio': {
             'mean': [
                 -0.17102599661893628, 0.23514659219974143,
@@ -129,67 +131,69 @@ _PI05_ROBOCASA_STATS = {
         },
         'action': {
             'mean': [
-                -0.1775359626264437, 0.2284479243988733, -0.11081084655259829,
-                -1.4611202696554626, 0.17829720094429205, 0.09361726611921038,
-                -0.006783452401265867, -0.22126730340471804,
+                -0.006509966007188773, -0.006698667800942633,
+                0.0020993306930294753, 0.010125724062866787,
+                0.00043474651160937576, -0.00788004360001824,
+                -0.00036967544803132257, -0.22126730340471804,
                 -0.22126730340471804, -0.22126730340471804,
                 -0.22126730340471804, -0.44253460680943607, 1.1117459333448283,
-                -0.34179493812684864, -0.32883822428616244,
-                0.06489898183750487, -1.4446330386524806, 0.3549797183859418,
-                0.07628017885730197, 0.1775135722948219, -0.5055467696490632,
-                -0.5055467696490632, -0.5055467696490632, -0.5055467696490632,
-                -1.0110935392981264, 3.0, 0.0037711007729695077,
-                0.006839471353927009, -0.00012166928530587137
+                -0.021478739146852298, -0.007161496397946293,
+                -0.020096794142656024, 0.028213465679413737,
+                0.017219984413039634, 0.007182808861258461,
+                0.01600419131645768, -0.5055467696490632, -0.5055467696490632,
+                -0.5055467696490632, -0.5055467696490632, -1.0110935392981264,
+                3.0, 0.00017345398802651147, 0.0024335211621470767,
+                -3.39942804832428e-05
             ],
             'std': [
-                0.3879081074050779, 0.17765238673292205, 0.2720438511901107,
-                0.4804564941142621, 0.3049441427473101, 0.29369821499250337,
-                0.3279262188807178, 0.8859177354343982, 0.8859177354343982,
+                0.09675022576717536, 0.05005936256920545, 0.07440947780528129,
+                0.13281660580130086, 0.07945174872532301, 0.08363123212385688,
+                0.089296777456169, 0.8859177354343982, 0.8859177354343982,
                 0.8859177354343982, 0.8859177354343982, 1.7718354708687964,
-                1.44888190662043, 0.522657539785618, 0.2942594437099049,
-                0.4063810443537934, 0.7158570101306991, 0.5269314647148533,
-                0.4040716204905002, 0.623581537540201, 1.412240228651775,
+                1.44888190662043, 0.1737595972860344, 0.12140563819244744,
+                0.1451651898661952, 0.2365496435204002, 0.1809493212523312,
+                0.18188144343304216, 0.2252424743952232, 1.412240228651775,
                 1.412240228651775, 1.412240228651775, 1.412240228651775,
-                2.82448045730355, 0.0, 0.07106289960401765,
-                0.020791731558488753, 0.005434817471243943
+                2.82448045730355, 0.0, 0.029924129871077728,
+                0.01161255559192212, 0.0067744298487410985
             ],
             'min': [
-                -1.710237741470337, -0.00042632038821466267,
-                -1.4035195112228394, -2.801373243331909, -2.033860445022583,
-                -1.4939793348312378, -1.3439968824386597, -1.5, -1.5, -1.5,
-                -1.5, -3.0, 0.0, -2.1020591259002686, -2.2016870975494385,
-                -2.3005123138427734, -2.848569631576538, -3.000068426132202,
-                -1.4995447397232056, -1.489180326461792, -1.5, -1.5, -1.5,
-                -1.5, -3.0, 3.0, -0.5332962870597839, -0.4947744905948639,
-                -0.4128894805908203
+                -1.0461804866790771, -0.6803019046783447, -1.0221858024597168,
+                -1.2902936935424805, -1.2338659763336182, -1.1870598793029785,
+                -0.9501065015792847, -1.5, -1.5, -1.5, -1.5, -3.0, 0.0,
+                -1.1997926235198975, -1.2838170528411865, -1.2514872550964355,
+                -1.4432705640792847, -1.6352717876434326, -1.401301383972168,
+                -1.5661211013793945, -1.5, -1.5, -1.5, -1.5, -3.0, 3.0,
+                -0.38090214133262634, -0.26482921838760376,
+                -0.21713007986545563
             ],
             'max': [
-                1.4058303833007812, 1.288877010345459, 1.2944501638412476,
-                3.1500876502832398e-06, 2.563594102859497, 1.5000286102294922,
-                1.4998135566711426, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
-                1.564226508140564, 0.00015454324602615088, 1.7984894514083862,
-                5.365318065742031e-05, 3.0000767707824707, 1.4954047203063965,
-                1.4975833892822266, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
-                0.9750414490699768, 0.34772318601608276, 0.5310259461402893
+                0.8943439722061157, 0.870212972164154, 0.8664765357971191,
+                1.8374738693237305, 1.3816263675689697, 1.1863933801651,
+                1.1048550605773926, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
+                1.3468607664108276, 1.1091669797897339, 1.2755736112594604,
+                1.9061418771743774, 1.436288595199585, 1.3197139501571655,
+                1.6336193084716797, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
+                0.3409733176231384, 0.23895391821861267, 0.31748268008232117
             ],
             'q01': [
-                -1.4168124198913574, -1.65025339811109e-05,
-                -0.9878814220428467, -2.587369680404663, -0.37570324540138245,
-                -0.7240629196166992, -0.9552507400512695, -1.5, -1.5, -1.5,
-                -1.5, -3.0, 0.0, -1.4654403924942017, -1.1332995891571045,
-                -0.8891795873641968, -2.689577341079712, -0.735479474067688,
-                -1.0292688608169556, -1.0800883769989014, -1.5, -1.5, -1.5,
-                -1.5, -3.0, 3.0, -0.28852102160453796, -0.02933858148753643,
-                -0.01415097527205944
+                -0.32158033430576327, -0.13311579823493958,
+                -0.2824851307272911, -0.4349453240633011, -0.213148954808712,
+                -0.24433061644434928, -0.30883259713649747, -1.5, -1.5, -1.5,
+                -1.5, -3.0, 0.0, -0.5331385570764542, -0.396867638528347,
+                -0.4624039369821549, -0.6440470653772354, -0.4602910199761391,
+                -0.5011064684391022, -0.5413642865419388, -1.5, -1.5, -1.5,
+                -1.5, -3.0, 3.0, -0.09061557054519653, -0.030642211642116307,
+                -0.02335636807605624
             ],
             'q99': [
-                0.71796053647995, 0.7908380627632141, 0.4401231110095978,
-                -0.1634492427110672, 1.0564770698547363, 0.8349300420284376,
-                0.7572318315505981, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
-                0.9571810364723206, -1.866471029643435e-05, 0.9322921633720398,
-                -0.08507565408945084, 1.613282561302185, 0.8777858018875122,
-                1.4806392192840576, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
-                0.21489860117435455, 0.09426142275333405, 0.011301719583570957
+                0.3115644890069964, 0.18661051586270339, 0.18698078393936157,
+                0.4621052959561349, 0.28328758478164673, 0.318443379700184,
+                0.29034364223480225, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
+                0.4818927049636841, 0.3122951662540441, 0.37722810059785905,
+                0.704622816443444, 0.570364025831223, 0.5432799297571185,
+                0.756458369493485, 1.5, 1.5, 1.5, 1.5, 3.0, 3.0,
+                0.09167730972170873, 0.03868345513939864, 0.02073821984231472
             ],
             'count':
             96320928
@@ -350,7 +354,9 @@ model = dict(
     ori_action_dim=29,
 )
 
-_ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_full'
+_ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_joint_delta'
+_ROBOCASA_JOINT_DELTA_MASK = ([True] * 7 + [False] * 6 + [True] * 7 +
+                              [False] * 6 + [True] * 3)
 _ROBOCASA_DATA_ROOT = os.environ.get('ROBOCASA_DATA_ROOT',
                                      _DEFAULT_ROBOCASA_DATA_ROOT)
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
@@ -366,8 +372,9 @@ def _robocasa_task_env(task_name):
 
 
 # The full dataset contains about 1,000 episodes for each of 24 tasks (6 seen
-# and 18 novel), one 256x256 ego-view camera, 29-dimensional joint states and
-# absolute actions, and fixed q01/q99 quantile statistics shared with eval.
+# and 18 novel), one 256x256 ego-view camera, 29-dimensional robot states,
+# relative arm/waist targets, absolute Fourier-hand commands, and fixed
+# q01/q99 quantile statistics shared with eval.
 train_dataloader = dict(
     # 8 samples/GPU x 32 GPUs x 1 accumulation step = global batch 256.
     per_device_batch_size=8,
@@ -437,9 +444,9 @@ train_dataloader = dict(
                 dict(
                     type='ProcessParquetInputs',
                     parquet_keys=[
-                        'observation.state',  # 29D joint angles
+                        'observation.state',  # 29D robot state
                         'timestamp',  # Seconds
-                        'actions',  # 29D target joint positions
+                        'actions',  # 29D robot commands
                         'info',  # Dataset metadata
                         'stats',  # Normalization statistics
                         'action_masks',  # Valid-action masks
@@ -456,6 +463,14 @@ train_dataloader = dict(
                     # with torchvision/PyAV. Do not let an optional decoder
                     # installation silently change the training inputs.
                     video_backend='pyav'),
+                # Express every joint-position target relative to the current
+                # state. Fourier-hand dimensions are discrete commands, so
+                # they intentionally remain absolute.
+                dict(
+                    type='DeltaActions',
+                    mask=_ROBOCASA_JOINT_DELTA_MASK,
+                    state_key='states',
+                    action_key='actions'),
                 # Preserve native state ordering and tokenize the normalized
                 # 29D state, matching OpenPI.
                 dict(
@@ -494,11 +509,6 @@ train_dataloader = dict(
             ],
             action_window_size=16,
             action_key='action',
-            # RoboCasa's 29D action contract is an absolute joint-position
-            # target. Changing this to delta action is a separate experiment
-            # that requires newly computed delta-action statistics and an
-            # inverse transform in evaluation; it is not a rebase fix.
-            use_delta=False,
             statistic_name=_ROBOCASA_STATISTIC_NAME,
             window_start_idx=0,
         )))
@@ -676,11 +686,11 @@ eval = dict(
                     type='PretrainedTokenizer', model_path=_PI05_TOKENIZER)),
         ]),
     denormalize_action=dict(
-        type='DenormalizeRobocasaAction',
+        type='DenormalizeDeltaAction',
+        statistic_name=_ROBOCASA_STATISTIC_NAME,
         norm_type='quantile',
         action_dim=29,
-        clip_actions=False,
-        stats_order='native',
+        delta_action_mask=_ROBOCASA_JOINT_DELTA_MASK,
     ),
 )
 

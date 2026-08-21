@@ -309,9 +309,18 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
         """
         if self.norm_stats is not None and self.denorm_action:
             norm_stats = self.norm_stats[self.statistic_name]
-            action = data.get('action', None)[0]
+            action = data.get('action', None)
             assert action is not None, \
                 f'Action is not found in the data: {data.keys()}'
+            action = np.asarray(action)
+            if action.ndim == 3:
+                if action.shape[0] != 1:
+                    raise ValueError(
+                        'Only batch size one is supported for action '
+                        f'denormalization, got {action.shape}.')
+                action = action[0]
+            elif action.ndim == 2 and action.shape[0] == 1:
+                action = action[0]
             stats = norm_stats['action']
             cont = self._denormalize_by_type(action, stats, self.norm_type,
                                              self.action_norm_mask)

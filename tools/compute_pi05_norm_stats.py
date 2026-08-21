@@ -64,6 +64,14 @@ PROFILES = {
         state_key='observation.state',
         action_key='action',
         delta_mask=(True, ) * 16 + (False, ) * 2),
+    'robocasa-joint-delta':
+    Profile(
+        state_key='observation.state',
+        action_key='action',
+        # GR1 arms and waist are absolute joint-position targets. Fourier
+        # hand actions are discrete commands and must remain absolute.
+        delta_mask=((True, ) * 7 + (False, ) * 6 + (True, ) * 7 +
+                    (False, ) * 6 + (True, ) * 3)),
 }
 
 
