@@ -338,6 +338,7 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
         self.lr_coef = lr_coef
         self.use_cosine_decay = use_cosine_decay
         self.min_lr_ratio = min_lr_ratio
+        self._groupwise_group_metadata = []
 
     def build_param_groups(self, runner, weight_decay=None):
         optimizer_cfg = runner.optimizer_cfg
@@ -352,16 +353,42 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
                 canonicalize_param_name=self._canonicalize_param_name,
             )
             if param_groups is not None:
+                self._groupwise_group_metadata = \
+                    self._prepare_param_groups(param_groups,
+                                               optimizer_cfg['lr'])
                 return param_groups
         raise ValueError(
             'Groupwise LR schedule requires the model to implement '
             '`get_lr_param_group_strategy(...)`.')
 
     @staticmethod
-    def _optimizer_build_cfg(runner) -> Dict:
-        optimizer_kwargs = BaseLRSchedulerPolicy._optimizer_build_cfg(runner)
-        optimizer_kwargs.pop('lr', None)
-        return optimizer_kwargs
+    def _prepare_param_groups(param_groups, learning_rate: float) -> list:
+        learning_rate = float(learning_rate)
+        metadata = []
+        for group in param_groups:
+            group_lr = group.get('lr', learning_rate)
+            group_lr = float(group_lr)
+
+            lr_scale = group.get('lr_scale')
+            if lr_scale is None:
+                lr_scale = group_lr / learning_rate
+            lr_scale = float(lr_scale)
+
+            frozen = bool(
+                group.get(
+                    'freeze',
+                    group_lr == 0.0 and lr_scale > 0.0,
+                ))
+
+            group['lr'] = group_lr
+            metadata.append(
+                dict(
+                    base_lr=learning_rate * lr_scale,
+                    freeze=frozen,
+                ))
+            group.pop('lr_scale', None)
+            group.pop('freeze', None)
+        return metadata
 
     def build_scheduler(self, runner, optimizer):
         return None
@@ -372,20 +399,6 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
         return runner.optimizer, self
 
     def _groupwise_lr_scale(self, runner, step: int) -> float:
-        strategy = getattr(runner.vla, 'get_lr_groupwise_scale', None)
-        if callable(strategy):
-            scale = strategy(
-                step=step,
-                freeze_steps=self.freeze_steps,
-                warmup_steps=self.warmup_steps,
-                use_cosine_decay=self.use_cosine_decay,
-                min_lr_ratio=self.min_lr_ratio,
-                num_training_steps=runner.num_training_steps,
-                max_steps=runner.max_steps,
-            )
-            if scale is not None:
-                return scale
-
         if not self.use_cosine_decay:
             return 1.0
 
@@ -401,24 +414,19 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
         return self.min_lr_ratio + (1.0 - self.min_lr_ratio) * cosine_ratio
 
     def prepare_step(self, runner) -> None:
-        lr = runner.optimizer_cfg['lr']
-        base = {
-            'vlm': lr * self.lr_coef,
-            'transformer_core': lr,
-            'soft_prompts': lr * self.lr_coef,
-            'action_heads': lr,
-        }
         step = runner.metric.global_step
-        for group in runner.optimizer.param_groups:
-            name = group.get('name', '')
-            if name not in base:
-                continue
-            if step < self.freeze_steps:
-                group['lr'] = 0.0 if name in (
-                    'vlm', 'transformer_core') else base[name]
+        scale = self._groupwise_lr_scale(runner, step)
+        if len(runner.optimizer.param_groups) != len(
+                self._groupwise_group_metadata):
+            raise RuntimeError(
+                'Optimizer parameter groups changed after building the '
+                'groupwise LR scheduler.')
+        for group, metadata in zip(runner.optimizer.param_groups,
+                                   self._groupwise_group_metadata):
+            if step < self.freeze_steps and metadata['freeze']:
+                group['lr'] = 0.0
             else:
-                group['lr'] = base[name] * self._groupwise_lr_scale(
-                    runner, step)
+                group['lr'] = metadata['base_lr'] * scale
 
     def step(self, runner) -> None:
         pass
@@ -428,13 +436,17 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
             return self.scheduler.get_last_lr()
         if self.optimizer is None:
             return []
-        for group in self.optimizer.param_groups:
-            if group.get('name') == 'action_heads':
-                return [group['lr']]
-        return [self.optimizer.param_groups[0]['lr']]
+        return [self._get_log_lr(self.optimizer.param_groups)]
 
     def get_log_lr(self, runner):
-        for group in runner.optimizer.param_groups:
-            if group.get('name') == 'action_heads':
-                return group['lr']
-        return runner.optimizer.param_groups[0]['lr']
+        return self._get_log_lr(runner.optimizer.param_groups)
+
+    @staticmethod
+    def _get_log_lr(param_groups) -> float:
+        """Return the LR of the fastest active group for metric logging."""
+        trainable_groups = [
+            group for group in param_groups if group.get('lr', 0.0) > 0.0
+        ]
+        if not trainable_groups:
+            return float(param_groups[0]['lr'])
+        return max(float(group['lr']) for group in trainable_groups)
