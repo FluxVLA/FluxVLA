@@ -536,14 +536,44 @@ python tools/compute_pi05_norm_stats.py /path/to/robocasa_lerobot_V2.1 \
 リテラルです。対応する設定へ貼り付け、`dataset_statistics` として渡してください。PI0.5
 は `q01`/`q99` 分位点正規化を使用します。
 
+たとえば `/tmp/aloha_stats.py` を生成した後、その中の完全な
+`_PI05_ALOHA_STATS = {...}` 定義を
+`configs/pi05/pi05_paligemma_aloha_full_finetune.py` にコピーして既存の定義を置き換え、学習とアクションの逆正規化で同じ変数を使用します：
+
+```python
+# /tmp/aloha_stats.py で生成された内容をここに貼り付けます。
+_PI05_ALOHA_STATS = {
+    # 生成された統計量の辞書。
+}
+
+train_dataloader = dict(
+    dataset=dict(
+        dataset_statistics=_PI05_ALOHA_STATS,
+        # その他のデータセット設定...
+    ),
+)
+
+eval = dict(
+    denormalize_action=dict(
+        norm_stats=_PI05_ALOHA_STATS,
+        # その他の後処理設定...
+    ),
+)
+```
+
+UR3、Franka、RoboCasa でも同様に、生成された変数定義を対応する config
+へコピーし、`dataset_statistics` で使用する変数を置き換えてください。評価 config
+が正規化統計量を直接参照している場合は、そちらも同じ新しい統計量へ更新します。
+
 終端 padding はデフォルトで統計に含まれます。設定が padding アクションを loss
 から除外する場合は `--exclude-terminal-padding` を追加してください。アクションウィンドウの開始位置はデフォルトで
 `0` です。設定で意図的に別のオフセットを使う場合にのみ `--window-start-index`
 を指定します。大規模データセットでは、`--temp-dir /path/with/free-space`
 を使い、一時メモリマップファイルを十分な空き容量のあるディスクに配置してください。
 
-各 profile の詳細な定義、カスタムデータキー、推論時の要件については
-[PI0.5 OpenPI/JAX Alignment](docs/pi05_openpi_jax_alignment.md) を参照してください。
+利用可能な profile、カスタム状態／アクションキー、相対アクション mask
+などの上書きオプションは、`python tools/compute_pi05_norm_stats.py --help`
+で確認できます。
 
 </details>
 

@@ -589,14 +589,45 @@ default output is a Python literal containing `mean`, `std`, `min`, `max`,
 `q01`, and `q99`; paste it into the corresponding config and pass it as
 `dataset_statistics`. PI0.5 uses `q01`/`q99` quantile normalization.
 
+For example, after generating `/tmp/aloha_stats.py`, copy its complete
+`_PI05_ALOHA_STATS = {...}` definition into
+`configs/pi05/pi05_paligemma_aloha_full_finetune.py`, replacing the existing
+definition. Then make sure the same variable is used by both training and
+action denormalization:
+
+```python
+# Paste the contents generated in /tmp/aloha_stats.py here.
+_PI05_ALOHA_STATS = {
+    # Generated statistics dictionary.
+}
+
+train_dataloader = dict(
+    dataset=dict(
+        dataset_statistics=_PI05_ALOHA_STATS,
+        # Other dataset settings...
+    ),
+)
+
+eval = dict(
+    denormalize_action=dict(
+        norm_stats=_PI05_ALOHA_STATS,
+        # Other postprocessing settings...
+    ),
+)
+```
+
+Use the corresponding generated variable and target config for UR3, Franka,
+or RoboCasa. If an evaluation config embeds normalization statistics directly,
+replace those with the same newly generated statistics as well.
+
 Terminal padding is included by default. Add `--exclude-terminal-padding` if
 the config masks padded actions from the loss. The default action-window start
 is `0`; set `--window-start-index` only when the config intentionally uses a
 different offset. For large datasets, use `--temp-dir /path/with/free-space`
 to place temporary memory-mapped files on a disk with sufficient capacity.
 
-See [PI0.5 OpenPI/JAX Alignment](docs/pi05_openpi_jax_alignment.md) for profile
-semantics, custom dataset keys, and inference requirements.
+Run `python tools/compute_pi05_norm_stats.py --help` for the available profiles
+and overrides such as custom state/action keys and delta masks.
 
 </details>
 

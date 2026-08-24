@@ -535,13 +535,41 @@ python tools/compute_pi05_norm_stats.py /path/to/robocasa_lerobot_V2.1 \
 字面量；将其复制到对应配置中，并通过 `dataset_statistics` 传入。PI0.5 使用
 `q01`/`q99` 分位数归一化。
 
+例如，生成 `/tmp/aloha_stats.py` 后，需要将其中完整的
+`_PI05_ALOHA_STATS = {...}` 定义复制到
+`configs/pi05/pi05_paligemma_aloha_full_finetune.py`，替换原有定义，并确保训练与动作反归一化使用同一个变量：
+
+```python
+# 将 /tmp/aloha_stats.py 生成的内容粘贴到这里。
+_PI05_ALOHA_STATS = {
+    # 生成的统计量字典。
+}
+
+train_dataloader = dict(
+    dataset=dict(
+        dataset_statistics=_PI05_ALOHA_STATS,
+        # 其他数据集配置...
+    ),
+)
+
+eval = dict(
+    denormalize_action=dict(
+        norm_stats=_PI05_ALOHA_STATS,
+        # 其他动作后处理配置...
+    ),
+)
+```
+
+UR3、Franka 和 RoboCasa 同理：将生成的变量定义复制到对应 config，并替换
+`dataset_statistics` 所使用的变量。如果评测配置直接引用了归一化统计量，也需要同步替换为新生成的统计量。
+
 默认会包含末尾 padding。若配置在 loss 中屏蔽了 padding 动作，请添加
 `--exclude-terminal-padding`。动作窗口起点默认为 `0`；只有配置有意使用其他偏移时才需要设置
 `--window-start-index`。处理大型数据集时，可使用
 `--temp-dir /path/with/free-space` 将临时内存映射文件放到空间充足的磁盘。
 
-各 profile 的具体语义、自定义数据字段和推理要求见
-[PI0.5 OpenPI/JAX 对齐说明](docs/pi05_openpi_jax_alignment.md)。
+运行 `python tools/compute_pi05_norm_stats.py --help` 可查看可用 profile，
+以及自定义状态/动作字段、相对动作 mask 等覆盖选项。
 
 </details>
 
