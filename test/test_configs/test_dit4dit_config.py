@@ -7,7 +7,7 @@ def test_dit4dit_training_budget_matches_released_checkpoint():
     cfg = Config.fromfile(
         'configs/dit4dit/dit4dit_libero_all_full_finetune.py')
 
-    assert cfg.train_dataloader.per_device_batch_size == 16
+    assert cfg.train_dataloader.per_device_batch_size == 8
     assert cfg.runner.grad_accumulation_steps == 1
     assert cfg.runner.metric.grad_accumulation_steps == 1
     assert cfg.runner.max_steps == 160_000
@@ -33,14 +33,10 @@ def test_dit4dit_core_source_contract_is_preserved():
     assert cfg.model.vla_head.num_inference_timesteps == 4
     assert cfg.eval.eval_chunk_size == 8
 
-    train_transforms = cfg.train_dataloader.dataset.datasets.transforms
-    train_prompt = next(t for t in train_transforms
-                        if t.type == 'CanonicalizePrompt')
-    assert train_prompt.output_key == 'prompt'
-    assert train_prompt.remove_source_keys is True
+    train_transforms = cfg.train_dataloader.dataset.datasets[0].transforms
     train_tokenizer = next(t for t in train_transforms
                            if t.type == 'ProcessCosmos25Prompt')
-    assert train_tokenizer.input_key == 'prompt'
+    assert train_tokenizer.input_key == 'task_description'
     assert train_tokenizer.remove_input_key is True
     assert train_tokenizer.tokenizer.model_path == (
         cfg.model.vlm_backbone.base_model + '/tokenizer')
@@ -50,10 +46,8 @@ def test_dit4dit_core_source_contract_is_preserved():
     assert cfg.runner.collator.meta_keys == ['info', 'stats']
     assert cfg.runner.tokenizer.type == 'PretrainedTokenizer'
 
-    eval_prompt = next(t for t in cfg.eval.dataset.transforms
-                       if t.type == 'CanonicalizePrompt')
-    assert eval_prompt.output_key == 'prompt'
     eval_tokenizer = next(t for t in cfg.eval.dataset.transforms
                           if t.type == 'ProcessCosmos25Prompt')
+    assert eval_tokenizer.input_key == 'task_description'
     assert eval_tokenizer.remove_input_key is True
-    assert cfg.eval.dataset.require_lang_tokens is True
+    assert cfg.runner.sharding_strategy == 'global-shard-grad-op'

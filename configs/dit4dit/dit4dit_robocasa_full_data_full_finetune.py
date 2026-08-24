@@ -309,7 +309,9 @@ runner = dict(
         warmup_steps=5000,
         min_lr=5e-7,
     ),
-    sharding_strategy='shard-grad-op',
+    # Preserve the pre-rebase global ZeRO-2 / SHARD_GRAD_OP behavior. On the
+    # latest main, ``shard-grad-op`` names the private hybrid variant.
+    sharding_strategy='global-shard-grad-op',
     pre_fsdp_param_dtype='fp32',
     # The source flag is not wired into the released training path. Enabling
     # it here would add recomputation absent from the source recipe.

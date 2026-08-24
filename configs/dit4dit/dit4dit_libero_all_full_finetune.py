@@ -420,7 +420,9 @@ runner = dict(
     # DiT4DiT is released with DeepSpeed ZeRO-2: parameters remain resident
     # while gradients and optimizer state are sharded. FULL_SHARD repeatedly
     # all-gathers the Cosmos parameters across its two forwards per step.
-    sharding_strategy='shard-grad-op',
+    # Preserve the pre-rebase global ZeRO-2 / SHARD_GRAD_OP behavior. On the
+    # latest main, ``shard-grad-op`` names the private hybrid variant.
+    sharding_strategy='global-shard-grad-op',
     # Keep FP32 master parameters/Adam moments like DeepSpeed BF16_Optimizer;
     # FSDP still casts forward parameters to BF16 below.
     pre_fsdp_param_dtype='fp32',

@@ -71,16 +71,18 @@ def _build_lightweight_vla():
 
 def test_dit4dit_forward_and_predict_consume_transform_tokens():
     vla = _build_lightweight_vla()
-    images = torch.zeros(2, 3, 8, 8)
+    images = torch.zeros(2, 3, 1, 8, 8)
     lang_tokens = torch.tensor([[1, 2, 0], [1, 3, 0]])
     lang_masks = lang_tokens.ne(0)
     actions = torch.zeros(2, 2, 2)
+    action_masks = torch.ones_like(actions)
 
     output = vla(
         images=images,
         lang_tokens=lang_tokens,
         lang_masks=lang_masks,
         actions=actions,
+        action_masks=action_masks,
     )
     predicted = vla.predict_action(
         images=images,
@@ -101,11 +103,10 @@ def test_cosmos_backbone_encodes_precomputed_token_ids():
     backbone.text_encoder = _FakeTextEncoder()
     lang_tokens = torch.tensor([[1, 2, 0], [1, 3, 0]])
 
-    prompt_embeds = backbone._get_prompt_embeds(
-        prompts=None,
+    prompt_embeds = backbone._encode_lang_tokens(
+        lang_tokens,
         device=torch.device('cpu'),
         dtype=torch.float32,
-        input_ids=lang_tokens,
     )
 
     assert tuple(prompt_embeds.shape) == (2, 3, 4)

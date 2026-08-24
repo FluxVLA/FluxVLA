@@ -12,11 +12,112 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import hashlib
+import math
 import unittest
 
 import numpy as np
 
+from fluxvla.datasets.balanced_dataset_wrapper import \
+    DistributedBalancedRepeatingDataset
 from fluxvla.datasets.dataset_wrapper import DistributedRepeatingDataset
+
+
+def _make_balanced_wrapper(*,
+                           source_lengths,
+                           sampling_probabilities,
+                           total_len,
+                           seed,
+                           shuffle=True,
+                           reshuffle_each_epoch=True):
+    wrapper = DistributedBalancedRepeatingDataset.__new__(
+        DistributedBalancedRepeatingDataset)
+    wrapper.source_lengths = list(source_lengths)
+    wrapper.sampling_probabilities = sampling_probabilities
+    wrapper.total_len = total_len
+    wrapper.seed = seed
+    wrapper.shuffle = shuffle
+    wrapper.reshuffle_each_epoch = reshuffle_each_epoch
+    return wrapper
+
+
+class TestDistributedBalancedRepeatingDataset(unittest.TestCase):
+
+    def test_weighted_mapping_matches_pre_rebase_dit4dit_algorithm(self):
+        source_lengths = [3, 7, 11]
+        probabilities = np.asarray([0.2, 0.3, 0.5], dtype=np.float64)
+        wrapper = _make_balanced_wrapper(
+            source_lengths=source_lengths,
+            sampling_probabilities=probabilities,
+            total_len=97,
+            seed=123,
+            shuffle=True)
+
+        for epoch in range(3):
+            for virtual_index in range(wrapper.total_len):
+                value = repr(
+                    (epoch, virtual_index, wrapper.seed)).encode('utf-8')
+                digest = hashlib.sha256(value).hexdigest()
+                mapping_seed = int(digest, 16) & ((1 << 128) - 1)
+                rng = np.random.default_rng(mapping_seed)
+                source_index = int(
+                    rng.choice(len(source_lengths), p=probabilities))
+                sample_index = int(rng.choice(source_lengths[source_index]))
+
+                self.assertEqual(
+                    wrapper._sample_dataset_and_index(epoch, virtual_index),
+                    (source_index, sample_index))
+
+            indices = np.arange(wrapper.total_len, dtype=np.int64)
+            rng = np.random.default_rng(wrapper.seed + epoch)
+            rng.shuffle(indices)
+            np.testing.assert_array_equal(
+                wrapper._ordered_virtual_indices(epoch), indices)
+            for rank in range(4):
+                np.testing.assert_array_equal(
+                    wrapper._shard_virtual_indices(epoch, rank, 4),
+                    indices[rank::4])
+
+    def test_unweighted_mapping_matches_main_balanced_cycle(self):
+        source_lengths = [3, 7, 11]
+        wrapper = _make_balanced_wrapper(
+            source_lengths=source_lengths,
+            sampling_probabilities=None,
+            total_len=33,
+            seed=456,
+            shuffle=True)
+
+        for epoch in range(3):
+            rng = np.random.default_rng(wrapper.seed + 104729 * epoch)
+            source_order = rng.permutation(len(source_lengths))
+            source_offsets = np.asarray(
+                [rng.integers(length) for length in source_lengths],
+                dtype=np.int64)
+            for virtual_index in range(wrapper.total_len):
+                source_slot = virtual_index % len(source_lengths)
+                source_index = int(source_order[source_slot])
+                cycle = virtual_index // len(source_lengths)
+                sample_index = int((source_offsets[source_index] + cycle) %
+                                   source_lengths[source_index])
+                self.assertEqual(
+                    wrapper._sample_dataset_and_index(epoch, virtual_index),
+                    (source_index, sample_index))
+
+            permutation_rng = np.random.default_rng(wrapper.seed +
+                                                    130363 * epoch + 17)
+            multiplier = int(permutation_rng.integers(1, wrapper.total_len))
+            while math.gcd(multiplier, wrapper.total_len) != 1:
+                multiplier = (multiplier + 1) % wrapper.total_len
+                if multiplier == 0:
+                    multiplier = 1
+            offset = int(permutation_rng.integers(wrapper.total_len))
+            for rank in range(4):
+                positions = np.arange(
+                    rank, wrapper.total_len, 4, dtype=np.int64)
+                expected = (multiplier * positions +
+                            offset) % wrapper.total_len
+                np.testing.assert_array_equal(
+                    wrapper._shard_virtual_indices(epoch, rank, 4), expected)
 
 
 class TestDistributedRepeatingDatasetStatistics(unittest.TestCase):

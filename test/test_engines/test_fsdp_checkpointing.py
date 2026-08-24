@@ -36,6 +36,34 @@ class _TinyModel(nn.Module):
         return (self.output(self.block(inputs)) * self.scale).sum()
 
 
+def _build_runner_for_sharding_strategy(strategy):
+    with mock.patch.object(
+            base_train_runner.BaseTrainRunner, '__init__',
+            return_value=None), mock.patch.object(
+                fsdp_train_runner.overwatch,
+                'local_rank',
+                return_value=0,
+                create=True):
+        return FSDPTrainRunner(
+            cfg={},
+            max_grad_norm=1,
+            collator={},
+            sampler='default',
+            metric={},
+            sharding_strategy=strategy)
+
+
+def test_fsdp_global_shard_grad_op_preserves_pre_rebase_strategy():
+    runner = _build_runner_for_sharding_strategy('global-shard-grad-op')
+    assert runner.fsdp_sharding_strategy is ShardingStrategy.SHARD_GRAD_OP
+
+
+def test_fsdp_main_shard_grad_op_keeps_private_hybrid_strategy():
+    runner = _build_runner_for_sharding_strategy('shard-grad-op')
+    assert (runner.fsdp_sharding_strategy
+            is ShardingStrategy._HYBRID_SHARD_ZERO2)
+
+
 @pytest.fixture()
 def single_process_group(tmp_path):
     if dist.is_initialized():
@@ -45,7 +73,10 @@ def single_process_group(tmp_path):
 
     rendezvous = tmp_path / 'gloo-rendezvous'
     dist.init_process_group(
-        'gloo', init_method=f'file://{rendezvous}', rank=0, world_size=1)
+        'gloo',
+        init_method='file://{}'.format(rendezvous),
+        rank=0,
+        world_size=1)
     try:
         yield
     finally:

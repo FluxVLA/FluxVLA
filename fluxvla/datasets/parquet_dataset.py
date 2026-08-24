@@ -543,8 +543,7 @@ class LiberoParquetEvalDataset:
             data = t(data)
         replay_img = data.get('replay_img', None)
 
-        has_lang_tokens = 'lang_tokens' in data and 'lang_masks' in data
-        assert has_lang_tokens, \
+        assert 'lang_tokens' in data and 'lang_masks' in data, \
             'Prompt transform must provide lang_tokens and lang_masks'
         tokens = torch.tensor(data['lang_tokens'])
         token_mask = data['lang_masks'].tolist() if hasattr(
@@ -572,9 +571,9 @@ class LiberoParquetEvalDataset:
         batch: Dict[str, Any] = dict(
             images=pixel_values.cuda().unsqueeze(0),
             img_masks=torch.tensor([img_masks]).cuda(),
+            lang_tokens=tokens.unsqueeze(0).cuda(),
+            lang_masks=torch.tensor(token_mask).unsqueeze(0).cuda(),
         )
-        batch['lang_tokens'] = tokens.unsqueeze(0).cuda()
-        batch['lang_masks'] = torch.tensor(token_mask).unsqueeze(0).cuda()
 
         if 'states' in data:
             batch['states'] = torch.from_numpy(

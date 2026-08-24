@@ -144,8 +144,8 @@ class BaseLRSchedulerPolicy:
     def build_scheduler(self, runner, optimizer):
         raise NotImplementedError
 
-    def build(self, runner):
-        runner.optimizer = self.build_optimizer(runner)
+    def build(self, runner, weight_decay=None):
+        runner.optimizer = self.build_optimizer(runner, weight_decay)
         self.optimizer = runner.optimizer
         self.scheduler = self.build_scheduler(runner, runner.optimizer)
         return runner.optimizer, self
@@ -471,8 +471,8 @@ class GroupwiseFreezeWarmupCosineLRScheduler(BaseLRSchedulerPolicy):
     def build_scheduler(self, runner, optimizer):
         return None
 
-    def build(self, runner):
-        super().build(runner)
+    def build(self, runner, weight_decay=None):
+        super().build(runner, weight_decay)
         self.prepare_step(runner)
         return runner.optimizer, self
 
