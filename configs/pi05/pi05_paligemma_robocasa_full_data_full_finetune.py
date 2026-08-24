@@ -479,7 +479,8 @@ train_dataloader = dict(
                     state_dim=29,
                     state_key='proprio',
                     action_key='action',
-                    norm_type='quantile'),
+                    norm_type='quantile',
+                    output_dtype='float32'),
                 # Build the OpenPI-compatible state-conditioned prompt.
                 dict(
                     type='PreparePromptWithState',
@@ -673,7 +674,8 @@ eval = dict(
                 state_dim=29,
                 state_key='proprio',
                 action_key='action',
-                norm_type='quantile'),
+                norm_type='quantile',
+                output_dtype='float32'),
             dict(
                 type='PreparePromptWithState',
                 max_state_dim=29,

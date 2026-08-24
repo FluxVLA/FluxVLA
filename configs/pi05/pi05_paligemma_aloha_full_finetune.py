@@ -285,7 +285,8 @@ train_dataloader = dict(
                         state_dim=32,
                         state_key='proprio',
                         action_key='action',
-                        norm_type='quantile'),
+                        norm_type='quantile',
+                        output_dtype='float32'),
                     dict(type='PreparePromptWithState'),
                     dict[str, str | dict[str, str]](
                         type='ProcessPrompts',
@@ -394,7 +395,8 @@ inference = dict(
                 state_dim=32,
                 state_key='proprio',
                 action_key='action',
-                norm_type='quantile'),
+                norm_type='quantile',
+                output_dtype='float32'),
             dict(type='PreparePromptWithState'),
             dict[str, str | dict[str, str]](
                 type='ProcessPrompts',
