@@ -44,9 +44,10 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 #### RoboCasa GR1
 
-| 模型           | 训练数据             | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                        |
-| -------------- | -------------------- | ------- | ------ | --------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------ |
-| FluxVLA(GR00T) | 24 个任务，30 条演示 | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64) |
+| 模型           | 训练数据             | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                                         |
+| -------------- | -------------------- | ------- | ------ | --------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| FluxVLA(GR00T) | 24 个任务，30 条演示 | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)                  |
+| FluxVLA(PI0.5) | 24 个任务，全量数据  | 60.00%  | 51.00% | 52.00%    | 47.44%         | [49.17%（每任务 50 次试验）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
 
 #### 说明
 
@@ -54,7 +55,7 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 - `Drawer`：`PnPCanToDrawerClose` + `PnPCupToDrawerClose`。
 - `Microwave`：`PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`。
 - `Generalization`：剩余的 18 个后训练新任务。
-- RoboCasa GR00T 结果使用每个任务 50 次试验评测。
+- RoboCasa 结果均使用每个任务 50 次试验评测。
 
 ## 📢 最新动态
 
@@ -678,22 +679,22 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 <details>
 <summary><b>VLA 模型</b></summary>
 
-| 模型                      | 大小 | 下载链接                                                                                                                                       |
-| ------------------------- | ---- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| GR00T N1.5                | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                                       |
-| OpenVLA                   | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                                   |
-| FastWAM_base              | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                                    |
-| PI0_base                  | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                                        |
-| PI05_base                 | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                                       |
-| PI05_libero               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                                     |
-| PI05 RoboCasa（全量数据） | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_21aa5e82a_bs256) |
-| SmolVLA                   | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                                 |
+| 模型                      | 大小 | 下载链接                                                                                                                             |
+| ------------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| GR00T N1.5                | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                             |
+| OpenVLA                   | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                         |
+| FastWAM_base              | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                          |
+| PI0_base                  | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                              |
+| PI05_base                 | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                             |
+| PI05_libero               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                           |
+| PI05 RoboCasa（全量数据） | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
+| SmolVLA                   | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                       |
 
 按 config 预期的目录结构下载 PI0.5 RoboCasa 全量数据 checkpoint：
 
 ```bash
 hf download limxdynamics/FluxVLAEngine \
-  --include "pi05_paligemma_robocasa_full_data_full_finetune_21aa5e82a_bs256/*" \
+  --include "pi05_paligemma_robocasa_full_data_full_finetune_bs256/*" \
   --local-dir ./checkpoints
 ```
 
