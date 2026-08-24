@@ -158,7 +158,7 @@ def _libero_rot6d_action_to_axisangle(action: np.ndarray) -> np.ndarray:
 
 
 @TRANSFORMS.register_module()
-class DeltaActions:
+class RelativeActions:
     """Convert selected absolute action dimensions to state-relative deltas.
 
     This is the same generic operation used by OpenPI.  ``state_key`` and
@@ -188,9 +188,15 @@ class DeltaActions:
         return data
 
 
+# Keep serialized configs and downstream imports using the old transform name
+# working while new configs use the clearer ``RelativeActions`` name.
+DeltaActions = RelativeActions
+TRANSFORMS.register_module(name='DeltaActions', module=RelativeActions)
+
+
 @TRANSFORMS.register_module()
-class AbsoluteActions(DeltaActions):
-    """Invert :class:`DeltaActions` for selected action dimensions."""
+class AbsoluteActions(RelativeActions):
+    """Invert :class:`RelativeActions` for selected action dimensions."""
 
     def __call__(self, data: Dict) -> Dict:
         if self.action_key not in data or self.mask is None:
@@ -206,8 +212,8 @@ class AbsoluteActions(DeltaActions):
 
 
 @TRANSFORMS.register_module()
-class ProcessLiberoActions(DeltaActions):
-    """Backward-compatible name for the generic delta-action transform."""
+class ProcessLiberoActions(RelativeActions):
+    """Backward-compatible name for the generic relative-action transform."""
 
 
 @TRANSFORMS.register_module()
@@ -322,8 +328,8 @@ class OpenPIAlohaGripperCoordinates:
     ``gripper_input_range`` first maps hardware units linearly to the ALOHA
     ``[0, 1]`` contract. Values are not clipped.
 
-    Joint signs, delta actions, and normalization deliberately remain in the
-    generic ``JointSignTransform``, ``DeltaActions``, and
+    Joint signs, relative actions, and normalization deliberately remain in
+    the generic ``JointSignTransform``, ``RelativeActions``, and
     ``NormalizeStatesAndActions`` stages.
     """
 

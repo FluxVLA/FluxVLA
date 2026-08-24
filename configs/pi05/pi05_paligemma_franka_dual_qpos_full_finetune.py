@@ -282,7 +282,7 @@ train_dataloader = dict(
                             'actions': ['actions']
                         }),
                     dict(
-                        type='DeltaActions',
+                        type='RelativeActions',
                         mask=[True] * 7 + [False] + [True] * 7 + [False]),
                     dict(
                         type='NormalizeStatesAndActions',

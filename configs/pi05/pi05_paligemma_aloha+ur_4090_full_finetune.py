@@ -355,7 +355,7 @@ train_dataloader = dict(
                             type='OpenPIAlohaGripperCoordinates',
                             gripper_input_range=(-0.01, 0.08)),
                         dict(
-                            type='DeltaActions',
+                            type='RelativeActions',
                             mask=([True] * 6 + [False] + [True] * 6 +
                                   [False])),
                         dict(
@@ -414,7 +414,8 @@ train_dataloader = dict(
                                 'observation.state': ['states'],
                                 'actions': ['actions']
                             }),
-                        dict(type='DeltaActions', mask=[True] * 6 + [False]),
+                        dict(
+                            type='RelativeActions', mask=[True] * 6 + [False]),
                         dict(
                             type='NormalizeStatesAndActions',
                             action_dim=32,

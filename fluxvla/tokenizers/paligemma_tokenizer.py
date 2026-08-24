@@ -40,8 +40,18 @@ class PaligemmaTokenizer:
     def __init__(
             self,
             download_path: str = 'gs://big_vision/paligemma_tokenizer.model',
+            model_path: str = None,
             *args,
             **kwargs):
+
+        # Evaluation runners pass the checkpoint-local tokenizer directory via
+        # ``model_path``.  Prefer that artifact over the remote fallback so a
+        # self-contained training work directory can be evaluated offline.
+        if model_path is not None:
+            path = Path(model_path).expanduser()
+            if path.is_dir():
+                path = path / 'tokenizer.model'
+            download_path = path.as_posix()
 
         path = maybe_download(download_path, gs={'token': 'anon'})
         with path.open('rb') as f:

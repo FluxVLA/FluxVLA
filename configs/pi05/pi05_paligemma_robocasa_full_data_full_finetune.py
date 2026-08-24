@@ -467,7 +467,7 @@ train_dataloader = dict(
                 # state. Fourier-hand dimensions are discrete commands, so
                 # they intentionally remain absolute.
                 dict(
-                    type='DeltaActions',
+                    type='RelativeActions',
                     mask=_ROBOCASA_JOINT_DELTA_MASK,
                     state_key='states',
                     action_key='actions'),

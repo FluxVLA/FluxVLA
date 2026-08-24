@@ -245,7 +245,7 @@ train_dataloader = dict(
                             'observation.state': ['states'],
                             'actions': ['actions']
                         }),
-                    dict(type='DeltaActions', mask=[True] * 6 + [False]),
+                    dict(type='RelativeActions', mask=[True] * 6 + [False]),
                     dict(
                         type='NormalizeStatesAndActions',
                         action_dim=32,
