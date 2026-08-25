@@ -56,6 +56,9 @@ class DistributedRepeatingDataset(IterableDataset):
         dim (int, optional): Target dimension for padding/copying data.
             If provided, data will be padded/copied to be an integer
             multiple of this dimension. Defaults to None.
+        auto_compute_statistics (dict, optional): Transformed state/action
+            statistics options resolved by ``scripts/train.py`` when neither
+            inline nor file-based statistics are configured.
         statistics_overrides (dict, optional): Nested statistic values used to
             override collected statistics. For grouped datasets, the outer
             keys may select individual dataset groups.
@@ -72,7 +75,8 @@ class DistributedRepeatingDataset(IterableDataset):
                  dim: Optional[int] = None,
                  dataset_statistics: Optional[Dict] = None,
                  statistics_overrides: Optional[Dict] = None,
-                 dataset_statistics_path: Optional[str] = None) -> None:
+                 dataset_statistics_path: Optional[str] = None,
+                 auto_compute_statistics: Optional[Dict] = None) -> None:
         if (dataset_statistics is not None
                 and dataset_statistics_path is not None):
             raise ValueError(
@@ -81,11 +85,17 @@ class DistributedRepeatingDataset(IterableDataset):
         if dataset_statistics_path is not None:
             with open(dataset_statistics_path, 'r', encoding='utf-8') as f:
                 dataset_statistics = json.load(f)
+        if (auto_compute_statistics is not None
+                and dataset_statistics is None):
+            raise RuntimeError(
+                'auto_compute_statistics must be resolved before dataset '
+                'construction. Launch training through scripts/train.py.')
         self.shuffle = shuffle
         self.reshuffle_each_epoch = reshuffle_each_epoch
         self.seed = seed
         self.statistic_name = statistic_name
         self.dim = dim
+        self.auto_compute_statistics = auto_compute_statistics
         # Determine the dataset format and initialize accordingly
         if isinstance(datasets, dict) and not (isinstance(
                 list(datasets.values())[0], list) if datasets else False):

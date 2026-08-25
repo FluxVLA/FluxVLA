@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backward-compatible entry point for transformed dataset statistics."""
+"""Compute transformed normalization statistics from LeRobot parquet data."""
 
 from fluxvla.datasets.utils.transformed_statistics import (PROFILES, Profile,
                                                            compute_statistics,

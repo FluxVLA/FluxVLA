@@ -19,6 +19,7 @@ import os
 import random
 import socket
 import sys
+from pathlib import Path
 
 import draccus
 import numpy as np
@@ -29,6 +30,8 @@ from mmengine import Config, DictAction
 
 from fluxvla.datasets.utils import (save_dataset_statistics,
                                     save_grouped_dataset_statistics)
+from fluxvla.datasets.utils.transformed_statistics import \
+    compute_statistics_from_dataset_config
 from fluxvla.engines import (build_dataset_from_cfg, build_runner_from_cfg,
                              initialize_overwatch)
 from fluxvla.engines.utils.torch_utils import set_global_seed
@@ -369,6 +372,57 @@ def _set_rank_training_seed(seed):
     return rank_seed
 
 
+def _prepare_automatic_dataset_statistics(cfg, work_dir):
+    """Resolve optional transformed statistics before dataset construction.
+
+    Explicit inline statistics have highest priority, followed by an explicit
+    statistics file. Automatic computation is used only when neither is set
+    and ``auto_compute_statistics`` is present in the dataset config.
+    """
+    dataset_cfg = cfg.train_dataloader.dataset
+    configured_stats = _get_nested_value(dataset_cfg, ('dataset_statistics', ))
+    configured_path = _get_nested_value(dataset_cfg,
+                                        ('dataset_statistics_path', ))
+    auto_options = _get_nested_value(dataset_cfg,
+                                     ('auto_compute_statistics', ))
+
+    if configured_stats is not None:
+        if overwatch.is_rank_zero():
+            overwatch.info('Using dataset statistics specified in config.')
+        return
+    if configured_path is not None:
+        if overwatch.is_rank_zero():
+            overwatch.info(f'Using configured dataset statistics file: '
+                           f'{configured_path}')
+        return
+    if not auto_options:
+        return
+
+    options = {} if auto_options is True else dict(auto_options)
+    stats_path = Path(work_dir).resolve() / 'dataset_statistics.json'
+    metadata_path = (
+        Path(work_dir).resolve() / 'dataset_statistics_metadata.json')
+    if overwatch.is_rank_zero():
+        overwatch.info(
+            'No dataset statistics were configured; computing transformed '
+            'statistics from the training parquet data.')
+        stats, metadata = compute_statistics_from_dataset_config(
+            dataset_cfg,
+            options=options,
+            default_temp_dir=Path(work_dir).resolve())
+        save_dataset_statistics(stats, work_dir)
+        with open(metadata_path, 'w', encoding='utf-8') as stream:
+            json.dump(metadata, stream, indent=2)
+        overwatch.info(
+            f'Saved automatic statistics metadata at {metadata_path}')
+
+    _sync_distributed()
+    if not stats_path.is_file():
+        raise FileNotFoundError(
+            f'Automatic dataset statistics were not created at {stats_path}')
+    dataset_cfg['dataset_statistics_path'] = str(stats_path)
+
+
 def train(args, cfg):
     """Train the model with the given configuration.
 
@@ -382,6 +436,7 @@ def train(args, cfg):
             overwatch.info(f'Training seed set to {seed}.')
 
     os.makedirs(args.work_dir, exist_ok=True)
+    _prepare_automatic_dataset_statistics(cfg, args.work_dir)
     dataset = build_dataset_from_cfg(cfg.train_dataloader.dataset)
     eval_dataset = _build_optional_training_eval_dataset(cfg)
     if overwatch.is_rank_zero() and hasattr(dataset, 'dataset_statistics'):
