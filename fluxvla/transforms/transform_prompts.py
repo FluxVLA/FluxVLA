@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import logging
 import os
 from typing import Dict, List, Optional
 
@@ -123,6 +124,10 @@ class ProcessPrompts():
             Defaults to 180.
         with_labels (bool, optional): Whether to include labels in
             the output. Defaults to False.
+        preserve_suffix_after (str, optional): If a prompt exceeds
+            ``max_len``, preserve the suffix beginning at the last occurrence
+            of this marker and truncate only the preceding text. This is used
+            by PI0.5 to retain the complete state and ``Action:`` marker.
     """
 
     def __init__(self,
@@ -132,7 +137,8 @@ class ProcessPrompts():
                  with_labels: bool = False,
                  with_state: bool = False,
                  ignore_index: int = -100,
-                 negative_prompt=None):
+                 negative_prompt=None,
+                 preserve_suffix_after: str | None = None):
         from fluxvla.engines import build_tokenizer_from_cfg
         if model_path is not None:
             tokenizer['model_path'] = os.path.join(model_path, 'tokenizer')
@@ -142,19 +148,64 @@ class ProcessPrompts():
         self.with_state = with_state
         self.ignore_index = ignore_index
         self.negative_prompt = negative_prompt
+        self.preserve_suffix_after = preserve_suffix_after
+
+    def _encode_prompt(self, prompt: str, state: np.ndarray | None = None):
+        if state is not None:
+            return self.tokenizer(
+                prompt, state=state, add_special_tokens=True)['input_ids']
+        return self.tokenizer(prompt, add_special_tokens=True)['input_ids']
+
+    def _truncate_preserving_suffix(self, prompt: str,
+                                    state: np.ndarray | None):
+        marker_index = prompt.rfind(self.preserve_suffix_after)
+        if marker_index < 0:
+            raise ValueError(
+                'Prompt does not contain the configured protected suffix '
+                f'marker {self.preserve_suffix_after!r}.')
+
+        head = prompt[:marker_index]
+        suffix = prompt[marker_index:]
+        suffix_tokens = self._encode_prompt(suffix, state)
+        if len(suffix_tokens) > self.max_len:
+            raise ValueError(
+                f'Protected prompt suffix needs {len(suffix_tokens)} tokens, '
+                f'which exceeds max_len={self.max_len}.')
+
+        low, high = 0, len(head)
+        best_tokens = suffix_tokens
+        best_prompt = suffix
+        while low <= high:
+            midpoint = (low + high) // 2
+            candidate = head[:midpoint].rstrip() + suffix
+            candidate_tokens = self._encode_prompt(candidate, state)
+            if len(candidate_tokens) <= self.max_len:
+                best_tokens = candidate_tokens
+                best_prompt = candidate
+                low = midpoint + 1
+            else:
+                high = midpoint - 1
+
+        logging.warning(
+            'Prompt exceeds max_len=%d; truncated task text while preserving '
+            'the suffix beginning with %r.', self.max_len,
+            self.preserve_suffix_after)
+        return best_tokens, best_prompt
 
     def _tokenize_single_prompt(self,
                                 prompt: str,
                                 state: np.ndarray | None = None):
-        if state is not None:
-            tokens = self.tokenizer(
-                prompt, state=state, add_special_tokens=True)['input_ids']
-        else:
-            tokens = self.tokenizer(
-                prompt, add_special_tokens=True)['input_ids']
+        effective_prompt = prompt
+        tokens = self._encode_prompt(prompt, state)
         token_mask = [True] * len(tokens)
         tokens_len = len(tokens)
         if self.max_len is not None:
+            if (tokens_len > self.max_len
+                    and self.preserve_suffix_after is not None):
+                tokens, effective_prompt = self._truncate_preserving_suffix(
+                    prompt, state)
+                token_mask = [True] * len(tokens)
+                tokens_len = len(tokens)
             if tokens_len < self.max_len:
                 padding = [False] * (self.max_len - tokens_len)
                 tokens = tokens + padding
@@ -162,7 +213,7 @@ class ProcessPrompts():
             else:
                 tokens = tokens[:self.max_len]
                 token_mask = token_mask[:self.max_len]
-        return tokens, token_mask
+        return tokens, token_mask, effective_prompt
 
     def __call__(self, inputs):
         """Tokenize and process the prompt in the input data.
@@ -179,12 +230,13 @@ class ProcessPrompts():
             state = inputs['state']
         else:
             state = None
-        tokens, token_mask = self._tokenize_single_prompt(
+        tokens, token_mask, effective_prompt = self._tokenize_single_prompt(
             inputs['prompt'], state)
+        inputs['prompt'] = effective_prompt
         lang_tokens = [tokens]
         lang_masks = [token_mask]
         if self.negative_prompt is not None:
-            negative_tokens, negative_token_mask = (
+            negative_tokens, negative_token_mask, _ = (
                 self._tokenize_single_prompt(self.negative_prompt, state))
             lang_tokens.append(negative_tokens)
             lang_masks.append(negative_token_mask)

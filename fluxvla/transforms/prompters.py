@@ -281,6 +281,10 @@ class PreparePromptWithState():
 
     Args:
         max_state_dim (int): The maximum dimension of the state.
+        token_state_dim (int, optional): Number of leading state dimensions to
+            encode in the prompt. This can be smaller than ``max_state_dim``
+            when the continuous model input is padded after normalization.
+            Defaults to ``max_state_dim`` for backward compatibility.
         task_key (str): The key of the task description in the input data.
         lowercase_task_description (bool): Whether to lowercase task text.
         add_action_prefix (bool): Whether to append ``Action:`` to the prompt.
@@ -288,12 +292,19 @@ class PreparePromptWithState():
 
     def __init__(self,
                  max_state_dim: int = 32,
+                 token_state_dim: Optional[int] = None,
                  task_key: str = 'task_description',
                  lowercase_task_description: bool = False,
                  add_action_prefix: bool = True,
                  *args,
                  **kwargs):
         self.max_state_dim = max_state_dim
+        self.token_state_dim = (
+            max_state_dim if token_state_dim is None else token_state_dim)
+        if not 0 < self.token_state_dim <= self.max_state_dim:
+            raise ValueError('token_state_dim must be in the range '
+                             f'[1, {self.max_state_dim}], got '
+                             f'{self.token_state_dim}.')
         self.task_key = task_key
         self.lowercase_task_description = lowercase_task_description
         self.add_action_prefix = add_action_prefix
@@ -314,8 +325,9 @@ class PreparePromptWithState():
         # by the NormalizerProcessorStep that runs before this step
         # Discretize into 256 bins
         # (see openpi `PaligemmaTokenizer.tokenize()`)
+        token_states = state_padded[:self.token_state_dim]
         discretized_states = np.digitize(
-            state_padded, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            token_states, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
 
         cleaned_text = task_description.strip().replace('_', ' ').replace(
             '\n', ' ')

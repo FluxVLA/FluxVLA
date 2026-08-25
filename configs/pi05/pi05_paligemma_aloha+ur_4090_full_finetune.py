@@ -366,10 +366,12 @@ train_dataloader = dict(
                             action_key='action',
                             norm_type='quantile',
                             output_dtype='float32'),
-                        dict(type='PreparePromptWithState'),
+                        dict(
+                            type='PreparePromptWithState', token_state_dim=14),
                         dict[str, str | dict[str, str]](
                             type='ProcessPrompts',
                             max_len=200,
+                            preserve_suffix_after=', State: ',
                             tokenizer=dict(
                                 type='PretrainedTokenizer',
                                 model_path=  # noqa: E251

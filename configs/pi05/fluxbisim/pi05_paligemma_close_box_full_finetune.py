@@ -162,10 +162,11 @@ train_dataloader = dict(
                         state_key='proprio',
                         action_key='action',
                         norm_type='mean_std'),
-                    dict(type='PreparePromptWithState'),
+                    dict(type='PreparePromptWithState', token_state_dim=14),
                     dict[str, str | dict[str, str]](
                         type='ProcessPrompts',
                         max_len=200,
+                        preserve_suffix_after=', State: ',
                         tokenizer=dict(
                             type='PretrainedTokenizer',
                             model_path=  # noqa: E251
@@ -241,9 +242,11 @@ inference = dict(
                 state_key='proprio',
                 action_key='action',
                 norm_type='mean_std'),
-            dict(type='PreparePromptWithState'),
+            dict(type='PreparePromptWithState', token_state_dim=14),
             dict[str, str | dict[str, str]](
                 type='ProcessPrompts',
+                max_len=200,
+                preserve_suffix_after=', State: ',
                 tokenizer=dict(
                     type='PretrainedTokenizer',
                     model_path=  # noqa: E251
