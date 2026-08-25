@@ -24,6 +24,7 @@ def test_dit4dit_core_source_contract_is_preserved():
     cfg = Config.fromfile(
         'configs/dit4dit/dit4dit_libero_all_full_finetune.py')
 
+    assert cfg.model.type == 'DiT4DiTVLA'
     assert cfg.model.repeated_diffusion_steps == 4
     assert cfg.model.vlm_backbone.extract_layer == 17
     assert cfg.model.vlm_backbone.detach_hidden_states is True

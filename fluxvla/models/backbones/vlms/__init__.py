@@ -15,6 +15,8 @@
 from fluxvla.engines.utils.heterogeneous_runtime import \
     import_heterogeneous_runtime_symbols
 from .eagle import EagleBackbone, EagleInferenceBackbone  # noqa: F401, F403
+from .outputs import VLMBackboneOutput  # noqa: F401
+from .outputs import normalize_vlm_backbone_output  # noqa: F401
 
 import_heterogeneous_runtime_symbols(
     __name__,

@@ -16,8 +16,7 @@
 # DiT4DiT/model/modules/vlm/Cosmos25.py
 
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Any, List, Optional, Sequence, Type, Union
+from typing import Any, Optional, Sequence, Type, Union
 
 import torch
 import torch.nn as nn
@@ -29,13 +28,11 @@ from fluxvla.engines.utils.fsdp_wrapping import (build_combined_wrap_policy,
                                                  build_module_wrap_policy,
                                                  build_size_based_wrap_policy)
 from fluxvla.engines.utils.name_map import str_to_dtype
+from .outputs import VLMBackboneOutput
 
-
-@dataclass
-class Cosmos25BackboneOutput:
-    hidden_states: List[torch.Tensor]
-    future_video_loss: Optional[torch.Tensor] = None
-    pred_future_video: Optional[torch.Tensor] = None
+# Backward-compatible import alias. New code should depend on the shared
+# VLMBackboneOutput contract rather than a Cosmos-specific output type.
+Cosmos25BackboneOutput = VLMBackboneOutput
 
 
 class _DefaultDummySafetyChecker:
@@ -57,9 +54,9 @@ class Cosmos25Backbone(nn.Module):
 
     The backbone runs the Cosmos2.5 video transformer for one or more denoising
     steps, captures a selected transformer block output, and exposes it as
-    ``hidden_states=[Tensor[B, S, D]]`` for an action head. Its primary input
-    is Cosmos-tokenized ``lang_tokens`` from the dataset transform. Language
-    tokenization is intentionally kept out of the model.
+    ``VLMBackboneOutput.last_hidden_state`` for an action head. Its primary
+    input is Cosmos-tokenized ``lang_tokens`` from the dataset transform.
+    Language tokenization is intentionally kept out of the model.
 
     Args:
         model_id_or_path: Local path or HF id for Cosmos-Predict2.5.
@@ -311,6 +308,12 @@ class Cosmos25Backbone(nn.Module):
         for module in self._iter_frozen_submodules():
             module.requires_grad_(False)
             module.eval()
+
+    def apply_trainable_policy(self) -> None:
+        """Apply fine-grained freezing through the generic VLM hook."""
+        self.trainable = any(param.requires_grad
+                             for param in self.transformer.parameters())
+        self.freeze_configured_submodules()
 
     def _iter_frozen_submodules(self):
         aliases = {
@@ -828,8 +831,12 @@ class Cosmos25Backbone(nn.Module):
         conditional_frame_timestep: Optional[float] = None,
         output_hidden_states: bool = True,
         return_dict: bool = True,
-    ) -> Cosmos25BackboneOutput:
-        _ = output_hidden_states, return_dict
+        img_masks: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> VLMBackboneOutput:
+        _ = (output_hidden_states, return_dict, img_masks, image_grid_thw,
+             kwargs)
         source_video = videos if videos is not None else images
         if source_video is None:
             raise ValueError('Cosmos25Backbone.forward requires `images` or '
@@ -978,10 +985,12 @@ class Cosmos25Backbone(nn.Module):
             )
 
         hidden = self._hidden_to_bsd(hidden_first)
-        return Cosmos25BackboneOutput(
-            hidden_states=[hidden],
-            future_video_loss=future_video_loss,
-            pred_future_video=None,
+        auxiliary_losses = {}
+        if future_video_loss is not None:
+            auxiliary_losses['future_video_loss'] = future_video_loss
+        return VLMBackboneOutput(
+            last_hidden_state=hidden,
+            auxiliary_losses=auxiliary_losses,
         )
 
 

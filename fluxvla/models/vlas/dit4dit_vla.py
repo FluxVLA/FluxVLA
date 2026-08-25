@@ -24,7 +24,12 @@ from transformers import PretrainedConfig
 
 from fluxvla.engines import VLAS
 from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
+from fluxvla.models.backbones.vlms.outputs import (
+    VLMBackboneOutput, normalize_vlm_backbone_output)
 from .base_vla import BaseVLA
+from .continuous_action_utils import (add_auxiliary_losses,
+                                      normalize_action_head_output,
+                                      repeat_batch_tensor)
 
 
 @VLAS.register_module()
@@ -44,6 +49,7 @@ class DiT4DiTVLA(BaseVLA):
         vlm_backbone: Dict = None,
         vla_head: Dict = None,
         repeated_diffusion_steps: int = 1,
+        auxiliary_loss_weights: Optional[Dict[str, float]] = None,
         pretrained_name_or_path: str = None,
         name_mapping: Dict = None,
         strict_mapping: bool = False,
@@ -72,6 +78,7 @@ class DiT4DiTVLA(BaseVLA):
             raise ValueError('DiT4DiTVLA requires `vla_head`.')
 
         self.repeated_diffusion_steps = int(repeated_diffusion_steps)
+        self.auxiliary_loss_weights = dict(auxiliary_loss_weights or {})
         self.all_module_keys = ['vlm_backbone', 'vla_head']
 
     def load_state_dict(self, state_dict, strict: bool = True, assign=False):
@@ -199,19 +206,15 @@ class DiT4DiTVLA(BaseVLA):
         images: torch.Tensor,
         lang_tokens: torch.Tensor,
         lang_masks: torch.Tensor,
-    ) -> tuple[torch.Tensor, object]:
-        backbone_outputs = self.vlm_backbone(
+    ) -> VLMBackboneOutput:
+        raw_outputs = self.vlm_backbone(
             images=images,
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
             output_hidden_states=True,
             return_dict=True,
         )
-        hidden_states = getattr(backbone_outputs, 'hidden_states', None)
-        if not hidden_states:
-            raise RuntimeError(
-                'Cosmos backbone did not return `hidden_states`.')
-        return hidden_states[-1], backbone_outputs
+        return normalize_vlm_backbone_output(raw_outputs)
 
     def _action_head_autocast(self, reference: torch.Tensor):
         if torch.is_tensor(reference) and reference.device.type == 'cuda':
@@ -237,11 +240,13 @@ class DiT4DiTVLA(BaseVLA):
                                                        batch_size)
         states = self._validate_states(states, batch_size)
 
-        last_hidden, backbone_outputs = self._encode_backbone(
+        backbone_outputs = self._encode_backbone(
             images=images,
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
         )
+        last_hidden = backbone_outputs.last_hidden_state
+        attention_mask = backbone_outputs.attention_mask
         actions = actions.to(
             device=last_hidden.device, dtype=last_hidden.dtype)
         action_masks = action_masks.to(
@@ -257,22 +262,23 @@ class DiT4DiTVLA(BaseVLA):
             action_masks = action_masks.repeat(repeat, 1, 1)
             if states is not None:
                 states = states.repeat(repeat, 1, 1)
+            attention_mask = repeat_batch_tensor(attention_mask, repeat,
+                                                 batch_size)
 
         with self._action_head_autocast(last_hidden):
-            action_loss = self.vla_head(
-                last_hidden,
+            head_output = self.vla_head(
+                input_features=last_hidden,
                 actions=actions,
-                action_mask=action_masks,
-                state=states,
+                action_masks=action_masks,
+                states=states,
+                attention_mask=attention_mask,
             )
-        loss = action_loss
-        output = dict(loss=loss, action_loss=action_loss)
-        future_video_loss = getattr(backbone_outputs, 'future_video_loss',
-                                    None)
-        if future_video_loss is not None:
-            output['future_video_loss'] = future_video_loss
-            output['loss'] = output['loss'] + future_video_loss
-        return output
+        output = normalize_action_head_output(head_output)
+        return add_auxiliary_losses(
+            output,
+            backbone_outputs.auxiliary_losses,
+            self.auxiliary_loss_weights,
+        )
 
     @torch.inference_mode()
     def predict_action(
@@ -290,16 +296,21 @@ class DiT4DiTVLA(BaseVLA):
             lang_tokens, lang_masks, batch_size)
         states = self._validate_states(states, batch_size)
 
-        last_hidden, _ = self._encode_backbone(
+        backbone_outputs = self._encode_backbone(
             images=images,
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
         )
+        last_hidden = backbone_outputs.last_hidden_state
         if states is not None:
             states = states.to(
                 device=last_hidden.device, dtype=last_hidden.dtype)
         with self._action_head_autocast(last_hidden):
-            actions = self.vla_head.predict_action(last_hidden, state=states)
+            actions = self.vla_head.predict_action(
+                input_features=last_hidden,
+                states=states,
+                attention_mask=backbone_outputs.attention_mask,
+            )
         if not torch.is_tensor(actions):
             raise TypeError('DiT4DiTActionHead.predict_action must return a '
                             f'torch.Tensor, got {type(actions)!r}.')

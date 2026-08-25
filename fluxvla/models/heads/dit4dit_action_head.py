@@ -226,15 +226,40 @@ class DiT4DiTActionHead(nn.Module):
             device=action_features.device)
         return action_features + self.position_embedding(pos_ids).unsqueeze(0)
 
+    @staticmethod
+    def _resolve_alias(primary, alias, primary_name: str, alias_name: str):
+        if primary is None:
+            return alias
+        if alias is not None and alias is not primary:
+            raise ValueError(f'Provide only one of `{primary_name}` and '
+                             f'`{alias_name}`.')
+        return primary
+
     def forward(
         self,
-        vl_embs: torch.Tensor,
-        actions: torch.Tensor,
-        action_mask: torch.Tensor,
+        vl_embs: Optional[torch.Tensor] = None,
+        actions: Optional[torch.Tensor] = None,
+        action_mask: Optional[torch.Tensor] = None,
         state: Optional[torch.Tensor] = None,
         encoder_attention_mask: Optional[torch.Tensor] = None,
+        input_features: Optional[torch.Tensor] = None,
+        states: Optional[torch.Tensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        action_masks: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> torch.Tensor:
+        vl_embs = self._resolve_alias(vl_embs, input_features, 'vl_embs',
+                                      'input_features')
+        state = self._resolve_alias(state, states, 'state', 'states')
+        action_mask = self._resolve_alias(action_mask, action_masks,
+                                          'action_mask', 'action_masks')
+        encoder_attention_mask = self._resolve_alias(encoder_attention_mask,
+                                                     attention_mask,
+                                                     'encoder_attention_mask',
+                                                     'attention_mask')
+        if vl_embs is None or actions is None or action_mask is None:
+            raise ValueError('DiT4DiTActionHead requires input features, '
+                             'actions, and action masks.')
         device = vl_embs.device
         actions = actions.to(device=device, dtype=vl_embs.dtype)
         action_mask = action_mask.to(device=device, dtype=vl_embs.dtype)
@@ -273,9 +298,22 @@ class DiT4DiTActionHead(nn.Module):
 
     @torch.no_grad()
     def predict_action(self,
-                       vl_embs: torch.Tensor,
+                       vl_embs: Optional[torch.Tensor] = None,
                        state: Optional[torch.Tensor] = None,
+                       input_features: Optional[torch.Tensor] = None,
+                       states: Optional[torch.Tensor] = None,
+                       encoder_attention_mask: Optional[torch.Tensor] = None,
+                       attention_mask: Optional[torch.Tensor] = None,
                        **kwargs) -> torch.Tensor:
+        vl_embs = self._resolve_alias(vl_embs, input_features, 'vl_embs',
+                                      'input_features')
+        state = self._resolve_alias(state, states, 'state', 'states')
+        encoder_attention_mask = self._resolve_alias(encoder_attention_mask,
+                                                     attention_mask,
+                                                     'encoder_attention_mask',
+                                                     'attention_mask')
+        if vl_embs is None:
+            raise ValueError('DiT4DiTActionHead requires input features.')
         batch_size = vl_embs.shape[0]
         device = vl_embs.device
         actions = torch.randn(
@@ -309,6 +347,7 @@ class DiT4DiTActionHead(nn.Module):
             model_output = self.model(
                 hidden_states=model_inputs,
                 encoder_hidden_states=vl_embs,
+                encoder_attention_mask=encoder_attention_mask,
                 timestep=timesteps,
             )
             pred = self.action_decoder(model_output)

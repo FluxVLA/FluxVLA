@@ -18,6 +18,9 @@ from typing import Dict, List, Optional
 import torch
 
 from fluxvla.engines import VLAS, initialize_overwatch
+from fluxvla.models.backbones.vlms.outputs import VLMBackboneOutput
+from .continuous_action_utils import (add_auxiliary_losses,
+                                      normalize_action_head_output)
 from .open_vla import OpenVLA
 
 overwatch = initialize_overwatch(__name__)
@@ -135,12 +138,19 @@ class LlavaVLA(OpenVLA):
 
         # Check if the model has a VLM backbone and use it if available.
         if hasattr(self, 'vlm_backbone') and self.vlm_backbone is not None:
-            last_hidden_state, fused_attention_mask, _ = self.vlm_backbone(
+            backbone_output = self.vlm_backbone(
                 images=images,
                 lang_tokens=lang_tokens,
                 img_masks=img_masks,
                 lang_masks=lang_masks,
                 image_grid_thw=image_grid_thw)
+            if isinstance(backbone_output, VLMBackboneOutput):
+                last_hidden_state = backbone_output.last_hidden_state
+                fused_attention_mask = backbone_output.attention_mask
+                auxiliary_losses = backbone_output.auxiliary_losses
+            else:
+                last_hidden_state, fused_attention_mask, _ = backbone_output
+                auxiliary_losses = {}
         else:
             output, fused_attention_mask = self.forward_model(
                 input_ids=lang_tokens,
@@ -161,6 +171,7 @@ class LlavaVLA(OpenVLA):
                 assert 'last_hidden_state' in output, \
                     'Output must contain either hidden_states or last_hidden_state.'  # noqa: E501
                 last_hidden_state = output['last_hidden_state']
+            auxiliary_losses = {}
         ret_dict = self.vla_head(
             input_features=last_hidden_state,
             states=states,
@@ -169,7 +180,10 @@ class LlavaVLA(OpenVLA):
             action_masks=action_masks,
             embodiment_ids=embodiment_ids,
             sample_weight=kwargs.get('sample_weight'))
-        return ret_dict
+        if not auxiliary_losses and not torch.is_tensor(ret_dict):
+            return ret_dict
+        return add_auxiliary_losses(
+            normalize_action_head_output(ret_dict), auxiliary_losses)
 
     def predict_action(self,
                        images: List[torch.Tensor],
@@ -186,12 +200,17 @@ class LlavaVLA(OpenVLA):
                        *args,
                        **kwargs):
         if hasattr(self, 'vlm_backbone') and self.vlm_backbone is not None:
-            last_hidden_state, fused_attention_mask, _ = self.vlm_backbone(
+            backbone_output = self.vlm_backbone(
                 images=images,
                 lang_tokens=lang_tokens,
                 img_masks=img_masks,
                 lang_masks=lang_masks,
                 image_grid_thw=image_grid_thw)
+            if isinstance(backbone_output, VLMBackboneOutput):
+                last_hidden_state = backbone_output.last_hidden_state
+                fused_attention_mask = backbone_output.attention_mask
+            else:
+                last_hidden_state, fused_attention_mask, _ = backbone_output
         else:
             output, fused_attention_mask = self.forward_model(
                 input_ids=lang_tokens,
