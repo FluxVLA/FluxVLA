@@ -475,8 +475,8 @@ train_dataloader = dict(
                 # 29D state, matching OpenPI.
                 dict(
                     type='NormalizeStatesAndActions',
-                    action_dim=32,  # Zero-pad to the model action dimension.
-                    state_dim=29,
+                    action_dim=None,
+                    state_dim=None,
                     state_key='proprio',
                     action_key='action',
                     norm_type='quantile',
@@ -484,7 +484,6 @@ train_dataloader = dict(
                 # Build the OpenPI-compatible state-conditioned prompt.
                 dict(
                     type='PreparePromptWithState',
-                    max_state_dim=29,
                     lowercase_task_description=False,
                     add_action_prefix=True),
                 # Tokenize the prompt.
@@ -495,6 +494,7 @@ train_dataloader = dict(
                         type='PretrainedTokenizer',
                         model_path=_PI05_TOKENIZER,
                     )),
+                dict(type='PadStatesAndActions', model_action_dim=32),
                 # Resize to 224 and apply the crop/color augmentations used by
                 # the RoboCasa training recipe.
                 dict(type='RandomCropImages', scale=0.95),
@@ -672,14 +672,13 @@ eval = dict(
                 value_range='tanh'),
             dict(
                 type='NormalizeStatesAndActions',
-                state_dim=29,
+                state_dim=None,
                 state_key='proprio',
                 action_key='action',
                 norm_type='quantile',
                 output_dtype='float32'),
             dict(
                 type='PreparePromptWithState',
-                max_state_dim=29,
                 lowercase_task_description=False,
                 add_action_prefix=True),
             dict(
@@ -687,6 +686,7 @@ eval = dict(
                 max_len=200,
                 tokenizer=dict(
                     type='PretrainedTokenizer', model_path=_PI05_TOKENIZER)),
+            dict(type='PadStatesAndActions', model_action_dim=32),
         ]),
     denormalize_action=dict(
         type='DenormalizeDeltaAction',

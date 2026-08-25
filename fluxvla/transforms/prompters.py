@@ -279,21 +279,22 @@ class PreparePromptWithState():
     This transform prepares the prompt with state for PI05.
     It formats the prompt to include the task description and state.
 
+    The state is intentionally discretized at its native dimension. Numeric
+    state/action padding must run after prompt tokenization, matching OpenPI's
+    ``TokenizePrompt`` -> ``PadStatesAndActions`` transform order.
+
     Args:
-        max_state_dim (int): The maximum dimension of the state.
         task_key (str): The key of the task description in the input data.
         lowercase_task_description (bool): Whether to lowercase task text.
         add_action_prefix (bool): Whether to append ``Action:`` to the prompt.
     """
 
     def __init__(self,
-                 max_state_dim: int = 32,
                  task_key: str = 'task_description',
                  lowercase_task_description: bool = False,
                  add_action_prefix: bool = True,
                  *args,
                  **kwargs):
-        self.max_state_dim = max_state_dim
         self.task_key = task_key
         self.lowercase_task_description = lowercase_task_description
         self.add_action_prefix = add_action_prefix
@@ -306,16 +307,12 @@ class PreparePromptWithState():
             f"Data must contain '{self.task_key}' key."
         task_description = inputs[self.task_key]
 
-        # Prepare state (pad to max_state_dim)
-        state_padded = np.zeros(self.max_state_dim)
-        state_padded[:state.shape[0]] = state
-
         # State should already be normalized to [-1, 1]
         # by the NormalizerProcessorStep that runs before this step
-        # Discretize into 256 bins
-        # (see openpi `PaligemmaTokenizer.tokenize()`)
+        # Discretize the native-dimensional state into 256 bins. Do not pad
+        # here: OpenPI pads the numeric state only after prompt tokenization.
         discretized_states = np.digitize(
-            state_padded, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
+            state, bins=np.linspace(-1, 1, 256 + 1)[:-1]) - 1
 
         cleaned_text = task_description.strip().replace('_', ' ').replace(
             '\n', ' ')
@@ -326,7 +323,4 @@ class PreparePromptWithState():
         full_prompt = f'Task: {cleaned_text}, State: {state_str}{suffix}'
 
         inputs['prompt'] = full_prompt
-        # Normalize state to [-1, 1] range if needed
-        # (assuming it's already normalized by normalizer processor step!!)
-        # Discretize into 256 bins (see openpi `PaligemmaTokenizer.tokenize()`)
         return inputs

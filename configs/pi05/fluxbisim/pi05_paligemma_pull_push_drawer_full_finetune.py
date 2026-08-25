@@ -157,8 +157,8 @@ train_dataloader = dict(
                         }),
                     dict(
                         type='NormalizeStatesAndActions',
-                        action_dim=32,
-                        state_dim=32,
+                        action_dim=None,
+                        state_dim=None,
                         state_key='proprio',
                         action_key='action',
                         norm_type='mean_std'),
@@ -172,6 +172,7 @@ train_dataloader = dict(
                             'checkpoints/pi05_base',  # noqa: E501
                             # special_tokens={'pad_token': '<PAD>'}
                         )),
+                    dict(type='PadStatesAndActions', model_action_dim=32),
                     dict(type='ResizeImages', height=224, width=224),
                     dict(type='SimpleNormalizeImages'),
                 ],
@@ -237,19 +238,21 @@ inference = dict(
         transforms=[
             dict(
                 type='NormalizeStatesAndActions',
-                state_dim=32,
+                state_dim=None,
                 state_key='proprio',
                 action_key='action',
                 norm_type='mean_std'),
             dict(type='PreparePromptWithState'),
             dict[str, str | dict[str, str]](
                 type='ProcessPrompts',
+                max_len=200,
                 tokenizer=dict(
                     type='PretrainedTokenizer',
                     model_path=  # noqa: E251
                     'checkpoints/pi05_base',
                     # special_tokens={'pad_token': '<PAD>'}
                 )),
+            dict(type='PadStatesAndActions', model_action_dim=32),
             dict(type='ResizeImages', height=224, width=224),
             dict(type='SimpleNormalizeImages'),
         ]),

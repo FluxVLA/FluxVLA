@@ -248,8 +248,8 @@ train_dataloader = dict(
                     dict(type='RelativeActions', mask=[True] * 6 + [False]),
                     dict(
                         type='NormalizeStatesAndActions',
-                        action_dim=32,
-                        state_dim=32,
+                        action_dim=None,
+                        state_dim=None,
                         state_key='proprio',
                         action_key='action',
                         norm_type='quantile',
@@ -264,6 +264,7 @@ train_dataloader = dict(
                             'checkpoints/pi05_base',  # noqa: E501
                             # special_tokens={'pad_token': '<PAD>'}
                         )),
+                    dict(type='PadStatesAndActions', model_action_dim=32),
                     dict(
                         type='ResizeImagesWithPad',
                         height=224,
@@ -356,7 +357,7 @@ inference = dict(
         transforms=[
             dict(
                 type='NormalizeStatesAndActions',
-                state_dim=32,
+                state_dim=None,
                 state_key='proprio',
                 action_key='action',
                 norm_type='quantile',
@@ -371,6 +372,7 @@ inference = dict(
                     'checkpoints/pi05_base',
                     # special_tokens={'pad_token': '<PAD>'}
                 )),
+            dict(type='PadStatesAndActions', model_action_dim=32),
             dict(
                 type='ResizeImagesWithPad',
                 height=224,

@@ -285,6 +285,7 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
                  normalize_gripper_action: bool = True,
                  invert_gripper_action: bool = True,
                  action_norm_mask: List[bool] = None,
+                 clip_normalized_action: bool = False,
                  statistic_name: str = 'private',
                  discrete_action_dims: List[int] = None,
                  discrete_norm_type: str = 'min_max'):
@@ -298,6 +299,7 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
         self.strict = strict
         self.denorm_action = denorm_action
         self.action_norm_mask = action_norm_mask
+        self.clip_normalized_action = bool(clip_normalized_action)
         self.statistic_name = statistic_name
         self.discrete_action_dims = (
             list(discrete_action_dims) if discrete_action_dims else None)
@@ -707,6 +709,52 @@ class NormalizeStatesAndActions:
         if dtype is None:
             return self.normalization_epsilon
         return np.asarray(self.normalization_epsilon, dtype=dtype)
+
+
+@TRANSFORMS.register_module()
+class PadStatesAndActions:
+    """Zero-pad numeric states and actions to the model action dimension.
+
+    This mirrors OpenPI's ``PadStatesAndActions`` transform. It is intended to
+    run after PI0.5 prompt tokenization so that the prompt contains only the
+    native-dimensional state. Inputs wider than ``model_action_dim`` are left
+    unchanged, matching OpenPI's ``pad_to_dim`` behavior.
+
+    Args:
+        model_action_dim (int): Target size of the last tensor dimension.
+        state_key (str): State field to pad. Defaults to ``states``.
+        action_key (str): Optional action field to pad. Defaults to
+            ``actions``.
+        pad_value (float): Constant padding value. Defaults to 0.0.
+    """
+
+    def __init__(self,
+                 model_action_dim: int,
+                 state_key: str = 'states',
+                 action_key: str = 'actions',
+                 pad_value: float = 0.0):
+        self.model_action_dim = int(model_action_dim)
+        self.state_key = state_key
+        self.action_key = action_key
+        self.pad_value = pad_value
+
+    def __call__(self, data: Dict) -> Dict:
+        if self.state_key not in data:
+            raise KeyError(
+                f"State key '{self.state_key}' is required for padding.")
+        data[self.state_key] = self._pad_to_dim(data[self.state_key])
+        if self.action_key in data and data[self.action_key] is not None:
+            data[self.action_key] = self._pad_to_dim(data[self.action_key])
+        return data
+
+    def _pad_to_dim(self, values: np.ndarray) -> np.ndarray:
+        values = np.asarray(values)
+        current_dim = values.shape[-1]
+        if current_dim >= self.model_action_dim:
+            return values
+        pad_width = [(0, 0)] * values.ndim
+        pad_width[-1] = (0, self.model_action_dim - current_dim)
+        return np.pad(values, pad_width, constant_values=self.pad_value)
 
 
 @TRANSFORMS.register_module()
