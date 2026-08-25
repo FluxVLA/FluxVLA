@@ -151,8 +151,7 @@ class FSDPTrainRunner(BaseTrainRunner):
             # hybrid Zero2 strategy below, this does not create one extra
             # inter-node communicator per local rank.
             self.fsdp_sharding_strategy = ShardingStrategy.SHARD_GRAD_OP
-        elif self.sharding_strategy in ('shard-grad-op',
-                                        'hybrid-shard-zero2'):
+        elif self.sharding_strategy in ('shard-grad-op', 'hybrid-shard-zero2'):
             self.fsdp_sharding_strategy = ShardingStrategy._HYBRID_SHARD_ZERO2
         elif self.sharding_strategy == 'full-shard':
             self.fsdp_sharding_strategy = ShardingStrategy.FULL_SHARD

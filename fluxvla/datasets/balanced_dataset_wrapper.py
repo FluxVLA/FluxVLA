@@ -104,8 +104,7 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
                     self.source_lengths)
             else:
                 lengths = np.asarray(self.source_lengths, dtype=np.float64)
-                epoch_size = int(
-                    np.max(lengths / self.sampling_probabilities))
+                epoch_size = int(np.max(lengths / self.sampling_probabilities))
         if int(epoch_size) <= 0:
             raise ValueError('`epoch_size` must be a positive integer.')
         self.total_len = int(epoch_size)
@@ -170,9 +169,8 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
     def _sample_dataset_and_index(self, epoch: int, virtual_index: int):
         """Map a virtual index to a source and a source-local index."""
         if virtual_index < 0 or virtual_index >= self.total_len:
-            raise IndexError(
-                f'Virtual index {virtual_index} is outside '
-                f'[0, {self.total_len}).')
+            raise IndexError(f'Virtual index {virtual_index} is outside '
+                             f'[0, {self.total_len}).')
 
         if self.sampling_probabilities is not None:
             rng = np.random.default_rng(

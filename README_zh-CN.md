@@ -39,7 +39,7 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 | FluxVLA(Cosmos3-Nano)       |                                                          96.0                                                           |                                                          99.6                                                           |                                                         94.0                                                          |                                                        98.0                                                         | [96.9](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_libero_full_finetune_bs2048) |
 | FluxVLA(FastWAM)            |                                                          97.3                                                           |                                                          99.8                                                           |                                                         97.4                                                          |                                                        94.6                                                         |    [97.26](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_libero_full_finetune_bs16)    |
 | FluxVLA(PI0.5)              |  [98.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_spatial_full_finetune_bs64)   |   [99.6](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_object_full_finetune_bs64)   |   [98.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_goal_full_finetune_bs64)   | [95.6±1.0](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_libero_10_full_finetune_bs64) |                                                    97.95                                                     |
-| FluxVLA(DiT4DiT)            |                                                          96.20                                                          |                                                          99.60                                                          |                                                         99.20                                                         |                                                        99.60                                                        | [98.65](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_libero_all_full_finetune_bc071270ff2_bs256) |
+| FluxVLA(DiT4DiT)            |                                                          96.20                                                          |                                                          99.60                                                          |                                                         99.20                                                         |                                                        99.60                                                        | [98.65](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_libero_all_full_finetune_bs256)  |
 
 #### RoboCasa GR1
 
@@ -725,7 +725,7 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 | GR00T N1.5                | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                             |
 | OpenVLA                   | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                         |
 | FastWAM_base              | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                          |
-| Cosmos-Predict2.5-2B      | 2B   | [🤗 Hugging Face](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B)                                                                          |
+| Cosmos-Predict2.5-2B      | 2B   | [🤗 Hugging Face](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B)                                                                |
 | PI0_base                  | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                              |
 | PI05_base                 | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                             |
 | PI05_libero               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                           |
@@ -755,7 +755,7 @@ hf download nvidia/Cosmos-Predict2.5-2B \
 
 ```bash
 hf download limxdynamics/FluxVLAEngine \
-  --include "dit4dit_libero_all_full_finetune_bc071270ff2_bs256/*" \
+  --include "dit4dit_libero_all_full_finetune_bs256/*" \
   --local-dir ./checkpoints
 ```
 

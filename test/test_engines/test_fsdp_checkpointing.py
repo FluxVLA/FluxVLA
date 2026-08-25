@@ -60,8 +60,8 @@ def test_fsdp_global_shard_grad_op_preserves_pre_rebase_strategy():
 
 def test_fsdp_main_shard_grad_op_keeps_private_hybrid_strategy():
     runner = _build_runner_for_sharding_strategy('shard-grad-op')
-    assert (runner.fsdp_sharding_strategy
-            is ShardingStrategy._HYBRID_SHARD_ZERO2)
+    assert (runner.fsdp_sharding_strategy is
+            ShardingStrategy._HYBRID_SHARD_ZERO2)
 
 
 @pytest.fixture()

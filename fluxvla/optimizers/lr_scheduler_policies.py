@@ -202,16 +202,97 @@ class LinearWarmupConstantLRScheduler(BaseLRSchedulerPolicy):
 @LR_SCHEDULERS.register_module(
     name=['linear-warmup+cosine-decay', 'LinearWarmupCosineDecayLRScheduler'])
 class LinearWarmupCosineDecayLRScheduler(BaseLRSchedulerPolicy):
+    """Linear-warmup cosine scheduler shared by HF and OpenPI recipes.
 
-    def __init__(self, warmup_ratio: float = 0.0, **kwargs) -> None:
+    The default ``huggingface`` style preserves the historical
+    ``linear-warmup+cosine-decay`` behavior and optionally supports a minimum
+    learning rate. The ``openpi`` style preserves OpenPI's one-step-shifted
+    warmup and clamps the cosine decay at its floor.
+    """
+
+    def __init__(self,
+                 warmup_ratio: float = None,
+                 warmup_steps: int = None,
+                 min_lr: float = None,
+                 min_lr_rate: float = None,
+                 decay_steps: Optional[int] = None,
+                 schedule_style: str = 'huggingface',
+                 **kwargs) -> None:
         super().__init__(**kwargs)
+        if warmup_ratio is not None and warmup_steps is not None:
+            raise ValueError('Use only one of warmup_ratio or warmup_steps.')
+        if warmup_steps is not None and warmup_steps < 0:
+            raise ValueError('warmup_steps must be non-negative')
+        if decay_steps is not None and decay_steps <= 0:
+            raise ValueError('decay_steps must be positive when provided')
+        if min_lr is not None and min_lr < 0:
+            raise ValueError('min_lr must be non-negative')
+        if min_lr is not None and min_lr_rate is not None:
+            raise ValueError('Only one of min_lr or min_lr_rate should be set')
+        if schedule_style not in ('huggingface', 'openpi'):
+            raise ValueError(f'Unsupported schedule_style={schedule_style}.')
         self.warmup_ratio = warmup_ratio
+        self.warmup_steps = warmup_steps
+        self.min_lr = min_lr
+        self.min_lr_rate = min_lr_rate
+        self.decay_steps = decay_steps
+        self.schedule_style = schedule_style
+
+    def _resolve_warmup_steps(self, num_training_steps: int) -> int:
+        if self.warmup_steps is not None:
+            return int(self.warmup_steps)
+        return int(num_training_steps * float(self.warmup_ratio or 0.0))
+
+    @staticmethod
+    def _openpi_lr_multiplier(step: int, warmup_steps: int, decay_steps: int,
+                              min_multiplier: float) -> float:
+        if step < warmup_steps:
+            init_multiplier = 1.0 / (warmup_steps + 1)
+            return init_multiplier + (
+                (1.0 - init_multiplier) * step / max(1, warmup_steps))
+        progress = (step - warmup_steps) / max(1, decay_steps - warmup_steps)
+        progress = min(1.0, max(0.0, progress))
+        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
+        return min_multiplier + (1.0 - min_multiplier) * cosine
 
     def build_scheduler(self, runner, optimizer):
-        num_warmup_steps = int(runner.num_training_steps * self.warmup_ratio)
-        scheduler = get_cosine_schedule_with_warmup(optimizer,
-                                                    num_warmup_steps,
-                                                    runner.num_training_steps)
+        num_training_steps = self.decay_steps or runner.num_training_steps
+        warmup_steps = self._resolve_warmup_steps(num_training_steps)
+        if self.schedule_style == 'openpi':
+            if warmup_steps > num_training_steps:
+                raise ValueError(
+                    'warmup_steps must not exceed decay_steps, got '
+                    f'{warmup_steps} > {num_training_steps}.')
+            peak_lr = float(optimizer.param_groups[0]['lr'])
+            if peak_lr <= 0:
+                raise ValueError(
+                    'OpenPI scheduler requires a positive peak LR.')
+            if self.min_lr is not None:
+                min_multiplier = self.min_lr / peak_lr
+            else:
+                min_multiplier = float(self.min_lr_rate or 0.0)
+            if min_multiplier > 1.0:
+                raise ValueError('Minimum LR must not exceed peak LR.')
+            return LambdaLR(
+                optimizer,
+                lambda step: self._openpi_lr_multiplier(
+                    step,
+                    warmup_steps,
+                    num_training_steps,
+                    min_multiplier,
+                ),
+            )
+
+        if self.min_lr is not None or self.min_lr_rate is not None:
+            scheduler = get_cosine_with_min_lr_schedule_with_warmup(
+                optimizer,
+                warmup_steps,
+                num_training_steps,
+                min_lr=self.min_lr,
+                min_lr_rate=self.min_lr_rate)
+        else:
+            scheduler = get_cosine_schedule_with_warmup(
+                optimizer, warmup_steps, num_training_steps)
         for param_group in optimizer.param_groups:
             param_group['lr'] = 0.0
         return scheduler
@@ -309,103 +390,6 @@ class LinearWarmupLinearDecayLRScheduler(BaseLRSchedulerPolicy):
         for param_group in optimizer.param_groups:
             param_group['lr'] = 0.0
         return scheduler
-
-
-@LR_SCHEDULERS.register_module(name=[
-    'cosine_with_min_lr', 'cosine-with-min-lr', 'CosineWithMinLRScheduler'
-])
-class CosineWithMinLRScheduler(BaseLRSchedulerPolicy):
-
-    def __init__(self,
-                 warmup_ratio: float = None,
-                 warmup_steps: int = None,
-                 min_lr: float = None,
-                 min_lr_rate: float = None,
-                 **kwargs) -> None:
-        super().__init__(**kwargs)
-        if warmup_ratio is not None and warmup_steps is not None:
-            raise ValueError('Use only one of warmup_ratio or warmup_steps.')
-        self.warmup_ratio = warmup_ratio
-        self.warmup_steps = warmup_steps
-        self.min_lr = min_lr
-        self.min_lr_rate = min_lr_rate
-
-    def build_scheduler(self, runner, optimizer):
-        if self.warmup_steps is None:
-            warmup_steps = int(runner.num_training_steps *
-                               float(self.warmup_ratio or 0.0))
-        else:
-            warmup_steps = int(self.warmup_steps)
-        scheduler = get_cosine_with_min_lr_schedule_with_warmup(
-            optimizer,
-            warmup_steps,
-            runner.num_training_steps,
-            min_lr=self.min_lr,
-            min_lr_rate=self.min_lr_rate)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = 0.0
-        return scheduler
-
-
-@LR_SCHEDULERS.register_module(
-    name=['openpi-warmup+cosine-decay', 'OpenPIWarmupCosineDecayLRScheduler'])
-class OpenPIWarmupCosineDecayLRScheduler(BaseLRSchedulerPolicy):
-    """Optax/OpenPI warmup-cosine schedule used by RLinf's parity path.
-
-    Unlike the common HuggingFace schedule, step zero starts at
-    ``peak_lr / (warmup_steps + 1)`` instead of zero.
-    """
-
-    def __init__(self,
-                 warmup_steps: int = 1000,
-                 decay_steps: Optional[int] = None,
-                 min_lr: float = 0.0,
-                 **kwargs) -> None:
-        super().__init__(**kwargs)
-        if warmup_steps < 0:
-            raise ValueError('warmup_steps must be non-negative')
-        if decay_steps is not None and decay_steps <= 0:
-            raise ValueError('decay_steps must be positive when provided')
-        if min_lr < 0:
-            raise ValueError('min_lr must be non-negative')
-        self.warmup_steps = int(warmup_steps)
-        self.decay_steps = (None if decay_steps is None else int(decay_steps))
-        self.min_lr = float(min_lr)
-
-    @staticmethod
-    def lr_multiplier(step: int, warmup_steps: int, decay_steps: int,
-                      min_multiplier: float) -> float:
-        if step < warmup_steps:
-            init_multiplier = 1.0 / (warmup_steps + 1)
-            return init_multiplier + (
-                (1.0 - init_multiplier) * step / max(1, warmup_steps))
-        progress = (step - warmup_steps) / max(1, decay_steps - warmup_steps)
-        progress = min(1.0, max(0.0, progress))
-        cosine = 0.5 * (1.0 + math.cos(math.pi * progress))
-        return min_multiplier + (1.0 - min_multiplier) * cosine
-
-    def build_scheduler(self, runner, optimizer):
-        decay_steps = self.decay_steps or runner.num_training_steps
-        if self.warmup_steps > decay_steps:
-            raise ValueError('warmup_steps must not exceed decay_steps, got '
-                             f'{self.warmup_steps} > {decay_steps}.')
-        peak_lr = float(optimizer.param_groups[0]['lr'])
-        if peak_lr <= 0:
-            raise ValueError('OpenPI scheduler requires a positive peak LR.')
-        min_multiplier = self.min_lr / peak_lr
-        if min_multiplier > 1.0:
-            raise ValueError(
-                f'min_lr ({self.min_lr}) exceeds peak lr ({peak_lr}).')
-
-        return LambdaLR(
-            optimizer,
-            lambda step: self.lr_multiplier(
-                step,
-                self.warmup_steps,
-                decay_steps,
-                min_multiplier,
-            ),
-        )
 
 
 @LR_SCHEDULERS.register_module(name=['step-based', 'StepBasedLRScheduler'])

@@ -695,13 +695,15 @@ class NormalizeStatesAndActions:
         return np.where(norm_mask, normalized, x)
 
     def _statistics_array(self, values, reference: np.ndarray) -> np.ndarray:
-        dtype = (reference.dtype if self.preserve_input_dtype else
-                 self.output_dtype)
+        dtype = (
+            reference.dtype
+            if self.preserve_input_dtype else self.output_dtype)
         return np.asarray(values, dtype=dtype)
 
     def _typed_epsilon(self, reference: np.ndarray):
-        dtype = (reference.dtype if self.preserve_input_dtype else
-                 self.output_dtype)
+        dtype = (
+            reference.dtype
+            if self.preserve_input_dtype else self.output_dtype)
         if dtype is None:
             return self.normalization_epsilon
         return np.asarray(self.normalization_epsilon, dtype=dtype)

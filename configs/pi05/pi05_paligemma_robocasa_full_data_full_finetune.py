@@ -572,7 +572,8 @@ runner = dict(
         run_dir='work_dirs',
         window_size=1),
     lr_scheduler=dict(
-        type='openpi-warmup+cosine-decay',
+        type='linear-warmup+cosine-decay',
+        schedule_style='openpi',
         warmup_steps=5000,
         # The three observed trajectories agree through roughly 30k steps,
         # then the old 100k decay keeps LR above 2e-5 while loss variance

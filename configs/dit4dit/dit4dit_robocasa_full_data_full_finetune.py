@@ -305,7 +305,7 @@ runner = dict(
         window_size=1,
     ),
     lr_scheduler=dict(
-        type='cosine_with_min_lr',
+        type='linear-warmup+cosine-decay',
         warmup_steps=5000,
         min_lr=5e-7,
     ),
