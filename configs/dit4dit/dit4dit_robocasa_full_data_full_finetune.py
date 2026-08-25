@@ -42,12 +42,12 @@ _frame_window_size = 9
 _image_frame_stride = 2
 _image_size = 224
 
-_ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_30ep'
+# Keep the statistics key aligned with the released DiT4DiT checkpoint. The
+# values themselves are aggregated from all 1,000 episodes of every task by
+# the dataset wrapper below.
+_ROBOCASA_STATISTIC_NAME = 'gr1'
 _ROBOCASA_DATA_ROOT = os.environ.get('ROBOCASA_DATA_ROOT',
                                      './datasets/robocasa_lerobot_V2.1')
-_OFFICIAL_GR1_STATS_PATH = os.environ.get(
-    'ROBOCASA_STATS_PATH', './datasets/robocasa_gr1_24tasks_first30ep/'
-    'official_groot_gr1_dataset_statistics.json')
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
 
@@ -114,9 +114,11 @@ model = dict(
         conditional_frame_timestep=0.0001,
         future_loss_type='flow_matching',
         detach_hidden_states=True,
-        flow_matching_time_distribution='logit_normal',
-        flow_matching_high_sigma_ratio=0.05,
-        flow_matching_high_sigma_min=0.98,
+        # Match the released RoboCasa checkpoint rather than the YAML
+        # defaults: the official launch command overrides these three fields.
+        flow_matching_time_distribution='uniform',
+        flow_matching_high_sigma_ratio=None,
+        flow_matching_high_sigma_min=None,
         fsdp_min_num_params=0,
     ),
     vla_head=dict(
@@ -215,6 +217,9 @@ _dit4dit_train_transforms = [
         normalize_states=False,
         clip_norm=False,
         normalization_epsilon=0.0,
+        # Official GR00T normalization maps a constant action dimension to 0.
+        # The full 24-task statistics contain one such hand dimension.
+        zero_constant_min_max_dims=True,
         preserve_input_dtype=True,
         valid_action_dim=_ori_action_dim,
         mark_all_action_steps_valid=True,
@@ -235,7 +240,8 @@ _dit4dit_parquet_dataset = dict(
 )
 
 train_dataloader = dict(
-    # 32 GPUs * 8 samples/GPU = the source global batch of 256.
+    # The released recipe uses 16 GPUs * 4 samples/GPU. The common 8-GPU
+    # FluxVLA launch uses 8 samples/GPU for the same global batch of 64.
     per_device_batch_size=8,
     per_device_num_workers=4,
     dataset=dict(
@@ -246,7 +252,9 @@ train_dataloader = dict(
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name=_ROBOCASA_STATISTIC_NAME,
-        dataset_statistics_path=_OFFICIAL_GR1_STATS_PATH,
+        # Do not use the legacy first-30-episode statistics with this
+        # full-data recipe. The wrapper merges all 24 converted datasets and
+        # saves the resulting statistics next to the checkpoint.
         # Keep the full-data recipe's 24 tasks as equal-probability sources.
         datasets=[
             dict(
@@ -264,12 +272,13 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=None,
-    max_steps=100000,
+    max_steps=200000,
     grad_accumulation_steps=1,
     optimizer=dict(
         type='AdamW',
-        lr=1e-5,
+        lr=3e-5,
         weight_decay=1e-8,
+        weight_decay_all_params=True,
         eps=1e-8,
         betas=(0.9, 0.95),
         paramwise_learning_rate={
@@ -278,7 +287,7 @@ runner = dict(
         },
     ),
     max_grad_norm=1.0,
-    save_iter_interval=5000,
+    save_iter_interval=100000,
     max_keep_ckpts=10,
     collator=dict(
         type='DictCollator',
@@ -336,7 +345,6 @@ eval = dict(
     num_trials_per_task=50,
     seed=eval_seed,
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
-    norm_stats_path=_OFFICIAL_GR1_STATS_PATH,
     action_order='n15',
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
@@ -347,11 +355,9 @@ eval = dict(
             dict(
                 type='ProcessRobocasaEvalInputs',
                 img_key='video.ego_view_bg_crop_pad_res256_freq20',
-                # Convert the source 256x256 frame to float CHW / 255, but
-                # preserve its spatial size until the torch resize below.
+                # Keep uint8 pixels until the official cv2 INTER_AREA resize.
                 resize_size=256,
-                normalize=True,
-                value_range='unit',
+                normalize=False,
             ),
             dict(type='RobocasaGR1N15Bridge', expand_state_axis=0),
             dict(
@@ -365,8 +371,16 @@ eval = dict(
                 key='pixel_values',
                 height=_image_size,
                 width=_image_size,
-                backend='torch',
+                backend='cv2',
+                interpolation='area',
                 output_layout='nchw',
+            ),
+            # Match Cosmos VideoProcessor: uint8 [0, 255] -> [-1, 1].
+            dict(
+                type='SimpleNormalizeImages',
+                key='pixel_values',
+                preserve_leading_dims=True,
+                output_type='torch',
             ),
             dict(
                 type='PrepareVideo',
@@ -388,7 +402,9 @@ eval = dict(
         type='DenormalizeRobocasaAction',
         norm_type='min_max',
         action_dim=_ori_action_dim,
-        clip_actions=False,
+        # The official RoboCasa policy clips diffusion outputs before
+        # applying min/max denormalization.
+        clip_actions=True,
         # Reorder the stored FluxVLA statistics to the N1.5/DiT4DiT output
         # order before denormalization.
         stats_order='fluxvla',
