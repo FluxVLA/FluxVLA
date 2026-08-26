@@ -698,8 +698,9 @@ class NormalizeStatesAndActions:
         if self.preserve_input_dtype:
             normalized = np.zeros_like(x)
             valid = ~np.isclose(high, low)
+            denominator = high[..., valid] - low[..., valid] + epsilon
             normalized[..., valid] = ((x[..., valid] - low[..., valid]) /
-                                      (high[..., valid] - low[..., valid] + epsilon))
+                                      denominator)
             normalized[..., valid] = 2 * normalized[..., valid] - 1
         else:
             normalized = (x - low) / (high - low + epsilon) * 2.0 - 1.0

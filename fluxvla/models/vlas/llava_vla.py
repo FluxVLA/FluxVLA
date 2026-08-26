@@ -19,9 +19,9 @@ import torch
 
 from fluxvla.engines import VLAS, initialize_overwatch
 from fluxvla.models.backbones.vlms.outputs import VLMBackboneOutput
+from .base_vla import BaseVLA
 from .continuous_action_utils import (add_auxiliary_losses,
                                       normalize_action_head_output)
-from .base_vla import BaseVLA
 
 overwatch = initialize_overwatch(__name__)
 
