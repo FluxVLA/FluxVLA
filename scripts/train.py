@@ -306,7 +306,7 @@ def _build_optional_training_eval_dataset(cfg):
     if dataset_cfg is None:
         return None
     if overwatch.is_rank_zero():
-        overwatch.info(f'Building training eval dataset from `{source}`.')
+        overwatch.info(f'Building training eval dataset from {source!r}.')
     return build_dataset_from_cfg(dataset_cfg)
 
 
