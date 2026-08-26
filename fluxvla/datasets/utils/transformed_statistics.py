@@ -38,6 +38,8 @@ class Profile:
 
 
 PROFILES = {
+    'absolute':
+    Profile(state_key='observation.state', action_key='action', delta_mask=()),
     'aloha':
     Profile(
         state_key='observation.state',
@@ -64,7 +66,8 @@ PROFILES = {
     Profile(
         state_key='observation.state',
         action_key='action',
-        delta_mask=(True, ) * 16 + (False, ) * 2),
+        # The restored Tron2 recipe predicts absolute arm/head/gripper qpos.
+        delta_mask=()),
     'robocasa-joint-delta':
     Profile(
         state_key='observation.state',

@@ -46,7 +46,7 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 | モデル         | 学習データ          | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                                         |
 | -------------- | ------------------- | ------- | ------ | --------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | FluxVLA(GR00T) | 24 タスク、30 デモ  | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)                  |
-| FluxVLA(PI0.5) | 24 タスク、全データ | 60.00%  | 51.00% | 52.00%    | 47.44%         | [49.17%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
+| FluxVLA(PI0.5) | 24 タスク、全データ | 60.00%  | 51.00% | 52.00%    | 50.44%         | [51.42%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
 
 #### 注記
 
@@ -504,50 +504,75 @@ huggingface-cli download limxdynamics/FluxVLAData \
 </details>
 
 <details>
-<summary><b>PI0.5 正規化統計量の計算</b></summary>
+<summary><b>変換後の正規化統計量の計算</b></summary>
 
-PI0.5 の学習データ、ロボットのアクション定義、アクションホライズン、または終端
-padding の方針を変更した場合は、正規化統計量を再計算してください。FluxVLA
-リポジトリのルートでプロジェクト環境を有効にしてから実行します：
+学習データ、ロボットのアクション定義、アクションホライズン、または終端 padding
+の方針を変更した場合は、正規化統計量を再計算してください。自動学習フローと
+コマンドラインツールは同じ実装を呼び出すため、profile とデータセット設定が同じなら
+同じ統計量を生成します。
+
+`auto_compute_statistics` を有効にした config では、起動時に次の優先順位で処理します：
+
+1. インラインの `dataset_statistics` があれば、それを使用する；
+2. なければ、`dataset_statistics_path` があれば、そのパスから読み込む；
+3. どちらもなければ、rank 0 で変換後の統計量を一度だけ計算し、作業ディレクトリに
+   `dataset_statistics.json` と `dataset_statistics_metadata.json` を保存する。
+
+PI0.5 の UR3、双腕 Franka、Tron2 学習 config は、この自動フローを使用します。
+ALOHA と RoboCasa は意図的にリポジトリ内の既存統計量を維持し、RoboCasa では
+起動のたびに全データセットを走査する処理を避けます。リポジトリのルートから
+同等の計算を手動で実行するには：
 
 ```bash
 conda activate fluxvla
 
 # ALOHA：関節は相対アクション、グリッパーは絶対アクション。
-python tools/compute_pi05_norm_stats.py /path/to/aloha \
+python tools/compute_transformed_dataset_stats.py /path/to/aloha \
   --profile aloha --action-key observation.state \
   --gripper-input-range=-0.01,0.08 --action-horizon 50 \
   --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 
 # UR3：6 関節は相対アクション、グリッパーは絶対アクション。
-python tools/compute_pi05_norm_stats.py /path/to/ur3 \
+python tools/compute_transformed_dataset_stats.py /path/to/ur3 \
   --profile ur3 --action-horizon 50 \
   --variable-name _PI05_UR3_STATS --output /tmp/ur3_stats.py
 
 # 双腕 Franka の関節位置：関節は相対アクション、グリッパーは絶対アクション。
-python tools/compute_pi05_norm_stats.py /path/to/franka \
+python tools/compute_transformed_dataset_stats.py /path/to/franka \
   --profile franka-qpos --action-horizon 50 \
   --variable-name _PI05_FRANKA_QPOS_STATS \
   --output /tmp/franka_qpos_stats.py
 
 # 双腕 Franka のデカルト姿勢：すべて絶対アクション。
-python tools/compute_pi05_norm_stats.py /path/to/franka \
+python tools/compute_transformed_dataset_stats.py /path/to/franka \
   --profile franka-eepose --action-horizon 50 \
   --variable-name _PI05_FRANKA_EEPOSE_STATS \
   --output /tmp/franka_eepose_stats.py
 
+# Tron2：アーム、頭部、グリッパーの qpos 目標はすべて絶対値。
+python tools/compute_transformed_dataset_stats.py /path/to/tron2 \
+  --profile tron2 --action-horizon 50 \
+  --variable-name _TRON2_STATS --output /tmp/tron2_stats.py
+
 # RoboCasa GR1：両腕と腰の関節は相対アクション、Fourier ハンド命令は絶対値。
-python tools/compute_pi05_norm_stats.py /path/to/robocasa_lerobot_V2.1 \
+python tools/compute_transformed_dataset_stats.py /path/to/robocasa_lerobot_V2.1 \
   --profile robocasa-joint-delta --action-horizon 16 \
   --statistic-name robocasa_gr1_24tasks_joint_delta \
   --variable-name _PI05_ROBOCASA_STATS \
   --output /tmp/pi05_robocasa_joint_delta_stats.py
 ```
 
-このツールは、ロボット座標系／符号の変換、指定したアクション次元の相対化、統計量の計算、という順序で処理します。デフォルト出力は
-`mean`、`std`、`min`、`max`、`q01`、`q99` を含む Python
-リテラルです。対応する設定へ貼り付け、`dataset_statistics` として渡してください。PI0.5
-は `q01`/`q99` 分位点正規化を使用します。
+このツールは、設定されたロボット座標系／符号の変換を最初に適用し、次に指定した
+アクション次元だけを差分へ変換して、最後に統計量を計算します。完全に絶対アクションを
+使用するポリシーでは `--profile absolute` または `--no-delta` を使用できます。
+たとえば、アクション列がすでに絶対 qpos である GR00T ポリシーでは
+`auto_compute_statistics=dict(profile='absolute')` を指定できます。データセットの
+列が異なる場合は、`state_key` または `action_key` を上書きしてください。
+
+出力には `mean`、`std`、`min`、`max`、`q01`、`q99` が含まれるため、
+mean/std、min/max、または PI0.5 の分位点正規化に利用できます。自動計算は学習 config
+から `action_window_size`、`window_start_idx`、`supervise_terminal_padding`、
+`statistic_name` をそのまま引き継ぎます。
 
 たとえば `/tmp/aloha_stats.py` を生成した後、その中の完全な
 `_PI05_ALOHA_STATS = {...}` 定義を
@@ -566,7 +591,7 @@ train_dataloader = dict(
     ),
 )
 
-eval = dict(
+inference = dict(
     denormalize_action=dict(
         norm_stats=_PI05_ALOHA_STATS,
         # その他の後処理設定...
@@ -574,9 +599,8 @@ eval = dict(
 )
 ```
 
-UR3、Franka、RoboCasa でも同様に、生成された変数定義を対応する config
-へコピーし、`dataset_statistics` で使用する変数を置き換えてください。評価 config
-が正規化統計量を直接参照している場合は、そちらも同じ新しい統計量へ更新します。
+従来の `tools/compute_pi05_norm_stats.py` コマンドも、汎用ツールの互換ラッパーとして
+引き続き利用できます。
 
 終端 padding はデフォルトで統計に含まれます。設定が padding アクションを loss
 から除外する場合は `--exclude-terminal-padding` を追加してください。アクションウィンドウの開始位置はデフォルトで
@@ -585,7 +609,7 @@ UR3、Franka、RoboCasa でも同様に、生成された変数定義を対応�
 を使い、一時メモリマップファイルを十分な空き容量のあるディスクに配置してください。
 
 利用可能な profile、カスタム状態／アクションキー、相対アクション mask
-などの上書きオプションは、`python tools/compute_pi05_norm_stats.py --help`
+などの上書きオプションは、`python tools/compute_transformed_dataset_stats.py --help`
 で確認できます。
 
 </details>

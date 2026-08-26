@@ -46,7 +46,7 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 | Model          | Training Data       | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                                 |
 | -------------- | ------------------- | ------- | ------ | --------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
 | FluxVLA(GR00T) | 24 tasks, 30 demos  | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)          |
-| FluxVLA(PI0.5) | 24 tasks, full data | 60.00%  | 51.00% | 52.00%    | 47.44%         | [49.17% (50 trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
+| FluxVLA(PI0.5) | 24 tasks, full data | 60.00%  | 51.00% | 52.00%    | 50.44%         | [51.42% (50 trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
 
 #### Notes
 
@@ -560,53 +560,80 @@ For full-data RoboCasa GR1 training, replace the include pattern with
 </details>
 
 <details>
-<summary><b>Compute PI0.5 normalization statistics</b></summary>
+<summary><b>Compute transformed normalization statistics</b></summary>
 
-Recompute normalization statistics whenever the PI0.5 training data, robot
-action semantics, action horizon, or terminal-padding policy changes. Run the
-tool from the FluxVLA repository root in the project environment:
+Recompute normalization statistics whenever the training data, robot action
+semantics, action horizon, or terminal-padding policy changes. The automatic
+training path and the command-line tool call the same implementation, so they
+produce the same statistics when given the same profile and dataset settings.
+
+For configs that opt in with `auto_compute_statistics`, the startup priority
+is:
+
+1. use inline `dataset_statistics` when present;
+2. otherwise use `dataset_statistics_path` when present;
+3. otherwise compute transformed statistics once on rank 0 and save
+   `dataset_statistics.json` plus `dataset_statistics_metadata.json` in the
+   work directory.
+
+The PI0.5 UR3, dual-Franka, and Tron2 training configs use this automatic
+path. ALOHA and RoboCasa intentionally keep checked-in statistics; RoboCasa
+does so to avoid scanning the full dataset at every startup. To run the
+equivalent calculation manually from the repository root:
 
 ```bash
 conda activate fluxvla
 
 # ALOHA: relative joints and absolute grippers.
-python tools/compute_pi05_norm_stats.py /path/to/aloha \
+python tools/compute_transformed_dataset_stats.py /path/to/aloha \
   --profile aloha --action-key observation.state \
   --gripper-input-range=-0.01,0.08 --action-horizon 50 \
   --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 
 # UR3: six relative joints and an absolute gripper.
-python tools/compute_pi05_norm_stats.py /path/to/ur3 \
+python tools/compute_transformed_dataset_stats.py /path/to/ur3 \
   --profile ur3 --action-horizon 50 \
   --variable-name _PI05_UR3_STATS --output /tmp/ur3_stats.py
 
 # Dual Franka joint-position actions: relative joints and absolute grippers.
-python tools/compute_pi05_norm_stats.py /path/to/franka \
+python tools/compute_transformed_dataset_stats.py /path/to/franka \
   --profile franka-qpos --action-horizon 50 \
   --variable-name _PI05_FRANKA_QPOS_STATS \
   --output /tmp/franka_qpos_stats.py
 
 # Dual Franka Cartesian poses: fully absolute actions.
-python tools/compute_pi05_norm_stats.py /path/to/franka \
+python tools/compute_transformed_dataset_stats.py /path/to/franka \
   --profile franka-eepose --action-horizon 50 \
   --variable-name _PI05_FRANKA_EEPOSE_STATS \
   --output /tmp/franka_eepose_stats.py
 
+# Tron2: fully absolute arm, head, and gripper qpos targets.
+python tools/compute_transformed_dataset_stats.py /path/to/tron2 \
+  --profile tron2 --action-horizon 50 \
+  --variable-name _TRON2_STATS --output /tmp/tron2_stats.py
+
 # RoboCasa GR1: relative arm/waist joints and absolute Fourier-hand commands.
-python tools/compute_pi05_norm_stats.py /path/to/robocasa_lerobot_V2.1 \
+python tools/compute_transformed_dataset_stats.py /path/to/robocasa_lerobot_V2.1 \
   --profile robocasa-joint-delta --action-horizon 16 \
   --statistic-name robocasa_gr1_24tasks_joint_delta \
   --variable-name _PI05_ROBOCASA_STATS \
   --output /tmp/pi05_robocasa_joint_delta_stats.py
 ```
 
-The tool applies the robot coordinate/sign transform first, converts the
-selected action dimensions to deltas second, and computes statistics last. Its
-default output is a Python literal containing `mean`, `std`, `min`, `max`,
-`q01`, and `q99`; paste it into the corresponding config and pass it as
-`dataset_statistics`. PI0.5 uses `q01`/`q99` quantile normalization.
+The tool applies configured robot coordinate/sign transforms first, converts
+only selected action dimensions to deltas second, and computes statistics
+last. Fully absolute policies can use `--profile absolute` or `--no-delta`;
+for example, a GR00T policy whose action column already contains absolute qpos
+can use `auto_compute_statistics=dict(profile='absolute')`. Override
+`state_key` or `action_key` when the dataset uses different columns.
 
-For example, after generating `/tmp/aloha_stats.py`, copy its complete
+The output contains `mean`, `std`, `min`, `max`, `q01`, and `q99`, so it can
+serve mean/std, min/max, or PI0.5 quantile normalization. Automatic computation
+inherits `action_window_size`, `window_start_idx`,
+`supervise_terminal_padding`, and `statistic_name` directly from the training
+config.
+
+For example, after manually generating `/tmp/aloha_stats.py`, copy its complete
 `_PI05_ALOHA_STATS = {...}` definition into
 `configs/pi05/pi05_paligemma_aloha_full_finetune.py`, replacing the existing
 definition. Then make sure the same variable is used by both training and
@@ -625,7 +652,7 @@ train_dataloader = dict(
     ),
 )
 
-eval = dict(
+inference = dict(
     denormalize_action=dict(
         norm_stats=_PI05_ALOHA_STATS,
         # Other postprocessing settings...
@@ -633,9 +660,8 @@ eval = dict(
 )
 ```
 
-Use the corresponding generated variable and target config for UR3, Franka,
-or RoboCasa. If an evaluation config embeds normalization statistics directly,
-replace those with the same newly generated statistics as well.
+The legacy `tools/compute_pi05_norm_stats.py` command remains available as a
+compatibility wrapper around the generic tool.
 
 Terminal padding is included by default. Add `--exclude-terminal-padding` if
 the config masks padded actions from the loss. The default action-window start
@@ -643,8 +669,9 @@ is `0`; set `--window-start-index` only when the config intentionally uses a
 different offset. For large datasets, use `--temp-dir /path/with/free-space`
 to place temporary memory-mapped files on a disk with sufficient capacity.
 
-Run `python tools/compute_pi05_norm_stats.py --help` for the available profiles
-and overrides such as custom state/action keys and delta masks.
+Run `python tools/compute_transformed_dataset_stats.py --help` for the
+available profiles and overrides such as custom state/action keys and delta
+masks.
 
 </details>
 

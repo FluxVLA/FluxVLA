@@ -126,7 +126,7 @@ model = dict(
         'vlm_backbone.vlm.model.vision_tower',
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
-    ori_action_dim=16,
+    ori_action_dim=18,
     # Supervise all padded model dimensions, as in OpenPI.
     loss_action_dim=32,
 )
@@ -138,37 +138,41 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
-        auto_compute_statistics=dict(profile='franka-eepose'),
-        name_mappings={'observation.eepose': ['proprio', 'action']},
-        statistic_keys=['observation.eepose', 'timestamp'],
+        # Tron2 uses absolute qpos targets. Its automatic statistics therefore
+        # keep every action dimension absolute.
+        auto_compute_statistics=dict(profile='tron2'),
+        name_mappings={
+            'observation.state': ['proprio'],
+            'action': ['action'],
+        },
+        statistic_keys=['observation.state', 'action'],
         datasets=[
             dict(
                 type='ParquetDataset',
                 data_root_path=  # noqa: E251
                 [
-                    './datasets/RealRobot_Franka_dual_lerobot_v2/franka_dual_example'  # noqa: E501
+                    './datasets/RealRobot_Tron2_lerobot/tron2_example',  # noqa: E501
                 ],
-                action_key='observation.eepose',
                 transforms=[
                     dict(
                         type='ProcessParquetInputs',
                         parquet_keys=[
-                            'observation.eepose', 'timestamp', 'actions',
+                            'observation.state', 'timestamp', 'actions',
                             'info', 'stats', 'action_masks'
                         ],
                         video_keys=[
-                            'observation.images.cam_front',
-                            'observation.images.cam_wrist_left',
-                            'observation.images.cam_wrist_right'
+                            'observation.images.cam_high',
+                            'observation.images.cam_left_wrist',
+                            'observation.images.cam_right_wrist'
                         ],
                         name_mappings={
-                            'observation.eepose': ['states'],
+                            'observation.state': ['states'],
                             'actions': ['actions']
                         }),
                     dict(
                         type='NormalizeStatesAndActions',
-                        action_dim=None,
-                        state_dim=None,
+                        action_dim=32,
+                        state_dim=32,
                         state_key='proprio',
                         action_key='action',
                         norm_type='quantile',
@@ -183,7 +187,6 @@ train_dataloader = dict(
                             'checkpoints/pi05_base',  # noqa: E501
                             # special_tokens={'pad_token': '<PAD>'}
                         )),
-                    dict(type='PadStatesAndActions', model_action_dim=32),
                     dict(
                         type='ResizeImagesWithPad',
                         height=224,
@@ -192,8 +195,9 @@ train_dataloader = dict(
                     dict(type='SimpleNormalizeImages'),
                     dict(type='OpenPIImageAugment', base_camera_indices=(0, )),
                 ],
-                action_window_size=50,
+                action_key='action',
                 window_start_idx=0,
+                action_window_size=50,
                 supervise_terminal_padding=True)
         ]))
 
@@ -227,6 +231,12 @@ runner = dict(
         ],
         meta_keys=['task_description', 'prompt', 'info', 'stats']),
     sampler=None,
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay',
+        schedule_style='openpi',
+        warmup_steps=1000,
+        decay_steps=30000,
+        min_lr=2.5e-6),
     tokenizer=dict(
         type='PretrainedTokenizer',
         model_path=  # noqa: E251
@@ -238,12 +248,6 @@ runner = dict(
         active_trackers=('jsonl', 'wandb'),
         run_dir='work_dirs',
         window_size=1),
-    lr_scheduler=dict(
-        type='linear-warmup+cosine-decay',
-        schedule_style='openpi',
-        warmup_steps=1000,
-        decay_steps=30000,
-        min_lr=2.5e-6),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
@@ -251,28 +255,20 @@ runner = dict(
     change_key_name=False)
 
 inference = dict(
-    type='FrankaInferenceRunner',
+    type='Tron2InferenceRunner',
     keep_params_fp32=True,
     mixed_precision_dtype='bf16',
     task_descriptions={
-        '1':
-        'The right arm picks up the shuttlecock bucket, hands it to the left arm, and places it on the plate.'  # noqa: E501
+        '1': 'complete the task',
     },
     seed=7,
-    action_mode='cartesian',
-    active_arms=('left', 'right'),
-    async_execution=False,
-    execute_horizon=20,
-    # Prepare eepose: [left_arm_eepose, right_arm_eepose]
-    # Each arm: [x, y, z, qx, qy, qz, qw, gripper_width]
-    prepare_pose=None,  # None uses operator default prepare eepose
     dataset=dict(
         type='PrivateInferenceDataset',
-        img_keys=['cam_front', 'cam_wrist_left', 'cam_wrist_right'],
+        img_keys=['cam_high', 'cam_left_wrist', 'cam_right_wrist'],
         transforms=[
             dict(
                 type='NormalizeStatesAndActions',
-                state_dim=None,
+                state_dim=32,
                 state_key='proprio',
                 action_key='action',
                 norm_type='quantile',
@@ -287,7 +283,6 @@ inference = dict(
                     'checkpoints/pi05_base',
                     # special_tokens={'pad_token': '<PAD>'}
                 )),
-            dict(type='PadStatesAndActions', model_action_dim=32),
             dict(
                 type='ResizeImagesWithPad',
                 height=224,
@@ -298,27 +293,17 @@ inference = dict(
     denormalize_action=dict(
         type='DenormalizePrivateAction',
         norm_type='quantile',
-        action_dim=16,
+        action_dim=18,
     ),
-    action_chunk=50,
+    action_chunk=32,
     operator=dict(
-        type='FrankaDualOperator',
+        type='Tron2Operator',
         image_encoding='rgb8',
-        command_mode='cartesian',
-        img_left_topic='/camera_left_wrist/color/image_raw',
-        img_right_topic='/camera_right_wrist/color/image_raw',
-        img_front_topic='/camera_front/color/image_raw',
-        puppet_arm_left_topic='/left_arm/joint_states',
-        puppet_arm_right_topic='/right_arm/joint_states',
-        puppet_franka_state_left_topic=(
-            '/left_arm/franka_state_controller/franka_states'),
-        puppet_franka_state_right_topic=(
-            '/right_arm/franka_state_controller/franka_states'),
-        sync_warning_enabled=True,
-        cartesian_cmd_left_topic=(
-            '/left_arm/cartesian_impedance_controller/equilibrium_pose'),
-        cartesian_cmd_right_topic=(
-            '/right_arm/cartesian_impedance_controller/equilibrium_pose'),
-        gripper_left_topic='/left_arm/franka_gripper/move/goal',
-        gripper_right_topic='/right_arm/franka_gripper/move/goal',
+        img_left_topic='/camera/left/color/image_rect_raw',
+        img_right_topic='/camera/right/color/image_rect_raw',
+        img_top_topic='/camera/top/color/image_raw',
+        joint_state_topic='/joint_states',
+        gripper_state_topic='/gripper_state',
+        ee_pose_left_topic='/left_arm/ee_pose',
+        ee_pose_right_topic='/right_arm/ee_pose',
     ))
