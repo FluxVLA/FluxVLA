@@ -50,17 +50,22 @@ def test_pi05_robocasa_keeps_explicit_statistics():
     assert len(stats.action.q01) == 29
 
 
-def test_restored_tron2_config_preserves_absolute_qpos_contract():
+def test_tron2_config_uses_16d_joint_delta_contract():
     cfg = Config.fromfile(ROOT /
                           'configs/pi05/pi05_paligemma_tron2_full_finetune.py')
     dataset = cfg.train_dataloader.dataset
     transform_types = [item.type for item in dataset.datasets[0].transforms]
 
-    assert cfg.model.ori_action_dim == 18
+    assert cfg.model.ori_action_dim == 16
     assert cfg.model.loss_action_dim == 32
     assert dataset.datasets[0].action_window_size == 50
     assert dataset.datasets[0].window_start_idx == 0
     assert dataset.datasets[0].supervise_terminal_padding is True
-    assert 'RelativeActions' not in transform_types
-    assert cfg.inference.denormalize_action.type == 'DenormalizePrivateAction'
-    assert cfg.inference.denormalize_action.action_dim == 18
+    assert 'RelativeActions' in transform_types
+    relative = next(item for item in dataset.datasets[0].transforms
+                    if item.type == 'RelativeActions')
+    expected_mask = [True] * 7 + [False] + [True] * 7 + [False]
+    assert relative.mask == expected_mask
+    assert cfg.inference.denormalize_action.type == 'DenormalizeDeltaAction'
+    assert cfg.inference.denormalize_action.action_dim == 16
+    assert cfg.inference.denormalize_action.delta_action_mask == expected_mask

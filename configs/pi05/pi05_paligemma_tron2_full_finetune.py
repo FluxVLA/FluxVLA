@@ -126,7 +126,7 @@ model = dict(
         'vlm_backbone.vlm.model.vision_tower',
         'vlm_backbone.vlm.model.multi_modal_projector',
     ],
-    ori_action_dim=18,
+    ori_action_dim=16,
     # Supervise all padded model dimensions, as in OpenPI.
     loss_action_dim=32,
 )
@@ -138,8 +138,8 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
-        # Tron2 uses absolute qpos targets. Its automatic statistics therefore
-        # keep every action dimension absolute.
+        # [left arm (7), left gripper, right arm (7), right gripper].
+        # Arm joints use state-relative deltas; grippers remain absolute.
         auto_compute_statistics=dict(profile='tron2'),
         name_mappings={
             'observation.state': ['proprio'],
@@ -169,6 +169,9 @@ train_dataloader = dict(
                             'observation.state': ['states'],
                             'actions': ['actions']
                         }),
+                    dict(
+                        type='RelativeActions',
+                        mask=[True] * 7 + [False] + [True] * 7 + [False]),
                     dict(
                         type='NormalizeStatesAndActions',
                         action_dim=32,
@@ -291,9 +294,10 @@ inference = dict(
             dict(type='SimpleNormalizeImages'),
         ]),
     denormalize_action=dict(
-        type='DenormalizePrivateAction',
+        type='DenormalizeDeltaAction',
         norm_type='quantile',
-        action_dim=18,
+        action_dim=16,
+        delta_action_mask=[True] * 7 + [False] + [True] * 7 + [False],
     ),
     action_chunk=32,
     operator=dict(
