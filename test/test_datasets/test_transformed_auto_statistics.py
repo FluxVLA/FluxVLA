@@ -5,11 +5,12 @@ import json
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
+import pytest
 from mmengine import ConfigDict
 
 import scripts.train as train_script
 from fluxvla.datasets.utils.transformed_statistics import (
-    PROFILES, compute_statistics_from_dataset_config)
+    PROFILES, _infer_profile, compute_statistics_from_dataset_config)
 
 
 def _wrapper_config(dataset_root):
@@ -74,6 +75,26 @@ def test_absolute_profile_keeps_qpos_actions_absolute(tmp_path):
     np.testing.assert_allclose(stats['robot']['action']['mean'], [4.25, 21.75])
     assert metadata['delta_mask'] == []
     assert PROFILES['tron2'].delta_mask == ()
+    assert PROFILES['tron2'].expected_dim == 16
+
+
+def test_tron2_profile_is_inferred_for_16d_separate_actions():
+    assert _infer_profile(16, 'observation.state',
+                          'action') is PROFILES['tron2']
+    assert _infer_profile(16, 'observation.state',
+                          'observation.state') is PROFILES['franka-qpos']
+
+
+def test_tron2_profile_rejects_non_16d_data(tmp_path):
+    dataset_root = tmp_path / 'dataset'
+    _write_dataset(dataset_root)
+
+    with pytest.raises(ValueError, match='expects 16D state/action values'):
+        compute_statistics_from_dataset_config(
+            _wrapper_config(dataset_root),
+            options=dict(profile='tron2'),
+            default_temp_dir=tmp_path,
+        )
 
 
 def test_inline_statistics_take_priority_over_automatic_computation(

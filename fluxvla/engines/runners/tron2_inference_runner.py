@@ -13,7 +13,7 @@
 # limitations under the License.
 
 import time
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 
@@ -46,18 +46,28 @@ class Tron2InferenceRunner(BaseInferenceRunner):
             head commands during prepare pose execution and trajectory
             execution. Defaults to False.
 
+        action_layout (str, optional): Layout of state and action vectors.
+            ``interleaved_grippers`` is 16D: left arm (7), left gripper,
+            right arm (7), right gripper. ``arms_head_grippers`` is the
+            legacy 18D layout. Defaults to ``arms_head_grippers``.
+
     """
 
     def __init__(self,
                  gripper_threshold: float = 0.1,
                  prepare_pose: List[float] = None,
                  enable_head_control: bool = False,
+                 action_layout: str = 'arms_head_grippers',
                  async_execution: bool = False,
                  execute_horizon: int = None,
                  *args,
                  **kwargs):
+        if action_layout not in {'interleaved_grippers', 'arms_head_grippers'}:
+            raise ValueError(f'Unsupported Tron2 action layout: '
+                             f'{action_layout!r}')
         self.gripper_threshold = gripper_threshold
         self.enable_head_control = enable_head_control
+        self.action_layout = action_layout
         self.async_execution = async_execution
         self.execute_horizon = execute_horizon
         # Set Tron2-specific defaults
@@ -90,10 +100,7 @@ class Tron2InferenceRunner(BaseInferenceRunner):
         self.dt = 1.0 / self.publish_rate
 
         if prepare_pose is None:
-            # Initialize Tron2-specific prepare poses
-            # [left(7), right(7), head_pitch, head_yaw,
-            #  left_gripper(0-1), right_gripper(0-1)]
-            self.prepare_pose = [
+            legacy_prepare_poses = [
                 [
                     1.2, 0, 0, -2.5, 0, 0, 0, 1.2, 0, 0, -2.5, 0, 0, 0, 0, 0,
                     1, 1
@@ -107,13 +114,46 @@ class Tron2InferenceRunner(BaseInferenceRunner):
                     0, 0, 0, 0, 1, 1
                 ],
             ]
+            if self.action_layout == 'interleaved_grippers':
+                self.prepare_pose = [
+                    pose[:7] + [pose[16]] + pose[7:14] + [pose[17]]
+                    for pose in legacy_prepare_poses
+                ]
+            else:
+                self.prepare_pose = legacy_prepare_poses
         else:
             self.prepare_pose = prepare_pose
 
+    def _split_action_components(self, actions: np.ndarray):
+        """Split actions according to the configured Tron2 action layout."""
+        expected_dim = (16 if self.action_layout == 'interleaved_grippers' else
+                        18)
+        if actions.shape[-1] != expected_dim:
+            raise ValueError(
+                f'{self.action_layout!r} expects {expected_dim}D actions, '
+                f'got shape {actions.shape}.')
+
+        if self.action_layout == 'interleaved_grippers':
+            return (actions[..., :7], actions[..., 8:15], None,
+                    actions[..., 7], actions[..., 15])
+        return (actions[..., :7], actions[..., 7:14], actions[..., 14:16],
+                actions[..., 16], actions[..., 17])
+
+    def _compose_qpos(self, arm_left, arm_right, head, gripper):
+        """Compose the model state using the configured action layout."""
+        left_gripper = np.asarray(gripper.position[0:1])
+        right_gripper = np.asarray(gripper.position[1:2])
+        if self.action_layout == 'interleaved_grippers':
+            return np.concatenate(
+                (np.asarray(arm_left.position), left_gripper,
+                 np.asarray(arm_right.position), right_gripper))
+        return np.concatenate(
+            (np.asarray(arm_left.position), np.asarray(arm_right.position),
+             np.asarray(head.position), left_gripper, right_gripper))
+
     def get_ros_observation(
-        self
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, 'JointState',  # noqa: F821
-               'JointState', 'JointState']:  # noqa: F821
+            self
+    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, Any, Any, Any, Any]:
         """Get synchronized observation data from ROS topics.
 
         Continuously polls the ROS operator for synchronized sensor data
@@ -170,8 +210,8 @@ class Tron2InferenceRunner(BaseInferenceRunner):
 
         Returns:
             Dict: Latest observation containing:
-                - 'qpos': 18 dims: 7 left + 7 right + 2 head
-                    + 1 left_grip(0-1) + 1 right_grip(0-1)
+                - 'qpos': either the configured 16D dual-arm/gripper layout
+                  or the legacy 18D dual-arm/head/gripper layout
                 - Camera images keyed by camera names
 
         Note:
@@ -198,17 +238,7 @@ class Tron2InferenceRunner(BaseInferenceRunner):
         img_left = self._apply_jpeg_compression(img_left)
         img_right = self._apply_jpeg_compression(img_right)
 
-        # Joints + head + grippers (0-1 from operator /100)
-        # [left(7), right(7), head_pitch, head_yaw,
-        #  left_gripper(1), right_gripper(1)]
-        gripper_pos = robot_gripper.position
-        left_gripper = np.array(gripper_pos[0:1])
-        right_gripper = np.array(gripper_pos[1:2])
-        qpos = np.concatenate(
-            (np.array(arm_left.position), np.array(arm_right.position),
-             np.array(head.position), left_gripper, right_gripper),
-            axis=0,
-        )
+        qpos = self._compose_qpos(arm_left, arm_right, head, robot_gripper)
 
         # Create observation dictionary
         observation = {
@@ -224,10 +254,7 @@ class Tron2InferenceRunner(BaseInferenceRunner):
     def _move_to_prepare_pose(self):
         """Move robot to predefined preparation pose.
 
-        Supports prepare_pose as:
-        - 18-dim: [left(7), right(7), head(2), left_gripper(0-1),
-          right_gripper(0-1)]
-        - List of 18-dim lists: execute each pose sequentially
+        The pose layout must match ``action_layout``.
         """
         if self.prepare_pose is None:
             return
@@ -242,14 +269,12 @@ class Tron2InferenceRunner(BaseInferenceRunner):
 
         for pose in poses:
             pose = np.array(pose)
-            left_joints = pose[:7]
-            right_joints = pose[7:14]
-            # head at indices 14-15, grippers at 16-17
-            head_joints = (
-                list(pose[14:16])
-                if self.enable_head_control and len(pose) > 15 else None)
-            left_gripper = pose[16] if len(pose) > 16 else None
-            right_gripper = pose[17] if len(pose) > 17 else None
+            (left_joints, right_joints, head_joints, left_gripper,
+             right_gripper) = self._split_action_components(pose)
+            if not self.enable_head_control:
+                head_joints = None
+            elif head_joints is not None:
+                head_joints = list(head_joints)
 
             self.ros_operator.move_to_targets(
                 left_joints,
@@ -266,16 +291,14 @@ class Tron2InferenceRunner(BaseInferenceRunner):
         raw_action = self.vla.predict_action(**inputs)
         return raw_action
 
-    # Action layout: [left_arm(7), right_arm(7), head(2),
-    # left_gripper(1), right_gripper(1)]
-    LEFT_GRIPPER_COL = 16
-    RIGHT_GRIPPER_COL = 17
     GRIPPER_CLOSED = 0.0
 
     def _postprocess_actions(self, raw_action):
         """Denormalize and snap near-closed grippers to fully closed."""
         actions = super()._postprocess_actions(raw_action)
-        for col in (self.LEFT_GRIPPER_COL, self.RIGHT_GRIPPER_COL):
+        gripper_columns = ((7, 15) if self.action_layout
+                           == 'interleaved_grippers' else (16, 17))
+        for col in gripper_columns:
             actions[:,
                     col] = np.where(actions[:, col] < self.gripper_threshold,
                                     self.GRIPPER_CLOSED, actions[:, col])
@@ -300,14 +323,17 @@ class Tron2InferenceRunner(BaseInferenceRunner):
             if self.execute_horizon is not None:
                 actions = actions[:self.execute_horizon]
 
-        head_trajectory = actions[:,
-                                  14:16] if self.enable_head_control else None
+        (left_arm_trajectory, right_arm_trajectory, head_trajectory,
+         left_gripper_trajectory,
+         right_gripper_trajectory) = self._split_action_components(actions)
+        if not self.enable_head_control:
+            head_trajectory = None
 
         self.ros_operator.execute_trajectory(
-            left_arm_trajectory=actions[:, :7],
-            right_arm_trajectory=actions[:, 7:14],
-            left_gripper_trajectory=actions[:, 16],
-            right_gripper_trajectory=actions[:, 17],
+            left_arm_trajectory=left_arm_trajectory,
+            right_arm_trajectory=right_arm_trajectory,
+            left_gripper_trajectory=left_gripper_trajectory,
+            right_gripper_trajectory=right_gripper_trajectory,
             head_trajectory=head_trajectory,
             dt=self.dt,
             async_exec=self.async_execution)

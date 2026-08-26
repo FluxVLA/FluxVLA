@@ -549,7 +549,7 @@ python tools/compute_transformed_dataset_stats.py /path/to/franka \
   --variable-name _PI05_FRANKA_EEPOSE_STATS \
   --output /tmp/franka_eepose_stats.py
 
-# Tron2：アーム、頭部、グリッパーの qpos 目標はすべて絶対値。
+# Tron2：16 次元の双腕とグリッパーの qpos 目標はすべて絶対値。
 python tools/compute_transformed_dataset_stats.py /path/to/tron2 \
   --profile tron2 --action-horizon 50 \
   --variable-name _TRON2_STATS --output /tmp/tron2_stats.py

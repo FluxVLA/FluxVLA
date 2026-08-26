@@ -35,6 +35,7 @@ class Profile:
     delta_mask: tuple[bool, ...]
     signs: tuple[float, ...] | None = None
     aloha_gripper_input_range: tuple[float, float] | None = None
+    expected_dim: int | None = None
 
 
 PROFILES = {
@@ -66,8 +67,11 @@ PROFILES = {
     Profile(
         state_key='observation.state',
         action_key='action',
-        # The restored Tron2 recipe predicts absolute arm/head/gripper qpos.
-        delta_mask=()),
+        # [left arm (7), left gripper, right arm (7), right gripper].
+        # Tron2 predicts absolute qpos targets, so no delta conversion is
+        # applied.
+        delta_mask=(),
+        expected_dim=16),
     'robocasa-joint-delta':
     Profile(
         state_key='observation.state',
@@ -123,7 +127,8 @@ def _discover_dataset_roots(paths: Sequence[Path]) -> list[Path]:
 def _parquet_files(roots: Sequence[Path]) -> list[Path]:
     files = sorted({
         file
-        for root in roots for file in (root / 'data').rglob('*.parquet')
+        for root in roots
+        for file in (root / 'data').rglob('*.parquet')
     })
     if not files:
         raise ValueError(
@@ -193,7 +198,7 @@ def _iter_episodes(files: Sequence[Path], state_key: str,
             if episode_id in seen_episodes:
                 raise ValueError(
                     f'Episode {episode_index} is split across parquet files '
-                    f'under {episode_id[0]}; merge it before computing stats.')
+                    f'under {episode_id[0]}. Merge it before computing stats.')
             seen_episodes.add(episode_id)
             yield states[selector], actions[selector]
 
@@ -207,9 +212,9 @@ def _infer_profile(state_dim: int, state_key: str, action_key: str) -> Profile:
         return PROFILES['franka-eepose']
     if state_dim == 7:
         return PROFILES['ur3']
-    if state_dim == 16 and action_key == state_key:
-        return PROFILES['franka-qpos']
-    if state_dim == 18:
+    if state_dim == 16:
+        if action_key == state_key:
+            return PROFILES['franka-qpos']
         return PROFILES['tron2']
     raise ValueError(
         f'Cannot infer a safe delta mask for {state_dim}D {state_key!r}/'
@@ -387,6 +392,12 @@ def compute_statistics(dataset_paths: Sequence[Path],
             _iter_episodes(files, state_key, action_key))
     state_dim = first_states.shape[-1]
     action_dim = first_actions.shape[-1]
+    if requested.expected_dim is not None and (
+            state_dim != requested.expected_dim
+            or action_dim != requested.expected_dim):
+        raise ValueError(f'{profile_name!r} profile expects '
+                         f'{requested.expected_dim}D state/action values, got '
+                         f'{state_dim}D/{action_dim}D.')
     if state_dim != action_dim and delta_mask:
         raise ValueError(
             'Delta conversion requires compatible state/action dimensions; '
@@ -507,8 +518,8 @@ def _common_source_value(source_configs: Sequence[Any], key: str, default):
     first = values[0]
     if any(value != first for value in values[1:]):
         raise ValueError(
-            f'Automatic transformed statistics requires a common {key!r}; '
-            'got '
+            f'Automatic transformed statistics requires a common {key!r}. '
+            'Got '
             f'{values}.')
     return first
 
