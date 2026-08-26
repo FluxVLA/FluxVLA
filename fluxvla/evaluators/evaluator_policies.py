@@ -100,10 +100,6 @@ class TrainingEvalEvaluator(BaseEvaluator):
         self.video_fps = int(video_fps)
         self._unavailable_warned = False
 
-    @staticmethod
-    def _unwrap_model(model):
-        return model.module if hasattr(model, 'module') else model
-
     def _get_eval_item(self, dataset, index: int):
         if hasattr(dataset, '_get_item_from_global_idx'):
             return dataset._get_item_from_global_idx(index)
@@ -178,9 +174,7 @@ class TrainingEvalEvaluator(BaseEvaluator):
 
     def run(self, runner, dataset) -> None:
         step = int(runner.metric.global_step)
-        model = self._unwrap_model(runner.vla)
-        eval_fn = getattr(model, 'compute_training_eval', None)
-        if not callable(eval_fn):
+        if not runner.can_run_training_eval():
             if (overwatch.is_rank_zero() and not self._unavailable_warned):
                 overwatch.warning(
                     'Training eval requested, but the model does not '
@@ -205,10 +199,11 @@ class TrainingEvalEvaluator(BaseEvaluator):
                         'cuda',
                         dtype=runner.mixed_precision_dtype,
                         enabled=runner.enable_mixed_precision_training):
-                    output = eval_fn(
-                        batch,
+                    output = runner.run_training_eval(
+                        batch=batch,
                         num_inference_steps=self.num_inference_steps,
-                        seed=self.seed)
+                        seed=self.seed,
+                    )
         finally:
             if was_training:
                 runner.vla.train()

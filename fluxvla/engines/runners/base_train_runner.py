@@ -20,7 +20,7 @@ import os
 from abc import ABC, abstractmethod
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import torch
 import torch.distributed as dist
@@ -72,6 +72,8 @@ class BaseTrainRunner(ABC):
             Defaults to False.
         deterministic_algorithms (bool, optional): Require deterministic
             PyTorch/CUDA kernels, including SDPA backward. Defaults to False.
+        dataset_sharding_strategy (str, optional): Dataset sharding strategy.
+            Defaults to 'round_robin'.
         sharding_strategy (str, optional): Sharding strategy for
             distributed training. Defaults to 'full-shard'.
     """
@@ -82,6 +84,7 @@ class BaseTrainRunner(ABC):
                  collator: Dict,
                  sampler: str,
                  metric: Dict,
+                 dataset_sharding_strategy: str = 'round_robin',
                  optimizer: Optional[Dict] = None,
                  max_epochs: int = None,
                  max_steps: Optional[int] = None,
@@ -157,6 +160,7 @@ class BaseTrainRunner(ABC):
         self.keep_params_fp32 = bool(keep_params_fp32)
         self.deterministic_algorithms = bool(deterministic_algorithms)
         self.per_device_batch_size = per_device_batch_size
+        self.dataset_sharding_strategy = dataset_sharding_strategy
         self.grad_accumulation_steps = grad_accumulation_steps
         if ema_decay is not None and not 0.0 < float(ema_decay) < 1.0:
             raise ValueError('ema_decay must be in (0, 1) when provided.')
@@ -202,6 +206,50 @@ class BaseTrainRunner(ABC):
                 'Only BF16 mixed precision training is supported!'
             assert check_bloat16_supported(), \
                 'BFloat16 is not supported on this hardware; unset `mixed_precision`'  # noqa: E501
+
+    def _unwrap_vla(self) -> torch.nn.Module:
+        """Return the model underneath a distributed wrapper."""
+        return self.vla.module if hasattr(self.vla, 'module') else self.vla
+
+    def can_run_training_eval(self) -> bool:
+        """Return whether the underlying VLA exposes a training-eval hook."""
+        unwrapped_vla = self._unwrap_vla()
+        training_eval_fn = getattr(unwrapped_vla, 'compute_training_eval',
+                                   None)
+        return callable(training_eval_fn)
+
+    def run_training_eval(
+        self,
+        batch: Dict[str, Any],
+        num_inference_steps: int,
+        seed: int,
+    ) -> Dict[str, Any]:
+        """Execute a training-eval hook for an unsharded model.
+
+        Distributed strategies that require a specialized execution path
+        override this method. DDP keeps complete parameters on every rank, so
+        calling the underlying model hook directly is safe.
+
+        Args:
+            batch: Collated evaluation batch.
+            num_inference_steps: Number of diffusion inference steps.
+            seed: Evaluation random seed.
+
+        Returns:
+            Training-evaluation output dictionary.
+        """
+        unwrapped_vla = self._unwrap_vla()
+        training_eval_fn = getattr(unwrapped_vla, 'compute_training_eval',
+                                   None)
+        if not callable(training_eval_fn):
+            raise RuntimeError(
+                f'{unwrapped_vla.__class__.__name__} does not implement '
+                '`compute_training_eval`.')
+        return training_eval_fn(
+            batch,
+            num_inference_steps=num_inference_steps,
+            seed=seed,
+        )
 
     @staticmethod
     def _normalize_optimizer_cfg(optimizer: Optional[Dict]) -> Dict:
@@ -642,6 +690,7 @@ class BaseTrainRunner(ABC):
 
     def run(self, vla_dataset, eval_dataset=None) -> None:
         """Train the VLA model."""
+        self._configure_dataset_sharding(vla_dataset)
         training_eval_dataset = (
             vla_dataset if eval_dataset is None else eval_dataset)
         # Setup dataloader
@@ -689,12 +738,40 @@ class BaseTrainRunner(ABC):
             self._active_dataloader = None
             gc.collect()
 
+    def _configure_dataset_sharding(self, dataset: Any) -> None:
+        """Configure the dataset sharding strategy before worker startup.
+
+        Args:
+            dataset: Training dataset to configure before worker startup.
+        """
+        strategy = self.dataset_sharding_strategy
+        configure_sharding = getattr(dataset, 'configure_sharding', None)
+
+        if strategy == 'round_robin':
+            if callable(configure_sharding):
+                configure_sharding(
+                    strategy='round_robin',
+                    batch_size=self.per_device_batch_size,
+                )
+        elif strategy == 'blockwise':
+            if not callable(configure_sharding):
+                raise TypeError(
+                    '`dataset_sharding_strategy="blockwise"` requires a '
+                    'dataset with `configure_sharding()` support.')
+            configure_sharding(
+                strategy='blockwise',
+                batch_size=self.per_device_batch_size,
+            )
+        else:
+            raise ValueError(
+                '`dataset_sharding_strategy` must be either "round_robin" '
+                f'or "blockwise", got {strategy!r}.')
+
     def _next_batch(self, dataloader, dataloader_iter, sampler):
         """Fetch a micro-batch, restarting the epoch if the iterator ends."""
         while True:
             if dataloader_iter is None:
-                if sampler:
-                    sampler.set_epoch(self.current_epoch)
+                self._set_dataloader_epoch(dataloader, sampler)
                 dataloader_iter = iter(dataloader)
 
             try:
@@ -702,6 +779,20 @@ class BaseTrainRunner(ABC):
             except StopIteration:
                 self.current_epoch += 1
                 dataloader_iter = None
+
+    def _set_dataloader_epoch(self, dataloader, sampler) -> None:
+        """Synchronize sampler and iterable-dataset shuffle epochs.
+
+        Args:
+            dataloader: Training DataLoader whose dataset may expose
+                ``set_epoch``.
+            sampler: Optional distributed sampler.
+        """
+        if sampler:
+            sampler.set_epoch(self.current_epoch)
+        set_epoch = getattr(dataloader.dataset, 'set_epoch', None)
+        if callable(set_epoch):
+            set_epoch(self.current_epoch)
 
     def _run_accumulated_training_step(self, dataloader, dataloader_iter,
                                        sampler):
@@ -826,9 +917,7 @@ class BaseTrainRunner(ABC):
                 initial=self.current_epoch) as epoch_pbar:
 
             while self.current_epoch < self.max_epochs:
-                if sampler:
-                    sampler.set_epoch(self.current_epoch)
-
+                self._set_dataloader_epoch(dataloader, sampler)
                 dataloader_iter = iter(dataloader)
                 epoch_step_count = 0
                 iter_total = self.steps_per_epoch or len(dataloader)
@@ -900,7 +989,7 @@ class BaseTrainRunner(ABC):
         if key in cache:
             return cache[key]
 
-        module = self.vla.module if hasattr(self.vla, 'module') else self.vla
+        module = self._unwrap_vla()
         signature = inspect.signature(module.forward)
         accepts = key in signature.parameters or any(
             param.kind == inspect.Parameter.VAR_KEYWORD

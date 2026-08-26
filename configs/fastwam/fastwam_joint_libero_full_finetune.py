@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# FastWAM world-action model (uncond) trained on all LIBERO suites.
+# FastWAM joint model trained on all LIBERO suites with P0-A FSDP.
 
 seed = 42
 
@@ -52,7 +52,7 @@ model = dict(
         text_embed_cache_device='cpu',
     ),
     vla_head=dict(
-        type='FastWAMHead',
+        type='FastWAMJointHead',
         video_dit_config=dict(
             has_image_input=False,
             patch_size=[1, 2, 2],
@@ -264,9 +264,6 @@ eval = dict(
         task_ids=None,
         norm_stats_key=_statistic_name,
         eval_chunk_size=10,
-        # Direct ``torchrun scripts/eval.py`` launches shard individual
-        # episodes across ranks. The LIBERO manager explicitly overrides this
-        # to ``task`` for its single-task workers.
         eval_shard_strategy='episode',
         preprocess_every_step=False,
         num_inference_steps=10,

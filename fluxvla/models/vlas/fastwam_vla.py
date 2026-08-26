@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, Literal, Optional, Tuple
 
 import numpy as np
 import torch
@@ -36,6 +36,8 @@ from .base_vla import BaseVLA
 overwatch = initialize_overwatch(__name__)
 
 __all__ = ['FastWAMVLA']
+
+FastWAMVLAForwardMode = Literal['train', 'training_eval']
 
 
 @VLAS.register_module()
@@ -217,8 +219,80 @@ class FastWAMVLA(BaseVLA):
         action_masks: Optional[torch.Tensor] = None,
         frame_masks: Optional[torch.Tensor] = None,
         img_masks: Optional[torch.Tensor] = None,
+        forward_mode: FastWAMVLAForwardMode = 'train',
+        training_eval_batch: Optional[Dict[str, Any]] = None,
+        num_inference_steps: int = 10,
+        seed: int = 42,
         **kwargs,
+    ) -> Dict[str, Any]:
+        """Run training or in-training evaluation through the VLA wrapper.
+
+        Args:
+            images: Training video tensor.
+            lang_tokens: Tokenized language input.
+            lang_masks: Valid language-token mask.
+            task_description: Optional task metadata.
+            states: Optional proprioception sequence.
+            actions: Training action targets.
+            action_masks: Valid action positions.
+            frame_masks: Valid video-frame positions.
+            img_masks: Optional image mask input.
+            forward_mode: Operation selected for this FSDP forward.
+            training_eval_batch: Batch used by in-training evaluation.
+            num_inference_steps: Number of diffusion inference steps.
+            seed: Inference random seed.
+            **kwargs: Additional compatibility arguments.
+
+        Returns:
+            Training losses or in-training evaluation outputs.
+        """
+        if forward_mode == 'train':
+            return self._forward_training(
+                images=images,
+                lang_tokens=lang_tokens,
+                lang_masks=lang_masks,
+                states=states,
+                actions=actions,
+                action_masks=action_masks,
+                frame_masks=frame_masks,
+            )
+        elif forward_mode == 'training_eval':
+            if training_eval_batch is None:
+                raise ValueError('Training eval requires '
+                                 '`training_eval_batch`.')
+            return self.compute_training_eval(
+                batch=training_eval_batch,
+                num_inference_steps=num_inference_steps,
+                seed=seed,
+            )
+        else:
+            raise ValueError(
+                f'Unsupported FastWAM VLA forward mode: {forward_mode!r}')
+
+    def _forward_training(
+        self,
+        images: Optional[torch.Tensor],
+        lang_tokens: Optional[torch.Tensor],
+        lang_masks: Optional[torch.Tensor],
+        states: Optional[torch.Tensor],
+        actions: Optional[torch.Tensor],
+        action_masks: Optional[torch.Tensor],
+        frame_masks: Optional[torch.Tensor],
     ) -> Dict[str, torch.Tensor]:
+        """Compute the FastWAM flow-matching training losses.
+
+        Args:
+            images: Training video tensor, shape ``[B, 3, T, H, W]``.
+            lang_tokens: Tokenized language input, shape ``[B, L]``.
+            lang_masks: Valid language-token mask, shape ``[B, L]``.
+            states: Optional proprioception sequence.
+            actions: Training action targets.
+            action_masks: Valid action positions.
+            frame_masks: Valid video-frame positions.
+
+        Returns:
+            Total, video, and action loss tensors.
+        """
         if lang_tokens is None or lang_masks is None:
             raise ValueError(
                 'FastWAMVLA.forward requires both `lang_tokens` and '
@@ -318,8 +392,7 @@ class FastWAMVLA(BaseVLA):
         first_frame_latents = self.vlm_backbone.encode_input_image_latents(
             input_image, tiled=tiled)
 
-        context, context_mask = self._prepare_inference_context(
-            proprio=proprio,
+        context, context_mask = self._encode_language_context(
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
         )
@@ -340,7 +413,8 @@ class FastWAMVLA(BaseVLA):
             latent_w = width // upsampling_factor
             video_latent_shape = (z_dim, latent_t, latent_h, latent_w)
 
-        return self.vla_head.predict_action(
+        return self.vla_head(
+            forward_mode='predict_action',
             first_frame_latents=first_frame_latents,
             context=context,
             context_mask=context_mask,
@@ -350,6 +424,7 @@ class FastWAMVLA(BaseVLA):
             sigma_shift=sigma_shift,
             seed=seed,
             rand_device=rand_device,
+            proprio=proprio,
         )
 
     def _build_video_latent_shape(self, input_image: torch.Tensor,
@@ -364,26 +439,25 @@ class FastWAMVLA(BaseVLA):
         latent_w = width // upsampling_factor
         return z_dim, latent_t, latent_h, latent_w
 
-    def _prepare_inference_context(
+    def _encode_language_context(
         self,
-        proprio: Optional[torch.Tensor],
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Encode the language context shared by inference paths.
+
+        Args:
+            lang_tokens: Tokenized language input, shape ``[B, L]``.
+            lang_masks: Valid language-token mask, shape ``[B, L]``.
+
+        Returns:
+            Encoded language context and its validity mask.
+        """
         if lang_tokens is None or lang_masks is None:
             raise ValueError(
                 'FastWAMVLA inference requires both `lang_tokens` and '
                 '`lang_masks`.')
-        context, context_mask = self.vlm_backbone.encode_prompt_cached(
-            lang_tokens, lang_masks)
-
-        if proprio is not None and self.vla_head.proprio_encoder is not None:
-            if proprio.ndim == 1:
-                proprio = proprio.unsqueeze(0)
-            proprio = proprio.to(device=self.device, dtype=self.torch_dtype)
-            context, context_mask = self.vla_head._append_proprio_to_context(
-                context=context, context_mask=context_mask, proprio=proprio)
-        return context, context_mask
+        return self.vlm_backbone.encode_prompt_cached(lang_tokens, lang_masks)
 
     @torch.no_grad()
     def infer(
@@ -426,14 +500,14 @@ class FastWAMVLA(BaseVLA):
 
         first_frame_latents = self.vlm_backbone.encode_input_image_latents(
             input_image, tiled=tiled)
-        context, context_mask = self._prepare_inference_context(
-            proprio=proprio,
+        context, context_mask = self._encode_language_context(
             lang_tokens=lang_tokens,
             lang_masks=lang_masks,
         )
         video_latent_shape = self._build_video_latent_shape(
             input_image, num_frames)
-        video_latents, pred_actions = self.vla_head.predict_video_action(
+        video_latents, pred_actions = self.vla_head(
+            forward_mode='predict_video_action',
             first_frame_latents=first_frame_latents,
             context=context,
             context_mask=context_mask,
@@ -444,6 +518,7 @@ class FastWAMVLA(BaseVLA):
             sigma_shift=sigma_shift,
             seed=seed,
             rand_device=rand_device,
+            proprio=proprio,
         )
         return {
             'video':

@@ -12,7 +12,7 @@ import os
 from collections import OrderedDict
 from functools import partial
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 import torch
 import torch.distributed as dist
@@ -84,6 +84,7 @@ class FSDPTrainRunner(BaseTrainRunner):
                  collator: Dict,
                  sampler: str,
                  metric: Dict,
+                 dataset_sharding_strategy: str = 'round_robin',
                  optimizer: Optional[Dict] = None,
                  max_epochs: int = None,
                  max_steps: int = None,
@@ -120,6 +121,7 @@ class FSDPTrainRunner(BaseTrainRunner):
             collator=collator,
             sampler=sampler,
             metric=metric,
+            dataset_sharding_strategy=dataset_sharding_strategy,
             optimizer=optimizer,
             max_epochs=max_epochs,
             max_steps=max_steps,
@@ -238,6 +240,32 @@ class FSDPTrainRunner(BaseTrainRunner):
             deduped.append(module)
             seen.add(id(module))
         return deduped
+
+    def run_training_eval(
+        self,
+        batch: Dict[str, Any],
+        num_inference_steps: int,
+        seed: int,
+    ) -> Dict[str, Any]:
+        """Execute training evaluation through the root FSDP forward.
+
+        FSDP materializes root-owned parameters only around the wrapper's
+        ``forward`` call, so training evaluation must use that entry point.
+
+        Args:
+            batch: Collated evaluation batch.
+            num_inference_steps: Number of diffusion inference steps.
+            seed: Evaluation random seed.
+
+        Returns:
+            Training-evaluation output dictionary.
+        """
+        return self.vla(
+            forward_mode='training_eval',
+            training_eval_batch=batch,
+            num_inference_steps=num_inference_steps,
+            seed=seed,
+        )
 
     def save_checkpoint(
         self,

@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Dict, Optional
+from typing import Any, Dict, Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -23,6 +23,10 @@ from ..third_party_models.fastwam.modules.schedulers.scheduler_continuous import
     WanContinuousFlowMatchScheduler  # noqa: E501
 
 __all__ = ['FastWAMHead', 'FastWAMJointHead', 'FastWAMIDMHead']
+
+VideoLatentShape = Tuple[int, int, int, int]
+FastWAMHeadForwardMode = Literal['train', 'predict_action',
+                                 'predict_video_action', ]
 
 
 @HEADS.register_module()
@@ -132,9 +136,12 @@ class FastWAMHead(nn.Module):
         context: torch.Tensor,
         context_mask: torch.Tensor,
         proprio: Optional[torch.Tensor],
-    ):
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Encode proprioception and append it to the language context."""
         if self.proprio_encoder is None or proprio is None:
             return context, context_mask
+        if proprio.ndim == 1:
+            proprio = proprio.unsqueeze(0)
         if proprio.ndim != 2:
             raise ValueError('`proprio` must be 2D [B, D], got shape '
                              f'{tuple(proprio.shape)}')
@@ -296,11 +303,8 @@ class FastWAMHead(nn.Module):
         action_padding_mask: Optional[torch.Tensor],
         frame_padding_mask: Optional[torch.Tensor],
         proprio: Optional[torch.Tensor],
-    ) -> Dict[str, torch.Tensor]:
-        """Move/validate training inputs and build the proprio-augmented
-        context (no random draws), shared by the ``uncond`` and ``idm``
-        forward passes so the noise-sampling order stays identical.
-        """
+    ) -> Dict[str, Any]:
+        """Validate training inputs and append proprioception to context."""
         device = video_latents.device
 
         first_frame_latents = None
@@ -328,7 +332,7 @@ class FastWAMHead(nn.Module):
                 raise ValueError(
                     f'proprio last dim must be {self.proprio_dim}, '
                     f'got {proprio.shape[2]}')
-            proprio = proprio[:, 0, :]  # [B, D]
+            proprio = proprio[:, 0, :]  # [B, T, D] -> [B, D]
             context, context_mask = self._append_proprio_to_context(
                 context=context,
                 context_mask=context_mask,
@@ -358,6 +362,109 @@ class FastWAMHead(nn.Module):
     # ------------------------------------------------------------------
     def forward(
         self,
+        context: torch.Tensor,
+        context_mask: torch.Tensor,
+        video_latents: Optional[torch.Tensor] = None,
+        actions: Optional[torch.Tensor] = None,
+        action_padding_mask: Optional[torch.Tensor] = None,
+        frame_padding_mask: Optional[torch.Tensor] = None,
+        proprio: Optional[torch.Tensor] = None,
+        forward_mode: FastWAMHeadForwardMode = 'train',
+        first_frame_latents: Optional[torch.Tensor] = None,
+        action_horizon: Optional[int] = None,
+        video_latent_shape: Optional[VideoLatentShape] = None,
+        conditioning_actions: Optional[torch.Tensor] = None,
+        num_inference_steps: int = 20,
+        sigma_shift: Optional[float] = None,
+        seed: Optional[int] = None,
+        rand_device: str = 'cpu',
+    ) -> Any:
+        """Run training or prediction inside the head FSDP boundary.
+
+        Args:
+            context: Encoded language context, shape ``[B, L, D]``.
+            context_mask: Valid language tokens, shape ``[B, L]``.
+            video_latents: Training video latents.
+            actions: Training action targets.
+            action_padding_mask: Padding positions in ``actions``.
+            frame_padding_mask: Padding positions in the input video.
+            proprio: Optional proprioception input.
+            forward_mode: Operation to execute through this wrapper.
+            first_frame_latents: Encoded first frame for prediction.
+            action_horizon: Number of actions to predict.
+            video_latent_shape: Predicted video latent shape.
+            conditioning_actions: Optional video-conditioning actions.
+            num_inference_steps: Number of diffusion inference steps.
+            sigma_shift: Optional inference scheduler shift.
+            seed: Optional inference random seed.
+            rand_device: Device used to initialize inference noise.
+
+        Returns:
+            Training losses, predicted actions, or video-action prediction.
+        """
+        if forward_mode == 'train':
+            if video_latents is None or actions is None:
+                raise ValueError('Training requires `video_latents` and '
+                                 '`actions`.')
+            return self._forward_training(
+                video_latents=video_latents,
+                context=context,
+                context_mask=context_mask,
+                actions=actions,
+                action_padding_mask=action_padding_mask,
+                frame_padding_mask=frame_padding_mask,
+                proprio=proprio,
+            )
+        elif forward_mode == 'predict_action':
+            if first_frame_latents is None or action_horizon is None:
+                raise ValueError('Prediction requires `first_frame_latents` '
+                                 'and `action_horizon`.')
+            context, context_mask = self._append_proprio_to_context(
+                context=context,
+                context_mask=context_mask,
+                proprio=proprio,
+            )
+            return self.predict_action(
+                first_frame_latents=first_frame_latents,
+                context=context,
+                context_mask=context_mask,
+                action_horizon=action_horizon,
+                video_latent_shape=video_latent_shape,
+                num_inference_steps=num_inference_steps,
+                sigma_shift=sigma_shift,
+                seed=seed,
+                rand_device=rand_device,
+            )
+        elif forward_mode == 'predict_video_action':
+            if first_frame_latents is None or action_horizon is None:
+                raise ValueError('Prediction requires `first_frame_latents` '
+                                 'and `action_horizon`.')
+            if video_latent_shape is None:
+                raise ValueError('Video-action prediction requires '
+                                 '`video_latent_shape`.')
+            context, context_mask = self._append_proprio_to_context(
+                context=context,
+                context_mask=context_mask,
+                proprio=proprio,
+            )
+            return self.predict_video_action(
+                first_frame_latents=first_frame_latents,
+                context=context,
+                context_mask=context_mask,
+                action_horizon=action_horizon,
+                video_latent_shape=video_latent_shape,
+                conditioning_actions=conditioning_actions,
+                num_inference_steps=num_inference_steps,
+                sigma_shift=sigma_shift,
+                seed=seed,
+                rand_device=rand_device,
+            )
+        else:
+            raise ValueError(
+                f'Unsupported FastWAM forward mode: {forward_mode!r}')
+
+    def _forward_training(
+        self,
         video_latents: torch.Tensor,
         context: torch.Tensor,
         context_mask: torch.Tensor,
@@ -365,7 +472,7 @@ class FastWAMHead(nn.Module):
         action_padding_mask: Optional[torch.Tensor] = None,
         frame_padding_mask: Optional[torch.Tensor] = None,
         proprio: Optional[torch.Tensor] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, torch.Tensor]:
         device = video_latents.device
         batch_size = video_latents.shape[0]
@@ -960,7 +1067,7 @@ class FastWAMIDMHead(FastWAMJointHead):
         mask[cond_end:, noisy_end:cond_end] = True
         return mask
 
-    def forward(
+    def _forward_training(
         self,
         video_latents: torch.Tensor,
         context: torch.Tensor,
@@ -969,7 +1076,7 @@ class FastWAMIDMHead(FastWAMJointHead):
         action_padding_mask: Optional[torch.Tensor] = None,
         frame_padding_mask: Optional[torch.Tensor] = None,
         proprio: Optional[torch.Tensor] = None,
-        **kwargs,
+        **kwargs: Any,
     ) -> Dict[str, torch.Tensor]:
         device = video_latents.device
         batch_size = video_latents.shape[0]

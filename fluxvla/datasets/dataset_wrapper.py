@@ -13,8 +13,9 @@
 # limitations under the License.
 
 import json
+import math
 from collections import defaultdict
-from typing import Dict, List, Optional, Union
+from typing import Dict, Iterator, List, Literal, Optional, Union
 
 import numpy as np
 import torch
@@ -24,6 +25,8 @@ from fluxvla.engines import (DATASETS, build_dataset_from_cfg,
                              initialize_overwatch)
 
 overwatch = initialize_overwatch(__name__)
+
+DatasetShardingStrategy = Literal['round_robin', 'blockwise']
 
 
 @DATASETS.register_module()
@@ -93,6 +96,8 @@ class DistributedRepeatingDataset(IterableDataset):
         self.shuffle = shuffle
         self.reshuffle_each_epoch = reshuffle_each_epoch
         self.seed = seed
+        self._sharding_strategy: DatasetShardingStrategy = 'round_robin'
+        self._per_rank_batch_size: Optional[int] = None
         self.statistic_name = statistic_name
         self.dim = dim
         self.auto_compute_statistics = auto_compute_statistics
@@ -218,6 +223,43 @@ class DistributedRepeatingDataset(IterableDataset):
         self.rank = overwatch.rank()
         self.world_size = overwatch.world_size()
         self._epoch = 0
+        self._runner_epoch = torch.full((), -1,
+                                        dtype=torch.int64).share_memory_()
+
+    def set_epoch(self, epoch: int) -> None:
+        """Set the runner epoch shared by persistent DataLoader workers.
+
+        Args:
+            epoch: Non-negative runner epoch used to seed shuffling.
+        """
+        if epoch < 0:
+            raise ValueError(f'`epoch` must be non-negative, got {epoch}.')
+        self._runner_epoch.fill_(epoch)
+
+    def configure_sharding(
+        self,
+        strategy: DatasetShardingStrategy,
+        batch_size: int,
+    ) -> None:
+        """Configure how samples are sharded across ranks and workers.
+
+        Args:
+            strategy: Either ``round_robin`` or ``blockwise``.
+            batch_size: Physical batch size produced on each rank. It is used
+                only by ``blockwise`` sharding.
+        """
+        if strategy == 'round_robin':
+            self._sharding_strategy = strategy
+            self._per_rank_batch_size = None
+        elif strategy == 'blockwise':
+            if batch_size <= 0:
+                raise ValueError(
+                    f'`batch_size` must be positive, got {batch_size}.')
+            self._sharding_strategy = strategy
+            self._per_rank_batch_size = batch_size
+        else:
+            raise ValueError('`strategy` must be either "round_robin" or '
+                             f'"blockwise", got {strategy!r}.')
 
     def _apply_statistics_overrides(self, statistics: Dict,
                                     overrides: Dict) -> None:
@@ -555,7 +597,77 @@ class DistributedRepeatingDataset(IterableDataset):
         # here is just a sample framework
         pass
 
-    def __iter__(self):
+    def _get_round_robin_indices(self, epoch: int) -> np.ndarray:
+        """Build NumPy indices for round-robin sample sharding.
+
+        Args:
+            epoch: Runner epoch used by epoch-dependent shuffling.
+
+        Returns:
+            Global dataset indices in the legacy NumPy shuffle order.
+        """
+        epoch_offset = epoch if self.reshuffle_each_epoch else 0
+        indices = np.arange(self.total_len)
+        if self.shuffle:
+            rng = np.random.default_rng(self.seed + epoch_offset)
+            rng.shuffle(indices)
+        return indices
+
+    def _get_blockwise_indices(self, epoch: int) -> torch.Tensor:
+        """Build PyTorch indices for blockwise batch sharding.
+
+        Args:
+            epoch: Runner epoch used by epoch-dependent shuffling.
+
+        Returns:
+            Global dataset indices in the configured shuffle order.
+        """
+        if not self.shuffle:
+            return torch.arange(self.total_len, dtype=torch.int64)
+        epoch_offset = epoch if self.reshuffle_each_epoch else 0
+        generator = torch.Generator(device='cpu')
+        generator.manual_seed(self.seed + epoch_offset)
+        return torch.randperm(self.total_len, generator=generator)
+
+    def _get_round_robin_shard(
+        self,
+        indices: np.ndarray,
+        worker_id: int,
+        num_workers: int,
+    ) -> List[int]:
+        """Assign individual samples to ranks and workers in round-robin."""
+        total_world = self.world_size * num_workers
+        total_rank = self.rank * num_workers + worker_id
+        return indices[total_rank::total_world].tolist()
+
+    def _get_blockwise_shard(
+        self,
+        indices: torch.Tensor,
+        worker_id: int,
+        num_workers: int,
+    ) -> List[int]:
+        """Form global batches, then assign each rank a contiguous block."""
+        batch_size = self._per_rank_batch_size
+        if batch_size is None:
+            raise RuntimeError(
+                'Blockwise sharding requires a per-rank batch size.')
+        if self.total_len <= 0:
+            return []
+
+        distributed_batch_size = batch_size * self.world_size
+        padding_size = (-indices.numel()) % distributed_batch_size
+        if padding_size:
+            repeats = math.ceil(padding_size / indices.numel())
+            padding = indices.repeat(repeats)[:padding_size]
+            indices = torch.cat((indices, padding))
+
+        # (samples) -> (distributed steps, ranks, local batch)
+        rank_batches = indices.view(-1, self.world_size,
+                                    batch_size)[:, self.rank, :]
+        worker_batches = rank_batches[worker_id::num_workers]
+        return worker_batches.reshape(-1).tolist()
+
+    def __iter__(self) -> Iterator:
         # Incorporate DataLoader worker info so data is split across both
         # distributed processes and per-process DataLoader workers.
         worker_info = torch.utils.data.get_worker_info()
@@ -566,23 +678,29 @@ class DistributedRepeatingDataset(IterableDataset):
             worker_id = 0
             num_workers = 1
 
-        total_world = self.world_size * num_workers
-        total_rank = self.rank * num_workers + worker_id
+        shared_epoch = getattr(self, '_runner_epoch', None)
+        runner_epoch = (-1
+                        if shared_epoch is None else int(shared_epoch.item()))
 
         while True:
-            epoch = self._epoch
-            if self.reshuffle_each_epoch:
+            if runner_epoch >= 0:
+                epoch = runner_epoch
+            else:
+                epoch = self._epoch
+            if runner_epoch < 0 and self.reshuffle_each_epoch:
                 self._epoch += 1
 
-            # Create indices for the entire virtual concatenated dataset
-            indices = np.arange(self.total_len)
-            if self.shuffle:
-                epoch_offset = epoch if self.reshuffle_each_epoch else 0
-                rng = np.random.default_rng(self.seed + epoch_offset)
-                rng.shuffle(indices)
-
-            # Distribute indices across distributed ranks and workers.
-            shard = indices[total_rank::total_world].tolist()
+            if self._sharding_strategy == 'round_robin':
+                indices = self._get_round_robin_indices(epoch)
+                shard = self._get_round_robin_shard(indices, worker_id,
+                                                    num_workers)
+            elif self._sharding_strategy == 'blockwise':
+                indices = self._get_blockwise_indices(epoch)
+                shard = self._get_blockwise_shard(indices, worker_id,
+                                                  num_workers)
+            else:
+                raise RuntimeError('Unsupported dataset sharding strategy: '
+                                   f'{self._sharding_strategy!r}.')
 
             for idx in shard:
                 yield self._get_item_from_global_idx(idx)
