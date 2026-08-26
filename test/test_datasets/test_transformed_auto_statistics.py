@@ -74,7 +74,36 @@ def test_absolute_profile_keeps_qpos_actions_absolute(tmp_path):
 
     np.testing.assert_allclose(stats['robot']['action']['mean'], [4.25, 21.75])
     assert metadata['delta_mask'] == []
-    assert PROFILES['tron2'].delta_mask == ()
+
+
+def test_tron2_profile_uses_joint_deltas_and_absolute_grippers(tmp_path):
+    dataset_root = tmp_path / 'dataset'
+    (dataset_root / 'meta').mkdir(parents=True)
+    (dataset_root / 'data').mkdir()
+    (dataset_root / 'meta' / 'info.json').write_text('{}')
+    pq.write_table(
+        pa.table({
+            'observation.state': [[10.0] * 16],
+            'action': [[12.0] * 16],
+            'episode_index': [0],
+            'frame_index': [0],
+        }), dataset_root / 'data' / 'episode.parquet')
+
+    config = _wrapper_config(dataset_root)
+    config.datasets.action_window_size = 1
+    stats, metadata = compute_statistics_from_dataset_config(
+        config,
+        options=dict(profile='tron2'),
+        default_temp_dir=tmp_path,
+    )
+
+    expected_mask = ((True, ) * 7 + (False, ) + (True, ) * 7 + (False, ))
+    expected_action = np.full(16, 2.0)
+    expected_action[[7, 15]] = 12.0
+    np.testing.assert_allclose(stats['robot']['action']['mean'],
+                               expected_action)
+    assert metadata['delta_mask'] == list(expected_mask)
+    assert PROFILES['tron2'].delta_mask == expected_mask
     assert PROFILES['tron2'].expected_dim == 16
 
 

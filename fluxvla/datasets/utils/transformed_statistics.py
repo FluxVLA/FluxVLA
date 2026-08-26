@@ -68,9 +68,9 @@ PROFILES = {
         state_key='observation.state',
         action_key='action',
         # [left arm (7), left gripper, right arm (7), right gripper].
-        # Tron2 predicts absolute qpos targets, so no delta conversion is
-        # applied.
-        delta_mask=(),
+        # Convert arm joint targets to deltas while keeping both gripper
+        # targets absolute.
+        delta_mask=(True, ) * 7 + (False, ) + (True, ) * 7 + (False, ),
         expected_dim=16),
     'robocasa-joint-delta':
     Profile(
