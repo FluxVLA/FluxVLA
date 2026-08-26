@@ -56,13 +56,11 @@ def test_restored_tron2_config_preserves_absolute_qpos_contract():
     dataset = cfg.train_dataloader.dataset
     transform_types = [item.type for item in dataset.datasets[0].transforms]
 
-    assert cfg.model.ori_action_dim == 16
+    assert cfg.model.ori_action_dim == 18
     assert cfg.model.loss_action_dim == 32
     assert dataset.datasets[0].action_window_size == 50
     assert dataset.datasets[0].window_start_idx == 0
     assert dataset.datasets[0].supervise_terminal_padding is True
     assert 'RelativeActions' not in transform_types
-    assert cfg.inference.state_dim == 16
-    assert cfg.inference.action_layout == 'interleaved_grippers'
     assert cfg.inference.denormalize_action.type == 'DenormalizePrivateAction'
-    assert cfg.inference.denormalize_action.action_dim == 16
+    assert cfg.inference.denormalize_action.action_dim == 18

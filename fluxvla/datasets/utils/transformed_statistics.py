@@ -127,8 +127,7 @@ def _discover_dataset_roots(paths: Sequence[Path]) -> list[Path]:
 def _parquet_files(roots: Sequence[Path]) -> list[Path]:
     files = sorted({
         file
-        for root in roots
-        for file in (root / 'data').rglob('*.parquet')
+        for root in roots for file in (root / 'data').rglob('*.parquet')
     })
     if not files:
         raise ValueError(

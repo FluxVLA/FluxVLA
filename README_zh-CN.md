@@ -547,7 +547,7 @@ python tools/compute_transformed_dataset_stats.py /path/to/franka \
   --variable-name _PI05_FRANKA_EEPOSE_STATS \
   --output /tmp/franka_eepose_stats.py
 
-# Tron2：16 维双臂与夹爪均使用绝对 qpos 目标。
+# Tron2：机械臂、头部和夹爪均使用绝对 qpos 目标。
 python tools/compute_transformed_dataset_stats.py /path/to/tron2 \
   --profile tron2 --action-horizon 50 \
   --variable-name _TRON2_STATS --output /tmp/tron2_stats.py
