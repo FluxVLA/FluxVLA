@@ -59,6 +59,8 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## 📢 Latest News
 
+**\[2026/08/25\]** 🔥 FluxVLA-native DiT4DiT support is now available, including training and inference workflows for LIBERO and RoboCasa.
+
 **\[2026/08/20\]** 🔥 FluxVLA-native Cosmos3 support is now available for Nano, Super, and Edge, including post-training and inference workflows.
 
 **\[2026/08/13\]** 🔥 FastWAM world-action model support is now available.
@@ -814,25 +816,23 @@ For ARM and SARM workflows, you typically need a CLIP checkpoint for training / 
 <details>
 <summary><b>VLA models</b></summary>
 
-| Model                   | Size | Download link                                                                                                                        |
-| ----------------------- | ---- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| GR00T N1.5              | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                             |
-| OpenVLA                 | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                         |
-| FastWAM_base            | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                          |
-| Cosmos-Predict2.5-2B    | 2B   | [🤗 Hugging Face](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B)                                                                |
-| PI0_base                | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                              |
-| PI0 RoboCasa full-data  | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256)  |
-| PI05_base               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                             |
-| PI05_libero             | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                           |
-| PI05 RoboCasa full-data | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
-| SmolVLA                 | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                       |
+| Model                  | Size | Download link                                                                                                                       |
+| ---------------------- | ---- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| GR00T N1.5             | 3B   | [🤗 Hugging Face](https://huggingface.co/nvidia/GR00T-N1.5-3B/tree/main)                                                            |
+| OpenVLA                | 7B   | [🤗 Hugging Face](https://huggingface.co/openvla/openvla-7b)                                                                        |
+| FastWAM_base           | 5B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                         |
+| Cosmos-Predict2.5-2B   | 2B   | [🤗 Hugging Face](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B)                                                               |
+| PI0_base               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                             |
+| PI0 RoboCasa full-data | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256) |
+| PI05_base              | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                            |
+| PI05_libero            | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                          |
+| SmolVLA                | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                      |
 
-Download the PI0 and PI0.5 RoboCasa full-data checkpoints while preserving the paths expected by their configs:
+Download the PI0 RoboCasa full-data checkpoint while preserving the path expected by its config:
 
 ```bash
 hf download limxdynamics/FluxVLAEngine \
   --include "pi0_paligemma_robocasa_full_data_full_finetune_bs256/*" \
-  --include "pi05_paligemma_robocasa_full_data_full_finetune_bs256/*" \
   --local-dir ./checkpoints
 ```
 
