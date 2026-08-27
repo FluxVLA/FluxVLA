@@ -46,6 +46,7 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 | モデル         | 学習データ          | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                                         |
 | -------------- | ------------------- | ------- | ------ | --------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | FluxVLA(GR00T) | 24 タスク、30 デモ  | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)                  |
+| FluxVLA(PI0)   | 24 タスク、全データ | 60.00%  | 56.00% | 48.00%    | 49.33%         | [51.00%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256)  |
 | FluxVLA(PI0.5) | 24 タスク、全データ | 60.00%  | 51.00% | 52.00%    | 50.44%         | [51.42%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
 
 #### 注記
@@ -755,15 +756,17 @@ ARM と SARM のワークフローでは、通常は学習 / 推論用の CLIP �
 | FastWAM_base              | 5B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_base)                                          |
 | Cosmos-Predict2.5-2B      | 2B     | [🤗 Hugging Face](https://huggingface.co/nvidia/Cosmos-Predict2.5-2B)                                                                |
 | PI0_base                  | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                              |
+| PI0 RoboCasa（全データ）  | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256)  |
 | PI05_base                 | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                             |
 | PI05_libero               | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                           |
 | PI05 RoboCasa（全データ） | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
 | SmolVLA                   | 450M   | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                       |
 
-config が期待するディレクトリ構成を維持したまま PI0.5 RoboCasa full-data checkpoint をダウンロードします：
+各 config が期待するディレクトリ構成を維持したまま PI0 と PI0.5 の RoboCasa full-data checkpoint をダウンロードします：
 
 ```bash
 hf download limxdynamics/FluxVLAEngine \
+  --include "pi0_paligemma_robocasa_full_data_full_finetune_bs256/*" \
   --include "pi05_paligemma_robocasa_full_data_full_finetune_bs256/*" \
   --local-dir ./checkpoints
 ```
