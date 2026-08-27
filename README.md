@@ -578,18 +578,15 @@ is:
    work directory.
 
 The PI0.5 UR3, dual-Franka, and Tron2 training configs use this automatic
-path. ALOHA and RoboCasa intentionally keep checked-in statistics; RoboCasa
-does so to avoid scanning the full dataset at every startup. To run the
-equivalent calculation manually from the repository root:
+path. The ALOHA configs use the official OpenPI PI0.5 Trossen statistics from
+`gs://openpi-assets/checkpoints/pi05_base/assets/trossen/norm_stats.json` for
+both training normalization and action denormalization. RoboCasa keeps
+checked-in dataset-specific statistics to avoid scanning the full dataset at
+every startup. To run a dataset-specific calculation manually from the
+repository root:
 
 ```bash
 conda activate fluxvla
-
-# ALOHA: relative joints and absolute grippers.
-python tools/compute_transformed_dataset_stats.py /path/to/aloha \
-  --profile aloha --action-key observation.state \
-  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
-  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 
 # UR3: six relative joints and an absolute gripper.
 python tools/compute_transformed_dataset_stats.py /path/to/ur3 \
@@ -634,32 +631,22 @@ inherits `action_window_size`, `window_start_idx`,
 `supervise_terminal_padding`, and `statistic_name` directly from the training
 config.
 
-For example, after manually generating `/tmp/aloha_stats.py`, copy its complete
-`_PI05_ALOHA_STATS = {...}` definition into
-`configs/pi05/pi05_paligemma_aloha_full_finetune.py`, replacing the existing
-definition. Then make sure the same variable is used by both training and
-action denormalization:
+For OpenPI parity, do not regenerate the ALOHA statistics from the local
+training split. The checked-in `_PI05_ALOHA_STATS` is a direct copy of the
+official PI0.5 Trossen asset. If a different ALOHA calibration or data domain
+intentionally requires dataset-specific statistics, generate a replacement
+with:
 
-```python
-# Paste the contents generated in /tmp/aloha_stats.py here.
-_PI05_ALOHA_STATS = {
-    # Generated statistics dictionary.
-}
-
-train_dataloader = dict(
-    dataset=dict(
-        dataset_statistics=_PI05_ALOHA_STATS,
-        # Other dataset settings...
-    ),
-)
-
-inference = dict(
-    denormalize_action=dict(
-        norm_stats=_PI05_ALOHA_STATS,
-        # Other postprocessing settings...
-    ),
-)
+```bash
+python tools/compute_transformed_dataset_stats.py /path/to/aloha \
+  --profile aloha --action-key observation.state \
+  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
+  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 ```
+
+When overriding the official asset, use the same replacement dictionary for
+both `train_dataloader.dataset.dataset_statistics` and
+`inference.denormalize_action.norm_stats`.
 
 The legacy `tools/compute_pi05_norm_stats.py` command remains available as a
 compatibility wrapper around the generic tool.

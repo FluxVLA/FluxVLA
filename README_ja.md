@@ -520,18 +520,15 @@ huggingface-cli download limxdynamics/FluxVLAData \
    `dataset_statistics.json` と `dataset_statistics_metadata.json` を保存する。
 
 PI0.5 の UR3、双腕 Franka、Tron2 学習 config は、この自動フローを使用します。
-ALOHA と RoboCasa は意図的にリポジトリ内の既存統計量を維持し、RoboCasa では
-起動のたびに全データセットを走査する処理を避けます。リポジトリのルートから
-同等の計算を手動で実行するには：
+ALOHA config は、学習時の正規化とアクションの逆正規化の両方で、
+`gs://openpi-assets/checkpoints/pi05_base/assets/trossen/norm_stats.json`
+にある OpenPI PI0.5 公式 Trossen 統計量を使用します。RoboCasa は、
+起動のたびに全データセットを走査しないよう、データセット固有の統計量を
+リポジトリ内に保持します。リポジトリのルートからデータセット固有の
+統計量を手動で計算するには：
 
 ```bash
 conda activate fluxvla
-
-# ALOHA：関節は相対アクション、グリッパーは絶対アクション。
-python tools/compute_transformed_dataset_stats.py /path/to/aloha \
-  --profile aloha --action-key observation.state \
-  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
-  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 
 # UR3：6 関節は相対アクション、グリッパーは絶対アクション。
 python tools/compute_transformed_dataset_stats.py /path/to/ur3 \
@@ -575,30 +572,22 @@ mean/std、min/max、または PI0.5 の分位点正規化に利用できます�
 から `action_window_size`、`window_start_idx`、`supervise_terminal_padding`、
 `statistic_name` をそのまま引き継ぎます。
 
-たとえば `/tmp/aloha_stats.py` を生成した後、その中の完全な
-`_PI05_ALOHA_STATS = {...}` 定義を
-`configs/pi05/pi05_paligemma_aloha_full_finetune.py` にコピーして既存の定義を置き換え、学習とアクションの逆正規化で同じ変数を使用します：
+OpenPI との一致を保つため、ローカル学習データから ALOHA 統計量を
+再生成しないでください。リポジトリ内の `_PI05_ALOHA_STATS` は、
+PI0.5 Trossen 公式アセットの直接コピーです。異なる ALOHA キャリブレーションや
+データドメイン向けに、意図的にデータセット固有の統計量を使用する場合のみ、
+次のコマンドで置き換え用の統計量を生成します：
 
-```python
-# /tmp/aloha_stats.py で生成された内容をここに貼り付けます。
-_PI05_ALOHA_STATS = {
-    # 生成された統計量の辞書。
-}
-
-train_dataloader = dict(
-    dataset=dict(
-        dataset_statistics=_PI05_ALOHA_STATS,
-        # その他のデータセット設定...
-    ),
-)
-
-inference = dict(
-    denormalize_action=dict(
-        norm_stats=_PI05_ALOHA_STATS,
-        # その他の後処理設定...
-    ),
-)
+```bash
+python tools/compute_transformed_dataset_stats.py /path/to/aloha \
+  --profile aloha --action-key observation.state \
+  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
+  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 ```
+
+公式統計量を上書きする場合は、同じ置き換え辞書を
+`train_dataloader.dataset.dataset_statistics` と
+`inference.denormalize_action.norm_stats` の両方に使用してください。
 
 従来の `tools/compute_pi05_norm_stats.py` コマンドも、汎用ツールの互換ラッパーとして
 引き続き利用できます。

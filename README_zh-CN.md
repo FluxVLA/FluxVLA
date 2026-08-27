@@ -518,18 +518,15 @@ huggingface-cli download limxdynamics/FluxVLAData \
 3. 否则，仅在 rank 0 上计算一次变换后的统计量，并将
    `dataset_statistics.json` 和 `dataset_statistics_metadata.json` 保存到工作目录。
 
-PI0.5 的 UR3、双臂 Franka 和 Tron2 训练配置使用该自动流程。ALOHA 和
-RoboCasa 则有意保留仓库中已有的统计量；RoboCasa 这样处理可避免每次启动时扫描
-完整数据集。如需在仓库根目录手动执行等价计算：
+PI0.5 的 UR3、双臂 Franka 和 Tron2 训练配置使用该自动流程。
+ALOHA 配置则在训练归一化和动作反归一化中统一使用 OpenPI PI0.5 的
+Trossen 官方统计量：
+`gs://openpi-assets/checkpoints/pi05_base/assets/trossen/norm_stats.json`。
+RoboCasa 保留数据集专用的内置统计量，以避免每次启动时扫描完整数据集。
+如需在仓库根目录手动计算数据集专用统计量：
 
 ```bash
 conda activate fluxvla
-
-# ALOHA：关节使用相对动作，夹爪使用绝对动作。
-python tools/compute_transformed_dataset_stats.py /path/to/aloha \
-  --profile aloha --action-key observation.state \
-  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
-  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 
 # UR3：六个关节使用相对动作，夹爪使用绝对动作。
 python tools/compute_transformed_dataset_stats.py /path/to/ur3 \
@@ -572,30 +569,21 @@ mean/std、min/max 或 PI0.5 分位数归一化。自动计算会直接继承训
 `action_window_size`、`window_start_idx`、`supervise_terminal_padding` 和
 `statistic_name`。
 
-例如，生成 `/tmp/aloha_stats.py` 后，需要将其中完整的
-`_PI05_ALOHA_STATS = {...}` 定义复制到
-`configs/pi05/pi05_paligemma_aloha_full_finetune.py`，替换原有定义，并确保训练与动作反归一化使用同一个变量：
+为保持与 OpenPI 对齐，不要使用本地训练集重新生成 ALOHA 统计量。
+仓库中的 `_PI05_ALOHA_STATS` 是 PI0.5 Trossen 官方资产的直接副本。
+只有在使用不同 ALOHA 标定或数据域、并有意采用数据集专用统计量时，
+才应生成替换值：
 
-```python
-# 将 /tmp/aloha_stats.py 生成的内容粘贴到这里。
-_PI05_ALOHA_STATS = {
-    # 生成的统计量字典。
-}
-
-train_dataloader = dict(
-    dataset=dict(
-        dataset_statistics=_PI05_ALOHA_STATS,
-        # 其他数据集配置...
-    ),
-)
-
-inference = dict(
-    denormalize_action=dict(
-        norm_stats=_PI05_ALOHA_STATS,
-        # 其他动作后处理配置...
-    ),
-)
+```bash
+python tools/compute_transformed_dataset_stats.py /path/to/aloha \
+  --profile aloha --action-key observation.state \
+  --gripper-input-range=-0.01,0.08 --action-horizon 50 \
+  --variable-name _PI05_ALOHA_STATS --output /tmp/aloha_stats.py
 ```
+
+覆盖官方统计量时，必须将同一份替换字典同时用于
+`train_dataloader.dataset.dataset_statistics` 和
+`inference.denormalize_action.norm_stats`。
 
 旧的 `tools/compute_pi05_norm_stats.py` 命令仍然保留，作为通用工具的兼容包装入口。
 

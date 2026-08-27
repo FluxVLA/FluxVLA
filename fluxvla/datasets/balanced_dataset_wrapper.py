@@ -220,8 +220,7 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
         if world_size <= 0:
             raise ValueError('`world_size` must be positive.')
         if rank < 0 or rank >= world_size:
-            raise ValueError(
-                f'`rank` must be in [0, {world_size}), got {rank}.')
+            raise ValueError(f'rank must be in [0, {world_size}), got {rank}.')
         if self.sampling_probabilities is not None:
             return self._ordered_virtual_indices(epoch)[rank::world_size]
         positions = np.arange(rank, self.total_len, world_size, dtype=np.int64)
