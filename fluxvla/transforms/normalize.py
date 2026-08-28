@@ -847,6 +847,104 @@ class SinCosKeys:
 
 
 @TRANSFORMS.register_module()
+class StateFromInputs:
+    """Normalize a single flat state key with generic statistics.
+
+    Generic version of :class:`LiberoProprioFromInputs` for benchmarks whose
+    observation carries one flat state vector (e.g. RoboDojo's 14D joint
+    state) instead of separate eef pos/quat/gripper keys. All field names are
+    configurable; nothing is hardcoded to a benchmark.
+
+    Args:
+        state_key (str): Input key holding the raw state vector (default
+            'states', the training name for the observation state).
+        stat_key (str): Statistics key inside ``data['norm_stats']``.
+        norm_type (str): Normalization type (default 'min_max').
+        clip_norm (bool): Whether to clip min-max/quantile normalized state to
+            [-1, 1]. Defaults to False.
+        state_dim (int | None): Padded output dimension.
+        out_key (str): Output key for the normalized state (default
+            'states').
+    """
+
+    def __init__(self,
+                 state_key: str = 'states',
+                 stat_key: str = 'proprio',
+                 norm_type: str = 'min_max',
+                 clip_norm: bool = False,
+                 state_dim: int = None,
+                 out_key: str = 'states') -> None:
+        if norm_type not in {'mean_std', 'quantile', 'min_max'}:
+            raise ValueError(f'Unsupported norm_type: {norm_type!r}')
+        self.state_key = state_key
+        self.stat_key = stat_key
+        self.norm_type = norm_type
+        self.clip_norm = bool(clip_norm)
+        self.state_dim = state_dim
+        self.out_key = out_key
+
+    def __call__(self, data: Dict) -> Dict:
+        if self.state_key not in data:
+            raise KeyError(f'Missing state key: {self.state_key!r}')
+        state = np.asarray(data[self.state_key], dtype=np.float32)
+        if state.ndim != 1 or state.size == 0:
+            raise ValueError(
+                f'State {self.state_key!r} must be a nonempty 1-D array, '
+                f'got {state.shape}')
+        stats = data['norm_stats'][self.stat_key]
+        if self.norm_type == 'min_max':
+            state = self._normalize_min_max(state, stats)
+        elif self.norm_type == 'quantile':
+            state = self._normalize_quantile(state, stats)
+        else:
+            state = self._normalize_mean_std(state, stats)
+        if self.clip_norm and self.norm_type in {'min_max', 'quantile'}:
+            state = np.clip(state, -1.0, 1.0)
+        out = dict(data)
+        if self.state_dim is not None:
+            padded = np.zeros(self.state_dim, dtype=np.float32)
+            padded[:state.shape[0]] = state
+            out[self.out_key] = padded
+        else:
+            out[self.out_key] = state
+        return out
+
+    def _normalize_min_max(self, state: np.ndarray, stats: Dict):
+        assert 'min' in stats and stats['min'] is not None
+        assert 'max' in stats and stats['max'] is not None
+        low = np.asarray(stats['min'], dtype=np.float32)
+        high = np.asarray(stats['max'], dtype=np.float32)
+        if low.shape[-1] != state.shape[-1]:
+            raise ValueError(
+                f'State stats width {low.shape[-1]} does not match state '
+                f'width {state.shape[-1]}')
+        return (state - low) / (high - low + 1e-6) * 2.0 - 1.0
+
+    def _normalize_quantile(self, state: np.ndarray, stats: Dict):
+        assert 'q01' in stats and stats['q01'] is not None
+        assert 'q99' in stats and stats['q99'] is not None
+        low = np.asarray(stats['q01'])
+        high = np.asarray(stats['q99'])
+        self._validate_stats_width(state, low)
+        return (state - low) / (high - low + 1e-6) * 2.0 - 1.0
+
+    def _normalize_mean_std(self, state: np.ndarray, stats: Dict):
+        assert 'mean' in stats and stats['mean'] is not None
+        assert 'std' in stats and stats['std'] is not None
+        mean = np.asarray(stats['mean'])
+        std = np.asarray(stats['std'])
+        self._validate_stats_width(state, mean)
+        return (state - mean) / (std + 1e-6)
+
+    def _validate_stats_width(self, state: np.ndarray,
+                              values: np.ndarray) -> None:
+        if values.shape[-1] != state.shape[-1]:
+            raise ValueError(
+                f'State stats width {values.shape[-1]} does not match state '
+                f'width {state.shape[-1]}')
+
+
+@TRANSFORMS.register_module()
 class LiberoProprioFromInputs:
     """Build and normalize Libero proprio state from inputs.
 

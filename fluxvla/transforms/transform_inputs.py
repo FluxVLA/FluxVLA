@@ -246,6 +246,49 @@ class ProcessOBSInputs():
         return inputs
 
 
+@TRANSFORMS.register_module()
+class ProcessEvalInputs:
+    """Load benchmark eval images into the parquet-style transform chain.
+
+    Generic entry point for an online observation dict whose images are
+    top-level ``uint8 [H, W, 3]`` arrays (e.g. RoboDojo's three cameras).
+
+    Args:
+        img_keys (List[str]): Image keys to fetch from the inputs.
+        embodiment_id (int | None): Optional embodiment id written to
+            ``embodiment_ids``.
+    """
+
+    def __init__(self,
+                 img_keys: List[str] = None,
+                 embodiment_id: int = None) -> None:
+        if img_keys is None:
+            raise ValueError('ProcessEvalInputs requires img_keys')
+        self.img_keys = list(img_keys)
+        self.embodiment_id = embodiment_id
+
+    def __call__(self, inputs: Dict) -> Dict:
+        images = []
+        img_masks = []
+        for img_key in self.img_keys:
+            if img_key not in inputs:
+                raise KeyError(f'Missing image key: {img_key!r}')
+            img = np.asarray(inputs[img_key])
+            if img.ndim != 3 or img.dtype != np.uint8:
+                raise TypeError(
+                    f'Image {img_key!r} must be uint8 [H, W, 3], got '
+                    f'{img.dtype} {img.shape}')
+            image = Image.fromarray(img).convert('RGB')
+            images.append(image)
+            img_masks.append(True)
+        inputs['pixel_values'] = images
+        inputs['img_masks'] = img_masks
+        if self.embodiment_id is not None:
+            inputs['embodiment_ids'] = np.array(
+                self.embodiment_id, dtype=np.int32)
+        return inputs
+
+
 # === Libero-specific Image Loader Transform ===
 @TRANSFORMS.register_module()
 class ProcessLiberoEvalInputs:
