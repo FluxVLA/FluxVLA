@@ -128,7 +128,7 @@ def set_global_seed(
     Raises:
         AssertionError: If the seed is outside the bounds of np.uint32.
     """
-    assert np.iinfo(np.uint32).min < seed < np.iinfo(
+    assert np.iinfo(np.uint32).min <= seed <= np.iinfo(
         np.uint32).max, 'Seed outside the np.uint32 bounds!'
 
     # Set Seed as an Environment Variable
