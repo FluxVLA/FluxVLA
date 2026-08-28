@@ -16,13 +16,11 @@ from __future__ import annotations
 import copy
 import os
 from abc import ABC, abstractmethod
-from functools import partial
 from typing import Callable, Dict, List, Optional
 
 import torch
 import torch.nn as nn
 from safetensors.torch import load_file
-from torch.distributed.fsdp.wrap import _module_wrap_policy, _or_policy
 from transformers import GenerationMixin, PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
@@ -30,6 +28,8 @@ from fluxvla.engines import (build_head_from_cfg, build_llm_backbone_from_cfg,
                              build_projector_from_cfg,
                              build_vision_backbone_from_cfg,
                              build_vlm_backbone_from_cfg, initialize_overwatch)
+from fluxvla.engines.utils.fsdp_wrapping import (build_combined_wrap_policy,
+                                                 build_module_wrap_policy)
 
 overwatch = initialize_overwatch(__name__)
 
@@ -464,19 +464,14 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
 
         # Get Prismatic Wrapping Policy =>> just a module wrapping policy
         # around `self.projector`
-        projector_fsdp_wrapping_policy = partial(
-            _module_wrap_policy,
-            module_classes=set(PROJECTORS._module_dict.values()),
-        )
+        projector_fsdp_wrapping_policy = build_module_wrap_policy(
+            set(PROJECTORS._module_dict.values()))
         fsdp_policy_list.append(projector_fsdp_wrapping_policy)
         # Return union (_or_) over constituent policies
         # => Note: there is *not* a fall-through policy; any module that isn't
         # covered by the above constituents will automatically be folded into
         # the root VLM FSDP instance.
-        return partial(
-            _or_policy,
-            policies=fsdp_policy_list,
-        )
+        return build_combined_wrap_policy(fsdp_policy_list)
 
     def from_pretrained(self):
         # Load weights based on file format
