@@ -64,6 +64,17 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 - `Generalization`：残り 18 個のポストトレーニング新規タスク。
 - RoboCasa の結果は、各タスク 50 試行で評価しています。
 
+#### RoboDojo
+
+RoboDojo の完全評価は 42 個のベンチマークタスクで構成されます。30 個の独立タスクは各 50 試行、12 個の汎化タスクは標準レイアウト 25 試行とランダムレイアウト 25 試行で評価し、モデルごとに計 2,100 episode となります。指標の表記は進捗スコア / 成功率（%）です。モデルは平均進捗スコアの昇順で並べています。
+
+| モデル              |           平均 | 標準汎化（Gen-Std） | ランダム汎化（Gen-Rand） |            精度 |  長期ホライゾン |          記憶 | オープンタスク |
+| ------------------- | -------------: | ------------------: | -----------------------: | --------------: | --------------: | ------------: | -------------: |
+| FluxVLA(SmolVLA)    |  5.29% / 2.98% |       8.15% / 5.33% |            0.30% / 0.00% |   8.70% / 4.50% |   8.89% / 4.75% | 3.97% / 2.33% |  0.67% / 0.67% |
+| FluxVLA(GR00T N1.5) |  5.50% / 3.17% |       6.48% / 3.33% |            1.62% / 0.67% |   2.38% / 0.00% |  15.36% / 9.25% | 5.48% / 4.33% |  0.25% / 0.25% |
+| FluxVLA(PI0)        |  5.96% / 3.37% |      13.05% / 9.67% |            0.78% / 0.00% |   7.62% / 4.00% |  11.76% / 6.00% | 3.52% / 2.00% |  0.00% / 0.00% |
+| FluxVLA(PI0.5)      | 13.61% / 8.83% |     22.65% / 16.00% |            6.25% / 2.33% | 18.28% / 10.25% | 28.04% / 18.75% | 5.10% / 4.00% |  2.20% / 2.00% |
+
 ## 📢 最新情報
 
 **\[2026/09/09\]** 🔥 FluxVLA は OpenAI Responses API を介した GPT-6 Astra のチェックポイント不要な LIBERO 評価に対応しました。マルチビュー観測、LIBERO ネイティブのアクション制御、環境変数による認証情報設定、整理されたロールアウト成果物を含みます。
@@ -492,6 +503,7 @@ tensorboard --logdir work_dirs/tensorboard
 | libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)             |
 | RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                 |
 | RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                   |
+| RoboDojo                | [RoboDojo-Benchmark/RoboDojo（LeRobot v2.1）](https://huggingface.co/datasets/RoboDojo-Benchmark/RoboDojo/tree/main/data/RoboDojo_lerobot_v21_video)                         |
 | ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0) |
 | RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)           |
 | RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                   |
