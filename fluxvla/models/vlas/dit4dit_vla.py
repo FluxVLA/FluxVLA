@@ -249,8 +249,10 @@ class DiT4DiTVLA(BaseVLA):
         attention_mask = backbone_outputs.attention_mask
         actions = actions.to(
             device=last_hidden.device, dtype=last_hidden.dtype)
-        action_masks = action_masks.to(
-            device=last_hidden.device, dtype=last_hidden.dtype)
+        # Keep the validity mask discrete. The source DiT4DiT collator passes
+        # a bool mask into the action head rather than casting it with the
+        # floating-point model inputs.
+        action_masks = action_masks.to(device=last_hidden.device)
         if states is not None:
             states = states.to(
                 device=last_hidden.device, dtype=last_hidden.dtype)

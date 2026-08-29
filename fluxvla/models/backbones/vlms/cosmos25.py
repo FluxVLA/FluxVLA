@@ -16,6 +16,7 @@
 # DiT4DiT/model/modules/vlm/Cosmos25.py
 
 from __future__ import annotations
+from contextlib import contextmanager
 from typing import Any, Optional, Sequence, Type, Union
 
 import torch
@@ -74,6 +75,8 @@ class Cosmos25Backbone(nn.Module):
         num_frames_out: Optional default output video length. DiT4DiT uses the
             training video length even for single-frame eval inputs.
         fixed_seed: Optional deterministic noise seed for latent extraction.
+            Defaults to ``None`` so training samples fresh VAE latents and
+            initial diffusion noise on every forward, matching DiT4DiT.
         fsdp_min_num_params: Auto-wrap large non-block Cosmos modules above
             this parameter count when building an FSDP policy.
     """
@@ -91,7 +94,7 @@ class Cosmos25Backbone(nn.Module):
         frozen_submodules: Optional[Sequence[str]] = None,
         split_future_frames: bool = True,
         num_frames_out: Optional[int] = None,
-        fixed_seed: Optional[int] = 42,
+        fixed_seed: Optional[int] = None,
         num_inference_steps: int = 1,
         conditional_frame_timestep: float = 0.001,
         future_loss_type: Optional[str] = None,
@@ -249,13 +252,17 @@ class Cosmos25Backbone(nn.Module):
             **common_kwargs,
         )
 
-        with init_empty_weights():
-            transformer = CosmosTransformer3DModel.from_config(
-                transformer_config).to(dtype=self.torch_dtype)
-            vae = AutoencoderKLWan.from_config(vae_config).to(
-                dtype=self.torch_dtype)
-            text_encoder = Qwen2_5_VLForConditionalGeneration(text_config).to(
-                dtype=self.torch_dtype)
+        # Match ``from_pretrained(..., torch_dtype=...)`` by constructing
+        # parameters in the target dtype rather than calling ``module.to``.
+        # The latter also casts non-persistent rotary-frequency buffers to
+        # BF16. Since checkpoints do not contain those buffers, that changes
+        # every language embedding after architecture-only checkpoint load.
+        with self._temporary_default_dtype(self.torch_dtype):
+            with init_empty_weights():
+                transformer = CosmosTransformer3DModel.from_config(
+                    transformer_config)
+                vae = AutoencoderKLWan.from_config(vae_config)
+                text_encoder = Qwen2_5_VLForConditionalGeneration(text_config)
 
         return pipeline_cls(
             text_encoder=text_encoder,
@@ -265,6 +272,17 @@ class Cosmos25Backbone(nn.Module):
             scheduler=scheduler,
             safety_checker=safety_checker,
         )
+
+    @staticmethod
+    @contextmanager
+    def _temporary_default_dtype(dtype: torch.dtype):
+        """Construct low-precision parameters without casting FP32 buffers."""
+        previous = torch.get_default_dtype()
+        torch.set_default_dtype(dtype)
+        try:
+            yield
+        finally:
+            torch.set_default_dtype(previous)
 
     @property
     def device(self) -> torch.device:
@@ -537,9 +555,14 @@ class Cosmos25Backbone(nn.Module):
                                   Sequence[torch.Generator]]] = None,
     ) -> torch.Tensor:
         vae_dtype = getattr(self.vae, 'dtype', self.dtype)
-        video = video_bcthw.to(device=self.device, dtype=vae_dtype)
+        # The source path runs VideoProcessor normalization while pixels are
+        # still FP32, then casts the normalized video to the VAE dtype. Doing
+        # the affine transform after a BF16 cast changes the condition latent
+        # and is strongly amplified by the Cosmos transformer.
+        video = video_bcthw.to(device=self.device)
         if video.min() >= 0.0:
             video = video * 2.0 - 1.0
+        video = video.to(dtype=vae_dtype)
         if video.shape[2] < num_frames_out:
             pad = video.new_zeros(video.shape[0], video.shape[1],
                                   num_frames_out - video.shape[2],
@@ -713,6 +736,16 @@ class Cosmos25Backbone(nn.Module):
             t = torch.where(high_mask, high_t, t)
         return t
 
+    @staticmethod
+    def _mix_condition_timestep(
+        cond_indicator: torch.Tensor,
+        cond_timestep: torch.Tensor,
+        generated_timestep: torch.Tensor,
+    ) -> torch.Tensor:
+        """Blend condition/future timesteps with source dtype promotion."""
+        return (cond_indicator * cond_timestep +
+                (1.0 - cond_indicator) * generated_timestep)
+
     def _future_video_flow_matching_loss(
         self,
         condition_video: torch.Tensor,
@@ -773,13 +806,14 @@ class Cosmos25Backbone(nn.Module):
         t_b1t11[:, :, cond_count:cond_count + time_steps] = t
         t_b1t11 = t_b1t11.to(dtype=transformer_dtype)
 
+        # Keep the same mixed-input promotion order as the source. In
+        # particular, ``cond_latents`` and ``cond_indicator`` remain FP32
+        # here; pre-casting them to BF16 changes the Cosmos FM gradients.
         in_latents = (
-            cond_mask_t * cond_latents.to(transformer_dtype) +
+            cond_mask_t * cond_latents +
             (1.0 - cond_mask_t) * xt_full.to(transformer_dtype))
-        in_timestep = (
-            cond_indicator.to(transformer_dtype) *
-            cond_timestep.to(transformer_dtype) +
-            (1.0 - cond_indicator.to(transformer_dtype)) * t_b1t11)
+        in_timestep = self._mix_condition_timestep(cond_indicator,
+                                                   cond_timestep, t_b1t11)
 
         v_pred = self.transformer(
             hidden_states=in_latents,
@@ -931,9 +965,10 @@ class Cosmos25Backbone(nn.Module):
             in_latents = (
                 cond_mask_t * cond_latents.to(transformer_dtype) +
                 (1.0 - cond_mask_t) * latents.to(transformer_dtype))
-            in_timestep = cond_indicator.to(
-                transformer_dtype) * cond_timestep.to(transformer_dtype) + (
-                    1.0 - cond_indicator.to(transformer_dtype)) * sigma
+            # Source DiT4DiT keeps this interpolation in FP32 and passes the
+            # resulting timestep tensor to the BF16 Cosmos transformer.
+            in_timestep = self._mix_condition_timestep(cond_indicator,
+                                                       cond_timestep, sigma)
 
             # The selected feature is intentionally detached in the source
             # recipe. Do not build an autograd/checkpoint graph for this first

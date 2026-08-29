@@ -62,6 +62,7 @@ class ParquetDataset(Dataset):
                  repeat_to_full_length: bool = False,
                  expose_index: bool = False,
                  supervise_terminal_padding: bool = False,
+                 action_dtype: Optional[str] = 'float32',
                  expected_dataset_version: Optional[str] = None) -> None:
         """Initialize the Parquet dataset.
 
@@ -114,6 +115,10 @@ class ParquetDataset(Dataset):
                 used to pad a window past the episode boundary remain valid in
                 the loss mask. OpenPI/LeRobot supervises these repeated hold
                 actions. Defaults to False for backward compatibility.
+            action_dtype (str, optional): NumPy dtype applied while assembling
+                action windows. Set to None to preserve the source values'
+                inferred dtype until downstream normalization. Defaults to
+                ``'float32'`` for backward compatibility.
             expected_dataset_version (str, optional): Expected FluxVLA dataset
                 content version. If omitted, no version check is performed so
                 existing local datasets remain usable.
@@ -122,6 +127,8 @@ class ParquetDataset(Dataset):
         if not 0 < train_episode_fraction <= 1:
             raise ValueError('train_episode_fraction must be in (0, 1].')
         self.action_window_size = action_window_size
+        self.action_dtype = (None if action_dtype is None else
+                             np.dtype(action_dtype))
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
         self.data_root_path = data_root_path
@@ -352,6 +359,10 @@ class ParquetDataset(Dataset):
                 == self.dataset[index]['episode_index']
                 and self._get_dataset_index(index) == dataset_idx)
 
+    def _stack_actions(self, actions) -> np.ndarray:
+        """Assemble an action window using the configured source dtype."""
+        return np.array(actions, dtype=self.action_dtype)
+
     def __getitem__(self, index, dataset_statistics):
         index = self._resolve_index(index)
         data = self.dataset[index]
@@ -418,7 +429,7 @@ class ParquetDataset(Dataset):
 
         data['info'] = self.info[dataset_idx]
         data['stats'] = dataset_statistics[self.statistic_name]
-        data['actions'] = np.array(actions, dtype=np.float32)
+        data['actions'] = self._stack_actions(actions)
         data['action_masks'] = np.array(action_masks, dtype=np.float32)
         if self.expose_index:
             data['index'] = np.array(index, dtype=np.int64)

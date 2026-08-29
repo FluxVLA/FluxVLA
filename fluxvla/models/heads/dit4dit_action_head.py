@@ -262,9 +262,12 @@ class DiT4DiTActionHead(nn.Module):
                              'actions, and action masks.')
         device = vl_embs.device
         actions = actions.to(device=device, dtype=vl_embs.dtype)
-        action_mask = action_mask.to(device=device, dtype=vl_embs.dtype)
+        action_mask = action_mask.to(device=device, dtype=torch.bool)
 
-        noise = torch.randn_like(actions)
+        # Use the same factory call as the source implementation so a shared
+        # RNG state produces the same flow-matching noise tensor.
+        noise = torch.randn(
+            actions.shape, device=actions.device, dtype=actions.dtype)
         t = self.sample_time(
             actions.shape[0], device=actions.device, dtype=actions.dtype)
         t = t[:, None, None]
@@ -292,9 +295,11 @@ class DiT4DiTActionHead(nn.Module):
         )
         pred = self.action_decoder(model_output)
         pred_actions = pred[:, -actions.shape[1]:]
-        loss = ((pred_actions.float() - velocity.float())**2 *
-                action_mask.float())
-        return loss.sum() / action_mask.float().sum().clamp_min(1.0)
+        # Preserve the released DiT4DiT expression and its native promotion
+        # rules. Depending on the DiT output dtype this can reduce in FP32 or
+        # BF16; do not force a different dtype here.
+        loss = ((pred_actions - velocity)**2) * action_mask
+        return loss.sum() / action_mask.sum()
 
     @torch.no_grad()
     def predict_action(self,

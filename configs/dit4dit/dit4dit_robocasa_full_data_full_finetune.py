@@ -92,6 +92,12 @@ def _robocasa_task_env(task_name):
 
 model = dict(
     type='DiT4DiTVLA',
+    # Also allows evaluation of the released source checkpoint. Native
+    # FluxVLA checkpoints are detected by the runner and remain unchanged.
+    name_mapping=dict(
+        vlm_backbone='backbone_interface.extractor',
+        vla_head='action_model',
+    ),
     # Train from the Cosmos base model rather than a released DiT4DiT policy
     # checkpoint. Training resume is handled by the runner.
     # The source trainer repeats each sample four times with independently
@@ -109,7 +115,10 @@ model = dict(
         split_future_frames=True,
         # video_delta_indices=0..16 with action_video_freq_ratio=2.
         num_frames_out=_frame_window_size,
-        fixed_seed=42,
+        # The source wrapper's local ``fixed_seed = 42`` variable is never
+        # passed to its extractor. Official training therefore samples fresh
+        # VAE latents and initial diffusion noise on every forward.
+        fixed_seed=None,
         num_inference_steps=1,
         conditional_frame_timestep=0.0001,
         future_loss_type='flow_matching',
@@ -237,13 +246,20 @@ _dit4dit_parquet_dataset = dict(
     window_start_idx=0,
     frame_window_size=_frame_window_size,
     frame_sample_stride=_image_frame_stride,
+    # Official GR00T normalization operates on the parquet values in their
+    # inferred FP64 dtype and casts only the normalized result to FP16.
+    action_dtype=None,
 )
 
 train_dataloader = dict(
     # The released recipe uses 16 GPUs * 4 samples/GPU. The common 8-GPU
     # FluxVLA launch uses 8 samples/GPU for the same global batch of 64.
     per_device_batch_size=8,
-    per_device_num_workers=4,
+    # This is an IterableDataset that shards by both rank and worker. With
+    # four workers, one optimizer step consumes every fourth source batch
+    # instead of the source DataLoader's contiguous 64 indices. One worker
+    # preserves the official global batch sequence while still prefetching.
+    per_device_num_workers=1,
     dataset=dict(
         type='DistributedBalancedRepeatingDataset',
         name_mappings={
@@ -264,7 +280,11 @@ train_dataloader = dict(
         ],
         sampling_weights=[1.0] * len(_ROBOCASA_TASK_DIRS),
         shuffle=False,
-        reshuffle_each_epoch=True,
+        # The source DataLoader iterates indices without ``shuffle=True`` and
+        # its reset helper updates only ``dataloader.sampler``. It never calls
+        # ``LeRobotMixtureDataset.set_epoch()``, so the mixture keeps epoch 0
+        # and repeats the same deterministic index-to-sample mapping.
+        reshuffle_each_epoch=False,
         seed=seed,
     ),
 )
@@ -344,8 +364,15 @@ eval = dict(
     max_episode_steps=720,
     num_trials_per_task=50,
     seed=eval_seed,
+    # The released batch evaluator never seeds gym resets or diffusion action
+    # sampling. Keep both stochastic here so the reported score follows the
+    # same rollout distribution rather than a FluxVLA-specific fixed suite.
+    deterministic_env=False,
+    deterministic_action_sampling=False,
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='n15',
+    # The source wrapper always runs Cosmos under BF16 autocast. Its
+    # ``--use_bf16`` switch controls parameter casting, not this autocast.
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
     dataset=dict(
@@ -394,7 +421,11 @@ eval = dict(
                 state_norm_type='none',
                 norm_type='min_max',
                 normalize_states=False,
-                output_dtype='float16',
+                # The source evaluator computes sin/cos from the environment's
+                # FP32 joint state and keeps it in FP32 until ``predict_action``
+                # casts it directly to the Cosmos hidden-state dtype. Avoid an
+                # intermediate FP16 round-trip in live rollouts.
+                output_dtype='float32',
             ),
         ],
     ),
@@ -405,9 +436,10 @@ eval = dict(
         # The official RoboCasa policy clips diffusion outputs before
         # applying min/max denormalization.
         clip_actions=True,
-        # Reorder the stored FluxVLA statistics to the N1.5/DiT4DiT output
-        # order before denormalization.
-        stats_order='fluxvla',
+        # Released source checkpoints store N1.5-order statistics, whereas
+        # FluxVLA checkpoints save the converted dataset's flat order. The
+        # runner resolves this from the checkpoint key convention.
+        stats_order='checkpoint',
     ),
 )
 
@@ -433,7 +465,7 @@ themis = dict(
             type='RoboCasaEnvironment',
             task_list=eval['task_list'],
             action_order=eval['action_order'],
-            deterministic_env=True,
+            deterministic_env=False,
             prompt_key='annotation.human.coarse_action',
             render_key='video.ego_view_pad_res256_freq20',
         ),

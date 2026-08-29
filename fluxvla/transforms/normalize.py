@@ -529,10 +529,14 @@ class NormalizeStatesAndActions:
             self.delta_action_dim_mask = None
 
     def __call__(self, data: Dict) -> Dict:
-        states = np.asarray(data['states'], dtype=np.float32)
+        states = (
+            np.asarray(data['states']) if self.preserve_input_dtype else
+            np.asarray(data['states'], dtype=np.float32))
         actions = None
         if self.action_key is not None and 'actions' in data:
-            actions = np.asarray(data['actions'], dtype=np.float32)
+            actions = (
+                np.asarray(data['actions']) if self.preserve_input_dtype else
+                np.asarray(data['actions'], dtype=np.float32))
             if (self.action_norm_mask is not None
                     and len(self.action_norm_mask) != actions.shape[-1]):
                 raise ValueError(
