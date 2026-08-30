@@ -217,6 +217,7 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
 
     def _shard_virtual_indices(self, epoch: int, rank: int,
                                world_size: int) -> np.ndarray:
+        """Shard virtual indices with the legacy round-robin policy."""
         if world_size <= 0:
             raise ValueError('`world_size` must be positive.')
         if rank < 0 or rank >= world_size:
@@ -225,6 +226,33 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
             return self._ordered_virtual_indices(epoch)[rank::world_size]
         positions = np.arange(rank, self.total_len, world_size, dtype=np.int64)
         return self._affine_permutation(epoch, positions)
+
+    def _get_worker_virtual_indices(
+        self,
+        epoch: int,
+        worker_id: int,
+        num_workers: int,
+    ) -> np.ndarray:
+        """Shard balanced virtual indices across ranks and workers.
+
+        Round-robin preserves the original sample-wise sharding behavior.
+        Blockwise first forms distributed batches, assigns each rank its
+        contiguous local batch, and then assigns complete local batches to
+        DataLoader workers.
+        """
+        if self._sharding_strategy == 'round_robin':
+            total_world = self.world_size * num_workers
+            total_rank = self.rank * num_workers + worker_id
+            return self._shard_virtual_indices(epoch, total_rank, total_world)
+
+        if self._sharding_strategy == 'blockwise':
+            indices = torch.as_tensor(
+                self._ordered_virtual_indices(epoch), dtype=torch.int64)
+            shard = self._get_blockwise_shard(indices, worker_id, num_workers)
+            return np.asarray(shard, dtype=np.int64)
+
+        raise RuntimeError('Unsupported dataset sharding strategy: '
+                           f'{self._sharding_strategy!r}.')
 
     def _get_balanced_item(self, source_index: int, sample_index: int):
         source_position = int(
@@ -236,25 +264,24 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
         return self.dataset.__getitem__(source_position,
                                         self.dataset_statistics)
 
-    def set_epoch(self, epoch: int) -> None:
-        """Set the next epoch used for deterministic sample mapping."""
-        if int(epoch) < 0:
-            raise ValueError('`epoch` must be non-negative.')
-        self._epoch = int(epoch)
-
     def __iter__(self):
         worker_info = torch.utils.data.get_worker_info()
         worker_id = worker_info.id if worker_info is not None else 0
         num_workers = worker_info.num_workers if worker_info is not None else 1
-        total_world = self.world_size * num_workers
-        total_rank = self.rank * num_workers + worker_id
+
+        shared_epoch = getattr(self, '_runner_epoch', None)
+        runner_epoch = (-1
+                        if shared_epoch is None else int(shared_epoch.item()))
 
         while True:
-            epoch = self._epoch
-            if self.reshuffle_each_epoch:
+            if runner_epoch >= 0:
+                epoch = runner_epoch
+            else:
+                epoch = self._epoch
+            if runner_epoch < 0 and self.reshuffle_each_epoch:
                 self._epoch += 1
-            virtual_indices = self._shard_virtual_indices(
-                epoch, total_rank, total_world)
+            virtual_indices = self._get_worker_virtual_indices(
+                epoch, worker_id, num_workers)
             for virtual_index in virtual_indices:
                 source_index, sample_index = self._sample_dataset_and_index(
                     epoch, int(virtual_index))
