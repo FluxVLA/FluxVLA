@@ -228,7 +228,6 @@ model = dict(
     load_metadata=True,
     qwen3_runtime='compat_457',
     freeze_vlm_backbone=True,
-    freeze_vla_head=False,
     vlm_backbone=dict(
         type='GrootN17Qwen3Backbone',
         model_config=_QWEN3_VL_CONFIG,

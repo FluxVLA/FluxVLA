@@ -66,7 +66,6 @@ class GrootN17VLA(LlavaVLA):
         freeze_llm_backbone: bool = True,
         freeze_vlm_backbone: bool = False,
         freeze_projector: bool = False,
-        freeze_vla_head: bool = False,
         load_metadata: bool = True,
         norm_stats: Optional[Dict[str, Any]] = None,
         use_relative_action: Optional[bool] = None,
@@ -88,7 +87,6 @@ class GrootN17VLA(LlavaVLA):
             freeze_llm_backbone=freeze_llm_backbone,
             freeze_projector=freeze_projector,
             freeze_vlm_backbone=freeze_vlm_backbone,
-            freeze_vla_head=freeze_vla_head,
             norm_stats=norm_stats,
             name_mapping=name_mapping,
         )
@@ -580,8 +578,8 @@ class GrootN17VLA(LlavaVLA):
         """
         self._ensure_native_runtime()
         # DDP invokes this hook after its initial freeze pass, when the lazy
-        # native modules do not exist yet. Reapply the common VLA policy now
-        # that the backbone and head have been materialized.
+        # native backbone does not exist yet. Reapply the common backbone
+        # policy now that the native modules have been materialized.
         self.freeze_backbones()
         return self
 

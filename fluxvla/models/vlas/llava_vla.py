@@ -90,7 +90,6 @@ class LlavaVLA(BaseVLA):
                  pretrained_name_or_path: Path = None,
                  name_mapping: Dict = None,
                  strict_mapping: bool = False,
-                 freeze_vla_head: bool = False,
                  *args,
                  **kwargs) -> None:
         super().__init__(
@@ -104,7 +103,6 @@ class LlavaVLA(BaseVLA):
             freeze_llm_backbone=freeze_llm_backbone,
             freeze_projector=freeze_projector,
             freeze_vlm_backbone=freeze_vlm_backbone,
-            freeze_vla_head=freeze_vla_head,
             vision_backbone_fp32=vision_backbone_fp32,
             unfreeze_last_layer=unfreeze_last_layer,
             ignore_index=ignore_index,
