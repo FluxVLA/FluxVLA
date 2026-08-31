@@ -14,33 +14,23 @@
 """FluxVLA-native GR00T N1.7 action head."""
 
 from __future__ import annotations
-import logging
-from functools import partial
 from types import SimpleNamespace
-from typing import Callable
 
 import torch
 import torch.nn.functional as F
-from torch import nn
-from torch.distributed.fsdp.wrap import _module_wrap_policy
-from torch.distributions import Beta
 
 from fluxvla.engines import HEADS
-from fluxvla.models.blocks import AlternateVLDiT, DiT, SelfAttentionTransformer
-from fluxvla.models.heads.flow_matching_head import (
-    CategorySpecificMLP, MultiEmbodimentActionEncoder)
-
-logger = logging.getLogger(__name__)
+from fluxvla.models.blocks import AlternateVLDiT, DiT
+from fluxvla.models.heads.flow_matching_head import FlowMatchingHead
 
 
 @HEADS.register_module()
-class GrootN17ActionHead(nn.Module):
+class GrootN17ActionHead(FlowMatchingHead):
     """Native equivalent of official ``Gr00tN1d7ActionHead``."""
 
     supports_gradient_checkpointing = True
 
     def __init__(self, config, **config_overrides):
-        super().__init__()
         if config_overrides:
             config_dict = (
                 dict(config) if isinstance(config, dict) else vars(config))
@@ -50,72 +40,40 @@ class GrootN17ActionHead(nn.Module):
             }
             config_dict.update(valid_overrides)
             config = SimpleNamespace(**config_dict)
-        self.config = config
-        self.hidden_size = config.hidden_size
-        self.input_embedding_dim = config.input_embedding_dim
-
+        model_cls = AlternateVLDiT if config.use_alternate_vl_dit else DiT
+        model_extra_kwargs = {
+            'cross_attention_dim': config.backbone_embedding_dim,
+        }
         if config.use_alternate_vl_dit:
-            self.model = AlternateVLDiT(
-                **config.diffusion_model_cfg,
-                cross_attention_dim=config.backbone_embedding_dim,
-                attend_text_every_n_blocks=config.attend_text_every_n_blocks,
-            )
-            logger.info('Using AlternateVLDiT for diffusion model')
-        else:
-            self.model = DiT(
-                **config.diffusion_model_cfg,
-                cross_attention_dim=config.backbone_embedding_dim,
-            )
-            logger.info('Using DiT for diffusion model')
-
-        self.action_dim = config.max_action_dim
+            model_extra_kwargs['attend_text_every_n_blocks'] = (
+                config.attend_text_every_n_blocks)
+        super().__init__(
+            hidden_size=config.hidden_size,
+            state_dim=config.max_state_dim * config.state_history_length,
+            input_embedding_dim=config.input_embedding_dim,
+            action_dim=config.max_action_dim,
+            num_inference_timesteps=config.num_inference_timesteps,
+            max_num_embodiments=config.max_num_embodiments,
+            use_vlln=config.use_vlln,
+            backbone_embedding_dim=config.backbone_embedding_dim,
+            vl_self_attention_cfg=config.vl_self_attention_cfg,
+            add_positional_embeddings=config.add_pos_embed,
+            max_seq_len=config.max_seq_len,
+            num_timestep_buckets=config.num_timestep_buckets,
+            noise_s=config.noise_s,
+            noise_beta_alpha=config.noise_beta_alpha,
+            noise_beta_beta=config.noise_beta_beta,
+            num_steps=config.action_horizon,
+            zero_padded_action_dims=False,
+            clamp_sample_time=False,
+            diffusion_model_cls=model_cls,
+            diffusion_model_cfg=config.diffusion_model_cfg,
+            diffusion_model_extra_kwargs=model_extra_kwargs,
+            use_future_tokens=False,
+        )
+        self.config = config
         self.action_horizon = config.action_horizon
-        self.num_inference_timesteps = config.num_inference_timesteps
-
-        self.state_encoder = CategorySpecificMLP(
-            num_categories=config.max_num_embodiments,
-            input_dim=config.max_state_dim * config.state_history_length,
-            hidden_dim=self.hidden_size,
-            output_dim=self.input_embedding_dim,
-        )
-        self.action_encoder = MultiEmbodimentActionEncoder(
-            action_dim=self.action_dim,
-            hidden_size=self.input_embedding_dim,
-            num_embodiments=config.max_num_embodiments,
-        )
-        self.action_decoder = CategorySpecificMLP(
-            num_categories=config.max_num_embodiments,
-            input_dim=self.hidden_size,
-            hidden_dim=self.hidden_size,
-            output_dim=self.action_dim,
-        )
-
-        self.vlln = (
-            nn.LayerNorm(config.backbone_embedding_dim)
-            if config.use_vlln else nn.Identity())
-        vl_self_attention_cfg = getattr(config, 'vl_self_attention_cfg', None)
-        if vl_self_attention_cfg and vl_self_attention_cfg.get(
-                'num_layers', 0) > 0:
-            self.vl_self_attention = SelfAttentionTransformer(
-                **vl_self_attention_cfg)
-        else:
-            self.vl_self_attention = nn.Identity()
-
-        if config.add_pos_embed:
-            self.position_embedding = nn.Embedding(
-                config.max_seq_len,
-                self.input_embedding_dim,
-            )
-            nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
-
         self.state_dropout_prob = config.state_dropout_prob
-        self.beta_dist = Beta(config.noise_beta_alpha, config.noise_beta_beta)
-        self.num_timestep_buckets = config.num_timestep_buckets
-        self.set_trainable_parameters(
-            config.tune_projector,
-            config.tune_diffusion_model,
-            config.tune_vlln,
-        )
 
     @staticmethod
     def _sample_initial_actions(size, dtype, device, seed: int | None = None):
@@ -129,58 +87,6 @@ class GrootN17ActionHead(nn.Module):
             device=device,
             generator=generator,
         )
-
-    def get_fsdp_wrapping_policy(self) -> Callable:
-        """Return FSDP wrapping policy for N1.7 flow action modules."""
-        return partial(
-            _module_wrap_policy,
-            module_classes={SelfAttentionTransformer, DiT},
-        )
-
-    def set_trainable_parameters(
-        self,
-        tune_projector: bool,
-        tune_diffusion_model: bool,
-        tune_vlln: bool,
-    ):
-        self.tune_projector = tune_projector
-        self.tune_diffusion_model = tune_diffusion_model
-        self.tune_vlln = tune_vlln
-        for param in self.parameters():
-            param.requires_grad = True
-        if not tune_projector:
-            self.state_encoder.requires_grad_(False)
-            self.action_encoder.requires_grad_(False)
-            self.action_decoder.requires_grad_(False)
-            if self.config.add_pos_embed:
-                self.position_embedding.requires_grad_(False)
-        if not tune_diffusion_model:
-            self.model.requires_grad_(False)
-        if not tune_vlln:
-            self.vlln.requires_grad_(False)
-            self.vl_self_attention.requires_grad_(False)
-
-    def apply_trainable_policy(self) -> None:
-        """Restore the fine-grained policy declared by the model config."""
-        self.set_trainable_parameters(
-            self.tune_projector,
-            self.tune_diffusion_model,
-            self.tune_vlln,
-        )
-
-    def set_frozen_modules_to_eval_mode(self):
-        if self.training:
-            if not self.tune_projector:
-                self.state_encoder.eval()
-                self.action_encoder.eval()
-                self.action_decoder.eval()
-                if self.config.add_pos_embed:
-                    self.position_embedding.eval()
-            if not self.tune_diffusion_model:
-                self.model.eval()
-            if not self.tune_vlln:
-                self.vlln.eval()
-                self.vl_self_attention.eval()
 
     def sample_time(self, batch_size, device, dtype):
         sample = self.beta_dist.sample([batch_size]).to(device, dtype=dtype)
@@ -223,8 +129,6 @@ class GrootN17ActionHead(nn.Module):
         sample_weight: torch.Tensor | None = None,
     ) -> dict[str, torch.Tensor]:
         del sample_weight
-        self.set_frozen_modules_to_eval_mode()
-
         vl_embeds, state_features = self.encode_features(
             input_features, states, embodiment_ids)
         device = vl_embeds.device
@@ -384,6 +288,7 @@ class GrootN17ActionHead(nn.Module):
         embodiment_ids: torch.Tensor,
         prefix_len: int = 0,
         image_mask: torch.Tensor | None = None,
+        seed: int | None = None,
         **kwargs,
     ) -> torch.Tensor:
         del prefix_len, kwargs
@@ -393,4 +298,5 @@ class GrootN17ActionHead(nn.Module):
             attention_mask=attention_mask,
             embodiment_ids=embodiment_ids,
             image_mask=image_mask,
+            seed=seed,
         )['action_pred']

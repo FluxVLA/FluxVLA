@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Callable, Dict
+from typing import Callable, Dict, Optional, Type
 
 import torch
 import torch.nn as nn
@@ -232,7 +232,10 @@ class FlowMatchingHead(nn.Module):
                  ori_action_dim=None,
                  rtc_training_config=None,
                  zero_padded_action_dims: bool = True,
-                 clamp_sample_time: bool = True):
+                 clamp_sample_time: bool = True,
+                 diffusion_model_cls: Type[nn.Module] = DiT,
+                 diffusion_model_extra_kwargs: Optional[Dict] = None,
+                 use_future_tokens: bool = True):
         super().__init__()
         self.rtc_training_config = rtc_training_config
         self.hidden_size = hidden_size
@@ -253,18 +256,22 @@ class FlowMatchingHead(nn.Module):
             hidden_dim=hidden_size,
             output_dim=action_dim,
         )
-        self.model = DiT(**diffusion_model_cfg)
+        diffusion_model_cfg = dict(diffusion_model_cfg)
+        diffusion_model_cfg.update(diffusion_model_extra_kwargs or {})
+        self.model = diffusion_model_cls(**diffusion_model_cfg)
         self.input_embedding_dim = input_embedding_dim
         self.action_dim = action_dim
         self.beta_dist = Beta(noise_beta_alpha, noise_beta_beta)
         self.num_inference_timesteps = num_inference_timesteps
         self.num_timestep_buckets = num_timestep_buckets
         self.noise_s = noise_s
-        self.future_tokens = nn.Embedding(num_target_vision_tokens,
-                                          self.input_embedding_dim)
+        self.future_tokens = (
+            nn.Embedding(num_target_vision_tokens, self.input_embedding_dim)
+            if use_future_tokens else None)
         self.add_positional_embeddings = add_positional_embeddings
         self.num_steps = num_steps
-        nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
+        if self.future_tokens is not None:
+            nn.init.normal_(self.future_tokens.weight, mean=0.0, std=0.02)
 
         self.vlln = (
             nn.LayerNorm(backbone_embedding_dim)
@@ -339,10 +346,13 @@ class FlowMatchingHead(nn.Module):
             action_features = action_features + pos_embs
 
         # Join vision, language, state and action embedding along sequence dim.
-        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(
-            input_features.shape[0], -1, -1)
-        sa_embs = torch.cat((state_features, future_tokens, action_features),
-                            dim=1)
+        features = [state_features]
+        if self.future_tokens is not None:
+            features.append(
+                self.future_tokens.weight.unsqueeze(0).expand(
+                    input_features.shape[0], -1, -1))
+        features.append(action_features)
+        sa_embs = torch.cat(features, dim=1)
 
         vl_attn_mask = attention_mask
 
@@ -408,10 +418,13 @@ class FlowMatchingHead(nn.Module):
             pos_embs = self.position_embedding(pos_ids).unsqueeze(0)
             action_features = action_features + pos_embs
 
-        future_tokens = self.future_tokens.weight.unsqueeze(0).expand(
-            input_features.shape[0], -1, -1)
-        sa_embs = torch.cat((state_features, future_tokens, action_features),
-                            dim=1)
+        features = [state_features]
+        if self.future_tokens is not None:
+            features.append(
+                self.future_tokens.weight.unsqueeze(0).expand(
+                    input_features.shape[0], -1, -1))
+        features.append(action_features)
+        sa_embs = torch.cat(features, dim=1)
 
         model_output = self.model(
             hidden_states=sa_embs,

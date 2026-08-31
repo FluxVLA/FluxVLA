@@ -90,6 +90,7 @@ class LlavaVLA(BaseVLA):
                  pretrained_name_or_path: Path = None,
                  name_mapping: Dict = None,
                  strict_mapping: bool = False,
+                 freeze_vla_head: bool = False,
                  *args,
                  **kwargs) -> None:
         super().__init__(
@@ -103,6 +104,7 @@ class LlavaVLA(BaseVLA):
             freeze_llm_backbone=freeze_llm_backbone,
             freeze_projector=freeze_projector,
             freeze_vlm_backbone=freeze_vlm_backbone,
+            freeze_vla_head=freeze_vla_head,
             vision_backbone_fp32=vision_backbone_fp32,
             unfreeze_last_layer=unfreeze_last_layer,
             ignore_index=ignore_index,
@@ -142,6 +144,7 @@ class LlavaVLA(BaseVLA):
         Forward pass for the LlavaVLA model.
         """
 
+        backbone_output = None
         # Check if the model has a VLM backbone and use it if available.
         if hasattr(self, 'vlm_backbone') and self.vlm_backbone is not None:
             backbone_output = self.vlm_backbone(
@@ -178,7 +181,7 @@ class LlavaVLA(BaseVLA):
                     'Output must contain either hidden_states or last_hidden_state.'  # noqa: E501
                 last_hidden_state = output['last_hidden_state']
             auxiliary_losses = {}
-        ret_dict = self.vla_head(
+        head_kwargs = dict(
             input_features=last_hidden_state,
             states=states,
             attention_mask=fused_attention_mask,
@@ -186,6 +189,11 @@ class LlavaVLA(BaseVLA):
             action_masks=action_masks,
             embodiment_ids=embodiment_ids,
             sample_weight=kwargs.get('sample_weight'))
+        if isinstance(backbone_output, VLMBackboneOutput):
+            image_mask = backbone_output.auxiliary_outputs.get('image_mask')
+            if image_mask is not None:
+                head_kwargs['image_mask'] = image_mask
+        ret_dict = self.vla_head(**head_kwargs)
         if not auxiliary_losses and not torch.is_tensor(ret_dict):
             return ret_dict
         return add_auxiliary_losses(
@@ -205,6 +213,7 @@ class LlavaVLA(BaseVLA):
                        seed: Optional[int] = None,
                        *args,
                        **kwargs):
+        backbone_output = None
         if hasattr(self, 'vlm_backbone') and self.vlm_backbone is not None:
             backbone_output = self.vlm_backbone(
                 images=images,
@@ -236,6 +245,10 @@ class LlavaVLA(BaseVLA):
             prev_actions=prev_actions,
             prefix_len=prefix_len,
             rtc_config=rtc_config)
+        if isinstance(backbone_output, VLMBackboneOutput):
+            image_mask = backbone_output.auxiliary_outputs.get('image_mask')
+            if image_mask is not None:
+                predict_kwargs['image_mask'] = image_mask
         if seed is not None:
             predict_kwargs['seed'] = seed
         pred_actions = self.vla_head.predict_action(**predict_kwargs)

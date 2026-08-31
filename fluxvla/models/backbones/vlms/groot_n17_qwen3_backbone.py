@@ -16,24 +16,15 @@
 from __future__ import annotations
 import logging
 from collections.abc import Mapping
-from dataclasses import dataclass
-from typing import Any, Callable, Dict
+from typing import Any, Dict, Optional
 
 import torch
 
 from fluxvla.engines.utils import VLM_BACKBONES
-from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
+from .outputs import VLMBackboneOutput
 from .qwen3_vl import Qwen3VL
 
 logger = logging.getLogger(__name__)
-_StateDict = Dict[str, torch.Tensor]
-
-
-@dataclass(frozen=True)
-class GrootN17BackboneOutput:
-    backbone_features: torch.Tensor
-    backbone_attention_mask: torch.Tensor
-    image_mask: torch.Tensor
 
 
 @VLM_BACKBONES.register_module()
@@ -48,15 +39,11 @@ class GrootN17Qwen3Backbone(Qwen3VL):
     def __init__(
         self,
         model_config: Dict[str, Any],
-        tune_llm: bool = False,
-        tune_visual: bool = False,
         select_layer: int = -1,
         reproject_vision: bool = True,
         use_flash_attention: bool = False,
         projector_dim: int = -1,
         load_bf16: bool = False,
-        tune_top_llm_layers: int = 0,
-        trainable_params_fp32: bool = False,
         qwen3_runtime: str = 'compat_457',
     ) -> None:
         del reproject_vision, projector_dim
@@ -105,9 +92,6 @@ class GrootN17Qwen3Backbone(Qwen3VL):
 
         self.select_layer = select_layer
         self.load_bf16 = load_bf16
-        self.trainable_params_fp32 = trainable_params_fp32
-        self.set_trainable_parameters(tune_llm, tune_visual,
-                                      tune_top_llm_layers)
 
     def finalize_checkpoint_load(self) -> None:
         """Materialize buffers after assigning checkpoint weights."""
@@ -133,64 +117,6 @@ class GrootN17Qwen3Backbone(Qwen3VL):
 
         if self.load_bf16:
             self.vlm.to(dtype=torch.bfloat16)
-        if self.trainable_params_fp32:
-            for name, param in self.named_parameters():
-                if param.requires_grad:
-                    param.data = param.data.to(torch.float32)
-                    logger.debug('Casting trainable parameter %s to fp32',
-                                 name)
-
-    @staticmethod
-    def remap_checkpoint_state_dict(state_dict: _StateDict) -> _StateDict:
-        """Map official GR00T backbone keys to the inherited VLM module."""
-        remapped = {}
-        checkpoint_prefix = 'model.'
-        for key, value in state_dict.items():
-            target_key = key
-            if key.startswith(checkpoint_prefix):
-                target_key = f'vlm.{key[len(checkpoint_prefix):]}'
-            if target_key in remapped:
-                raise KeyError(
-                    f'Duplicate backbone key after remapping: {target_key!r}')
-            remapped[target_key] = value
-        return remapped
-
-    def set_trainable_parameters(self, tune_llm: bool, tune_visual: bool,
-                                 tune_top_llm_layers: int) -> None:
-        self.tune_llm = tune_llm
-        self.tune_visual = tune_visual
-        self.tune_top_llm_layers = tune_top_llm_layers
-        self.requires_grad_(False)
-        if tune_llm:
-            self.vlm.model.language_model.requires_grad_(True)
-            if hasattr(self.vlm, 'lm_head'):
-                self.vlm.lm_head.requires_grad_(True)
-        if tune_visual:
-            self.vlm.model.visual.requires_grad_(True)
-        if tune_top_llm_layers > 0:
-            for layer in self.vlm.model.language_model.layers[
-                    -tune_top_llm_layers:]:
-                for param in layer.parameters():
-                    param.requires_grad = True
-        # A fully frozen backbone is a valid, config-controlled N1.7 policy.
-        # Do not warn here: this method is intentionally called more than once
-        # during DDP/FSDP setup, and a warning from every rank makes it look as
-        # if the trainability policy is changing when it is not.
-
-    def apply_trainable_policy(self) -> None:
-        """Restore the fine-grained policy after BaseVLA runner setup."""
-        self.set_trainable_parameters(
-            self.tune_llm,
-            self.tune_visual,
-            self.tune_top_llm_layers,
-        )
-
-    def set_frozen_modules_to_eval_mode(self) -> None:
-        if self.training:
-            if self.vlm.model.language_model and not self.tune_llm:
-                self.vlm.model.language_model.eval()
-            if self.vlm.model.visual and not self.tune_visual:
-                self.vlm.model.visual.eval()
 
     @staticmethod
     def _trim_common_left_padding(
@@ -220,9 +146,22 @@ class GrootN17Qwen3Backbone(Qwen3VL):
 
     def forward(
         self,
-        vl_input: Mapping[str, torch.Tensor],
-    ) -> GrootN17BackboneOutput:
-        self.set_frozen_modules_to_eval_mode()
+        vl_input: Optional[Mapping[str, torch.Tensor]] = None,
+        images: Optional[torch.Tensor] = None,
+        lang_tokens: Optional[torch.Tensor] = None,
+        img_masks: Optional[torch.Tensor] = None,
+        lang_masks: Optional[torch.Tensor] = None,
+        image_grid_thw: Optional[torch.Tensor] = None,
+        **kwargs,
+    ) -> VLMBackboneOutput:
+        del img_masks, kwargs
+        if vl_input is None:
+            vl_input = {
+                'lang_tokens': lang_tokens,
+                'lang_masks': lang_masks,
+                'images': images,
+                'image_grid_thw': image_grid_thw,
+            }
         hf_input = {
             'input_ids': vl_input['lang_tokens'],
             'attention_mask': vl_input['lang_masks'],
@@ -243,10 +182,10 @@ class GrootN17Qwen3Backbone(Qwen3VL):
         backbone_features = outputs.hidden_states[-1]
         image_mask = hf_input['input_ids'] == self.vlm.config.image_token_id
         attention_mask = hf_input['attention_mask'] == 1
-        return GrootN17BackboneOutput(
-            backbone_features=backbone_features,
-            backbone_attention_mask=attention_mask,
-            image_mask=image_mask,
+        return VLMBackboneOutput(
+            last_hidden_state=backbone_features,
+            attention_mask=attention_mask,
+            auxiliary_outputs={'image_mask': image_mask},
         )
 
     def enable_gradient_checkpointing(self) -> None:
@@ -263,7 +202,3 @@ class GrootN17Qwen3Backbone(Qwen3VL):
                 gradient_checkpointing_kwargs=gradient_checkpointing_kwargs)
         except TypeError:
             self.vlm.gradient_checkpointing_enable()
-
-    def get_fsdp_wrapping_policy(self) -> Callable:
-        """Return FSDP wrapping policy for Qwen3-VL text decoder layers."""
-        return build_module_wrap_policy({self.transformer_layer_cls})
