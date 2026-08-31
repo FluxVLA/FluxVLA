@@ -943,14 +943,21 @@ class LiberoProprioFromInputs:
         assert self.pos_key in data and self.quat_key in \
             data and self.gripper_key in data, \
             f'Missing proprio keys in data: {self.pos_key}, {self.quat_key}, {self.gripper_key}'  # noqa: E501
+        input_dtype = np.result_type(
+            np.asarray(data[self.pos_key]).dtype,
+            np.asarray(data[self.quat_key]).dtype,
+            np.asarray(data[self.gripper_key]).dtype,
+        )
+        if not np.issubdtype(input_dtype, np.floating):
+            input_dtype = np.dtype(float)
         robot0_eef_pos = np.asarray(
-            data[self.pos_key], dtype=np.float32).reshape(-1)
+            data[self.pos_key], dtype=input_dtype).reshape(-1)
         robot0_eef_quat = np.asarray(
-            data[self.quat_key], dtype=np.float32).reshape(-1)
+            data[self.quat_key], dtype=input_dtype).reshape(-1)
         robot0_gripper_qpos = np.asarray(
-            data[self.gripper_key], dtype=np.float32).reshape(-1)
+            data[self.gripper_key], dtype=input_dtype).reshape(-1)
         rotation = np.asarray(
-            quat2axisangle(robot0_eef_quat), dtype=np.float32).reshape(-1)
+            quat2axisangle(robot0_eef_quat), dtype=input_dtype).reshape(-1)
         if robot0_eef_pos.size != 3 or rotation.size != 3:
             raise ValueError(
                 'LIBERO proprio expects 3D position and axis-angle rotation.')
@@ -959,19 +966,18 @@ class LiberoProprioFromInputs:
             robot0_eef_pos,
             rotation,
             robot0_gripper_qpos,
-        )).astype(
-            np.float32, copy=False)
+        ))
 
         if self.norm_type == 'linear':
             raw = data['norm_stats'][self.stat_field][self.stat_subkey]
             lin_stats = _select_prefixed_stats(raw, self.prefix)
             scale, offset = _linear_norm_scale_offset(lin_stats,
                                                       self.linear_mode)
-            state_t = torch.as_tensor(state, dtype=torch.float32)
+            state_t = torch.as_tensor(state)
             state = torch.clamp(state_t * scale + offset, -self.clamp,
                                 self.clamp).numpy()
         elif self.norm_type in (None, 'none'):
-            state = state.astype(np.float32, copy=False)
+            state = state.astype(input_dtype, copy=False)
         else:
             stats = data['norm_stats'][self.stat_key]
             if self.norm_type == 'quantile':

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Metadata-driven state/action codec used by GR00T-style transforms."""
+"""Metadata helpers used by GR00T N1.7 transforms."""
 
 from __future__ import annotations
 import json
@@ -19,8 +19,6 @@ import os
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Dict, Optional
-
-import numpy as np
 
 GROOT_N17_EMBODIMENT_ALIASES = {
     'LIBERO_PANDA': 'libero_sim',
@@ -99,181 +97,6 @@ def resolve_groot_n17_metadata(
         require_statistics=require_statistics)
     selected['processor_kwargs'] = processor_kwargs
     return selected
-
-
-def normalize_tag_value(tag: Any) -> str:
-    if hasattr(tag, 'value'):
-        return str(tag.value)
-    return str(tag)
-
-
-def _normalization_dim(stats: Dict[str, Any]) -> int:
-    for field in ('min', 'max', 'mean', 'std', 'q01', 'q99'):
-        if field in stats:
-            return int(np.asarray(stats[field]).shape[-1])
-    raise KeyError(f'No supported statistics fields in {sorted(stats)}')
-
-
-def _unnormalize_minmax(values: np.ndarray,
-                        params: Dict[str, np.ndarray]) -> np.ndarray:
-    min_vals = params['min']
-    max_vals = params['max']
-    return (np.clip(values, -1.0, 1.0) + 1.0) / 2.0 * (max_vals -
-                                                       min_vals) + min_vals
-
-
-def _unnormalize_meanstd(values: np.ndarray,
-                         params: Dict[str, np.ndarray]) -> np.ndarray:
-    return values * params['std'] + params['mean']
-
-
-def _action_config_value(config: Dict[str, Any], key: str,
-                         default: str) -> str:
-    return str(config.get(key, default)).upper()
-
-
-class ModalityStateActionCodec:
-    """Decode model actions using checkpoint-owned modality metadata."""
-
-    def __init__(self,
-                 modality_configs: Dict[str, Any],
-                 statistics: Optional[Dict[str, Any]] = None,
-                 use_percentiles: bool = False,
-                 clip_outliers: bool = True,
-                 apply_sincos_state_encoding: bool = False,
-                 use_relative_action: bool = False):
-        # Kept for compatibility with GrootN17VLA while its codec construction
-        # still passes the former training-side options.
-        del clip_outliers, apply_sincos_state_encoding
-        self.modality_configs = deepcopy(modality_configs)
-        self.statistics: Dict[str, Any] = {}
-        self.use_percentiles = use_percentiles
-        self.use_relative_action = use_relative_action
-        self.norm_params: Dict[str, Any] = {}
-        if statistics is not None:
-            self.set_statistics(statistics)
-
-    def eval(self):
-        """Retain the evaluator-facing codec interface."""
-        return self
-
-    def set_statistics(self,
-                       statistics: Dict[str, Any],
-                       override: bool = False) -> None:
-        for key, value in statistics.items():
-            if key not in self.statistics or override:
-                self.statistics[key] = deepcopy(value)
-        self._compute_normalization_parameters()
-
-    def _compute_normalization_parameters(self) -> None:
-        self.norm_params = {}
-        for embodiment_tag, emb_stats in self.statistics.items():
-            self.norm_params[embodiment_tag] = {'action': {}}
-            for key, stats in emb_stats.get('action', {}).items():
-                low_field, high_field = (('q01',
-                                          'q99') if self.use_percentiles else
-                                         ('min', 'max'))
-                self.norm_params[embodiment_tag]['action'][key] = {
-                    'min': np.asarray(stats[low_field]),
-                    'max': np.asarray(stats[high_field]),
-                    'mean': np.asarray(stats['mean']),
-                    'std': np.asarray(stats['std']),
-                    'dim': np.array(_normalization_dim(stats)),
-                }
-            action_cfg = self.modality_configs.get(embodiment_tag,
-                                                   {}).get('action', {})
-            for key, cfg in zip(
-                    action_cfg.get('modality_keys') or [],
-                    action_cfg.get('action_configs') or []):
-                if (self.use_relative_action and _action_config_value(
-                        cfg, 'rep', '') == 'RELATIVE'):
-                    action_dim = self.norm_params[embodiment_tag]['action'][
-                        key]['dim']
-                    rel_stats = emb_stats['relative_action'][key]
-                    self.norm_params[embodiment_tag]['action'][key] = {
-                        'min': np.asarray(rel_stats['min']),
-                        'max': np.asarray(rel_stats['max']),
-                        'mean': np.asarray(rel_stats['mean']),
-                        'std': np.asarray(rel_stats['std']),
-                        'dim': action_dim,
-                    }
-
-    def _use_mean_std(self, embodiment_tag: str, modality: str,
-                      key: str) -> bool:
-        cfg = self.modality_configs[embodiment_tag][modality]
-        keys = cfg.get('mean_std_embedding_keys')
-        return bool(keys and key in keys)
-
-    def _unnormalize(self, values: np.ndarray, embodiment_tag: str,
-                     modality: str, key: str) -> np.ndarray:
-        params = self.norm_params[embodiment_tag][modality][key]
-        if self._use_mean_std(embodiment_tag, modality, key):
-            return _unnormalize_meanstd(values, params)
-        return _unnormalize_minmax(values, params)
-
-    def _relative_to_absolute(self, action: np.ndarray,
-                              reference_state: np.ndarray,
-                              action_config: Dict[str, Any]) -> np.ndarray:
-        action_type = _action_config_value(action_config, 'type', 'NON_EEF')
-        action_format = _action_config_value(action_config, 'format',
-                                             'DEFAULT')
-        if action_type != 'NON_EEF' or action_format != 'DEFAULT':
-            raise NotImplementedError(
-                'Native N1.7 processor currently supports NON_EEF/DEFAULT '
-                f'relative actions only, got {action_type}/{action_format}.')
-        action = action.astype(np.float64)
-        reference_state = reference_state.astype(np.float64)
-        return action + reference_state
-
-    def _maybe_relative(self, values: np.ndarray, state: Dict[str, np.ndarray],
-                        key: str, action_config: Dict[str, Any]) -> np.ndarray:
-        if (not self.use_relative_action or
-                _action_config_value(action_config, 'rep', '') != 'RELATIVE'):
-            return values
-        state_key = action_config.get('state_key') or key
-        reference = np.asarray(state[state_key])[-1]
-        return self._relative_to_absolute(values, reference, action_config)
-
-    def unapply_action(
-        self,
-        action: Dict[str, np.ndarray],
-        embodiment_tag: str,
-        state: Optional[Dict[str,
-                             np.ndarray]] = None) -> Dict[str, np.ndarray]:
-        cfg = self.modality_configs[embodiment_tag]['action']
-        action_configs = cfg.get('action_configs') or [
-            {} for _ in cfg['modality_keys']
-        ]
-        result = {}
-        for key, action_config in zip(cfg['modality_keys'], action_configs):
-            values = self._unnormalize(action[key], embodiment_tag, 'action',
-                                       key)
-            if (self.use_relative_action and _action_config_value(
-                    action_config, 'rep', '') == 'RELATIVE'):
-                if state is None:
-                    raise ValueError(f'State is required to decode {key!r}.')
-                values = self._maybe_relative(values, state, key,
-                                              action_config)
-            result[key] = values
-        return result
-
-    def decode_action(
-        self,
-        action: np.ndarray,
-        embodiment_tag: Any,
-        state: Optional[Dict[str,
-                             np.ndarray]] = None) -> Dict[str, np.ndarray]:
-        """Decode a padded action using the configured modality layout."""
-        embodiment_key = normalize_tag_value(embodiment_tag)
-        action_cfg = self.modality_configs[embodiment_key]['action']
-        horizon = len(action_cfg['delta_indices'])
-        decoded = {}
-        start_idx = 0
-        for key in action_cfg['modality_keys']:
-            dim = int(self.norm_params[embodiment_key]['action'][key]['dim'])
-            decoded[key] = action[..., :horizon, start_idx:start_idx + dim]
-            start_idx += dim
-        return self.unapply_action(decoded, embodiment_key, state=state)
 
 
 def load_groot_n17_metadata(

@@ -228,7 +228,7 @@ model = dict(
     load_metadata=True,
     qwen3_runtime='compat_457',
     freeze_vlm_backbone=True,
-    freeze_projector=False,
+    freeze_vla_head=False,
     vlm_backbone=dict(
         type='GrootN17Qwen3Backbone',
         model_config=_QWEN3_VL_CONFIG,
@@ -236,15 +236,9 @@ model = dict(
         reproject_vision=False,
         use_flash_attention=True,
         load_bf16=False,
-        tune_top_llm_layers=0,
-        trainable_params_fp32=True,
         qwen3_runtime='compat_457',
     ),
-    vla_head=dict(
-        type='GrootN17ActionHead',
-        tune_diffusion_model=True,
-        tune_vlln=True,
-    ),
+    vla_head=dict(type='GrootN17ActionHead'),
 )
 
 train_dataloader = dict(
@@ -541,5 +535,9 @@ eval = dict(
         ],
     ),
     denormalize_action=dict(
-        type='DenormalizeLiberoAction', denorm_action=False, action_dim=7),
+        type='DenormalizeLiberoAction',
+        denorm_action=True,
+        norm_type='quantile',
+        action_dim=7,
+    ),
 )

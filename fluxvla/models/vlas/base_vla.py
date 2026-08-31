@@ -54,7 +54,8 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                  norm_stats: Dict = None,
                  pretrained_name_or_path: str = None,
                  name_mapping: Dict = None,
-                 strict_mapping: bool = False) -> None:
+                 strict_mapping: bool = False,
+                 freeze_vla_head: bool = False) -> None:
         super().__init__()
         if vision_backbone is not None:
             self.vision_backbone = build_vision_backbone_from_cfg(
@@ -83,6 +84,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         self.freeze_llm_backbone = freeze_llm_backbone
         self.freeze_vlm_backbone = freeze_vlm_backbone
         self.freeze_projector = freeze_projector
+        self.freeze_vla_head = freeze_vla_head
         self.vision_backbone_requires_grad = not freeze_vision_backbone
         self.vision_backbone_fp32 = vision_backbone_fp32
         self.unfreeze_last_layer = unfreeze_last_layer
@@ -138,6 +140,8 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
             self.vlm_backbone.requires_grad_(not self.freeze_vlm_backbone)
         if self.projector is not None:
             self.projector.requires_grad_(not self.freeze_projector)
+        if self.vla_head is not None:
+            self.vla_head.requires_grad_(not self.freeze_vla_head)
 
         # Update Trackers
         self.vision_backbone_requires_grad = not self.freeze_vision_backbone
@@ -165,6 +169,11 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                 overwatch.info('[Frozen]    🥶 =>> Projector', ctx_level=1)
             else:
                 overwatch.info('[TRAINABLE] 🔥 =>> Projector', ctx_level=1)
+        if self.vla_head is not None:
+            if self.freeze_vla_head:
+                overwatch.info('[Frozen]    🥶 =>> VLA Head', ctx_level=1)
+            else:
+                overwatch.info('[TRAINABLE] 🔥 =>> VLA Head', ctx_level=1)
 
         # Some VLM backbones need finer-grained tuning than the generic
         # freeze_vlm_backbone switch, e.g. GR00T N1.5 freezes Eagle LLM but

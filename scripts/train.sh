@@ -8,9 +8,6 @@
 # Falls back to a sensible single-node default when none are set.
 
 set -euo pipefail
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-export PYTHONPATH="${REPO_ROOT}:${PYTHONPATH:-}"
 
 CONFIG=${1:-"configs/gr00t/gr00t_eagle_3b_libero_10_full_finetune.py"}
 WORK_DIR=${2:-"work_dirs/gr00t_eagle_3b_libero_10_full_finetune"}
@@ -36,7 +33,7 @@ torchrun \
   --node_rank="${NODE_RANK}" \
   --master_addr="${MASTER_ADDR}" \
   --master_port="${MASTER_PORT}" \
-  "${REPO_ROOT}/scripts/train.py" \
+  "scripts/train.py" \
   --config "${CONFIG}" \
   --work-dir "${WORK_DIR}" \
   "${EXTRA_ARGS[@]}"

@@ -26,7 +26,6 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Optional
 
-import numpy as np
 import torch
 import torch.nn as nn
 from torch.distributed.fsdp.wrap import _or_policy
@@ -67,27 +66,21 @@ class GrootN17VLA(LlavaVLA):
         freeze_llm_backbone: bool = True,
         freeze_vlm_backbone: bool = False,
         freeze_projector: bool = False,
+        freeze_vla_head: bool = False,
         load_metadata: bool = True,
         norm_stats: Optional[Dict[str, Any]] = None,
         use_relative_action: Optional[bool] = None,
         apply_sincos_state_encoding: Optional[bool] = None,
+        name_mapping: Optional[Dict[str, str]] = None,
         **kwargs,
     ) -> None:
         native_vlm_backbone_cfg = copy.deepcopy(vlm_backbone)
         native_vla_head_cfg = copy.deepcopy(vla_head)
-        if native_vlm_backbone_cfg is not None:
-            # N1.7 exposes a combined VLM backbone, so follow BaseVLA's
-            # standard combined-backbone semantics: freeze_vlm_backbone is
-            # authoritative. Optional nested tune_llm/tune_visual values may
-            # refine the policy only when the whole VLM is not frozen.
-            if freeze_vlm_backbone:
-                native_vlm_backbone_cfg['tune_llm'] = False
-                native_vlm_backbone_cfg['tune_visual'] = False
-            else:
-                native_vlm_backbone_cfg.setdefault('tune_llm', True)
-                native_vlm_backbone_cfg.setdefault('tune_visual', True)
-        if native_vla_head_cfg is not None:
-            native_vla_head_cfg['tune_projector'] = not freeze_projector
+        if name_mapping is None:
+            name_mapping = {
+                'vlm_backbone.vlm.': 'backbone.model.',
+                'vla_head.': 'action_head.',
+            }
 
         super().__init__(
             vla_head=None,
@@ -95,7 +88,9 @@ class GrootN17VLA(LlavaVLA):
             freeze_llm_backbone=freeze_llm_backbone,
             freeze_projector=freeze_projector,
             freeze_vlm_backbone=freeze_vlm_backbone,
+            freeze_vla_head=freeze_vla_head,
             norm_stats=norm_stats,
+            name_mapping=name_mapping,
         )
         self.model_path = model_path
         self.processor_path = processor_path
@@ -149,8 +144,6 @@ class GrootN17VLA(LlavaVLA):
         # Placeholder so generic module utilities have a device anchor before
         # Layer 2 instantiates the real N1.7 modules.
         self._device_anchor = nn.Parameter(torch.empty(0), requires_grad=False)
-        self.action_codec = None
-
         if self.model_path is not None and self.load_metadata:
             self._load_checkpoint_metadata(Path(self.model_path))
 
@@ -298,29 +291,6 @@ class GrootN17VLA(LlavaVLA):
         )
         return self.qwen3_runtime_summary
 
-    def _ensure_native_action_codec(self):
-        """Build the metadata-only codec used by the split eval path."""
-        if self.action_codec is not None:
-            return self.action_codec
-        if not self.processor_config or not self.statistics:
-            raise ValueError(
-                'Native action codec requires processor metadata.')
-        codec_module = importlib.import_module(
-            'fluxvla.transforms.modality_state_action')
-        codec_cls = getattr(codec_module, 'ModalityStateActionCodec')
-        processor_kwargs = self.processor_config.get('processor_kwargs', {})
-        codec = codec_cls(
-            modality_configs=processor_kwargs.get('modality_configs', {}),
-            statistics=self.statistics,
-            use_percentiles=self.use_percentiles,
-            clip_outliers=self.clip_outliers,
-            apply_sincos_state_encoding=bool(self.apply_sincos_state_encoding),
-            use_relative_action=bool(self.use_relative_action),
-        )
-        codec.eval()
-        self.action_codec = codec
-        return codec
-
     @staticmethod
     def _namespace_from_dict(data: Dict[str, Any]) -> SimpleNamespace:
         return SimpleNamespace(**dict(data))
@@ -334,118 +304,97 @@ class GrootN17VLA(LlavaVLA):
                 int(diffusion_cfg.get('num_attention_heads', 32)) *
                 int(diffusion_cfg.get('attention_head_dim', 48)))
         defaults = {
-            'hidden_size':
-            cfg.get('hidden_size', 1024),
-            'input_embedding_dim':
-            input_embedding_dim,
-            'backbone_embedding_dim':
-            cfg.get('backbone_embedding_dim', 2048),
-            'max_action_dim':
-            cfg.get('max_action_dim', self.max_action_dim),
-            'max_state_dim':
-            cfg.get('max_state_dim', self.max_state_dim),
-            'action_horizon':
-            cfg.get('action_horizon', self.action_horizon),
-            'state_history_length':
-            cfg.get('state_history_length', 1),
-            'num_inference_timesteps':
-            cfg.get('num_inference_timesteps', 4),
-            'max_num_embodiments':
-            cfg.get('max_num_embodiments', 32),
-            'use_alternate_vl_dit':
-            cfg.get('use_alternate_vl_dit', True),
-            'attend_text_every_n_blocks':
-            cfg.get('attend_text_every_n_blocks', 2),
-            'use_vlln':
-            cfg.get('use_vlln', True),
-            'vl_self_attention_cfg':
-            cfg.get('vl_self_attention_cfg'),
-            'add_pos_embed':
-            cfg.get('add_pos_embed', True),
-            'max_seq_len':
-            cfg.get('max_seq_len', 1024),
-            'state_dropout_prob':
-            cfg.get('state_dropout_prob', 0.0),
-            'noise_beta_alpha':
-            cfg.get('noise_beta_alpha', 1.5),
-            'noise_beta_beta':
-            cfg.get('noise_beta_beta', 1.0),
-            'noise_s':
-            cfg.get('noise_s', 0.999),
-            'num_timestep_buckets':
-            cfg.get('num_timestep_buckets', 1000),
-            'tune_projector':
-            cfg.get('tune_projector', True),
-            'tune_diffusion_model':
-            cfg.get('tune_diffusion_model', True),
-            'tune_vlln':
-            cfg.get('tune_vlln', True),
-            'diffusion_model_cfg':
-            diffusion_cfg,
-            'select_layer':
-            cfg.get('select_layer', 16),
-            'tune_llm':
-            cfg.get('tune_llm', False),
-            'tune_visual':
-            cfg.get('tune_visual', False),
-            'reproject_vision':
-            cfg.get('reproject_vision', True),
-            'use_flash_attention':
-            bool(self.use_flash_attention),
-            'load_bf16':
-            cfg.get('load_bf16', False),
-            'tune_top_llm_layers':
-            cfg.get('tune_top_llm_layers', 0),
-            'backbone_trainable_params_fp32':
-            cfg.get('backbone_trainable_params_fp32', False),
+            'hidden_size': cfg.get('hidden_size', 1024),
+            'input_embedding_dim': input_embedding_dim,
+            'backbone_embedding_dim': cfg.get('backbone_embedding_dim', 2048),
+            'max_action_dim': cfg.get('max_action_dim', self.max_action_dim),
+            'max_state_dim': cfg.get('max_state_dim', self.max_state_dim),
+            'action_horizon': cfg.get('action_horizon', self.action_horizon),
+            'state_history_length': cfg.get('state_history_length', 1),
+            'num_inference_timesteps': cfg.get('num_inference_timesteps', 4),
+            'max_num_embodiments': cfg.get('max_num_embodiments', 32),
+            'use_alternate_vl_dit': cfg.get('use_alternate_vl_dit', True),
+            'attend_text_every_n_blocks': cfg.get('attend_text_every_n_blocks',
+                                                  2),
+            'use_vlln': cfg.get('use_vlln', True),
+            'vl_self_attention_cfg': cfg.get('vl_self_attention_cfg'),
+            'add_pos_embed': cfg.get('add_pos_embed', True),
+            'max_seq_len': cfg.get('max_seq_len', 1024),
+            'state_dropout_prob': cfg.get('state_dropout_prob', 0.0),
+            'noise_beta_alpha': cfg.get('noise_beta_alpha', 1.5),
+            'noise_beta_beta': cfg.get('noise_beta_beta', 1.0),
+            'noise_s': cfg.get('noise_s', 0.999),
+            'num_timestep_buckets': cfg.get('num_timestep_buckets', 1000),
+            'diffusion_model_cfg': diffusion_cfg,
+            'select_layer': cfg.get('select_layer', 16),
+            'reproject_vision': cfg.get('reproject_vision', True),
+            'use_flash_attention': bool(self.use_flash_attention),
+            'load_bf16': cfg.get('load_bf16', False),
         }
         for key in (
                 'state_dropout_prob',
-                'tune_projector',
-                'tune_diffusion_model',
-                'tune_vlln',
-                'tune_llm',
-                'tune_visual',
-                'tune_top_llm_layers',
                 'reproject_vision',
                 'load_bf16',
-                'backbone_trainable_params_fp32',
         ):
             if key in self.extra_cfg and self.extra_cfg[key] is not None:
                 defaults[key] = self.extra_cfg[key]
         cfg.update(defaults)
         return self._namespace_from_dict(cfg)
 
-    def _load_prefixed_state_dict(self,
-                                  prefix: str) -> Dict[str, torch.Tensor]:
+    def _load_prefixed_state_dict(
+        self,
+        checkpoint_prefix: str,
+        module_prefix: str,
+    ) -> Dict[str, torch.Tensor]:
         if self.checkpoint_dir is None:
             raise ValueError('Native runtime requires model_path metadata.')
         weight_map = self.safetensors_index.get('weight_map', {})
-        keys = [key for key in weight_map if key.startswith(prefix)]
+        keys = [key for key in weight_map if key.startswith(checkpoint_prefix)]
         if not keys:
-            raise KeyError(
-                f'No checkpoint weights found for prefix {prefix!r}')
+            raise KeyError('No checkpoint weights found for prefix '
+                           f'{checkpoint_prefix!r}')
         shards = sorted({weight_map[key] for key in keys})
         safetensors_torch = importlib.import_module('safetensors.torch')
         load_file = getattr(safetensors_torch, 'load_file')
         state_dict = {}
-        prefix_len = len(prefix)
         wanted = set(keys)
         for shard in shards:
             tensors = load_file(str(self.checkpoint_dir / shard), device='cpu')
             for key, value in tensors.items():
                 if key in wanted:
-                    state_dict[key[prefix_len:]] = value
+                    state_dict[key] = value
         if len(state_dict) != len(keys):
-            missing = sorted(wanted - {prefix + key for key in state_dict})
-            raise KeyError(f'Missing {len(missing)} tensors for {prefix!r}: '
-                           f'{missing[:5]}')
-        if prefix == 'backbone.':
-            lm_head_key = 'model.lm_head.weight'
-            embed_key = 'model.model.language_model.embed_tokens.weight'
+            missing = sorted(wanted - set(state_dict))
+            raise KeyError(
+                f'Missing {len(missing)} tensors for {checkpoint_prefix!r}: '
+                f'{missing[:5]}')
+        if checkpoint_prefix == 'backbone.':
+            lm_head_key = 'backbone.model.lm_head.weight'
+            embed_key = (
+                'backbone.model.model.language_model.embed_tokens.weight')
             if lm_head_key not in state_dict and embed_key in state_dict:
                 state_dict[lm_head_key] = state_dict[embed_key]
-        return state_dict
+
+        mapping = [(target, source)
+                   for target, source in (self.name_mapping or {}).items()
+                   if target.startswith(module_prefix)
+                   and source.startswith(checkpoint_prefix)]
+        if not mapping:
+            raise KeyError('No name_mapping entry connects checkpoint prefix '
+                           f'{checkpoint_prefix!r} to module prefix '
+                           f'{module_prefix!r}.')
+        remapped = {}
+        for source_name, value in state_dict.items():
+            matches = [(target, source) for target, source in mapping
+                       if source_name.startswith(source)]
+            if len(matches) != 1:
+                raise KeyError(
+                    f'Expected one name_mapping match for {source_name!r}, '
+                    f'got {matches!r}.')
+            target, source = matches[0]
+            target_name = target + source_name[len(source):]
+            remapped[target_name[len(module_prefix):]] = value
+        return remapped
 
     def _ensure_native_runtime(self) -> Dict[str, Any]:
         """Load the FluxVLA-native backbone and action head."""
@@ -464,20 +413,14 @@ class GrootN17VLA(LlavaVLA):
         backbone = build_vlm_backbone_from_cfg(
             copy.deepcopy(self._native_vlm_backbone_cfg),
             default_args={
-                'tune_llm': config.tune_llm,
-                'tune_visual': config.tune_visual,
                 'select_layer': config.select_layer,
                 'reproject_vision': config.reproject_vision,
                 'use_flash_attention': config.use_flash_attention,
                 'load_bf16': False,
-                'tune_top_llm_layers': config.tune_top_llm_layers,
-                'trainable_params_fp32': config.backbone_trainable_params_fp32,
                 'qwen3_runtime': self.qwen3_runtime,
             })
-        backbone_state_dict = self._load_prefixed_state_dict('backbone.')
-        if hasattr(backbone, 'remap_checkpoint_state_dict'):
-            backbone_state_dict = backbone.remap_checkpoint_state_dict(
-                backbone_state_dict)
+        backbone_state_dict = self._load_prefixed_state_dict(
+            'backbone.', 'vlm_backbone.')
         backbone_load = backbone.load_state_dict(
             backbone_state_dict,
             strict=True,
@@ -490,7 +433,7 @@ class GrootN17VLA(LlavaVLA):
             copy.deepcopy(self._native_vla_head_cfg),
             default_args={'config': config})
         action_head_load = action_head.load_state_dict(
-            self._load_prefixed_state_dict('action_head.'),
+            self._load_prefixed_state_dict('action_head.', 'vla_head.'),
             strict=True,
         )
         action_head.eval()
@@ -532,52 +475,6 @@ class GrootN17VLA(LlavaVLA):
                 moved[key] = value
         return moved
 
-    def _native_prepare_inputs(self, inputs: Dict[str, Any],
-                               device: torch.device, dtype: torch.dtype):
-        moved = self._move_batch_to_device_dtype(inputs, device, dtype)
-        backbone_inputs = {
-            key: moved[key]
-            for key in ('lang_tokens', 'lang_masks', 'images',
-                        'image_grid_thw')
-        }
-        return backbone_inputs, moved
-
-    def _run_native_backbone_head(
-        self,
-        inputs: Dict[str, Any],
-        mode: str = 'loss',
-        seed: Optional[int] = None,
-    ) -> Dict[str, torch.Tensor]:
-        backbone, action_head = self.vlm_backbone, self.vla_head
-        if backbone is None or action_head is None:
-            raise RuntimeError('Native N1.7 runtime is not loaded.')
-        device = next(iter(action_head.parameters())).device
-        dtype = next(iter(action_head.parameters())).dtype
-        backbone_inputs, action_inputs = self._native_prepare_inputs(
-            inputs, device, dtype)
-        backbone_outputs = backbone(backbone_inputs)
-        if mode == 'loss':
-            return action_head(
-                input_features=backbone_outputs.backbone_features,
-                states=action_inputs['states'],
-                attention_mask=backbone_outputs.backbone_attention_mask,
-                embodiment_ids=action_inputs['embodiment_ids'],
-                actions=action_inputs['actions'],
-                action_masks=action_inputs['action_masks'],
-                image_mask=backbone_outputs.image_mask,
-                sample_weight=action_inputs.get('sample_weight'),
-            )
-        if mode == 'action':
-            return action_head.get_action(
-                input_features=backbone_outputs.backbone_features,
-                states=action_inputs['states'],
-                attention_mask=backbone_outputs.backbone_attention_mask,
-                embodiment_ids=action_inputs['embodiment_ids'],
-                image_mask=backbone_outputs.image_mask,
-                seed=seed,
-            )
-        raise ValueError(f'Unsupported native backbone/head mode: {mode!r}')
-
     def _prepare_native_eval_runtime(
         self,
         dtype: str,
@@ -593,45 +490,6 @@ class GrootN17VLA(LlavaVLA):
         backbone.eval()
         action_head.eval()
         return target_device, target_dtype
-
-    @staticmethod
-    def _action_for_decode(normalized_action: np.ndarray) -> np.ndarray:
-        if normalized_action.ndim == 3:
-            if normalized_action.shape[0] != 1:
-                raise ValueError('N1.7 eval decode expects batch=1, got '
-                                 f'action shape {normalized_action.shape}')
-            return normalized_action[0]
-        return normalized_action
-
-    @staticmethod
-    def _flatten_decoded_action(decoded: Dict[str, np.ndarray],
-                                action_keys: list[str]) -> torch.Tensor:
-        flat_action = np.concatenate(
-            [
-                np.asarray(decoded[key], dtype=np.float32)
-                for key in action_keys
-            ],
-            axis=-1,
-        ).astype(np.float32)
-        return torch.from_numpy(flat_action[None, ...])
-
-    def _decode_n17_action_to_env_tensor(
-        self,
-        normalized_action: np.ndarray,
-        embodiment_key: Optional[str] = None,
-        raw_state: Optional[Dict[str, Any]] = None,
-    ) -> torch.Tensor:
-        """Decode split-path actions through the metadata-only codec."""
-        if embodiment_key is None:
-            embodiment_key = self.active_embodiment_key
-        codec = self._ensure_native_action_codec()
-        action_for_decode = self._action_for_decode(normalized_action)
-        decoded = codec.decode_action(
-            action_for_decode, embodiment_key, state=raw_state)
-        action_keys = codec.modality_configs[embodiment_key]['action'][
-            'modality_keys']
-        return self._flatten_decoded_action(decoded, action_keys).to(
-            device=self._device_anchor.device, dtype=torch.float32)
 
     @staticmethod
     def _extract_predict_inputs(batch: Dict[str, Any]) -> Dict[str, Any]:
@@ -688,12 +546,10 @@ class GrootN17VLA(LlavaVLA):
         self,
         inputs: Dict[str, Any],
         dtype: str = 'bfloat16',
-        raw_state: Optional[Dict[str, Any]] = None,
-        embodiment_key: Optional[str] = None,
         seed: Optional[int] = None,
     ) -> torch.Tensor:
-        """Run N1.7 inference from the FluxVLA batch contract."""
-        self._prepare_native_eval_runtime(dtype)
+        """Run N1.7 inference through the shared LlavaVLA contract."""
+        device, torch_dtype = self._prepare_native_eval_runtime(dtype)
         model_inputs = {
             key: value
             for key, value in inputs.items() if key in {
@@ -706,14 +562,10 @@ class GrootN17VLA(LlavaVLA):
             }
         }
         model_inputs = self._normalize_predict_inputs(model_inputs)
+        model_inputs = self._move_batch_to_device_dtype(
+            model_inputs, device, torch_dtype)
         with torch.inference_mode():
-            model_pred = self._run_native_backbone_head(
-                model_inputs, mode='action', seed=seed)
-        normalized_action = model_pred['action_pred'].float().cpu().numpy()
-        return self._decode_n17_action_to_env_tensor(
-            normalized_action,
-            embodiment_key=embodiment_key,
-            raw_state=raw_state)
+            return super().predict_action(**model_inputs, seed=seed)
 
     @staticmethod
     def _module_has_trainable_parameters(module: Optional[nn.Module]) -> bool:
@@ -727,6 +579,10 @@ class GrootN17VLA(LlavaVLA):
         runner checkpoints are handled separately by ``load_state_dict``.
         """
         self._ensure_native_runtime()
+        # DDP invokes this hook after its initial freeze pass, when the lazy
+        # native modules do not exist yet. Reapply the common VLA policy now
+        # that the backbone and head have been materialized.
+        self.freeze_backbones()
         return self
 
     def get_fsdp_wrapping_policy(self) -> Callable:
@@ -826,8 +682,9 @@ class GrootN17VLA(LlavaVLA):
 
     def forward(self, *args, **kwargs):
         inputs = self._extract_forward_inputs(args, kwargs)
-        self._prepare_native_forward_modules(inputs)
-        return self._run_native_backbone_head(inputs, mode='loss')
+        _, _, device, dtype = self._prepare_native_forward_modules(inputs)
+        inputs = self._move_batch_to_device_dtype(inputs, device, dtype)
+        return super().forward(**inputs)
 
     def predict_action(self, **batch):
         inputs = self._extract_predict_inputs(batch)
@@ -835,9 +692,6 @@ class GrootN17VLA(LlavaVLA):
             return self._predict_n17_action(
                 inputs,
                 dtype=batch.get('dtype', 'bfloat16'),
-                raw_state=batch.get('n17_raw_state', batch.get('raw_state')),
-                embodiment_key=batch.get('n17_embodiment_key',
-                                         batch.get('embodiment_key')),
                 seed=batch.get('seed'),
             )
         raise NotImplementedError(
