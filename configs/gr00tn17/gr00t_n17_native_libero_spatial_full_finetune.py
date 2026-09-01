@@ -364,7 +364,7 @@ train_dataloader = dict(
                     ),
                 ],
                 action_window_size=16,
-                drop_incomplete_action_windows=True,
+                require_full_window=True,
             ),
         ],
     ),
