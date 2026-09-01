@@ -421,10 +421,11 @@ eval = dict(
                 state_norm_type='none',
                 norm_type='min_max',
                 normalize_states=False,
-                # The source evaluator computes sin/cos from the environment's
-                # FP32 joint state and keeps it in FP32 until ``predict_action``
-                # casts it directly to the Cosmos hidden-state dtype. Avoid an
-                # intermediate FP16 round-trip in live rollouts.
+                # The source evaluator computes sin/cos from the
+                # environment's FP32 joint state and keeps it in FP32 until
+                # ``predict_action`` casts it directly to the Cosmos hidden
+                # state dtype. Avoid an intermediate FP16 round-trip in live
+                # rollouts.
                 output_dtype='float32',
             ),
         ],
@@ -436,10 +437,11 @@ eval = dict(
         # The official RoboCasa policy clips diffusion outputs before
         # applying min/max denormalization.
         clip_actions=True,
-        # Released source checkpoints store N1.5-order statistics, whereas
-        # FluxVLA checkpoints save the converted dataset's flat order. The
-        # runner resolves this from the checkpoint key convention.
-        stats_order='checkpoint',
+        # FluxVLA training checkpoints save action statistics in the
+        # converted dataset order; reorder them to the N1.5 action layout.
+        # When evaluating the released source checkpoint, override this with
+        # ``eval.denormalize_action.stats_order=native``.
+        stats_order='fluxvla',
     ),
 )
 
