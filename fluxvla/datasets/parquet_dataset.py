@@ -60,7 +60,6 @@ class ParquetDataset(Dataset):
                  require_full_window: bool = False,
                  train_episode_fraction: float = 1.0,
                  repeat_to_full_length: bool = False,
-                 drop_incomplete_action_windows: bool = False,
                  expose_index: bool = False,
                  supervise_terminal_padding: bool = False,
                  action_dtype: Optional[str] = 'float32',
@@ -108,9 +107,6 @@ class ParquetDataset(Dataset):
                 episode subset so `__len__` remains the full dataset length.
                 This keeps epoch length based on full statistics while
                 sampling only the selected train episode fraction.
-            drop_incomplete_action_windows (bool): If True, omit samples whose
-                complete action window would cross an episode or dataset
-                boundary. This matches loaders that do not pad action chunks.
             expose_index (bool): Whether to add the concatenated dataset index
                 to each raw sample before transforms. This is useful for
                 offline sample-weight transforms such as SARM RA-BC.
@@ -133,7 +129,6 @@ class ParquetDataset(Dataset):
         self.action_window_size = action_window_size
         self.action_dtype = (None if action_dtype is None else
                              np.dtype(action_dtype))
-        self.window_start_idx = window_start_idx
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
         self.data_root_path = data_root_path
@@ -198,9 +193,6 @@ class ParquetDataset(Dataset):
         self.full_length = len(self.dataset)
         self.sample_indices = self._build_sample_indices(
             train_episode_fraction)
-        if drop_incomplete_action_windows:
-            self.sample_indices = self._filter_complete_action_windows(
-                self.sample_indices)
         self.effective_length = (
             self.full_length
             if repeat_to_full_length else len(self.sample_indices))
@@ -208,6 +200,7 @@ class ParquetDataset(Dataset):
         self.action_key = action_key
         self.use_delta = use_delta
         self.statistic_name = statistic_name
+        self.window_start_idx = window_start_idx
         self.frame_window_size = frame_window_size
         self.frame_sample_stride = frame_sample_stride
         self.require_full_window = require_full_window
@@ -307,42 +300,6 @@ class ParquetDataset(Dataset):
         if not sample_indices:
             raise ValueError('No samples left after applying episode split.')
         return np.asarray(sample_indices, dtype=np.int64)
-
-    def _filter_complete_action_windows(
-            self, sample_indices: np.ndarray) -> np.ndarray:
-        """Keep only indices with a contiguous, fully valid action chunk."""
-        first_offset = self.window_start_idx
-        last_offset = first_offset + self.action_window_size - 1
-        min_offset = min(first_offset, last_offset)
-        max_offset = max(first_offset, last_offset)
-        filtered = []
-
-        for raw_index in sample_indices:
-            index = int(raw_index)
-            first_index = index + min_offset
-            last_index = index + max_offset
-            if first_index < 0 or last_index >= len(self.dataset):
-                continue
-
-            data = self.dataset[index]
-            dataset_idx = self._get_dataset_index(index)
-            if not self._same_episode_and_dataset(first_index, dataset_idx,
-                                                  data):
-                continue
-            if not self._same_episode_and_dataset(last_index, dataset_idx,
-                                                  data):
-                continue
-            if self._get_task_name(dataset_idx,
-                                   first_index) in ('empty', 'static'):
-                continue
-            if self._get_task_name(dataset_idx,
-                                   last_index) in ('empty', 'static'):
-                continue
-            filtered.append(index)
-
-        if not filtered:
-            raise ValueError('No samples have a complete action window.')
-        return np.asarray(filtered, dtype=np.int64)
 
     def _resolve_index(self, index: int) -> int:
         sample_index = index % len(self.sample_indices)
