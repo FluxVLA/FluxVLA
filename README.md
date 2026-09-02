@@ -45,11 +45,12 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 #### RoboCasa GR1
 
-| Model          | Training Data       | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                                 |
-| -------------- | ------------------- | ------- | ------ | --------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| FluxVLA(GR00T) | 24 tasks, 30 demos  | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)          |
-| FluxVLA(PI0)   | 24 tasks, full data | 60.00%  | 56.00% | 48.00%    | 49.33%         | [51.00% (50 trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256)  |
-| FluxVLA(PI0.5) | 24 tasks, full data | 60.00%  | 51.00% | 52.00%    | 50.44%         | [51.42% (50 trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
+| Model            | Training Data       | Cabinet | Drawer | Microwave | Generalization | Average                                                                                                                                 |
+| ---------------- | ------------------- | ------- | ------ | --------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| FluxVLA(GR00T)   | 24 tasks, 30 demos  | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)          |
+| FluxVLA(PI0)     | 24 tasks, full data | 60.00%  | 56.00% | 48.00%    | 49.33%         | [51.00% (50 trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256)  |
+| FluxVLA(PI0.5)   | 24 tasks, full data | 60.00%  | 51.00% | 52.00%    | 50.44%         | [51.42% (50 trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
+| FluxVLA(DiT4DiT) | 24 tasks, full data | 63.00%  | 52.00% | 59.00%    | 57.00%         | [57.25% (50 trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robocasa_full_data_full_finetune_bs64)         |
 
 #### Notes
 
