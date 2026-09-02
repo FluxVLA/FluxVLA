@@ -80,6 +80,10 @@ class Wan21Backbone(WanBaseBackbone):
         device: str = 'cpu',
         torch_dtype: torch.dtype = torch.float32,
         freeze: bool = True,
+        use_torch_compile_encoders: bool = False,
+        torch_compile_mode: str = 'reduce-overhead',
+        torch_compile_fullgraph: bool = True,
+        torch_compile_dynamic: bool = False,
         *args,
         **kwargs,
     ):
@@ -93,6 +97,11 @@ class Wan21Backbone(WanBaseBackbone):
         self.tile_size_width = tile_size_width
         self.tile_stride_height = tile_stride_height
         self.tile_stride_width = tile_stride_width
+        self.use_torch_compile_encoders = use_torch_compile_encoders
+        self.torch_compile_mode = torch_compile_mode
+        self.torch_compile_fullgraph = torch_compile_fullgraph
+        self.torch_compile_dynamic = torch_compile_dynamic
+        self._torch_compile_applied = False
 
         self.text_encoder = WanTextEncoder(
             text_encoder_pretrained_path=text_encoder_path)
@@ -106,6 +115,33 @@ class Wan21Backbone(WanBaseBackbone):
 
         if freeze:
             self.freeze_encoder_modules()
+        self._compile_encoder_modules_if_configured()
+
+    def _compile_encoder_modules_if_configured(self) -> None:
+        if not self.use_torch_compile_encoders:
+            return
+        if self._torch_compile_applied:
+            return
+        if os.getenv('ENABLE_TENSORRT', 'False').lower() == 'true':
+            logger.info('Skipping Wan21Backbone encoder torch.compile because '
+                        'ENABLE_TENSORRT=true.')
+            return
+
+        compile_kwargs = dict(
+            mode=self.torch_compile_mode,
+            fullgraph=self.torch_compile_fullgraph,
+            dynamic=self.torch_compile_dynamic,
+        )
+        logger.info('Torch compiling Wan21Backbone encoders with %s',
+                    compile_kwargs)
+        self.text_encoder.forward = torch.compile(**compile_kwargs)(
+            self.text_encoder.forward)
+        self.image_encoder.model.visual.forward = torch.compile(
+            **compile_kwargs)(
+                self.image_encoder.model.visual.forward)
+        self.vae.model.encode = torch.compile(**compile_kwargs)(
+            self.vae.model.encode)
+        self._torch_compile_applied = True
 
     def _load_pretrained_weights(self, text_enc_path, img_enc_path, vae_path):
         """Load pretrained weights for T5, CLIP, and VAE."""

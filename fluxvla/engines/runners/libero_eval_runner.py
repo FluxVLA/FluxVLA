@@ -27,6 +27,10 @@ import tqdm
 from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
+from fluxvla.engines.utils.cfg_parallel import (
+    CFG_PARALLEL_PREDICT, CFG_PARALLEL_STOP, receive_dreamzero_cfg_command,
+    send_dreamzero_cfg_predict, send_dreamzero_cfg_stop,
+    set_model_cfg_parallel, validate_dreamzero_cfg_parallel)
 from fluxvla.engines.utils.eval_utils import (get_libero_dummy_action,
                                               get_libero_env,
                                               save_rollout_video)
@@ -401,6 +405,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  run_id_suffix: str = None,
                  result_output_dir: str = None,
                  result_gpu_id: int = None,
+                 cfg_parallel: bool = False,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True):
         from fluxvla.engines import (build_dataset_from_cfg,
@@ -499,6 +504,7 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.result_output_dir = result_output_dir
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
+        self.cfg_parallel = cfg_parallel
 
         if os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
@@ -511,9 +517,41 @@ class LiberoEvalRunner(BaseEvalRunner):
                 'Otherwise, you may run into errors when trying to call `predict_action()` due to an absent `unnorm_key`.'  # noqa: E501
             )
 
+    def _cfg_parallel_broadcast_predict(self, predict_kwargs: Dict) -> None:
+        send_dreamzero_cfg_predict(predict_kwargs)
+
+    @staticmethod
+    def _cfg_parallel_broadcast_stop() -> None:
+        send_dreamzero_cfg_stop()
+
+    def _run_cfg_parallel_worker(self) -> None:
+        receive_buffers = {}
+        while True:
+            command, predict_kwargs = receive_dreamzero_cfg_command(
+                receive_buffers, src=0)
+            if command == CFG_PARALLEL_STOP:
+                return
+            if command != CFG_PARALLEL_PREDICT or predict_kwargs is None:
+                raise ValueError(f'Unknown CFG parallel command: {command}.')
+            with torch.autocast(
+                    'cuda',
+                    dtype=self.mixed_precision_dtype,
+                    enabled=self.enable_mixed_precision_training):
+                with torch.no_grad():
+                    _ = self.vla.predict_action(**predict_kwargs)
+
     def run_setup(self):
         """Set up the evaluation environment and model."""
         set_seed_everywhere(self.seed)
+        cuda_device_count = torch.cuda.device_count()
+        if self.device_id >= cuda_device_count:
+            visible = os.environ.get('CUDA_VISIBLE_DEVICES', '<unset>')
+            raise RuntimeError(
+                f'Local rank {self.device_id} cannot select CUDA device '
+                f'{self.device_id}; torch sees {cuda_device_count} visible '
+                f'CUDA device(s). Check CUDA_VISIBLE_DEVICES={visible!r} and '
+                'make sure --nproc-per-node does not exceed the number of '
+                'visible GPUs.')
         torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
         self.vla.eval()
         self.vla.freeze_vision_backbone = True
@@ -525,6 +563,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 device=self.device_id, dtype=self.mixed_precision_dtype)
         else:
             self.vla.cuda(self.device_id)
+        set_model_cfg_parallel(self.vla, self.cfg_parallel)
 
     def cleanup(self) -> None:
         """Release per-suite evaluation resources before the next suite."""
@@ -570,13 +609,27 @@ class LiberoEvalRunner(BaseEvalRunner):
             f'Using mixed precision dtype: {self.mixed_precision_dtype}')
         rank = overwatch.rank()
         world_size = overwatch.world_size()
-        local_episodes = self._build_local_episode_schedule(
-            num_tasks,
-            self.num_trials_per_task,
-            rank,
-            world_size,
-            self.eval_shard_strategy,
-            task_ids=task_ids)
+        if self.cfg_parallel:
+            validate_dreamzero_cfg_parallel(self.cfg_parallel,
+                                            self.model_family, world_size)
+            local_episodes = (
+                self._build_local_episode_schedule(
+                    num_tasks,
+                    self.num_trials_per_task,
+                    0,
+                    1,
+                    self.eval_shard_strategy,
+                    task_ids=task_ids) if rank == 0 else [])
+            overwatch.info('Using DreamZero CFG parallel mode: rank0 drives '
+                           'LIBERO env, rank1 serves CFG branch.')
+        else:
+            local_episodes = self._build_local_episode_schedule(
+                num_tasks,
+                self.num_trials_per_task,
+                rank,
+                world_size,
+                self.eval_shard_strategy,
+                task_ids=task_ids)
         # Use a single run timestamp shared across ranks so every rank writes
         # into the same per-run directory. Broadcasting from rank 0 also avoids
         # the previous collision where ranks landing in the same wall-clock
@@ -649,6 +702,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         initial_states = None
         task_description = None
         try:
+            if self.cfg_parallel and rank != 0:
+                self._run_cfg_parallel_worker()
             for local_id in local_episodes:
                 # Get task ID from local episode index
                 task_id = local_id // self.num_trials_per_task
@@ -721,6 +776,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                             self.num_inference_steps
                     if self.inference_seed is not None:
                         predict_kwargs['seed'] = self.inference_seed
+                    if self.cfg_parallel and rank == 0:
+                        self._cfg_parallel_broadcast_predict(predict_kwargs)
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,
@@ -840,6 +897,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                 env.close()
             if pbar is not None:
                 pbar.close()
+            if self.cfg_parallel and rank == 0:
+                self._cfg_parallel_broadcast_stop()
 
         global_episodes = total_episodes.clone()
         global_successes = total_successes.clone()
@@ -873,6 +932,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 sf.write(f'num_inference_steps: {self.num_inference_steps}\n')
                 sf.write(f'max_steps: {self.max_steps}\n')
                 sf.write(f'eval_shard_strategy: {self.eval_shard_strategy}\n')
+                sf.write(f'cfg_parallel: {self.cfg_parallel}\n')
                 sf.write(
                     f'preprocess_every_step: {self.preprocess_every_step}\n')
                 sf.write(f'save_rollout_videos: '
