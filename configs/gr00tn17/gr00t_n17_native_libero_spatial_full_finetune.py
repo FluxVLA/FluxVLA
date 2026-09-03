@@ -234,21 +234,31 @@ model = dict(
     vla_head=dict(type='GrootN17ActionHead'),
 )
 
+# Evaluation restores the complete FluxVLA checkpoint directly. The original
+# GR00T checkpoint is only a training initializer and must not be required at
+# inference time.
+inference_model = model.copy()
+inference_model.update(
+    model_path=None,
+    load_metadata=False,
+    load_pretrained_weights=False,
+)
+
 train_dataloader = dict(
     per_device_batch_size=80,
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
         name_mappings={
-            'observation.state': ['states'],
-            'action': ['actions'],
+            'observation.state': ['proprio'],
+            'action': ['action'],
         },
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name=_STATISTIC_NAME,
         dataset_statistics={
             _STATISTIC_NAME: {
-                'states': _N17_FLAT_STATISTICS['state'],
-                'actions': _N17_FLAT_STATISTICS['action'],
+                'proprio': _N17_FLAT_STATISTICS['state'],
+                'action': _N17_FLAT_STATISTICS['action'],
             },
         },
         shuffle=True,
@@ -287,8 +297,8 @@ train_dataloader = dict(
                     ),
                     dict(
                         type='NormalizeStatesAndActions',
-                        state_key='states',
-                        action_key='actions',
+                        state_key='proprio',
+                        action_key='action',
                         state_dim=132,
                         action_dim=132,
                         norm_type='quantile',
@@ -451,7 +461,7 @@ eval = dict(
             ),
             dict(
                 type='NormalizeStatesAndActions',
-                state_key='states',
+                state_key='proprio',
                 action_key=None,
                 state_dim=132,
                 norm_type='quantile',

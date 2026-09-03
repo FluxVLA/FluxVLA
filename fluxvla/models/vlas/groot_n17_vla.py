@@ -50,9 +50,50 @@ class GrootN17VLA(LlavaVLA):
     native N1.7 backbone/action-head contract.
     """
 
+    # Architecture-only defaults for the public GR00T N1.7 3B checkpoint.
+    # Keeping these values in code lets a full FluxVLA checkpoint construct
+    # the model without reopening the original pretrained checkpoint.
+    DEFAULT_MODEL_CONFIG = {
+        'action_horizon': 40,
+        'backbone_embedding_dim': 2048,
+        'hidden_size': 1024,
+        'max_action_dim': 132,
+        'max_num_embodiments': 32,
+        'max_seq_len': 1024,
+        'max_state_dim': 132,
+        'num_inference_timesteps': 4,
+        'num_timestep_buckets': 1000,
+        'state_history_length': 1,
+        'use_flash_attention': True,
+        'use_alternate_vl_dit': True,
+        'use_vlln': True,
+        'add_pos_embed': True,
+        'diffusion_model_cfg': {
+            'attention_head_dim': 48,
+            'cross_attention_dim': 2048,
+            'dropout': 0.2,
+            'final_dropout': True,
+            'interleave_self_attention': True,
+            'norm_type': 'ada_norm',
+            'num_attention_heads': 32,
+            'num_layers': 32,
+            'output_dim': 1024,
+            'positional_embeddings': None,
+        },
+        'vl_self_attention_cfg': {
+            'attention_head_dim': 64,
+            'dropout': 0.2,
+            'final_dropout': True,
+            'num_attention_heads': 32,
+            'num_layers': 4,
+            'positional_embeddings': None,
+        },
+    }
+
     def __init__(
         self,
         model_path: Optional[str] = None,
+        model_config: Optional[Dict[str, Any]] = None,
         processor_path: Optional[str] = None,
         processor_kwargs: Optional[Dict[str, Any]] = None,
         embodiment_tag: str = 'LIBERO_PANDA',
@@ -67,6 +108,7 @@ class GrootN17VLA(LlavaVLA):
         freeze_vlm_backbone: bool = False,
         freeze_projector: bool = False,
         load_metadata: bool = True,
+        load_pretrained_weights: bool = True,
         norm_stats: Optional[Dict[str, Any]] = None,
         use_relative_action: Optional[bool] = None,
         apply_sincos_state_encoding: Optional[bool] = None,
@@ -91,11 +133,13 @@ class GrootN17VLA(LlavaVLA):
             name_mapping=name_mapping,
         )
         self.model_path = model_path
+        self.inline_model_config = copy.deepcopy(model_config or {})
         self.processor_path = processor_path
         self.inline_processor_kwargs = copy.deepcopy(processor_kwargs)
         self.embodiment_tag = embodiment_tag
         self.action_horizon = action_horizon
         self.action_dim = action_dim
+        self._use_flash_attention_override = use_flash_attention
         self.use_flash_attention = use_flash_attention
         self.qwen3_runtime = str(qwen3_runtime).lower()
         if self.qwen3_runtime not in ('hf_53', 'compat_457'):
@@ -108,6 +152,7 @@ class GrootN17VLA(LlavaVLA):
         self.qwen3_runtime_summary: Optional[Dict[str, Any]] = None
         self.checkpoint_use_flash_attention = None
         self.load_metadata = load_metadata
+        self.load_pretrained_weights = load_pretrained_weights
         self._native_vlm_backbone_cfg = native_vlm_backbone_cfg
         self._native_vla_head_cfg = native_vla_head_cfg
         if (self._native_vlm_backbone_cfg is None
@@ -126,7 +171,9 @@ class GrootN17VLA(LlavaVLA):
         self.clip_outliers = True
 
         self.checkpoint_dir: Optional[Path] = None
-        self.model_config: Dict[str, Any] = {}
+        self.model_config: Dict[str,
+                                Any] = copy.deepcopy(self.DEFAULT_MODEL_CONFIG)
+        self.model_config.update(self.inline_model_config)
         self.processor_config: Dict[str, Any] = {}
         self.statistics: Dict[str, Any] = {}
         self.embodiment_id_map: Dict[str, int] = {}
@@ -136,6 +183,15 @@ class GrootN17VLA(LlavaVLA):
         self.available_statistics = []
         self.active_embodiment_key = self.resolve_embodiment_key(
             embodiment_tag)
+
+        if self.inline_processor_kwargs is not None:
+            processor_kwargs = copy.deepcopy(self.inline_processor_kwargs)
+            self.processor_config = {'processor_kwargs': processor_kwargs}
+            self.statistics = copy.deepcopy(
+                processor_kwargs.get('statistics', {}))
+            self.embodiment_id_map = copy.deepcopy(
+                processor_kwargs.get('embodiment_id_mapping', {}))
+        self._apply_runtime_metadata()
 
         self.all_module_keys = ['vlm_backbone', 'vla_head']
 
@@ -197,7 +253,11 @@ class GrootN17VLA(LlavaVLA):
         self.checkpoint_dir = checkpoint_dir
         processor_metadata_dir = self._resolve_processor_metadata_dir(
             checkpoint_dir)
-        self.model_config = self._load_json(checkpoint_dir / 'config.json')
+        checkpoint_model_config = self._load_json(checkpoint_dir /
+                                                  'config.json')
+        self.model_config = copy.deepcopy(self.DEFAULT_MODEL_CONFIG)
+        self.model_config.update(checkpoint_model_config)
+        self.model_config.update(self.inline_model_config)
         if self.inline_processor_kwargs is not None:
             processor_kwargs = copy.deepcopy(self.inline_processor_kwargs)
             self.processor_config = {'processor_kwargs': processor_kwargs}
@@ -243,20 +303,30 @@ class GrootN17VLA(LlavaVLA):
         self.active_embodiment_key = self.resolve_embodiment_key(
             self.embodiment_tag)
 
+        self._apply_runtime_metadata()
+
+    def _apply_runtime_metadata(self) -> None:
+        """Resolve runtime settings from inline/checkpoint metadata."""
+        processor_kwargs = self.processor_config.get('processor_kwargs', {})
         self.action_horizon = int(
-            self.model_config.get('action_horizon', self.action_horizon))
+            self.model_config.get(
+                'action_horizon',
+                processor_kwargs.get('max_action_horizon',
+                                     self.action_horizon)))
         self.num_inference_timesteps = self.model_config.get(
-            'num_inference_timesteps')
-        self.action_dim = self.model_config.get('max_action_dim',
-                                                self.action_dim)
-        self.max_state_dim = self.model_config.get('max_state_dim')
-        self.max_action_dim = self.model_config.get('max_action_dim')
+            'num_inference_timesteps', self.num_inference_timesteps)
+        self.max_state_dim = self.model_config.get(
+            'max_state_dim',
+            processor_kwargs.get('max_state_dim', self.max_state_dim))
+        self.max_action_dim = self.model_config.get(
+            'max_action_dim',
+            processor_kwargs.get('max_action_dim', self.max_action_dim))
+        self.action_dim = self.max_action_dim or self.action_dim
         self.checkpoint_use_flash_attention = self.model_config.get(
             'use_flash_attention')
-        if self.use_flash_attention is None:
+        if self._use_flash_attention_override is None:
             self.use_flash_attention = bool(
                 self.checkpoint_use_flash_attention)
-        processor_kwargs = self.processor_config.get('processor_kwargs', {})
         if self.use_relative_action is None:
             self.use_relative_action = bool(
                 processor_kwargs.get('use_relative_action', False))
@@ -294,7 +364,8 @@ class GrootN17VLA(LlavaVLA):
         return SimpleNamespace(**dict(data))
 
     def _native_n17_config(self) -> SimpleNamespace:
-        cfg = dict(self.model_config)
+        cfg = copy.deepcopy(self.DEFAULT_MODEL_CONFIG)
+        cfg.update(self.model_config)
         diffusion_cfg = dict(cfg.get('diffusion_model_cfg') or {})
         input_embedding_dim = cfg.get('input_embedding_dim')
         if input_embedding_dim is None:
@@ -395,7 +466,7 @@ class GrootN17VLA(LlavaVLA):
         return remapped
 
     def _ensure_native_runtime(self) -> Dict[str, Any]:
-        """Load the FluxVLA-native backbone and action head."""
+        """Build native modules, optionally initialized from source weights."""
         backbone, action_head = self.vlm_backbone, self.vla_head
         if backbone is not None and action_head is not None:
             return {
@@ -403,20 +474,39 @@ class GrootN17VLA(LlavaVLA):
                 'checkpoint_dir': str(self.checkpoint_dir),
                 'all_module_keys': list(self.all_module_keys or []),
             }
-        if self.checkpoint_dir is None:
+        if self.load_pretrained_weights and self.checkpoint_dir is None:
             raise ValueError('Native runtime requires model_path metadata.')
         self._apply_qwen3_runtime(patch_gr00t_backbone=False)
 
         config = self._native_n17_config()
-        backbone = build_vlm_backbone_from_cfg(
-            copy.deepcopy(self._native_vlm_backbone_cfg),
-            default_args={
-                'select_layer': config.select_layer,
-                'reproject_vision': config.reproject_vision,
-                'use_flash_attention': config.use_flash_attention,
-                'load_bf16': False,
+        build_device = 'cpu' if self.load_pretrained_weights else 'meta'
+        with torch.device(build_device):
+            backbone = build_vlm_backbone_from_cfg(
+                copy.deepcopy(self._native_vlm_backbone_cfg),
+                default_args={
+                    'select_layer': config.select_layer,
+                    'reproject_vision': config.reproject_vision,
+                    'use_flash_attention': config.use_flash_attention,
+                    'load_bf16': False,
+                    'qwen3_runtime': self.qwen3_runtime,
+                })
+            action_head = build_head_from_cfg(
+                copy.deepcopy(self._native_vla_head_cfg),
+                default_args={'config': config})
+
+        self.vlm_backbone = backbone
+        self.vla_head = action_head
+        if not self.load_pretrained_weights:
+            backbone.train(self.training)
+            action_head.train(self.training)
+            return {
+                'status': 'awaiting_checkpoint',
+                'checkpoint_dir': None,
+                'all_module_keys': list(self.all_module_keys),
                 'qwen3_runtime': self.qwen3_runtime,
-            })
+                'qwen3_runtime_summary': self.qwen3_runtime_summary,
+            }
+
         backbone_state_dict = self._load_prefixed_state_dict(
             'backbone.', 'vlm_backbone.')
         backbone_load = backbone.load_state_dict(
@@ -427,17 +517,12 @@ class GrootN17VLA(LlavaVLA):
         backbone.finalize_checkpoint_load()
         backbone.eval()
 
-        action_head = build_head_from_cfg(
-            copy.deepcopy(self._native_vla_head_cfg),
-            default_args={'config': config})
         action_head_load = action_head.load_state_dict(
             self._load_prefixed_state_dict('action_head.', 'vla_head.'),
             strict=True,
         )
         action_head.eval()
 
-        self.vlm_backbone = backbone
-        self.vla_head = action_head
         return {
             'status': 'ok',
             'checkpoint_dir': str(self.checkpoint_dir),
@@ -626,10 +711,31 @@ class GrootN17VLA(LlavaVLA):
             state_dict, 'n17_action_head.', 'vla_head.')
         return state_dict
 
-    def load_state_dict(self, state_dict, strict: bool = True):
-        self._ensure_native_runtime()
+    def load_state_dict(self,
+                        state_dict,
+                        strict: bool = True,
+                        assign: bool = False):
         state_dict = self._remap_native_state_dict_keys(state_dict)
-        return super().load_state_dict(state_dict, strict=strict)
+        self._ensure_native_runtime()
+        has_meta_parameters = any(parameter.is_meta
+                                  for parameter in self.parameters())
+        incompatible = super().load_state_dict(
+            state_dict,
+            strict=strict,
+            assign=assign or has_meta_parameters,
+        )
+        if has_meta_parameters:
+            finalize_backbone = getattr(self.vlm_backbone,
+                                        'finalize_checkpoint_load', None)
+            if callable(finalize_backbone):
+                finalize_backbone()
+            finalize_head = getattr(self.vla_head, 'finalize_checkpoint_load',
+                                    None)
+            if callable(finalize_head):
+                finalize_head()
+            self.vlm_backbone.train(self.training)
+            self.vla_head.train(self.training)
+        return incompatible
 
     @staticmethod
     def _extract_forward_inputs(args, kwargs) -> Dict[str, Any]:
