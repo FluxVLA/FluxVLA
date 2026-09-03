@@ -396,7 +396,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.vla.freeze_llm_backbone = True
         self.vla.freeze_projector = True
         self.vla.freeze_vlm_backbone = True
-        self.vla.cuda(self.device_id)
+        if self.enable_mixed_precision_training:
+            self.vla.to(
+                device=self.device_id, dtype=self.mixed_precision_dtype)
+        else:
+            self.vla.cuda(self.device_id)
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
@@ -882,9 +886,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     # actions shape: (1, chunk_size, max_action_dim)
                     if len(actions.shape) == 3:
                         actions = actions[
-                            0, :self.eval_chunk_size, :].cpu().numpy()
+                            0, :self.eval_chunk_size, :].float().cpu().numpy()
                     else:
-                        actions = actions[0, None, :].cpu().numpy()
+                        actions = actions[0, None, :].float().cpu().numpy()
 
                     if t == 0:
                         action_min = format(actions.min(), '.6g')

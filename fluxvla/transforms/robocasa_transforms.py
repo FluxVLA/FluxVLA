@@ -433,12 +433,15 @@ class RobocasaEvalDataset:
         norm_stats: Normalization statistics path or dict.
         unnorm_key: Key inside the statistics dict.
         transforms: Transform config list.
+        extra_tensor_keys: Additional transform outputs to place in the model
+            batch as tensors, such as Cosmos3 conditioning metadata.
     """
 
     def __init__(self,
                  norm_stats: Any = None,
                  unnorm_key: str = 'robocasa_gr1_test',
                  transforms: List[Dict] = None,
+                 extra_tensor_keys: Optional[List[str]] = None,
                  **kwargs) -> None:
         from fluxvla.engines import build_transform_from_cfg
 
@@ -446,6 +449,7 @@ class RobocasaEvalDataset:
             build_transform_from_cfg(t) for t in (transforms or [])
         ]
         self.unnorm_key = unnorm_key
+        self.extra_tensor_keys = extra_tensor_keys or []
         # In grouped evaluation this is set per task by RobocasaEvalRunner.
         self._active_stats_blob: Optional[Dict] = None
         self.last_raw_state: Optional[np.ndarray] = None
@@ -553,5 +557,16 @@ class RobocasaEvalDataset:
         else:
             batch['embodiment_ids'] = torch.zeros(
                 bsz, dtype=torch.long, device=dev)
+
+        # Cosmos3 evaluation needs scalar action metadata (for example the
+        # conditioning FPS) in addition to the common image/text fields. Keep
+        # this opt-in so existing PI0.5 and GR00T RoboCasa configs preserve
+        # their exact inference inputs.
+        for key in self.extra_tensor_keys:
+            if key in batch or key not in data or data[key] is None:
+                continue
+            value = torch.as_tensor(data[key], device=dev)
+            batch[key] = (
+                value.view(1) if value.ndim == 0 else value.unsqueeze(0))
 
         return batch, replay_img
