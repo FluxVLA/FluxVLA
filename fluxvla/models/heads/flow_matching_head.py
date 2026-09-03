@@ -261,7 +261,14 @@ class FlowMatchingHead(nn.Module):
         self.model = diffusion_model_cls(**diffusion_model_cfg)
         self.input_embedding_dim = input_embedding_dim
         self.action_dim = action_dim
-        self.beta_dist = Beta(noise_beta_alpha, noise_beta_beta)
+        # Keep this non-module sampling helper on CPU even when the model is
+        # constructed under ``torch.device('meta')`` for checkpoint-only
+        # materialization. ``sample_time`` already transfers samples to the
+        # requested runtime device.
+        self.beta_dist = Beta(
+            torch.tensor(noise_beta_alpha, device='cpu'),
+            torch.tensor(noise_beta_beta, device='cpu'),
+        )
         self.num_inference_timesteps = num_inference_timesteps
         self.num_timestep_buckets = num_timestep_buckets
         self.noise_s = noise_s
