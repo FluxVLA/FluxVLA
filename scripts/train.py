@@ -28,7 +28,6 @@ import torch.distributed as dist
 import yaml
 from mmengine import Config, DictAction
 
-import fluxvla  # noqa: F401
 from fluxvla.datasets.utils import (save_dataset_statistics,
                                     save_grouped_dataset_statistics)
 from fluxvla.datasets.utils.transformed_statistics import \
@@ -306,7 +305,7 @@ def _build_optional_training_eval_dataset(cfg):
     if dataset_cfg is None:
         return None
     if overwatch.is_rank_zero():
-        overwatch.info(f'Building training eval dataset from {source!r}.')
+        overwatch.info(f'Building training eval dataset from `{source}`.')
     return build_dataset_from_cfg(dataset_cfg)
 
 

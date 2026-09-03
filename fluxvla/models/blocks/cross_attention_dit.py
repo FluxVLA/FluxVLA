@@ -217,8 +217,8 @@ class BasicTransformerBlock(nn.Module):
         attn_output = self.attn1(
             norm_hidden_states,
             encoder_hidden_states=encoder_hidden_states,
-            attention_mask=(encoder_attention_mask if encoder_hidden_states
-                            is not None else attention_mask),
+            attention_mask=attention_mask,
+            # encoder_attention_mask=encoder_attention_mask,
         )
         if self.final_dropout:
             attn_output = self.final_dropout(attn_output)
@@ -423,70 +423,6 @@ class DiT(ModelMixin, ConfigMixin):
             return output, all_hidden_states
         else:
             return self.proj_out_2(hidden_states)
-
-
-class AlternateVLDiT(DiT):
-    """Vision-language DiT that alternates text/image cross-attention masks."""
-
-    def __init__(self, *args, attend_text_every_n_blocks: int = 2, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.attend_text_every_n_blocks = attend_text_every_n_blocks
-
-    def forward(
-        self,
-        hidden_states: torch.Tensor,
-        encoder_hidden_states: torch.Tensor,
-        timestep: Optional[torch.LongTensor] = None,
-        encoder_attention_mask: Optional[torch.Tensor] = None,
-        return_all_hidden_states: bool = False,
-        image_mask: Optional[torch.Tensor] = None,
-        backbone_attention_mask: Optional[torch.Tensor] = None,
-    ):
-        del encoder_attention_mask
-        assert image_mask is not None, 'Image mask is required'
-
-        temb = self.timestep_encoder(timestep)
-        hidden_states = hidden_states.contiguous()
-        encoder_hidden_states = encoder_hidden_states.contiguous()
-
-        image_attention_mask = image_mask & backbone_attention_mask
-        non_image_attention_mask = (~image_mask) & backbone_attention_mask
-
-        all_hidden_states = [hidden_states]
-        assert self.config.interleave_self_attention, (
-            'Interleave self attention must be enabled')
-
-        for idx, block in enumerate(self.transformer_blocks):
-            if idx % 2 == 1:
-                hidden_states = block(
-                    hidden_states,
-                    attention_mask=None,
-                    encoder_hidden_states=None,
-                    encoder_attention_mask=None,
-                    temb=temb,
-                )
-            else:
-                if idx % (2 * self.attend_text_every_n_blocks) == 0:
-                    curr_encoder_attention_mask = non_image_attention_mask
-                else:
-                    curr_encoder_attention_mask = image_attention_mask
-                hidden_states = block(
-                    hidden_states,
-                    attention_mask=None,
-                    encoder_hidden_states=encoder_hidden_states,
-                    encoder_attention_mask=curr_encoder_attention_mask,
-                    temb=temb,
-                )
-            all_hidden_states.append(hidden_states)
-
-        conditioning = temb
-        shift, scale = self.proj_out_1(F.silu(conditioning)).chunk(2, dim=1)
-        hidden_states = (
-            self.norm_out(hidden_states) * (1 + scale[:, None]) +
-            shift[:, None])
-        if return_all_hidden_states:
-            return self.proj_out_2(hidden_states), all_hidden_states
-        return self.proj_out_2(hidden_states)
 
 
 class SelfAttentionTransformer(ModelMixin, ConfigMixin):

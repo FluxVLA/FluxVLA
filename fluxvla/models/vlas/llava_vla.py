@@ -19,21 +19,19 @@ import torch
 
 from fluxvla.engines import VLAS, initialize_overwatch
 from fluxvla.models.backbones.vlms.outputs import VLMBackboneOutput
-from .base_vla import BaseVLA
 from .continuous_action_utils import (add_auxiliary_losses,
                                       normalize_action_head_output)
+from .open_vla import OpenVLA
 
 overwatch = initialize_overwatch(__name__)
 
 
 @VLAS.register_module()
-class LlavaVLA(BaseVLA):
+class LlavaVLA(OpenVLA):
     """
-    Continuous-action VLA wrapper for LLaVA-style architectures.
-
-    The class inherits directly from :class:`BaseVLA`. It supports either a
-    combined ``vlm_backbone`` or separate vision/LLM/projector modules, and
-    forwards the resulting hidden states to a continuous-action head.
+    LlavaVLA is a variant of the OpenVLA model specifically designed for
+    Llava-based architectures. It inherits from OpenVLA and is registered
+    in the VLAS registry for easy instantiation.
 
     Args:
         vla_head (Dict): Configuration dictionary for the VLA head.
@@ -106,16 +104,11 @@ class LlavaVLA(BaseVLA):
             vision_backbone_fp32=vision_backbone_fp32,
             unfreeze_last_layer=unfreeze_last_layer,
             ignore_index=ignore_index,
+            freeze_weights=freeze_weights,
             norm_stats=norm_stats,
             pretrained_name_or_path=pretrained_name_or_path,
             name_mapping=name_mapping,
             strict_mapping=strict_mapping)
-        # Keep the same runner-facing module metadata and initialization state
-        # that LlavaVLA previously received through OpenVLA.
-        self.all_module_keys = [
-            'vision_backbone', 'llm_backbone', 'projector', 'head'
-        ]
-        self.string2idx = {}
 
     def forward(self,
                 lang_tokens: Optional[torch.LongTensor] = None,
@@ -139,10 +132,10 @@ class LlavaVLA(BaseVLA):
                 *args,
                 **kwargs) -> Dict:
         """
-        Forward pass for the LlavaVLA model.
+        Forward pass for the LlavaVLA model. This method is inherited from
+        OpenVLA and can be overridden if specific behavior is needed.
         """
 
-        backbone_output = None
         # Check if the model has a VLM backbone and use it if available.
         if hasattr(self, 'vlm_backbone') and self.vlm_backbone is not None:
             backbone_output = self.vlm_backbone(
@@ -179,7 +172,7 @@ class LlavaVLA(BaseVLA):
                     'Output must contain either hidden_states or last_hidden_state.'  # noqa: E501
                 last_hidden_state = output['last_hidden_state']
             auxiliary_losses = {}
-        head_kwargs = dict(
+        ret_dict = self.vla_head(
             input_features=last_hidden_state,
             states=states,
             attention_mask=fused_attention_mask,
@@ -187,11 +180,6 @@ class LlavaVLA(BaseVLA):
             action_masks=action_masks,
             embodiment_ids=embodiment_ids,
             sample_weight=kwargs.get('sample_weight'))
-        if isinstance(backbone_output, VLMBackboneOutput):
-            image_mask = backbone_output.auxiliary_outputs.get('image_mask')
-            if image_mask is not None:
-                head_kwargs['image_mask'] = image_mask
-        ret_dict = self.vla_head(**head_kwargs)
         if not auxiliary_losses and not torch.is_tensor(ret_dict):
             return ret_dict
         return add_auxiliary_losses(
@@ -211,7 +199,6 @@ class LlavaVLA(BaseVLA):
                        seed: Optional[int] = None,
                        *args,
                        **kwargs):
-        backbone_output = None
         if hasattr(self, 'vlm_backbone') and self.vlm_backbone is not None:
             backbone_output = self.vlm_backbone(
                 images=images,
@@ -243,10 +230,6 @@ class LlavaVLA(BaseVLA):
             prev_actions=prev_actions,
             prefix_len=prefix_len,
             rtc_config=rtc_config)
-        if isinstance(backbone_output, VLMBackboneOutput):
-            image_mask = backbone_output.auxiliary_outputs.get('image_mask')
-            if image_mask is not None:
-                predict_kwargs['image_mask'] = image_mask
         if seed is not None:
             predict_kwargs['seed'] = seed
         pred_actions = self.vla_head.predict_action(**predict_kwargs)
