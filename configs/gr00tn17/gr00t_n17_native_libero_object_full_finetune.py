@@ -222,7 +222,7 @@ model = dict(
     state_dropout_prob=0.2,
     load_metadata=True,
     qwen3_runtime='compat_457',
-    freeze_vlm_backbone=True,
+    freeze_vlm_backbone=False,
     vlm_backbone=dict(
         type='GrootN17Qwen3Backbone',
         model_config=_QWEN3_VL_CONFIG,
@@ -246,7 +246,7 @@ inference_model.update(
 )
 
 train_dataloader = dict(
-    per_device_batch_size=80,
+    per_device_batch_size=8,
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
