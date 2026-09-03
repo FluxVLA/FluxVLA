@@ -160,14 +160,19 @@ class DenormalizeLiberoAction:
         if self.norm_stats is not None and self.denorm_action:
             norm_stats_key = data.get('norm_stats_key')
             norm_stats = self.norm_stats[norm_stats_key]
+            action_stats = norm_stats.get('action')
+            if action_stats is None:
+                action_stats = norm_stats.get('actions')
+            if action_stats is None:
+                raise KeyError(
+                    f'No action statistics found for {norm_stats_key!r}; '
+                    "expected 'action' (or legacy 'actions').")
             if self.norm_type == 'quantile':
-                action = self._denormalize_quantile(action,
-                                                    norm_stats['action'])
+                action = self._denormalize_quantile(action, action_stats)
             elif self.norm_type == 'min_max':
-                action = self._denormalize_min_max(action,
-                                                   norm_stats['action'])
+                action = self._denormalize_min_max(action, action_stats)
             else:  # norm_type == 'mean_std'
-                action = self._denormalize(action, norm_stats['action'])
+                action = self._denormalize(action, action_stats)
         if self.normalize_gripper_action:
             action = normalize_gripper_action(action, binarize=True)
         if self.invert_gripper_action:

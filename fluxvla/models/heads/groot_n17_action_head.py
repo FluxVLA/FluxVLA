@@ -15,22 +15,97 @@
 
 from __future__ import annotations
 from types import SimpleNamespace
+from typing import Callable, Optional
 
 import torch
 import torch.nn.functional as F
+from torch import nn
+from torch.distributions import Beta
 
 from fluxvla.engines import HEADS
-from fluxvla.models.blocks import AlternateVLDiT, DiT
-from fluxvla.models.heads.flow_matching_head import FlowMatchingHead
+from fluxvla.engines.utils.fsdp_wrapping import build_module_wrap_policy
+from fluxvla.models.blocks import cross_attention_dit
+from fluxvla.models.heads.flow_matching_head import (
+    CategorySpecificMLP, MultiEmbodimentActionEncoder)
+
+
+class AlternateVLDiT(cross_attention_dit.DiT):
+    """N1.7-specific DiT with alternating text/image cross-attention."""
+
+    def __init__(self, *args, attend_text_every_n_blocks: int = 2, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.attend_text_every_n_blocks = attend_text_every_n_blocks
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        encoder_hidden_states: torch.Tensor,
+        timestep: Optional[torch.LongTensor] = None,
+        encoder_attention_mask: Optional[torch.Tensor] = None,
+        return_all_hidden_states: bool = False,
+        image_mask: Optional[torch.Tensor] = None,
+        backbone_attention_mask: Optional[torch.Tensor] = None,
+    ):
+        del encoder_attention_mask
+        if image_mask is None or backbone_attention_mask is None:
+            raise ValueError('AlternateVLDiT requires image and backbone '
+                             'attention masks.')
+
+        temb = self.timestep_encoder(timestep)
+        hidden_states = hidden_states.contiguous()
+        encoder_hidden_states = encoder_hidden_states.contiguous()
+        image_attention_mask = image_mask & backbone_attention_mask
+        text_attention_mask = (~image_mask) & backbone_attention_mask
+        all_hidden_states = [hidden_states]
+
+        if not self.config.interleave_self_attention:
+            raise ValueError('AlternateVLDiT requires interleaved self '
+                             'attention blocks.')
+
+        for idx, block in enumerate(self.transformer_blocks):
+            if idx % 2 == 1:
+                hidden_states = block(
+                    hidden_states,
+                    attention_mask=None,
+                    encoder_hidden_states=None,
+                    encoder_attention_mask=None,
+                    temb=temb,
+                )
+            else:
+                attention_mask = (
+                    text_attention_mask if idx %
+                    (2 * self.attend_text_every_n_blocks) == 0 else
+                    image_attention_mask)
+                # FluxVLA's shared BasicTransformerBlock consumes the mask
+                # through ``attention_mask``. Keep that model-specific detail
+                # here instead of changing the shared DiT implementation.
+                hidden_states = block(
+                    hidden_states,
+                    attention_mask=attention_mask,
+                    encoder_hidden_states=encoder_hidden_states,
+                    encoder_attention_mask=None,
+                    temb=temb,
+                )
+            all_hidden_states.append(hidden_states)
+
+        shift, scale = self.proj_out_1(F.silu(temb)).chunk(2, dim=1)
+        hidden_states = (
+            self.norm_out(hidden_states) * (1 + scale[:, None]) +
+            shift[:, None])
+        output = self.proj_out_2(hidden_states)
+        if return_all_hidden_states:
+            return output, all_hidden_states
+        return output
 
 
 @HEADS.register_module()
-class GrootN17ActionHead(FlowMatchingHead):
+class GrootN17ActionHead(nn.Module):
     """Native equivalent of official ``Gr00tN1d7ActionHead``."""
 
     supports_gradient_checkpointing = True
 
     def __init__(self, config, **config_overrides):
+        super().__init__()
         if config_overrides:
             config_dict = (
                 dict(config) if isinstance(config, dict) else vars(config))
@@ -40,40 +115,69 @@ class GrootN17ActionHead(FlowMatchingHead):
             }
             config_dict.update(valid_overrides)
             config = SimpleNamespace(**config_dict)
-        model_cls = AlternateVLDiT if config.use_alternate_vl_dit else DiT
-        model_extra_kwargs = {
-            'cross_attention_dim': config.backbone_embedding_dim,
-        }
-        if config.use_alternate_vl_dit:
-            model_extra_kwargs['attend_text_every_n_blocks'] = (
-                config.attend_text_every_n_blocks)
-        super().__init__(
-            hidden_size=config.hidden_size,
-            state_dim=config.max_state_dim * config.state_history_length,
-            input_embedding_dim=config.input_embedding_dim,
-            action_dim=config.max_action_dim,
-            num_inference_timesteps=config.num_inference_timesteps,
-            max_num_embodiments=config.max_num_embodiments,
-            use_vlln=config.use_vlln,
-            backbone_embedding_dim=config.backbone_embedding_dim,
-            vl_self_attention_cfg=config.vl_self_attention_cfg,
-            add_positional_embeddings=config.add_pos_embed,
-            max_seq_len=config.max_seq_len,
-            num_timestep_buckets=config.num_timestep_buckets,
-            noise_s=config.noise_s,
-            noise_beta_alpha=config.noise_beta_alpha,
-            noise_beta_beta=config.noise_beta_beta,
-            num_steps=config.action_horizon,
-            zero_padded_action_dims=False,
-            clamp_sample_time=False,
-            diffusion_model_cls=model_cls,
-            diffusion_model_cfg=config.diffusion_model_cfg,
-            diffusion_model_extra_kwargs=model_extra_kwargs,
-            use_future_tokens=False,
-        )
         self.config = config
+        self.hidden_size = config.hidden_size
+        self.input_embedding_dim = config.input_embedding_dim
+
+        diffusion_model_cfg = dict(config.diffusion_model_cfg)
+        diffusion_model_cfg['cross_attention_dim'] = (
+            config.backbone_embedding_dim)
+        if config.use_alternate_vl_dit:
+            diffusion_model_cfg['attend_text_every_n_blocks'] = (
+                config.attend_text_every_n_blocks)
+            self.model = AlternateVLDiT(**diffusion_model_cfg)
+        else:
+            self.model = cross_attention_dit.DiT(**diffusion_model_cfg)
+
+        self.action_dim = config.max_action_dim
         self.action_horizon = config.action_horizon
+        self.num_inference_timesteps = config.num_inference_timesteps
+        self.num_timestep_buckets = config.num_timestep_buckets
+
+        self.state_encoder = CategorySpecificMLP(
+            num_categories=config.max_num_embodiments,
+            input_dim=config.max_state_dim * config.state_history_length,
+            hidden_dim=self.hidden_size,
+            output_dim=self.input_embedding_dim,
+        )
+        self.action_encoder = MultiEmbodimentActionEncoder(
+            action_dim=self.action_dim,
+            hidden_size=self.input_embedding_dim,
+            num_embodiments=config.max_num_embodiments,
+        )
+        self.action_decoder = CategorySpecificMLP(
+            num_categories=config.max_num_embodiments,
+            input_dim=self.hidden_size,
+            hidden_dim=self.hidden_size,
+            output_dim=self.action_dim,
+        )
+        self.vlln = (
+            nn.LayerNorm(config.backbone_embedding_dim)
+            if config.use_vlln else nn.Identity())
+        self.vl_self_attention = (
+            cross_attention_dit.SelfAttentionTransformer(
+                **config.vl_self_attention_cfg)
+            if config.use_vlln else nn.Identity())
+        if config.add_pos_embed:
+            self.position_embedding = nn.Embedding(config.max_seq_len,
+                                                   self.input_embedding_dim)
+            nn.init.normal_(self.position_embedding.weight, mean=0.0, std=0.02)
+
+        # The head can be constructed inside a meta-device context when an
+        # evaluation checkpoint is materialized. Beta is not an nn.Module, so
+        # keep its scalar parameters explicitly on CPU and move samples later.
+        self.beta_dist = Beta(
+            torch.tensor(config.noise_beta_alpha, device='cpu'),
+            torch.tensor(config.noise_beta_beta, device='cpu'),
+        )
         self.state_dropout_prob = config.state_dropout_prob
+
+    def get_fsdp_wrapping_policy(self) -> Callable:
+        """Return the wrapping policy for N1.7 action-head modules."""
+        return build_module_wrap_policy({
+            cross_attention_dit.SelfAttentionTransformer,
+            cross_attention_dit.DiT,
+        })
 
     @staticmethod
     def _sample_initial_actions(size, dtype, device, seed: int | None = None):
@@ -134,10 +238,9 @@ class GrootN17ActionHead(FlowMatchingHead):
         device = vl_embeds.device
 
         if self.training and self.state_dropout_prob > 0:
-            do_dropout = (
-                torch.rand(
-                    state_features.shape[0], device=state_features.device) <
-                self.state_dropout_prob)
+            dropout_sample = torch.rand(
+                state_features.shape[0], device=state_features.device)
+            do_dropout = dropout_sample < self.state_dropout_prob
             do_dropout = do_dropout[:, None,
                                     None].to(dtype=state_features.dtype)
             state_features = state_features * (1 - do_dropout)

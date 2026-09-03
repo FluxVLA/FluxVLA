@@ -32,22 +32,25 @@ from torch.distributed.fsdp.wrap import _or_policy
 
 from fluxvla.engines import (VLAS, build_head_from_cfg,
                              build_vlm_backbone_from_cfg, initialize_overwatch)
+from fluxvla.models.backbones.vlms.outputs import normalize_vlm_backbone_output
 from fluxvla.transforms.modality_state_action import \
     resolve_groot_n17_embodiment_key
-from .llava_vla import LlavaVLA
+from .base_vla import BaseVLA
+from .continuous_action_utils import (add_auxiliary_losses,
+                                      normalize_action_head_output)
 
 overwatch = initialize_overwatch(__name__)
 
 
 @VLAS.register_module()
-class GrootN17VLA(LlavaVLA):
+class GrootN17VLA(BaseVLA):
     """Native FluxVLA shell for GR00T N1.7.
 
     The class intentionally avoids importing official Isaac-GR00T at module
     import time. This keeps FluxVLA's existing LIBERO/RoboCasa paths importable
-    while we port N1.7 layer by layer. It inherits FluxVLA's LlavaVLA base
-    interface but overrides runtime assembly, forward, and prediction with the
-    native N1.7 backbone/action-head contract.
+    while we port N1.7 layer by layer. Runtime assembly, forward, and
+    prediction stay model-owned because N1.7 needs image-token masks that are
+    not part of the generic continuous-action VLA contract.
     """
 
     # Architecture-only defaults for the public GR00T N1.7 3B checkpoint.
@@ -124,6 +127,7 @@ class GrootN17VLA(LlavaVLA):
             }
 
         super().__init__(
+            vlm_backbone=None,
             vla_head=None,
             freeze_vision_backbone=freeze_vision_backbone,
             freeze_llm_backbone=freeze_llm_backbone,
@@ -631,7 +635,7 @@ class GrootN17VLA(LlavaVLA):
         dtype: str = 'bfloat16',
         seed: Optional[int] = None,
     ) -> torch.Tensor:
-        """Run N1.7 inference through the shared LlavaVLA contract."""
+        """Run N1.7 inference through its model-owned backbone/head path."""
         device, torch_dtype = self._prepare_native_eval_runtime(dtype)
         model_inputs = {
             key: value
@@ -639,6 +643,7 @@ class GrootN17VLA(LlavaVLA):
                 'lang_tokens',
                 'lang_masks',
                 'images',
+                'img_masks',
                 'image_grid_thw',
                 'states',
                 'embodiment_ids',
@@ -648,7 +653,7 @@ class GrootN17VLA(LlavaVLA):
         model_inputs = self._move_batch_to_device_dtype(
             model_inputs, device, torch_dtype)
         with torch.inference_mode():
-            return super().predict_action(**model_inputs, seed=seed)
+            return self._predict_action_from_inputs(model_inputs, seed=seed)
 
     @staticmethod
     def _module_has_trainable_parameters(module: Optional[nn.Module]) -> bool:
@@ -784,11 +789,57 @@ class GrootN17VLA(LlavaVLA):
             action_head.to(device=target_device, dtype=dtype)
         return backbone, action_head, target_device, dtype
 
+    def _encode_backbone(self, inputs: Dict[str, Any]):
+        output = self.vlm_backbone(
+            images=inputs.get('images'),
+            lang_tokens=inputs.get('lang_tokens'),
+            img_masks=inputs.get('img_masks'),
+            lang_masks=inputs.get('lang_masks'),
+            image_grid_thw=inputs.get('image_grid_thw'),
+        )
+        return normalize_vlm_backbone_output(output)
+
+    def _forward_from_inputs(self, inputs: Dict[str, Any]) -> Dict[str, Any]:
+        backbone_output = self._encode_backbone(inputs)
+        head_output = self.vla_head(
+            input_features=backbone_output.last_hidden_state,
+            states=inputs.get('states'),
+            attention_mask=backbone_output.attention_mask,
+            actions=inputs.get('actions'),
+            action_masks=inputs.get('action_masks'),
+            embodiment_ids=inputs.get('embodiment_ids'),
+            image_mask=backbone_output.auxiliary_outputs.get('image_mask'),
+            sample_weight=inputs.get('sample_weight'),
+        )
+        if not backbone_output.auxiliary_losses and not torch.is_tensor(
+                head_output):
+            return head_output
+        return add_auxiliary_losses(
+            normalize_action_head_output(head_output),
+            backbone_output.auxiliary_losses,
+        )
+
+    def _predict_action_from_inputs(
+        self,
+        inputs: Dict[str, Any],
+        seed: Optional[int] = None,
+    ) -> torch.Tensor:
+        backbone_output = self._encode_backbone(inputs)
+        actions = self.vla_head.predict_action(
+            input_features=backbone_output.last_hidden_state,
+            states=inputs.get('states'),
+            attention_mask=backbone_output.attention_mask,
+            embodiment_ids=inputs.get('embodiment_ids'),
+            image_mask=backbone_output.auxiliary_outputs.get('image_mask'),
+            seed=seed,
+        )
+        return actions.float()
+
     def forward(self, *args, **kwargs):
         inputs = self._extract_forward_inputs(args, kwargs)
         _, _, device, dtype = self._prepare_native_forward_modules(inputs)
         inputs = self._move_batch_to_device_dtype(inputs, device, dtype)
-        return super().forward(**inputs)
+        return self._forward_from_inputs(inputs)
 
     def predict_action(self, **batch):
         inputs = self._extract_predict_inputs(batch)
