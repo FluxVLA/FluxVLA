@@ -130,9 +130,9 @@ class Cosmos3InferenceMixin:
         if actions.dim() != 3:
             raise ValueError('Cosmos3 actions must have shape [B,T,D], '
                              f'got {tuple(actions.shape)}.')
-        if actions.shape[-1] > raw_action_dim_value:
+        if actions.shape[-1] > self.max_action_dim:
             raise ValueError(f'Cosmos3 expected action dim <= '
-                             f'{raw_action_dim_value}, got '
+                             f'{self.max_action_dim}, got '
                              f'{actions.shape[-1]}.')
         actions = actions.to(device=device, dtype=dtype).clone()
         if actions.shape[-1] < self.max_action_dim:
@@ -142,6 +142,11 @@ class Cosmos3InferenceMixin:
                 self.max_action_dim - actions.shape[-1],
             )
             actions = torch.cat([actions, padding], dim=-1)
+        # Policy inference can use a state token already padded to
+        # ``max_action_dim`` as the first conditioned action.  Preserve that
+        # representation while ensuring channels outside the task's raw action
+        # space cannot condition generation.
+        actions[..., raw_action_dim_value:] = 0
         return actions
 
     @staticmethod
