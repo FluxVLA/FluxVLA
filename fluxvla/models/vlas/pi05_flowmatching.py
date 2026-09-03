@@ -127,9 +127,13 @@ class PI05FlowMatching(PI0FlowMatching):
             bsize, action_time_dim, dtype=torch.bool, device=device)
         pad_masks.append(action_time_mask)
 
-        # Set attention masks so that image and language
-        # inputs do not attend to action tokens
-        att_masks += [1] + ([0] * (self.n_action_steps - 1))
+        # Set attention masks so that image and language inputs do not attend
+        # to action tokens.  Derive the mask from the supplied action window
+        # because evaluation and truncated episodes can use a horizon
+        # different from the training configuration.
+        if action_time_dim == 0:
+            raise ValueError('noisy_actions must contain at least one step')
+        att_masks += [1] + ([0] * (action_time_dim - 1))
 
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)

@@ -379,9 +379,13 @@ class PI0FlowMatching(BaseVLA):
             bsize, action_time_dim, dtype=torch.bool, device=device)
         pad_masks.append(action_time_mask)
 
-        # Set attention masks so that image, language and state
-        # inputs do not attend to action tokens
-        att_masks += [1] + ([0] * (self.n_action_steps - 1))
+        # Set attention masks so that image, language and state inputs do not
+        # attend to action tokens.  Use the runtime horizon rather than the
+        # configured default: training/evaluation may provide a shorter
+        # action window (for example, a truncated episode).
+        if action_time_dim == 0:
+            raise ValueError('noisy_actions must contain at least one step')
+        att_masks += [1] + ([0] * (action_time_dim - 1))
 
         embs = torch.cat(embs, dim=1)
         pad_masks = torch.cat(pad_masks, dim=1)
@@ -469,8 +473,11 @@ class PI0FlowMatching(BaseVLA):
                 attention_masks,
                 scaling,
             )
-            head_dim = self.llm_backbone.layers[layer_idx].self_attn.head_dim
-            att_output = att_output.reshape(batch_size, -1, 1 * 8 * head_dim)
+            # Attention helpers return [B, L, H, D].  Flatten the actual
+            # number of query heads instead of assuming the eight-head
+            # PaliGemma configuration, so alternate Gemma widths retain the
+            # correct input size for each model's output projection.
+            att_output = att_output.flatten(start_dim=2)
 
             outputs_embeds = []
             start_pos = 0
