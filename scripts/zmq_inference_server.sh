@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,11 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .arm_dataset import *  # noqa: F401, F403
-from .balanced_dataset_wrapper import *  # noqa: F401, F403
-from .dataset_wrapper import *  # noqa: F401, F403
-from .parquet_dataset import *  # noqa: F401, F403
-from .robodojo_dataset import *  # noqa: F401, F403
-from .parquet_dataset_v3 import *  # noqa: F401, F403
-from .sarm_dataset import *  # noqa: F401, F403
-from .utils import *  # noqa: F401, F403
+# Stable shell entry point for the FluxThemis ZMQ evaluation service.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+cd "${PROJECT_ROOT}"
+exec python "${SCRIPT_DIR}/zmq_inference_server.py" "$@"

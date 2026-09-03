@@ -36,6 +36,10 @@ def __getattr__(name):
         'EvaluationEventError',
         'FluxVLAROSEvaluationReporter',
     }
+    _zmq_eval_server = {
+        'FluxVLAZMQEvalServer',
+        'build_zmq_eval_server_from_config',
+    }
 
     if name in _public:
         from . import serializers
@@ -55,6 +59,9 @@ def __getattr__(name):
     if name in _evaluation_reporter:
         from . import evaluation_reporter
         return getattr(evaluation_reporter, name)
+    if name in _zmq_eval_server:
+        from . import zmq_eval_server
+        return getattr(zmq_eval_server, name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
@@ -64,6 +71,8 @@ __all__ = [
     'EvaluationEventError',
     'FluxVLAROSPolicy',
     'FluxVLAROSEvaluationReporter',
+    'FluxVLAZMQEvalServer',
+    'build_zmq_eval_server_from_config',
     'FluxVLAROS2Server',
     'FluxVLAROSServer',
     'EpisodeAffinityPolicyPool',

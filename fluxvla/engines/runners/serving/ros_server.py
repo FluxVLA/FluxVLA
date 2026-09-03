@@ -205,6 +205,8 @@ class FluxVLAROSPolicy:
             if raw_state is not None:
                 request_context['state'] = np.asarray(
                     raw_state, dtype=np.float32).copy()
+            elif observation.get('states') is not None:
+                request_context['state'] = observation['states']
             actions = self._to_environment_actions(
                 raw_actions,
                 unnorm_key=unnorm_key,
@@ -931,6 +933,10 @@ def build_ros_server_from_config(
             if 'episodes_per_task' in runner_cfg:
                 reporter_eval_config.setdefault(
                     'num_trials_per_task', runner_cfg['episodes_per_task'])
+            if 'episodes_per_task_overrides' in runner_cfg:
+                reporter_eval_config.setdefault(
+                    'num_trials_per_task_overrides',
+                    runner_cfg['episodes_per_task_overrides'])
             if 'run_name' in runner_cfg:
                 reporter_eval_config.setdefault('run_name',
                                                 runner_cfg['run_name'])
@@ -988,6 +994,7 @@ def build_ros_server_from_config(
             devices=resolved_devices,
             service_name=transport.get('service_name'),
             startup_timeout_s=workers_cfg.get('startup_timeout_s', 900.0),
+            startup_parallelism=workers_cfg.get('startup_parallelism', 1),
             request_timeout_s=workers_cfg.get('request_timeout_s', 120.0),
             lease_timeout_s=workers_cfg.get('lease_timeout_s', 900.0),
         )
@@ -1297,7 +1304,10 @@ def _validate_denormalization_stats(transform: Any,
                                     context: Mapping[str, Any]) -> None:
     norm_stats = getattr(transform, 'norm_stats', None)
     transform_name = type(transform).__name__
-    if 'Libero' in transform_name:
+    statistic_name = getattr(transform, 'statistic_name', None)
+    if statistic_name:
+        stats_key = statistic_name
+    elif 'Libero' in transform_name:
         stats_key = context.get('norm_stats_key')
     else:
         stats_key = (

@@ -25,7 +25,7 @@ import threading
 import time
 import traceback
 from dataclasses import dataclass
-from multiprocessing.connection import Connection
+from multiprocessing.connection import Connection, wait as wait_connections
 from typing import Any, Sequence
 
 import numpy as np
@@ -35,6 +35,15 @@ import numpy as np
 class _EpisodeLease:
     worker_index: int
     seed: int
+
+
+@dataclass(frozen=True)
+class _StartingPolicyWorker:
+    worker_index: int
+    device: str
+    process: Any
+    connection: Connection
+    deadline: float
 
 
 class EpisodeAffinityPolicyPool:
@@ -288,6 +297,7 @@ def spawn_ros_policy_pool(
         devices: Sequence[str],
         service_name: str | None = None,
         startup_timeout_s: float = 900.0,
+        startup_parallelism: int = 1,
         request_timeout_s: float = 120.0,
         lease_timeout_s: float = 900.0) -> EpisodeAffinityPolicyPool:
     """Spawn one fully initialized FluxVLA policy process per device."""
@@ -303,18 +313,28 @@ def spawn_ros_policy_pool(
             raise TypeError(f'{name} must be a number')
         if value <= 0:
             raise ValueError(f'{name} must be positive')
+    if isinstance(startup_parallelism,
+                  bool) or not isinstance(startup_parallelism, int):
+        raise TypeError('startup_parallelism must be an integer')
+    if startup_parallelism < 1:
+        raise ValueError('startup_parallelism must be positive')
 
     context = mp.get_context('spawn')
-    backends: list[_ProcessPolicyBackend] = []
-    pending_process = None
-    pending_connection = None
-    try:
-        # Start sequentially to avoid multiplying checkpoint deserialization
-        # peaks in host memory.
-        for worker_index, device in enumerate(normalized_devices):
+    worker_count = len(normalized_devices)
+    startup_parallelism = min(startup_parallelism, worker_count)
+    backends: list[_ProcessPolicyBackend | None] = [None] * worker_count
+    starting: dict[Connection, _StartingPolicyWorker] = {}
+    next_worker_index = 0
+
+    def start_available_workers() -> None:
+        nonlocal next_worker_index
+        while (next_worker_index < worker_count
+               and len(starting) < startup_parallelism):
+            worker_index = next_worker_index
+            device = normalized_devices[worker_index]
             print(
                 '[FluxVLA] Loading inference replica '
-                f'{worker_index + 1}/{len(normalized_devices)} on {device}.',
+                f'{worker_index + 1}/{worker_count} on {device}.',
                 flush=True,
             )
             parent_connection, child_connection = context.Pipe(duplex=True)
@@ -337,67 +357,96 @@ def spawn_ros_policy_pool(
                 child_connection.close()
                 raise
             child_connection.close()
-            pending_process = process
-            pending_connection = parent_connection
-            if not parent_connection.poll(float(startup_timeout_s)):
-                process.terminate()
-                process.join(timeout=5.0)
-                parent_connection.close()
+            starting[parent_connection] = _StartingPolicyWorker(
+                worker_index=worker_index,
+                device=device,
+                process=process,
+                connection=parent_connection,
+                deadline=time.monotonic() + float(startup_timeout_s),
+            )
+            next_worker_index += 1
+
+    try:
+        start_available_workers()
+        while starting:
+            now = time.monotonic()
+            next_deadline = min(worker.deadline
+                                for worker in starting.values())
+            timeout_s = max(0.0, next_deadline - now)
+            ready_connections = wait_connections(
+                tuple(starting), timeout=timeout_s)
+            if not ready_connections:
+                timed_out = min(
+                    starting.values(), key=lambda worker: worker.deadline)
                 raise TimeoutError(
-                    f'Worker {worker_index} on {device} did not become '
-                    f'ready within {startup_timeout_s:g}s')
-            try:
-                ready = parent_connection.recv()
-            except (EOFError, OSError) as exc:
-                process.join(timeout=1.0)
-                parent_connection.close()
-                raise RuntimeError(
-                    f'FluxVLA worker {worker_index} on {device} exited during '
-                    'startup') from exc
-            if ready.get('op') != 'ready':
-                process.join(timeout=1.0)
-                if process.is_alive():
-                    process.terminate()
-                    process.join(timeout=5.0)
-                parent_connection.close()
-                raise RuntimeError(
-                    f'FluxVLA worker {worker_index} on {device} failed to '
-                    f"start: {ready.get('error', 'unknown error')}\n"
-                    f"{ready.get('traceback', '')}".rstrip())
-            backends.append(
-                _ProcessPolicyBackend(
+                    f'Worker {timed_out.worker_index} on '
+                    f'{timed_out.device} did not become ready within '
+                    f'{startup_timeout_s:g}s')
+
+            for parent_connection in ready_connections:
+                worker = starting[parent_connection]
+                worker_index = worker.worker_index
+                device = worker.device
+                process = worker.process
+                try:
+                    ready = parent_connection.recv()
+                except (EOFError, OSError) as exc:
+                    process.join(timeout=1.0)
+                    raise RuntimeError(
+                        f'FluxVLA worker {worker_index} on {device} exited '
+                        'during startup') from exc
+                if ready.get('op') != 'ready':
+                    process.join(timeout=1.0)
+                    raise RuntimeError(
+                        f'FluxVLA worker {worker_index} on {device} failed '
+                        f"to start: {ready.get('error', 'unknown error')}\n"
+                        f"{ready.get('traceback', '')}".rstrip())
+                if (ready.get('worker_index') != worker_index
+                        or ready.get('device') != device):
+                    raise RuntimeError(
+                        f'FluxVLA worker {worker_index} on {device} returned '
+                        'mismatched startup identity')
+
+                backends[worker_index] = _ProcessPolicyBackend(
                     process=process,
                     connection=parent_connection,
                     device=device,
                     request_timeout_s=float(request_timeout_s),
-                ))
-            pending_process = None
-            pending_connection = None
-            print(
-                '[FluxVLA] Inference replica '
-                f'{worker_index + 1}/{len(normalized_devices)} ready on '
-                f'{device}.',
-                flush=True,
-            )
+                )
+                del starting[parent_connection]
+                print(
+                    '[FluxVLA] Inference replica '
+                    f'{worker_index + 1}/{worker_count} ready on {device}.',
+                    flush=True,
+                )
+
+            start_available_workers()
+
+        ready_backends = [
+            backend for backend in backends if backend is not None
+        ]
+        if len(ready_backends) != worker_count:
+            raise RuntimeError('Not all FluxVLA inference workers started')
         return EpisodeAffinityPolicyPool(
-            backends=backends,
+            backends=ready_backends,
             lease_timeout_s=float(lease_timeout_s),
         )
     except BaseException:
-        if pending_connection is not None:
+        for worker in starting.values():
             try:
-                pending_connection.close()
+                worker.connection.close()
             except OSError:
                 pass
-        if pending_process is not None:
             try:
-                if pending_process.is_alive():
-                    pending_process.terminate()
-                if pending_process.pid is not None:
-                    pending_process.join(timeout=5.0)
+                if worker.process.is_alive():
+                    worker.process.terminate()
+                if worker.process.pid is not None:
+                    worker.process.join(timeout=5.0)
             except (AssertionError, OSError):
                 pass
         for backend in backends:
+            if backend is None:
+                continue
             try:
                 backend.close()
             except Exception:
