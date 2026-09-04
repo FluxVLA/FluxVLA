@@ -712,7 +712,8 @@ class PI0FlowMatching(BaseVLA):
             fill_kv_cache=fill_kv_cache,
             adarms_cond=[None, adarms_cond],
             time=time)
-        suffix_out = suffix_out[:, -self.n_action_steps:]
+        action_time_dim = x_t.shape[1]
+        suffix_out = suffix_out[:, -action_time_dim:]
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self._project_action_output(suffix_out)
@@ -916,7 +917,8 @@ class PI0FlowMatching(BaseVLA):
             inputs_embeds=[None, suffix_embs],
             use_cache=False,
             adarms_cond=[None, adarms_cond])
-        suffix_out = suffix_out[:, -self.n_action_steps:]
+        action_time_dim = x_t.shape[1]
+        suffix_out = suffix_out[:, -action_time_dim:]
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self._project_action_output(suffix_out)
         return v_t

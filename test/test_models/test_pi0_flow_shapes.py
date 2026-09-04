@@ -72,6 +72,65 @@ def test_suffix_rejects_empty_action_window(factory):
         model.embed_suffix(states, actions, timestep)
 
 
+def _make_runtime_horizon_model():
+    model = _make_pi0_suffix_model()
+    model.action_out_proj = nn.Linear(4, 2)
+    model.openpi_fp32_flow = False
+    model.rtc_training_config = None
+    model.loss_action_dim = None
+    model.attention_implementation = 'sdpa'
+
+    def embed_prefix(**kwargs):
+        bsize = kwargs['lang_tokens'].shape[0]
+        embs = torch.zeros(bsize, 1, 4)
+        pad_masks = torch.ones(bsize, 1, dtype=torch.bool)
+        att_masks = torch.zeros(bsize, 1, dtype=torch.bool)
+        return embs, pad_masks, att_masks
+
+    def forward_model(**kwargs):
+        return kwargs['inputs_embeds'][1], None
+
+    model.embed_prefix = embed_prefix
+    model.forward_model = forward_model
+    return model
+
+
+def test_training_output_matches_runtime_horizon():
+    """The state token must not be projected as an action when T is short."""
+    model = _make_runtime_horizon_model()
+    actions = torch.randn(2, 3, 2)
+
+    output = model.forward(
+        images=[],
+        lang_tokens=torch.zeros(2, 1, dtype=torch.long),
+        states=torch.randn(2, 3),
+        actions=actions,
+        img_masks=None,
+        lang_masks=None,
+        noise=torch.randn_like(actions),
+        time=torch.full((2, ), 0.5),
+    )
+
+    assert output['predictions'].shape == actions.shape
+    assert torch.isfinite(output['loss'])
+
+
+def test_denoise_output_matches_runtime_horizon():
+    model = _make_runtime_horizon_model()
+    model.llm_expert = SimpleNamespace(config=SimpleNamespace())
+    x_t = torch.randn(2, 3, 2)
+
+    output = model.denoise_step(
+        states=torch.randn(2, 3),
+        prefix_pad_masks=torch.ones(2, 2, dtype=torch.bool),
+        past_key_values=None,
+        x_t=x_t,
+        timestep=torch.full((2, ), 0.5),
+    )
+
+    assert output.shape == x_t.shape
+
+
 class _TinyNorm(nn.Module):
 
     def forward(self, hidden_states, cond=None):
