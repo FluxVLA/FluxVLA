@@ -462,7 +462,6 @@ class PI0FlowMatching(BaseVLA):
             query_states, key_states = apply_rotary_pos_emb(
                 query_states, key_states, cos, sin)
 
-            batch_size = query_states.shape[0]
             scaling = self.llm_backbone.layers[layer_idx].self_attn.scaling
 
             att_output, _ = self.attention_interface(

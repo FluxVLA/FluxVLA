@@ -43,7 +43,7 @@ def _make_pi05_suffix_model():
     ],
 )
 def test_suffix_attention_mask_matches_runtime_horizon(factory,
-                                                        expected_attention):
+                                                       expected_attention):
     """A truncated action window must keep the flow attention mask aligned."""
     model = factory()
     states = torch.randn(2, 3)
@@ -60,8 +60,8 @@ def test_suffix_attention_mask_matches_runtime_horizon(factory,
     assert torch.all(pad_masks)
 
 
-@pytest.mark.parametrize('factory', [_make_pi0_suffix_model,
-                                     _make_pi05_suffix_model])
+@pytest.mark.parametrize('factory',
+                         [_make_pi0_suffix_model, _make_pi05_suffix_model])
 def test_suffix_rejects_empty_action_window(factory):
     model = factory()
     states = torch.randn(1, 3)
@@ -115,10 +115,12 @@ class _TinyRotary:
 
     def __call__(self, dummy_tensor, position_ids):
         shape = (*position_ids.shape, dummy_tensor.shape[-1])
-        return (torch.ones(shape, device=dummy_tensor.device,
-                            dtype=dummy_tensor.dtype),
-                torch.zeros(shape, device=dummy_tensor.device,
-                            dtype=dummy_tensor.dtype))
+        return (torch.ones(
+            shape, device=dummy_tensor.device, dtype=dummy_tensor.dtype),
+                torch.zeros(
+                    shape,
+                    device=dummy_tensor.device,
+                    dtype=dummy_tensor.dtype))
 
 
 def test_joint_flow_forward_uses_actual_attention_width():
@@ -136,11 +138,8 @@ def test_joint_flow_forward_uses_actual_attention_width():
 
     def fake_attention(module, query, key, value, mask, scaling):
         del module, key, value, mask, scaling
-        return torch.zeros(
-            query.shape[0],
-            query.shape[2],
-            query.shape[1],
-            query.shape[3]), None
+        return torch.zeros(query.shape[0], query.shape[2], query.shape[1],
+                           query.shape[3]), None
 
     model.attention_interface = fake_attention
     prefix = torch.randn(1, 2, hidden_size)
