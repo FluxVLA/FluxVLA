@@ -14,6 +14,8 @@
 
 import io
 import os
+import select
+import sys
 import threading
 import time
 from pathlib import Path
@@ -75,6 +77,8 @@ class BaseInferenceRunner:
             server.  Keys: ``server_host``, ``server_port``, ``timeout_s``,
             ``serializer``, ``compress``, ``enable_profiling``.
     """
+
+    _PAUSE_COMMAND = 'p'
 
     def __init__(self,
                  cfg: Dict = None,
@@ -363,6 +367,12 @@ class BaseInferenceRunner:
                 actions = self._postprocess_actions(raw_action)
                 self._execute_actions(actions, rate)
 
+                if self._poll_keyboard_pause():
+                    self.reset_inference_history()
+                    overwatch.info('Paused after the current action chunk; '
+                                   'waiting for the next instruction.')
+                    return
+
                 self._prev_ctx = self._action_ctx
                 t += (
                     getattr(self, 'execute_horizon', None)
@@ -518,6 +528,37 @@ class BaseInferenceRunner:
                 action=raw_action.cpu().numpy(),
                 state=getattr(self._action_ctx, 'state', None)))
         return denormalized[:self.action_chunk]
+
+    def reset_inference_history(self) -> None:
+        """Discard temporal state after an out-of-band robot reset.
+
+        Evaluation resets move the robot independently of the policy.  The
+        previous action context and observation window therefore no longer
+        describe the current robot state and must not be used for the next
+        inference chunk.
+        """
+        self._prev_ctx = None
+        self._action_ctx = SimpleNamespace()
+        self.observation_window = None
+
+    def _poll_keyboard_pause(self) -> bool:
+        """Return True when the terminal requests a pause after this chunk.
+
+        A terminal is line-buffered, so type ``p`` and press Enter while a
+        chunk is running. The command is consumed after that chunk completes;
+        no asynchronous input thread is required.
+        """
+        if not sys.stdin.isatty():
+            return False
+        try:
+            readable, _, _ = select.select([sys.stdin], [], [], 0)
+        except (OSError, ValueError):
+            return False
+        if not readable:
+            return False
+
+        command = sys.stdin.readline().strip().lower()
+        return command == self._PAUSE_COMMAND
 
     def _get_user_task_instruction(self, default_instruction: str) -> str:
         """Get task instruction from user input.
