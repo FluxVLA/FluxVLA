@@ -121,6 +121,8 @@ class PI0FlowMatching(BaseVLA):
                  time_beta_alpha: float = 1.5,
                  time_beta_beta: float = 1.0,
                  openpi_fp32_flow: bool = False,
+                 zero_padded_action_dims: bool = False,
+                 trim_action_prediction: bool = False,
                  rtc_training_config: Optional[Dict] = None,
                  **kwargs):
         super(PI0FlowMatching, self).__init__(
@@ -199,6 +201,12 @@ class PI0FlowMatching(BaseVLA):
         self.time_beta_alpha = float(time_beta_alpha)
         self.time_beta_beta = float(time_beta_beta)
         self.openpi_fp32_flow = bool(openpi_fp32_flow)
+        self.zero_padded_action_dims = bool(zero_padded_action_dims)
+        self.trim_action_prediction = bool(trim_action_prediction)
+        if ((self.zero_padded_action_dims or self.trim_action_prediction)
+                and self.ori_action_dim is None):
+            raise ValueError('ori_action_dim is required when padded action '
+                             'masking or prediction trimming is enabled.')
         self.rtc_training_config = rtc_training_config
 
     @staticmethod
@@ -260,6 +268,15 @@ class PI0FlowMatching(BaseVLA):
                 f'loss_action_dim={self.loss_action_dim}.')
         return (prediction[..., :self.loss_action_dim],
                 target[..., :self.loss_action_dim])
+
+    def _zero_action_padding(self, tensor: torch.Tensor) -> torch.Tensor:
+        """Remove stochastic/model signal from non-semantic action padding."""
+        if (not self.zero_padded_action_dims or self.ori_action_dim is None
+                or tensor.shape[-1] <= self.ori_action_dim):
+            return tensor
+        tensor = tensor.clone()
+        tensor[..., self.ori_action_dim:] = 0
+        return tensor
 
     def get_attention_interface(self):
         if self.attention_implementation == 'sdpa':
@@ -643,6 +660,9 @@ class PI0FlowMatching(BaseVLA):
         if noise is None:
             noise = self.sample_noise(actions.shape, actions.device)
 
+        actions = self._zero_action_padding(actions)
+        noise = self._zero_action_padding(noise)
+
         if time is None:
             time = self.sample_time(actions.shape[0], actions.device)
 
@@ -801,6 +821,7 @@ class PI0FlowMatching(BaseVLA):
         if noise is None:
             actions_shape = (bsize, self.n_action_steps, self.max_action_dim)
             noise = self.sample_noise(actions_shape, device)
+        noise = self._zero_action_padding(noise)
 
         prefix_embs, prefix_pad_masks, prefix_att_masks = self.embed_prefix(
             images=images,
@@ -866,6 +887,9 @@ class PI0FlowMatching(BaseVLA):
             x_t = self._predict_action_plain(
                 x_t=x_t, denoise=denoise, bsize=bsize, dt=dt, device=device)
 
+        x_t = self._zero_action_padding(x_t)
+        if self.trim_action_prediction and self.ori_action_dim is not None:
+            return x_t[..., :self.ori_action_dim]
         return x_t
 
     def denoise_step(
@@ -913,7 +937,7 @@ class PI0FlowMatching(BaseVLA):
         suffix_out = suffix_out[:, -self.n_action_steps:]
         suffix_out = suffix_out.to(dtype=torch.float32)
         v_t = self._project_action_output(suffix_out)
-        return v_t
+        return self._zero_action_padding(v_t)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """
