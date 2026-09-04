@@ -322,6 +322,13 @@ class OliRTCInferenceRunner(OliInferenceRunner):
 
     def run(self, initial_instruction='pour water into the cup'):
         overwatch.info('Starting Oli RTC inference runner')
+        if not self.interactive:
+            prompt_id = self.default_prompt_id
+            instruction = self._get_task_description(prompt_id)
+            self._selected_prompt_id = prompt_id
+            self._prev_ctx = None
+            self._run_rtc_instruction(instruction, chunk_count=None)
+            return
         while self._running:
             self._run_episode(initial_instruction)
 
@@ -333,8 +340,8 @@ class OliRTCInferenceRunner(OliInferenceRunner):
         self._run_rtc_instruction(
             instruction=instructions[0], chunk_count=len(instructions))
 
-    def _run_rtc_instruction(self, instruction: str, chunk_count: int):
-        if chunk_count <= 0:
+    def _run_rtc_instruction(self, instruction: str, chunk_count: int | None):
+        if chunk_count is not None and chunk_count <= 0:
             return
 
         scheduler = self._make_scheduler()
@@ -357,14 +364,26 @@ class OliRTCInferenceRunner(OliInferenceRunner):
             name='OliRTCActor')
         producer.start()
         actor.start()
+        chunk_label = 'continuous' if chunk_count is None else str(chunk_count)
         overwatch.info(
-            f'Started Oli RTC producer/actor for {chunk_count} chunk(s)')
+            f'Started Oli RTC producer/actor for {chunk_label} chunk(s)')
 
-        horizon = self.execute_horizon or self.action_chunk
-        timeout = chunk_count * horizon * self._dt + 30.0
-        deadline = time.monotonic() + timeout
+        if chunk_count is None:
+            timeout = None
+            deadline = None
+        else:
+            horizon = self.execute_horizon or self.action_chunk
+            timeout = chunk_count * horizon * self._dt + 30.0
+            deadline = time.monotonic() + timeout
+        pause_requested = False
+        timed_out = False
         while self._running and (producer.is_alive() or actor.is_alive()):
-            if time.monotonic() >= deadline:
+            if self.interactive and self._poll_keyboard_pause():
+                pause_requested = True
+                stop_event.set()
+                break
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
                 overwatch.error(
                     f'Oli RTC execution timed out after {timeout:.1f}s')
                 stop_event.set()
@@ -373,18 +392,28 @@ class OliRTCInferenceRunner(OliInferenceRunner):
 
         if not self._running:
             stop_event.set()
-        producer.join(timeout=2.0)
-        actor.join(timeout=2.0)
+        if pause_requested or timed_out or not self._running:
+            # Inference itself is not cancellable. Wait for both workers to
+            # observe stop_event before returning, otherwise a resumed episode
+            # could use the model concurrently with the old producer.
+            while producer.is_alive() or actor.is_alive():
+                producer.join(timeout=0.1)
+                actor.join(timeout=0.1)
+        else:
+            producer.join(timeout=2.0)
+            actor.join(timeout=2.0)
         self._rtc_stop_event = None
+        if pause_requested and self._running:
+            self._handle_keyboard_pause()
 
-    def _producer_loop(self, instruction: str, chunk_count: int,
+    def _producer_loop(self, instruction: str, chunk_count: int | None,
                        scheduler: OliRTCChunkScheduler, stop_event: Event,
                        producer_done: Event):
         committed_chunks = 0
         next_chunk_id = 0
         try:
-            while (self._running and not stop_event.is_set()
-                   and committed_chunks < chunk_count):
+            while (self._running and not stop_event.is_set() and
+                   (chunk_count is None or committed_chunks < chunk_count)):
                 request = scheduler.prepare_inference_request(
                     use_rtc=self._rtc_enabled())
                 if request is None:
@@ -411,8 +440,10 @@ class OliRTCInferenceRunner(OliInferenceRunner):
                         committed_chunks += 1
                         self._prev_ctx = self._action_ctx
                         self._last_rtc_chunk_count = committed_chunks
-                        overwatch.info(f'[OliRTC] committed chunk '
-                                       f'{committed_chunks}/{chunk_count} '
+                        progress = (
+                            str(committed_chunks) if chunk_count is None else
+                            f'{committed_chunks}/{chunk_count}')
+                        overwatch.info(f'[OliRTC] committed chunk {progress} '
                                        f'prefix_len={request.prefix_len}')
                     else:
                         debug = scheduler.last_commit_debug()
@@ -470,7 +501,7 @@ class OliRTCInferenceRunner(OliInferenceRunner):
 
     @staticmethod
     def _raw_action_to_numpy(raw_action) -> np.ndarray:
-        raw_np = raw_action.detach().cpu().numpy()
+        raw_np = raw_action.float().detach().cpu().numpy()
         if raw_np.ndim >= 3 and raw_np.shape[0] == 1:
             raw_np = raw_np[0]
         return raw_np
