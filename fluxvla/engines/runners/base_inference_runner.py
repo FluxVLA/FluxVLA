@@ -521,11 +521,12 @@ class BaseInferenceRunner:
         Returns:
             np.ndarray: Denormalized actions, truncated to action_chunk.
         """
+        action_numpy = raw_action.float().cpu().numpy()
         if self._use_remote:
-            return raw_action.cpu().numpy()[:self.action_chunk]
+            return action_numpy[:self.action_chunk]
         denormalized = self.denormalize_action(
             dict(
-                action=raw_action.cpu().numpy(),
+                action=action_numpy,
                 state=getattr(self._action_ctx, 'state', None)))
         return denormalized[:self.action_chunk]
 

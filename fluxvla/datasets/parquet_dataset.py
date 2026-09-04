@@ -633,6 +633,7 @@ class PrivateInferenceDataset:
                  norm_stats: str,
                  transforms: List[Dict],
                  model_path: str,
+                 statistic_name: str = 'private',
                  img_keys: List[str] = ['agentview_image'],
                  center_crop: bool = False,
                  resize_size: int = 224,
@@ -651,6 +652,7 @@ class PrivateInferenceDataset:
                 self.norm_stats = json.load(f)
         else:
             self.norm_stats = norm_stats
+        self.statistic_name = statistic_name
         self.img_keys = img_keys
         self.center_crop = center_crop
         self.resize_size = resize_size
@@ -671,7 +673,7 @@ class PrivateInferenceDataset:
             images=imgs,
             task_description=data.get('task_description',
                                       'No task description provided'),
-            stats=self.norm_stats['private'],
+            stats=self.norm_stats[self.statistic_name],
             states=data['qpos'])
         if self.embodiment_id is not None:
             inputs['embodiment_ids'] = np.array(
