@@ -154,20 +154,25 @@ class DenormalizeLiberoAction:
             data (Dict): The data to be denormalized, which should
                 contain keys that match the keys in `norm_stats`.
         """
+        action = data.get('action', None)
+        assert action is not None, \
+            f'Action is not found in the data: {data.keys()}'
         if self.norm_stats is not None and self.denorm_action:
             norm_stats_key = data.get('norm_stats_key')
             norm_stats = self.norm_stats[norm_stats_key]
-            action = data.get('action', None)
-            assert action is not None, \
-                f'Action is not found in the data: {data.keys()}'
+            action_stats = norm_stats.get('action')
+            if action_stats is None:
+                action_stats = norm_stats.get('actions')
+            if action_stats is None:
+                raise KeyError(
+                    f'No action statistics found for {norm_stats_key!r}; '
+                    "expected 'action' (or legacy 'actions').")
             if self.norm_type == 'quantile':
-                action = self._denormalize_quantile(action,
-                                                    norm_stats['action'])
+                action = self._denormalize_quantile(action, action_stats)
             elif self.norm_type == 'min_max':
-                action = self._denormalize_min_max(action,
-                                                   norm_stats['action'])
+                action = self._denormalize_min_max(action, action_stats)
             else:  # norm_type == 'mean_std'
-                action = self._denormalize(action, norm_stats['action'])
+                action = self._denormalize(action, action_stats)
         if self.normalize_gripper_action:
             action = normalize_gripper_action(action, binarize=True)
         if self.invert_gripper_action:
@@ -438,6 +443,9 @@ class NormalizeStatesAndActions:
         output_dtype (str | None): Optional NumPy dtype used for normalization
             arithmetic and outputs. ``None`` preserves the legacy NumPy dtype
             promotion behavior. Defaults to None.
+        statistics_key (str): Input dictionary key containing the state/action
+            statistics. Training datasets use ``stats`` while online
+            evaluation datasets use ``norm_stats``. Defaults to ``stats``.
         state_key (str | None): The key in the data dictionary
             that contains the state information.
         action_key (str | None): The key in the data dictionary
@@ -473,6 +481,7 @@ class NormalizeStatesAndActions:
                  valid_action_dim: int = None,
                  mark_all_action_steps_valid: bool = False,
                  output_dtype: Optional[str] = None,
+                 statistics_key: str = 'stats',
                  *args,
                  **kwargs):
         self.state_key = state_key
@@ -494,6 +503,7 @@ class NormalizeStatesAndActions:
                 and not np.issubdtype(self.output_dtype, np.floating)):
             raise ValueError(
                 f'output_dtype must be a floating dtype, got {output_dtype!r}')
+        self.statistics_key = statistics_key
         if action_norm_mask is not None:
             if (action_dim is not None and len(action_norm_mask) > action_dim):
                 raise ValueError(
@@ -550,10 +560,12 @@ class NormalizeStatesAndActions:
         needs_action_stats = (
             actions is not None and self.action_norm_type != 'none')
         if needs_state_stats or needs_action_stats:
-            assert 'stats' in data, "Input data must contain 'stats' key"
+            assert self.statistics_key in data, (
+                f'Input data must contain {self.statistics_key!r} key')
+            statistics = data[self.statistics_key]
 
         if needs_state_stats:
-            state_stats = data['stats'][self.state_key]
+            state_stats = statistics[self.state_key]
             states = self._normalize_mixed(
                 states,
                 state_stats,
@@ -565,7 +577,7 @@ class NormalizeStatesAndActions:
 
         if actions is not None:
             if needs_action_stats:
-                action_stats = data['stats'][self.action_key]
+                action_stats = statistics[self.action_key]
                 actions = self._normalize_mixed(
                     actions,
                     action_stats,
@@ -688,7 +700,15 @@ class NormalizeStatesAndActions:
         low = self._statistics_array(stats['q01'], x)
         high = self._statistics_array(stats['q99'], x)
         epsilon = self._typed_epsilon(x)
-        normalized = (x - low) / (high - low + epsilon) * 2.0 - 1.0
+        if self.preserve_input_dtype:
+            normalized = np.zeros_like(x)
+            valid = ~np.isclose(high, low)
+            denominator = high[..., valid] - low[..., valid] + epsilon
+            normalized[..., valid] = ((x[..., valid] - low[..., valid]) /
+                                      denominator)
+            normalized[..., valid] = 2 * normalized[..., valid] - 1
+        else:
+            normalized = (x - low) / (high - low + epsilon) * 2.0 - 1.0
         if self.clip_norm:
             normalized = np.clip(normalized, -1, 1)
         return np.where(norm_mask, normalized, x)
@@ -865,28 +885,29 @@ class SinCosKeys:
 
 @TRANSFORMS.register_module()
 class LiberoProprioFromInputs:
-    """Build and normalize Libero proprio state from inputs.
+    """Build Libero proprio state from inputs and optionally normalize it.
 
     Reads `robot0_eef_pos`, `robot0_eef_quat`, `robot0_gripper_qpos`,
     converts quaternion to axis-angle, concatenates into a
-    state vector, and normalizes using `norm_stats[task_suite_name +
-    '_no_noops']['proprio']`.
-
-    Expects `task_suite_name` to be present in the input dict.
+    state vector. When ``norm_type`` is not ``None``, it normalizes using the
+    selected ``norm_stats`` entry. ``modality_keys`` can expose the same raw or
+    normalized values as a per-modality dictionary for metadata-driven models.
 
     Args:
-        norm_stats (str | Dict): Path to JSON or dict of normalization stats.
-        norm_type (str): Type of normalization to use.
-            Options: 'mean_std', 'quantile', or 'min_max'.
-            Defaults to 'quantile'.
+        norm_type (str | None): Type of normalization to use. ``None`` keeps
+            raw values. Other options are ``mean_std``, ``quantile``, and
+            ``min_max``. Defaults to ``quantile``.
         pos_key (str): Key for end-effector position.
         quat_key (str): Key for end-effector quaternion.
         gripper_key (str): Key for gripper position.
         out_key (str): Output key for normalized state (default 'states').
+        modality_keys (List[str] | None): Seven output names corresponding to
+            x, y, z, roll, pitch, yaw, and gripper. When set, ``out_key`` is a
+            dictionary whose values include a leading step dimension.
     """
 
     def __init__(self,
-                 norm_type: str = 'quantile',
+                 norm_type: Optional[str] = 'quantile',
                  state_dim: int = None,
                  pos_key: str = 'robot0_eef_pos',
                  quat_key: str = 'robot0_eef_quat',
@@ -897,7 +918,18 @@ class LiberoProprioFromInputs:
                  stat_subkey: str = 'default',
                  prefix: str = 'global',
                  linear_mode: str = 'min/max',
-                 clamp: float = 5.0) -> None:
+                 clamp: float = 5.0,
+                 modality_keys: Optional[List[str]] = None) -> None:
+        if norm_type not in (None, 'none', 'linear', 'mean_std', 'quantile',
+                             'min_max'):
+            raise ValueError(f'Unsupported norm_type: {norm_type!r}')
+        if modality_keys is not None and len(modality_keys) != 7:
+            raise ValueError(
+                'modality_keys must contain names for x, y, z, roll, '
+                'pitch, yaw, and gripper.')
+        if modality_keys is not None and state_dim is not None:
+            raise ValueError(
+                'state_dim padding is not supported with modality_keys.')
         self.norm_type = norm_type
         self.state_dim = state_dim
         self.pos_key = pos_key
@@ -910,18 +942,34 @@ class LiberoProprioFromInputs:
         self.prefix = prefix
         self.linear_mode = linear_mode
         self.clamp = float(clamp)
+        self.modality_keys = tuple(modality_keys or ())
 
     def __call__(self, data: Dict) -> Dict:
         assert self.pos_key in data and self.quat_key in \
             data and self.gripper_key in data, \
             f'Missing proprio keys in data: {self.pos_key}, {self.quat_key}, {self.gripper_key}'  # noqa: E501
-        robot0_eef_pos = np.asarray(data[self.pos_key])
-        robot0_eef_quat = np.asarray(data[self.quat_key])
-        robot0_gripper_qpos = np.asarray(data[self.gripper_key])
+        input_dtype = np.result_type(
+            np.asarray(data[self.pos_key]).dtype,
+            np.asarray(data[self.quat_key]).dtype,
+            np.asarray(data[self.gripper_key]).dtype,
+        )
+        if not np.issubdtype(input_dtype, np.floating):
+            input_dtype = np.dtype(float)
+        robot0_eef_pos = np.asarray(
+            data[self.pos_key], dtype=input_dtype).reshape(-1)
+        robot0_eef_quat = np.asarray(
+            data[self.quat_key], dtype=input_dtype).reshape(-1)
+        robot0_gripper_qpos = np.asarray(
+            data[self.gripper_key], dtype=input_dtype).reshape(-1)
+        rotation = np.asarray(
+            quat2axisangle(robot0_eef_quat), dtype=input_dtype).reshape(-1)
+        if robot0_eef_pos.size != 3 or rotation.size != 3:
+            raise ValueError(
+                'LIBERO proprio expects 3D position and axis-angle rotation.')
 
         state = np.concatenate((
             robot0_eef_pos,
-            quat2axisangle(robot0_eef_quat),
+            rotation,
             robot0_gripper_qpos,
         ))
 
@@ -930,11 +978,11 @@ class LiberoProprioFromInputs:
             lin_stats = _select_prefixed_stats(raw, self.prefix)
             scale, offset = _linear_norm_scale_offset(lin_stats,
                                                       self.linear_mode)
-            state_t = torch.as_tensor(state, dtype=torch.float32)
+            state_t = torch.as_tensor(state)
             state = torch.clamp(state_t * scale + offset, -self.clamp,
                                 self.clamp).numpy()
-        elif self.norm_type == 'none':
-            state = state.astype(np.float32, copy=False)
+        elif self.norm_type in (None, 'none'):
+            state = state.astype(input_dtype, copy=False)
         else:
             stats = data['norm_stats'][self.stat_key]
             if self.norm_type == 'quantile':
@@ -945,7 +993,14 @@ class LiberoProprioFromInputs:
                 state = self._normalize(state, stats)
 
         out = dict(data)
-        if self.state_dim is not None:
+        if self.modality_keys:
+            split_points = [1, 2, 3, 4, 5, 6]
+            values = np.split(state, split_points)
+            out[self.out_key] = {
+                key: value[None, ...]
+                for key, value in zip(self.modality_keys, values)
+            }
+        elif self.state_dim is not None:
             out[self.out_key] = np.zeros((self.state_dim), dtype=state.dtype)
             out[self.out_key][:state.shape[0]] = state
         else:
