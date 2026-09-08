@@ -225,6 +225,13 @@ eval = dict(
     seed=7,
     unnorm_key=_STAT,
     action_order='n15',
+    action_keys={
+        'action.left_arm': (0, 7),
+        'action.right_arm': (7, 14),
+        'action.left_hand': (14, 20),
+        'action.right_hand': (20, 26),
+        'action.waist': (26, 29),
+    },
     dataset=dict(
         type='RobocasaEvalDataset',
         unnorm_key=_STAT,
