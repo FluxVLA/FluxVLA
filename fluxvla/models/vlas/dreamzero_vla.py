@@ -362,6 +362,8 @@ class DreamZeroVLA(BaseVLA):
             embodiment_ids=embodiment_ids,
             reset_history=reset_history,
         )
+        if 'num_inference_steps' in kwargs:
+            head_kwargs['num_inference_steps'] = kwargs['num_inference_steps']
         if self.use_cache:
             head_kwargs['observed_latent_frames'] = observed_latent_frames
 

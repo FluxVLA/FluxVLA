@@ -18,6 +18,7 @@ from importlib import import_module
 from typing import Callable, Dict, Optional, TypeAlias
 
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Beta
@@ -124,6 +125,11 @@ class DreamZeroHead(nn.Module):
         pretrained_name_or_path: Optional[str] = None,
         use_gradient_checkpointing: bool = True,
         cfg_scale: float = 1.0,
+        cfg_parallel: bool = False,
+        dit_compute_steps: Optional[int] = None,
+        dynamic_cache_schedule: bool = False,
+        trt_engine_path: Optional[str] = None,
+        trt_model_type: str = 'ar_14B',
         max_chunk_size: int = -1,
         *args,
         **kwargs,
@@ -144,6 +150,14 @@ class DreamZeroHead(nn.Module):
         self.num_state_per_block = num_state_per_block
         self.use_cache = False
         self.cfg_scale = cfg_scale
+        self.cfg_parallel = cfg_parallel
+        self.dit_compute_steps = dit_compute_steps
+        self.dynamic_cache_schedule = dynamic_cache_schedule
+        self.dynamic_cache_thresholds = (0.95, 0.93)
+        self.dynamic_cache_countdowns = (4, 2)
+        self.trt_engine_path = trt_engine_path or os.getenv('LOAD_TRT_ENGINE')
+        self.trt_model_type = trt_model_type
+        self.trt_engine = None
         self.max_chunk_size = max_chunk_size
 
         # ----- build DiT model -----
@@ -187,6 +201,173 @@ class DreamZeroHead(nn.Module):
 
         self.reset_inference_state()
         self.scheduler.set_timesteps(1000, training=True)
+
+    def _load_trt_engine_if_configured(self) -> None:
+        if self.trt_engine is not None or not self.trt_engine_path:
+            return
+        trt_module = import_module(
+            'fluxvla.models.third_party_models.dreamzero.tensorrt_utils')
+        self.trt_engine = trt_module.load_tensorrt_engine(
+            self.trt_engine_path, model_type=self.trt_model_type)
+        logger.info('Loaded DreamZero TensorRT engine from %s',
+                    self.trt_engine_path)
+
+    def _run_denoise_model_forward(
+        self,
+        reference_latents: torch.Tensor,
+        timestep: torch.Tensor,
+        clip_feas: torch.Tensor,
+        ys: torch.Tensor,
+        prompt_emb: torch.Tensor,
+        frame_seqlen: int,
+        action: torch.Tensor,
+        timestep_action: torch.Tensor,
+        state: torch.Tensor,
+        embodiment_id: torch.Tensor,
+        kv_cache: list[torch.Tensor],
+        crossattn_cache: list[torch.Tensor],
+        start_frame: int,
+        update_cache: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, Optional[list[torch.Tensor]]]:
+        if not update_cache and self.trt_engine_path:
+            self._load_trt_engine_if_configured()
+
+        if not update_cache and self.trt_engine is not None:
+            obs_noise_pred, action_noise_pred = self.trt_engine(
+                reference_latents,
+                timestep=timestep,
+                clip_feature=clip_feas,
+                y=ys,
+                context=prompt_emb,
+                action=action,
+                timestep_action=timestep_action,
+                state=state,
+                kv_cache=kv_cache,
+            )
+            return obs_noise_pred, action_noise_pred, None
+
+        obs_noise_pred, action_noise_pred, updated_kv_caches = self.model(
+            reference_latents,
+            timestep=timestep,
+            clip_feature=clip_feas,
+            y=ys,
+            context=prompt_emb,
+            seq_len=reference_latents.shape[2] * frame_seqlen,
+            action=action,
+            timestep_action=timestep_action,
+            state=state,
+            embodiment_id=embodiment_id,
+            kv_cache=kv_cache,
+            crossattn_cache=crossattn_cache,
+            current_start_frame=start_frame,
+        )
+        return obs_noise_pred, action_noise_pred, updated_kv_caches
+
+    @staticmethod
+    def _build_dit_step_mask(num_inference_steps: int,
+                             dit_compute_steps: Optional[int]) -> list[bool]:
+        """Build the official DreamZero DiT-forward skip mask.
+
+        ``True`` means this denoise step runs the DiT. ``False`` means the
+        scheduler still runs, but reuses the latest DiT prediction.
+        """
+        if (dit_compute_steps is None
+                or dit_compute_steps >= num_inference_steps):
+            return [True] * num_inference_steps
+        if num_inference_steps != 16:
+            raise ValueError(
+                'DreamZero DiT step masks are only defined for '
+                f'num_inference_steps=16, got {num_inference_steps}.')
+        run_step_indices = {
+            5: (0, 1, 2, 7, 12),
+            6: (0, 1, 5, 10, 14, 15),
+            7: (0, 1, 2, 6, 10, 14, 15),
+            8: (0, 1, 2, 6, 10, 13, 14, 15),
+        }
+        if dit_compute_steps not in run_step_indices:
+            raise ValueError(
+                'Unsupported DreamZero dit_compute_steps='
+                f'{dit_compute_steps}; expected one of [5, 6, 7, 8] '
+                f'or >= num_inference_steps ({num_inference_steps}).')
+        run_steps = set(run_step_indices[dit_compute_steps])
+        return [step in run_steps for step in range(num_inference_steps)]
+
+    def _should_run_dit_step(self, step_index: int, dit_step_mask: list[bool],
+                             prev_predictions: list,
+                             skip_countdown: int) -> tuple[bool, int]:
+        if not self.dynamic_cache_schedule:
+            return dit_step_mask[step_index], skip_countdown
+
+        if len(prev_predictions) < 2:
+            return True, skip_countdown
+
+        if skip_countdown > 1:
+            return False, skip_countdown - 1
+        if skip_countdown == 1:
+            return True, 0
+
+        v_last = prev_predictions[-1][1].flatten(1).float()
+        v_prev = prev_predictions[-2][1].flatten(1).float()
+        similarity = F.cosine_similarity(v_last, v_prev, dim=1).mean()
+        similarity_value = float(similarity.detach().cpu())
+
+        for threshold, countdown in zip(self.dynamic_cache_thresholds,
+                                        self.dynamic_cache_countdowns):
+            if similarity_value > threshold:
+                return False, countdown
+        return True, 0
+
+    def _cfg_parallel_enabled(self, prompt_count: int) -> bool:
+        if not self.cfg_parallel:
+            return False
+        if self.cfg_scale == 1.0 or prompt_count <= 1:
+            return False
+        return dist.is_available() and dist.is_initialized(
+        ) and dist.get_world_size() == 2
+
+    def _cfg_parallel_rank(self) -> int:
+        return dist.get_rank() % 2
+
+    def _select_cfg_parallel_inputs(self, prompt_embs, kv_caches,
+                                    crossattn_caches):
+        if not self._cfg_parallel_enabled(len(prompt_embs)):
+            return prompt_embs, kv_caches, crossattn_caches
+        branch_index = self._cfg_parallel_rank()
+        return ([prompt_embs[branch_index]], [kv_caches[branch_index]],
+                [crossattn_caches[branch_index]])
+
+    def _exchange_cfg_parallel_predictions(self, predictions):
+        if not self._cfg_parallel_enabled(2):
+            return predictions
+        assert len(predictions) == 1, (
+            'CFG parallel expects one local prediction per rank.')
+        local_prediction = predictions[0]
+        remote_prediction = []
+        for tensor in local_prediction:
+            if tensor is None:
+                remote_prediction.append(None)
+            else:
+                remote_prediction.append(torch.empty_like(tensor))
+
+        ops = []
+        peer = 1 - self._cfg_parallel_rank()
+        for tensor in local_prediction:
+            if tensor is not None:
+                ops.append(dist.P2POp(dist.isend, tensor, peer))
+        for tensor in remote_prediction:
+            if tensor is not None:
+                ops.append(dist.P2POp(dist.irecv, tensor, peer))
+        requests = dist.batch_isend_irecv(ops)
+        # ``wait`` is the synchronization point for CFG parallel inference:
+        # both ranks finish their local branch forward before entering this
+        # exchange, then block here until the peer prediction tensors arrive.
+        for request in requests:
+            request.wait()
+
+        output_predictions = [None, None]
+        output_predictions[self._cfg_parallel_rank()] = local_prediction
+        output_predictions[peer] = tuple(remote_prediction)
+        return output_predictions
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -499,27 +680,39 @@ class DreamZeroHead(nn.Module):
 
         predictions = list()
         prompt_embs = self._as_prompt_emb_list(prompt_embs)
-        for index, prompt_emb in enumerate(prompt_embs):
-            obs_noise_pred, action_noise_pred, updated_kv_caches = self.model(
-                reference_latents,
-                timestep=timestep,
-                clip_feature=clip_feas,
-                y=ys,
-                context=prompt_emb,
-                seq_len=reference_latents.shape[2] * frame_seqlen,
-                action=action,
-                timestep_action=timestep_action,
-                state=state,
-                embodiment_id=embodiment_id,
-                kv_cache=kv_caches[index],
-                crossattn_cache=crossattn_caches[index],
-                current_start_frame=start_frame,
-            )
+        cfg_parallel = self._cfg_parallel_enabled(len(prompt_embs))
+        local_prompt_embs, local_kv_caches, local_crossattn_caches = (
+            self._select_cfg_parallel_inputs(prompt_embs, kv_caches,
+                                             crossattn_caches))
+        for index, prompt_emb in enumerate(local_prompt_embs):
+            obs_noise_pred, action_noise_pred, updated_kv_caches = (
+                self._run_denoise_model_forward(
+                    reference_latents=reference_latents,
+                    timestep=timestep,
+                    clip_feas=clip_feas,
+                    ys=ys,
+                    prompt_emb=prompt_emb,
+                    frame_seqlen=frame_seqlen,
+                    action=action,
+                    timestep_action=timestep_action,
+                    state=state,
+                    embodiment_id=embodiment_id,
+                    kv_cache=local_kv_caches[index],
+                    crossattn_cache=local_crossattn_caches[index],
+                    start_frame=start_frame,
+                    update_cache=update_cache,
+                ))
             if update_cache:
+                if updated_kv_caches is None:
+                    raise RuntimeError(
+                        'TensorRT denoise path cannot update KV cache.')
                 for block_index, updated_kv_cache in enumerate(
                         updated_kv_caches):
-                    kv_caches[index][block_index] = updated_kv_cache.clone()
+                    local_kv_caches[index][block_index] = (
+                        updated_kv_cache.clone())
             predictions.append((obs_noise_pred, action_noise_pred))
+        if cfg_parallel and not update_cache:
+            predictions = self._exchange_cfg_parallel_predictions(predictions)
         return predictions
 
     def _sample_action_block(
@@ -612,6 +805,10 @@ class DreamZeroHead(nn.Module):
             y_future = ys[:, :, -denoise_frames:]
         prompt_embs = self._as_prompt_emb_list(prompt_embs)
         use_cfg = self.cfg_scale != 1.0 and len(prompt_embs) > 1
+        dit_step_mask = self._build_dit_step_mask(
+            len(sample_scheduler.timesteps), self.dit_compute_steps)
+        prev_predictions = []
+        skip_countdown = 0
 
         for step_index in range(len(sample_scheduler.timesteps)):
             video_timestep = sample_scheduler.timesteps[step_index]
@@ -620,28 +817,41 @@ class DreamZeroHead(nn.Module):
             t_video = video_timestep.expand(b, denoise_frames)
             t_action = action_timestep.expand(b, self.action_horizon)
 
-            predictions = self._single_flowmatching_step(
-                prompt_embs=prompt_embs,
-                reference_latents=noisy_latents,
-                clip_feas=clip_feas,
-                ys=y_future,
-                start_frame=current_start_frame,
-                kv_caches=[kv_cache, kv_cache_neg],
-                crossattn_caches=[crossattn_cache, crossattn_cache_neg],
-                timestep=t_video,
-                timestep_action=t_action,
-                action=noisy_actions,
-                state=states,
-                embodiment_id=embodiment_ids,
-                update_cache=False,
-            )
-            flow_pred_cond, flow_pred_cond_action = predictions[0]
-            flow_pred = flow_pred_cond
+            should_run_model, skip_countdown = self._should_run_dit_step(
+                step_index, dit_step_mask, prev_predictions, skip_countdown)
+            if should_run_model:
+                predictions = self._single_flowmatching_step(
+                    prompt_embs=prompt_embs,
+                    reference_latents=noisy_latents,
+                    clip_feas=clip_feas,
+                    ys=y_future,
+                    start_frame=current_start_frame,
+                    kv_caches=[kv_cache, kv_cache_neg],
+                    crossattn_caches=[crossattn_cache, crossattn_cache_neg],
+                    timestep=t_video,
+                    timestep_action=t_action,
+                    action=noisy_actions,
+                    state=states,
+                    embodiment_id=embodiment_ids,
+                    update_cache=False,
+                )
+                flow_pred_cond, flow_pred_cond_action = predictions[0]
+                flow_pred = flow_pred_cond
 
-            if use_cfg:
-                flow_pred_uncond, _ = predictions[1]
-                flow_pred = flow_pred_uncond + self.cfg_scale * (
-                    flow_pred_cond - flow_pred_uncond)
+                if use_cfg:
+                    flow_pred_uncond, _ = predictions[1]
+                    flow_pred = flow_pred_uncond + self.cfg_scale * (
+                        flow_pred_cond - flow_pred_uncond)
+                prev_predictions.append(
+                    (video_timestep, flow_pred, flow_pred_cond_action))
+                if len(prev_predictions) > 2:
+                    prev_predictions.pop(0)
+            else:
+                if not prev_predictions:
+                    raise RuntimeError(
+                        'Cannot skip DreamZero DiT step before any '
+                        'previous prediction is available.')
+                _, flow_pred, flow_pred_cond_action = prev_predictions[-1]
 
             noisy_latents = sample_scheduler.step(
                 model_output=flow_pred.float(),

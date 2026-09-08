@@ -19,6 +19,7 @@ import os
 import time
 from pathlib import Path
 
+import torch.distributed as dist
 from mmengine import Config, DictAction
 
 from fluxvla.engines import build_runner_from_cfg, initialize_overwatch
@@ -90,6 +91,14 @@ def _cleanup_eval_runner(eval_runner):
     cleanup = getattr(eval_runner, 'cleanup', None)
     if callable(cleanup):
         cleanup()
+
+
+def _destroy_distributed_process_group():
+    """Release distributed resources initialized by Overwatch/Accelerate."""
+    if dist.is_available() and dist.is_initialized():
+        # Do not add a barrier here. This function also runs after exceptions,
+        # when another rank may already have left the process group.
+        dist.destroy_process_group()
 
 
 def _run_eval(cfg, args, suite_name=None):
@@ -227,7 +236,7 @@ def parse_args():
     return args, unknown
 
 
-if __name__ == '__main__':
+def _run_main():
     configure_inference_attention_defaults()
     args, _ = parse_args()
     cfg = Config.fromfile(args.config)
@@ -242,3 +251,14 @@ if __name__ == '__main__':
             summary_paths.setdefault(report_kind, []).append(summary_path)
     _maybe_report_libero_eval(summary_paths.get('libero', []), args, cfg)
     _maybe_report_robocasa_eval(summary_paths.get('robocasa', []), args, cfg)
+
+
+def main():
+    try:
+        _run_main()
+    finally:
+        _destroy_distributed_process_group()
+
+
+if __name__ == '__main__':
+    main()
