@@ -135,7 +135,15 @@ def split_images_by_view(
             for key, images in value.items()
         }
 
-    images = list(value)
+    is_single_image = isinstance(value, Image.Image)
+    if torch.is_tensor(value) or isinstance(value, np.ndarray):
+        shape = tuple(value.shape)
+        is_single_image = (
+            len(shape) == 2
+            or (len(shape) == 3 and
+                (shape[0] in (1, 3, 4) or shape[-1] in (1, 3, 4))))
+
+    images = [value] if is_single_image else list(value)
     if len(image_keys) == 1:
         return {image_keys[0]: [_to_pil_rgb(img) for img in images]}
 
