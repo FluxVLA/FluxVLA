@@ -76,7 +76,7 @@ inference = dict(
 The following example uses GR00T deployed on ALOHA:
 
 ```python
-_base_ = './gr00t/gr00t_eagle_3b_aloha_full_finetune.py'
+_base_ = './gr00tn15/gr00t_eagle_3b_aloha_full_finetune.py'
 
 # Training: enable RTC prefix conditioning
 model = dict(
@@ -159,7 +159,7 @@ Example commands:
 
 ```bash
 python scripts/test_rtc.py \
-    --config configs/gr00t/gr00t_eagle_3b_aloha_full_finetune.py \
+    --config configs/gr00tn15/gr00t_eagle_3b_aloha_full_finetune.py \
     --checkpoint /path/to/checkpoint.pt \
     --prefix_len 5 \
     --output_dir work_dirs/rtc_test

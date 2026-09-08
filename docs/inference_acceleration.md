@@ -69,7 +69,7 @@ Inference acceleration is enabled by defining an `inference_model` (for GR00T) o
 
 ### GR00T Example
 
-See `configs/gr00t/gr00t_eagle_3b_libero_10_full_finetune.py`:
+See `configs/gr00tn15/gr00t_eagle_3b_libero_10_full_finetune.py`:
 
 ```python
 inference_model = dict(
@@ -215,7 +215,7 @@ inference = dict(
 
 GR00T-RTC uses the existing GR00T acceleration path (`EagleInferenceBackbone` + `FlowMatchingInferenceHead`) and adds RTC at the runner/head boundary. The RTC runner resamples the remaining part of the previously predicted action chunk, passes it as `prev_actions` with `prefix_len`, and the accelerated head fills CUDA Graph prefix buffers before replay.
 
-See `configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`:
+See `configs/gr00tn15/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`:
 
 ```python
 
@@ -238,12 +238,12 @@ inference = dict(
 
 #### What changed for GR00T-RTC acceleration
 
-| Area                | Change                                                                                                                                                                                 |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Accelerated model   | Use the existing GR00T inference model path: `EagleInferenceBackbone` + `FlowMatchingInferenceHead`.                                                                                   |
-| RTC runner          | Use `AlohaRTCInferenceRunner` or `Tron2RTCInferenceRunner` so previous action chunks are passed back as RTC prefixes.                                                                  |
-| RTC method          | Use `rtc_config.method='prefix'`; this is the supported RTC method in the accelerated GR00T head.                                                                                      |
-| Config entry points | Add `configs/gr00t/gr00t_eagle_3b_aloha_rtc_inference.py`, `configs/gr00t/gr00t_eagle_3b_tron2_3cam_rtc_inference.py`, and `configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`. |
+| Area                | Change                                                                                                                                                                                          |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Accelerated model   | Use the existing GR00T inference model path: `EagleInferenceBackbone` + `FlowMatchingInferenceHead`.                                                                                            |
+| RTC runner          | Use `AlohaRTCInferenceRunner` or `Tron2RTCInferenceRunner` so previous action chunks are passed back as RTC prefixes.                                                                           |
+| RTC method          | Use `rtc_config.method='prefix'`; this is the supported RTC method in the accelerated GR00T head.                                                                                               |
+| Config entry points | Add `configs/gr00tn15/gr00t_eagle_3b_aloha_rtc_inference.py`, `configs/gr00tn15/gr00t_eagle_3b_tron2_3cam_rtc_inference.py`, and `configs/gr00tn15/gr00t_eagle_3b_ur3_rtc_kernel_inference.py`. |
 
 #### Usage
 
@@ -251,7 +251,7 @@ The RTC prefix method is robot-agnostic and can be applied to all supported robo
 
 ```bash
 python scripts/inference_real_robot.py \
-    --config configs/gr00t/gr00t_eagle_3b_ur3_rtc_kernel_inference.py \
+    --config configs/gr00tn15/gr00t_eagle_3b_ur3_rtc_kernel_inference.py \
     --ckpt-path /path/to/checkpoint.safetensors
 ```
 

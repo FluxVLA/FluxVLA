@@ -161,7 +161,8 @@ FluxVLA/
 │   ├── data/           # Data loading and processing pipelines
 │   └── ...
 ├── configs/            # Training / evaluation / inference configs
-│   ├── gr00t/          #   GR00T model configs
+│   ├── gr00tn15/       #   GR00T N1.5 model configs
+│   ├── gr00tn17/       #   GR00T N1.7 model configs
 │   ├── pi0/            #   PI0 model configs
 │   ├── pi05/           #   PI0.5 model configs
 │   ├── openvla/        #   OpenVLA model configs

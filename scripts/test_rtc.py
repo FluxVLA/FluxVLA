@@ -20,7 +20,7 @@ denoising process visualizations with prefix regions highlighted.
 Usage:
     # GR00T / PI0 — run all modes
     python scripts/test_rtc.py \
-        --config configs/gr00t/xxx.py \
+        --config configs/gr00tn15/xxx.py \
         --checkpoint /path/to/checkpoint.pt \
         --prefix_len 5 \
         --output_dir work_dirs/rtc_test
