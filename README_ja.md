@@ -64,6 +64,8 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 ## 📢 最新情報
 
+**\[2026/09/09\]** 🔥 FluxVLA は OpenAI Responses API を介した GPT-6 Astra のチェックポイント不要な LIBERO 評価に対応しました。マルチビュー観測、LIBERO ネイティブのアクション制御、環境変数による認証情報設定、整理されたロールアウト成果物を含みます。
+
 **\[2026/09/09\]** 🔥 FluxVLA-native GR00T N1.7 をオープンソース化しました。LIBERO、RoboCasa、Franka ロボット向けの学習・推論ワークフローを含みます。
 
 **\[2026/08/25\]** 🔥 FluxVLA-native DiT4DiT に対応しました。LIBERO と RoboCasa の学習・推論ワークフローを含みます。
