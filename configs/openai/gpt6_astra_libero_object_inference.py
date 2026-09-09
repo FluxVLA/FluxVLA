@@ -11,12 +11,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Checkpoint-free GPT-6 Astra smoke evaluation on LIBERO-Object."""
+"""Checkpoint-free GPT-6 Astra full-suite evaluation on LIBERO-Object."""
 
 _base_ = './gpt6_astra_libero_inference.py'
 
 eval = dict(
     task_suite_name='libero_object',
-    task_ids=[0],
+    task_ids=None,
     output_dir='work_dirs/gpt6_astra_libero_object',
 )

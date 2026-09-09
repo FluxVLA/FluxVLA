@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Checkpoint-free GPT-6 Astra smoke evaluation on LIBERO-Goal."""
+"""Checkpoint-free GPT-6 Astra full-suite evaluation on LIBERO-Goal."""
 
 _base_ = './gpt6_astra_libero_inference.py'
 
@@ -19,6 +19,6 @@ inference_model = dict(task_visual_hints=dict(_delete_=True))
 
 eval = dict(
     task_suite_name='libero_goal',
-    task_ids=[0],
+    task_ids=None,
     output_dir='work_dirs/gpt6_astra_libero_goal',
 )

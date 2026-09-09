@@ -11,11 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Checkpoint-free GPT-6 Astra smoke evaluation on RoboCasa GR1.
+"""Checkpoint-free GPT-6 Astra full-suite evaluation on RoboCasa GR1.
 
-The config contains all 24 standard RoboCasa tasks but evaluates task 0 for
-one episode by default to control API cost. Set ``eval.task_ids=None`` and
-``eval.num_trials_per_task`` to run the complete benchmark.
+The config evaluates all 24 standard RoboCasa tasks once by default. Override
+``eval.num_trials_per_task`` to increase the number of episodes per task.
 
 Connection settings are read from the environment::
 
@@ -93,7 +92,7 @@ eval = dict(
         for task_name in _ROBOCASA_TASK_NAMES
     ],
     total_tasks=len(_ROBOCASA_TASK_NAMES),
-    task_ids=[0],
+    task_ids=None,
     eval_chunk_size=8,
     max_episode_steps=720,
     num_trials_per_task=1,
