@@ -39,8 +39,30 @@ LIBERO_TASK_SHARDING_ALLOWED_ENV = 'FLUXVLA_ALLOW_LIBERO_TASK_SHARDING'
 
 
 def _get_libero_benchmark():
+    # LIBERO creates ``~/.libero`` during package import with a racy
+    # ``exists()`` + ``makedirs()`` sequence. Under torchrun, several ranks
+    # can observe the directory as missing and one then fails with
+    # FileExistsError. Pre-create it idempotently and let one process per node
+    # initialize config.yaml before the remaining local ranks import LIBERO.
+    libero_config_path = os.environ.get('LIBERO_CONFIG_PATH',
+                                        os.path.expanduser('~/.libero'))
+    os.makedirs(libero_config_path, exist_ok=True)
+
+    is_distributed = dist.is_available() and dist.is_initialized()
+    local_rank = overwatch.local_rank() if is_distributed else 0
+    benchmark = None
     try:
-        from libero.libero import benchmark
+        if not is_distributed or local_rank == 0:
+            from libero.libero import benchmark as imported_benchmark
+            benchmark = imported_benchmark
+        if is_distributed:
+            dist.barrier()
+            if local_rank != 0:
+                from libero.libero import benchmark as imported_benchmark
+                benchmark = imported_benchmark
+            # Do not let an early rank read config.yaml while another local
+            # rank is still completing its first LIBERO import.
+            dist.barrier()
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             'LIBERO is required for simulation evaluation. Install it with '
