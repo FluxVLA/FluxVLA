@@ -171,6 +171,7 @@ class GrootN17ActionHead(nn.Module):
             torch.tensor(config.noise_beta_beta, device='cpu'),
         )
         self.state_dropout_prob = config.state_dropout_prob
+        self.rtc_training_config = getattr(config, 'rtc_training_config', None)
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """Return the wrapping policy for N1.7 action-head modules."""
@@ -247,16 +248,38 @@ class GrootN17ActionHead(nn.Module):
 
         noise = torch.randn(
             actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(
+        t_scalar = self.sample_time(
             actions.shape[0], device=actions.device, dtype=actions.dtype)
-        t = t[:, None, None]
-        noisy_trajectory = (1 - t) * noise + t * actions
+        action_horizon = actions.shape[1]
+        if (self.rtc_training_config
+                and self.rtc_training_config.get('enabled', False)):
+            from fluxvla.engines.utils.rtc_training import (
+                apply_rtc_time_conditioning, sample_training_delay)
+            delays = sample_training_delay(
+                batch_size=actions.shape[0],
+                max_delay=self.rtc_training_config.get('max_delay', 5),
+                distribution=self.rtc_training_config.get(
+                    'distribution', 'exponential'),
+                temperature=self.rtc_training_config.get('temperature', 1.0),
+                device=actions.device,
+            )
+            action_time, action_masks = apply_rtc_time_conditioning(
+                t_scalar,
+                action_masks,
+                delays,
+                action_horizon,
+            )
+        else:
+            action_time = t_scalar[:, None].expand(-1, action_horizon)
+        noisy_trajectory = ((1 - action_time.unsqueeze(-1)) * noise +
+                            action_time.unsqueeze(-1) * actions)
         velocity = actions - noise
 
-        t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
+        action_timestep = (action_time * self.num_timestep_buckets).long()
+        global_timestep = (t_scalar * self.num_timestep_buckets).long()
         action_features = self.action_encoder(
             noisy_trajectory,
-            t_discretized,
+            action_timestep,
             embodiment_ids,
         )
         if self.config.add_pos_embed:
@@ -272,7 +295,7 @@ class GrootN17ActionHead(nn.Module):
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
+                timestep=global_timestep,
                 return_all_hidden_states=True,
                 image_mask=image_mask,
                 backbone_attention_mask=attention_mask,
@@ -282,7 +305,7 @@ class GrootN17ActionHead(nn.Module):
                 hidden_states=sa_embs,
                 encoder_hidden_states=vl_embeds,
                 encoder_attention_mask=vl_attn_mask,
-                timestep=t_discretized,
+                timestep=global_timestep,
                 return_all_hidden_states=True,
             )
 
@@ -308,6 +331,9 @@ class GrootN17ActionHead(nn.Module):
         embodiment_ids: torch.Tensor,
         attention_mask: torch.Tensor,
         image_mask: torch.Tensor | None = None,
+        prev_actions: torch.Tensor | None = None,
+        prefix_len: int = 0,
+        rtc_config: dict | None = None,
         seed: int | None = None,
     ) -> dict[str, torch.Tensor]:
         vl_embeds = backbone_features
@@ -321,6 +347,42 @@ class GrootN17ActionHead(nn.Module):
         )
         dt = 1.0 / self.num_inference_timesteps
 
+        use_prefix_rtc = (
+            prev_actions is not None and prefix_len > 0
+            and rtc_config is not None)
+        if use_prefix_rtc:
+            method = rtc_config.get('method', 'prefix')
+            if method != 'prefix':
+                raise NotImplementedError(
+                    'GrootN17ActionHead currently supports only RTC prefix '
+                    f'conditioning, got method={method!r}.')
+            if prev_actions.ndim == 2:
+                prev_actions = prev_actions.unsqueeze(0)
+            if prev_actions.ndim != 3:
+                raise ValueError('RTC prev_actions must have shape [B, T, D], '
+                                 f'got {tuple(prev_actions.shape)}.')
+            if prev_actions.shape[0] != batch_size:
+                raise ValueError('RTC prev_actions batch size does not match '
+                                 f'input batch: {prev_actions.shape[0]} != '
+                                 f'{batch_size}.')
+            if prev_actions.shape[-1] < self.action_dim:
+                prev_actions = F.pad(
+                    prev_actions,
+                    (0, self.action_dim - prev_actions.shape[-1]),
+                    value=0.0,
+                )
+            elif prev_actions.shape[-1] > self.action_dim:
+                prev_actions = prev_actions[..., :self.action_dim]
+            prev_actions = prev_actions.to(device=device, dtype=actions.dtype)
+            if prefix_len > self.action_horizon:
+                raise ValueError(
+                    f'RTC prefix_len={prefix_len} exceeds action horizon '
+                    f'{self.action_horizon}.')
+            if prefix_len > prev_actions.shape[1]:
+                raise ValueError(
+                    f'RTC prefix_len={prefix_len} exceeds prev_actions '
+                    f'horizon {prev_actions.shape[1]}.')
+
         for t in range(self.num_inference_timesteps):
             t_cont = t / float(self.num_inference_timesteps)
             t_discretized = int(t_cont * self.num_timestep_buckets)
@@ -329,7 +391,19 @@ class GrootN17ActionHead(nn.Module):
                 fill_value=t_discretized,
                 device=device,
             )
-            action_features = self.action_encoder(actions, timesteps_tensor,
+            action_timesteps = timesteps_tensor
+            if use_prefix_rtc:
+                actions[:, :prefix_len] = prev_actions[:, :prefix_len]
+                action_timesteps = torch.full(
+                    (batch_size, self.action_horizon),
+                    fill_value=t_discretized,
+                    dtype=torch.long,
+                    device=device,
+                )
+                # RTC training marks the already-known prefix as fully
+                # denoised with the terminal action-encoder timestep.
+                action_timesteps[:, :prefix_len] = self.num_timestep_buckets
+            action_features = self.action_encoder(actions, action_timesteps,
                                                   embodiment_ids)
             if self.config.add_pos_embed:
                 pos_ids = torch.arange(
@@ -355,6 +429,9 @@ class GrootN17ActionHead(nn.Module):
             pred_velocity = pred[:, -self.action_horizon:]
             actions = actions + dt * pred_velocity
 
+        if use_prefix_rtc:
+            actions[:, :prefix_len] = prev_actions[:, :prefix_len]
+
         return {
             'action_pred': actions,
             'backbone_features': vl_embeds,
@@ -369,6 +446,9 @@ class GrootN17ActionHead(nn.Module):
         attention_mask: torch.Tensor,
         embodiment_ids: torch.Tensor,
         image_mask: torch.Tensor | None = None,
+        prev_actions: torch.Tensor | None = None,
+        prefix_len: int = 0,
+        rtc_config: dict | None = None,
         seed: int | None = None,
     ) -> dict[str, torch.Tensor]:
         vl_embeds, state_features = self.encode_features(
@@ -379,6 +459,9 @@ class GrootN17ActionHead(nn.Module):
             embodiment_ids=embodiment_ids,
             attention_mask=attention_mask,
             image_mask=image_mask,
+            prev_actions=prev_actions,
+            prefix_len=prefix_len,
+            rtc_config=rtc_config,
             seed=seed,
         )
 
@@ -389,17 +472,22 @@ class GrootN17ActionHead(nn.Module):
         states: torch.Tensor,
         attention_mask: torch.Tensor,
         embodiment_ids: torch.Tensor,
+        prev_actions: torch.Tensor | None = None,
         prefix_len: int = 0,
+        rtc_config: dict | None = None,
         image_mask: torch.Tensor | None = None,
         seed: int | None = None,
         **kwargs,
     ) -> torch.Tensor:
-        del prefix_len, kwargs
+        del kwargs
         return self.get_action(
             input_features=input_features,
             states=states,
             attention_mask=attention_mask,
             embodiment_ids=embodiment_ids,
             image_mask=image_mask,
+            prev_actions=prev_actions,
+            prefix_len=prefix_len,
+            rtc_config=rtc_config,
             seed=seed,
         )['action_pred']
