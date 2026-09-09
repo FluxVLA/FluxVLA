@@ -16,15 +16,31 @@
 The default is intentionally a one-episode smoke evaluation to limit API
 usage. Override ``eval.task_ids`` and ``eval.num_trials_per_task`` for a full
 benchmark after validating the controller on the local simulator.
+
+Connection settings are intentionally read from the environment so this
+config works with either the official OpenAI endpoint or an OpenAI-compatible
+gateway::
+
+    export OPENAI_API_KEY='...'
+    export OPENAI_BASE_URL='https://api.openai.com/v1'  # optional
+
+If a provider uses a different key variable name, set
+``OPENAI_API_KEY_ENV`` to that variable name instead of putting the secret in
+this file.
 """
+
+from os import environ as _environ
+
+_DEFAULT_OPENAI_BASE_URL = 'https://api.openai.com/v1'
+_OPENAI_BASE_URL = (_environ.get('OPENAI_BASE_URL')
+                    or _DEFAULT_OPENAI_BASE_URL).rstrip('/')
+_OPENAI_API_KEY_ENV = (_environ.get('OPENAI_API_KEY_ENV') or 'OPENAI_API_KEY')
 
 inference_model = dict(
     type='OpenAIResponsesVLA',
     model='gpt-6-astra',
-    # The company LiteLLM gateway exposes GPT-6 Astra through the standard
-    # Responses API and is reachable from the LIBERO evaluation host.
-    base_url='https://litellm.limx.cn/v1',
-    api_key_env='OPENAI_API_KEY',
+    base_url=_OPENAI_BASE_URL,
+    api_key_env=_OPENAI_API_KEY_ENV,
     # Match the reference run's reasoning setting; the larger call budget and
     # higher-resolution images are more important for closed-loop control.
     reasoning_effort='medium',
@@ -61,6 +77,9 @@ inference_model = dict(
     },
 )
 
+# Keep environment helpers out of MMEngine's serialized config namespace.
+del _environ, _DEFAULT_OPENAI_BASE_URL, _OPENAI_BASE_URL, _OPENAI_API_KEY_ENV
+
 eval = dict(
     type='LiberoEvalRunner',
     task_suite_name='libero_object',
@@ -87,5 +106,5 @@ eval = dict(
     save_rollout_videos=True,
     save_failed_rollout_videos=False,
     save_multi_view_rollout_videos=True,
-    result_output_dir='work_dirs/gpt6_astra_libero',
+    output_dir='work_dirs/gpt6_astra_libero',
 )

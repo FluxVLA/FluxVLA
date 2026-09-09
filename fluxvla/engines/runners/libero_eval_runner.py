@@ -112,6 +112,8 @@ class LiberoEvalRunner(BaseEvalRunner):
             paths are resolved under the active video root.
         run_id_suffix (str): Optional suffix appended to the eval run id.
             Useful when launching several single-task eval workers at once.
+        output_dir (str): Optional root for normal evaluation artifacts.
+            Runs are written under ``<output_dir>/eval_runs/<group>/<run>``.
         result_output_dir (str): Optional manager output root. When set,
             per-worker eval artifacts are written under its ``eval_runs``
             subdirectory, and manager-compatible per-task result files are
@@ -292,38 +294,43 @@ class LiberoEvalRunner(BaseEvalRunner):
         return run_id
 
     @staticmethod
-    def _build_ckpt_tag(ckpt_path: str) -> str:
+    def _build_ckpt_tag(ckpt_path: str, inference_tag: str = None) -> str:
         """Stable per-checkpoint folder name for grouping eval runs."""
         if ckpt_path is None:
-            return 'no-checkpoint'
+            tag = str(inference_tag or 'inference-only')
+            return tag.replace('/', '-').replace('\\', '-')
         return Path(ckpt_path).resolve().stem
 
     @staticmethod
     def _build_run_dir(ckpt_path: str,
                        run_id: str,
-                       output_dir: str = None) -> str:
+                       output_dir: str = None,
+                       inference_tag: str = None) -> str:
         """Per-checkpoint, per-run output directory."""
         root = (
             Path(output_dir).expanduser().resolve() if output_dir is not None
             else Path(ckpt_path).resolve().parent.parent
             if ckpt_path is not None else Path('work_dirs').resolve())
-        return os.path.join(root, 'eval_runs',
-                            LiberoEvalRunner._build_ckpt_tag(ckpt_path),
-                            run_id)
+        return os.path.join(
+            root, 'eval_runs',
+            LiberoEvalRunner._build_ckpt_tag(
+                ckpt_path, inference_tag=inference_tag), run_id)
 
     @classmethod
     def _build_log_file_path(cls,
                              ckpt_path: str,
                              run_id: str,
                              rank: int,
-                             output_dir: str = None) -> str:
+                             output_dir: str = None,
+                             inference_tag: str = None) -> str:
         """Per-rank log path inside the per-run directory.
 
         Encoding the rank in the filename avoids the previous collision where
         ranks sharing a wall-clock second overwrote the same log file.
         """
         return os.path.join(
-            cls._build_run_dir(ckpt_path, run_id, output_dir),
+            cls._build_run_dir(
+                ckpt_path, run_id, output_dir, inference_tag=inference_tag),
             f'rank{rank}.txt')
 
     def _should_collect_replay_images(self) -> bool:
@@ -408,6 +415,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  save_multi_view_rollout_videos: bool = False,
                  rollout_dir: str = None,
                  run_id_suffix: str = None,
+                 output_dir: str = None,
                  result_output_dir: str = None,
                  result_gpu_id: int = None,
                  mixed_precision_dtype: str = 'bf16',
@@ -510,6 +518,9 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.save_multi_view_rollout_videos = save_multi_view_rollout_videos
         self.rollout_dir = rollout_dir
         self.run_id_suffix = run_id_suffix
+        self.output_dir = (
+            str(Path(output_dir).expanduser().resolve())
+            if output_dir is not None else None)
         # Normalize once so downstream video/result paths do not accidentally
         # prepend the same relative output root twice.
         self.result_output_dir = (
@@ -615,16 +626,22 @@ class LiberoEvalRunner(BaseEvalRunner):
             suffix=self.run_id_suffix)
         # Isolate each evaluation run in its own directory. Manager-launched
         # workers keep their artifacts under the manager output root.
+        output_root = self.output_dir
+        if output_root is None:
+            output_root = self.result_output_dir
         self.run_dir = self._build_run_dir(
-            self.ckpt_path, run_id, output_dir=self.result_output_dir)
+            self.ckpt_path,
+            run_id,
+            output_dir=output_root,
+            inference_tag=self.model_family)
         os.makedirs(self.run_dir, exist_ok=True)
         progress_dir = os.path.join(self.run_dir, 'rank_progress')
         total_eval_episodes = len(
             self._build_global_episodes(num_tasks, self.num_trials_per_task,
                                         task_ids))
         local_log_filepath = self._build_log_file_path(self.ckpt_path, run_id,
-                                                       rank,
-                                                       self.result_output_dir)
+                                                       rank, output_root,
+                                                       self.model_family)
         log_file = open(local_log_filepath, 'w')
         total_episodes, total_successes = torch.zeros(
             1, device=torch.cuda.current_device()), torch.zeros(
@@ -800,15 +817,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_durations[task_id] += episode_duration
                 trial_success_grid[task_id, trial_id] = float(bool(done))
                 if self._should_save_rollout_video(done):
-                    video_root = (
-                        self.result_output_dir if self.result_output_dir
-                        is not None else self.run_dir)
+                    # Keep videos with the summary/logs for this exact run,
+                    # matching the standard checkpoint-eval layout:
+                    # ``.../<run_id>/rollouts/<date>/*.mp4``.
+                    video_root = self.run_dir
                     rollout_dir = self.rollout_dir
-                    if (rollout_dir is None
-                            and self.result_output_dir is not None):
-                        rollout_dir = os.path.join(self.result_output_dir,
-                                                   self.task_suite_name,
-                                                   'videos')
                     if rollout_dir is not None:
                         rollout_dir = os.path.expanduser(rollout_dir)
                         if not os.path.isabs(rollout_dir):
