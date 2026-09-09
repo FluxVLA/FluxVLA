@@ -53,6 +53,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
         eval_chunk_size: Number of predicted actions executed per step.
         max_episode_steps: Maximum number of environment steps per episode.
         num_trials_per_task: Number of trials for each task.
+        num_inference_steps: Optional denoising steps forwarded to the model.
         task_ids: Optional task id filter. Used by manager workers to run
             one or a few RoboCasa tasks.
         eval_shard_strategy: Episode assignment strategy. ``task`` keeps all
@@ -94,6 +95,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  eval_chunk_size: int = 10,
                  max_episode_steps: int = 720,
                  num_trials_per_task: int = 50,
+                 num_inference_steps: Optional[int] = None,
                  task_ids=None,
                  eval_shard_strategy: str = 'episode',
                  mixed_precision_dtype: str = 'bf16',
@@ -283,6 +285,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
         self.task_list = task_list
         self.max_episode_steps = max_episode_steps
         self.num_trials_per_task = num_trials_per_task
+        self.num_inference_steps = num_inference_steps
         self.task_ids = task_ids
         self.eval_shard_strategy = eval_shard_strategy
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
@@ -878,6 +881,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
                             log_file.write(f'State range: min={state_min}, '
                                            f'max={state_max}\n')
                     batch['unnorm_key'] = self.unnorm_key
+                    if self.num_inference_steps is not None:
+                        batch['num_inference_steps'] = \
+                            self.num_inference_steps
 
                     # Model inference.
                     if self.deterministic_action_sampling:
@@ -889,12 +895,12 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         with torch.no_grad():
                             actions = self.vla.predict_action(**batch)
 
-                    # actions shape: (1, chunk_size, max_action_dim)
-                    if len(actions.shape) == 3:
-                        actions = actions[
-                            0, :self.eval_chunk_size, :].cpu().numpy()
+                    # (B, H, D) or (B, D) -> (H, D), float32 NumPy.
+                    if actions.ndim == 3:
+                        actions = actions[0, :self.eval_chunk_size, :]
                     else:
-                        actions = actions[0, None, :].cpu().numpy()
+                        actions = actions[0, None, :]
+                    actions = actions.detach().float().cpu().numpy()
 
                     if t == 0:
                         action_min = format(actions.min(), '.6g')

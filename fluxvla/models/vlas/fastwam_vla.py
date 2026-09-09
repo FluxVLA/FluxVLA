@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from typing import Any, Callable, Dict, Literal, Optional, Tuple
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 import numpy as np
 import torch
@@ -72,10 +72,12 @@ class FastWAMVLA(BaseVLA):
         vla_head: Optional[Dict] = None,
         proprio_dim: Optional[int] = None,
         action_horizon: Optional[int] = None,
+        action_norm_type: str = 'min_max',
         frame_window_size: Optional[int] = None,
         num_views: Optional[int] = None,
         mot_checkpoint_mixed_attn: bool = False,
         pretrained_name_or_path: Optional[str] = None,
+        pretrained_skip_prefixes: Optional[List[str]] = None,
         freeze_vlm_backbone: bool = True,
         device: str = 'cpu',
         torch_dtype: torch.dtype = torch.float32,
@@ -87,6 +89,7 @@ class FastWAMVLA(BaseVLA):
             pretrained_name_or_path=pretrained_name_or_path,
             name_mapping=None,
             strict_mapping=True,
+            pretrained_skip_prefixes=pretrained_skip_prefixes,
         )
         if pretrained_name_or_path is None:
             raise ValueError(
@@ -104,6 +107,12 @@ class FastWAMVLA(BaseVLA):
         self.proprio_dim = None if proprio_dim is None else int(proprio_dim)
         self.action_horizon = (None if action_horizon is None else
                                int(action_horizon))
+        self.action_norm_type = str(action_norm_type)
+        if self.action_norm_type not in ('mean_std', 'quantile', 'min_max',
+                                         'none'):
+            raise ValueError('action_norm_type must be mean_std, quantile, '
+                             f'min_max, or none, got '
+                             f'{self.action_norm_type!r}.')
         self.num_views = None if num_views is None else int(num_views)
         self.frame_window_size = (None if frame_window_size is None else
                                   int(frame_window_size))
@@ -527,22 +536,48 @@ class FastWAMVLA(BaseVLA):
         }
 
     @staticmethod
-    def _denormalize_min_max_action(action: torch.Tensor, stats: Dict):
+    def _denormalize_action(action: torch.Tensor, stats: Optional[Dict],
+                            norm_type: str) -> Optional[torch.Tensor]:
+        """Restore actions to the numeric space used by the dataset.
+
+        Args:
+            action: Normalized action tensor.
+            stats: Per-sample dataset statistics.
+            norm_type: Normalization applied by the data transform.
+
+        Returns:
+            Denormalized actions, or ``None`` when statistics are unavailable.
+        """
+        if norm_type == 'none':
+            return action.float()
         action_stats = None
         if isinstance(stats, dict):
             action_stats = stats.get('action') or stats.get('actions')
-        if not action_stats or 'min' not in action_stats \
-                or 'max' not in action_stats:
+        if not action_stats:
             return None
-        action_min = torch.as_tensor(
-            action_stats['min'], dtype=torch.float32, device=action.device)
-        action_max = torch.as_tensor(
-            action_stats['max'], dtype=torch.float32, device=action.device)
-        while action_min.ndim < action.ndim:
-            action_min = action_min.unsqueeze(0)
-            action_max = action_max.unsqueeze(0)
-        return (action.float() + 1.0) * 0.5 * (action_max - action_min +
-                                               1e-6) + action_min
+        if norm_type == 'mean_std':
+            low_key, high_key = 'mean', 'std'
+        elif norm_type == 'quantile':
+            low_key, high_key = 'q01', 'q99'
+        elif norm_type == 'min_max':
+            low_key, high_key = 'min', 'max'
+        else:
+            raise ValueError(f'Unsupported action norm type: {norm_type!r}.')
+        if (action_stats.get(low_key) is None
+                or action_stats.get(high_key) is None):
+            return None
+
+        action_low = torch.as_tensor(
+            action_stats[low_key], dtype=torch.float32, device=action.device)
+        action_high = torch.as_tensor(
+            action_stats[high_key], dtype=torch.float32, device=action.device)
+        while action_low.ndim < action.ndim:
+            action_low = action_low.unsqueeze(0)
+            action_high = action_high.unsqueeze(0)
+        if norm_type == 'mean_std':
+            return action.float() * (action_high + 1e-6) + action_low
+        return (action.float() + 1.0) * 0.5 * (action_high - action_low +
+                                               1e-6) + action_low
 
     @staticmethod
     def _select_first_meta_value(value):
@@ -651,13 +686,15 @@ class FastWAMVLA(BaseVLA):
         pred_actions = pred.get('action')
         stats = self._select_first_meta_value(batch.get('stats'))
         if action0 is not None and pred_actions is not None:
-            pred_denorm = self._denormalize_min_max_action(
-                pred_actions.detach().cpu(), stats)
-            gt_denorm = self._denormalize_min_max_action(
-                action0.detach().cpu(), stats)
+            pred_denorm = self._denormalize_action(pred_actions.detach().cpu(),
+                                                   stats,
+                                                   self.action_norm_type)
+            gt_denorm = self._denormalize_action(action0.detach().cpu(), stats,
+                                                 self.action_norm_type)
             if pred_denorm is not None and gt_denorm is not None:
                 action_diff = pred_denorm - gt_denorm
-                metrics['action_l2'] = float(action_diff.pow(2).mean().item())
+                metrics['action_l2'] = float(
+                    action_diff.pow(2).mean().sqrt().item())
                 metrics['action_l1'] = float(action_diff.abs().mean().item())
 
         video_frames = self._stitch_eval_video_frames(pred_video_tensor,

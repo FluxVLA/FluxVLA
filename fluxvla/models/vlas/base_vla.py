@@ -54,7 +54,8 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
                  norm_stats: Dict = None,
                  pretrained_name_or_path: str = None,
                  name_mapping: Dict = None,
-                 strict_mapping: bool = False) -> None:
+                 strict_mapping: bool = False,
+                 pretrained_skip_prefixes: Optional[List[str]] = None) -> None:
         super().__init__()
         if vision_backbone is not None:
             self.vision_backbone = build_vision_backbone_from_cfg(
@@ -92,8 +93,63 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         self.pretrained_name_or_path = pretrained_name_or_path
         self.name_mapping = name_mapping
         self.strict_mapping = strict_mapping
+        self.pretrained_skip_prefixes = tuple(pretrained_skip_prefixes or [])
+        if any(not isinstance(prefix, str) or not prefix
+               for prefix in self.pretrained_skip_prefixes):
+            raise ValueError(
+                '`pretrained_skip_prefixes` must contain non-empty strings.')
         # Instance Attributes for a generic VLM
         self.all_module_keys = None
+
+    def _skip_pretrained_key(self, name: str) -> bool:
+        """Return whether a model key should retain its initialization."""
+        return any(
+            name.startswith(prefix)
+            for prefix in self.pretrained_skip_prefixes)
+
+    def _validate_pretrained_skip_prefixes(self) -> None:
+        """Reject skip prefixes that do not match the current model."""
+        model_keys = tuple(self.state_dict())
+        unmatched = [
+            prefix for prefix in self.pretrained_skip_prefixes
+            if not any(name.startswith(prefix) for name in model_keys)
+        ]
+        if unmatched:
+            raise ValueError('Pretrained skip prefixes did not match any '
+                             f'model keys: {unmatched}')
+
+    def _load_unmapped_pretrained_weights(
+            self, pretrained_weights: Dict[str, torch.Tensor]) -> None:
+        """Load an unmodified state dict while honoring skip prefixes."""
+        if not self.pretrained_skip_prefixes:
+            self.load_state_dict(
+                pretrained_weights, strict=self.strict_mapping)
+            return
+
+        filtered_weights = {
+            name: value
+            for name, value in pretrained_weights.items()
+            if not self._skip_pretrained_key(name)
+        }
+        incompatible = self.load_state_dict(filtered_weights, strict=False)
+        missing_keys = [
+            name for name in incompatible.missing_keys
+            if not self._skip_pretrained_key(name)
+        ]
+        unexpected_keys = list(incompatible.unexpected_keys)
+        if self.strict_mapping and (missing_keys or unexpected_keys):
+            raise RuntimeError(
+                'Strict checkpoint loading failed after applying '
+                '`pretrained_skip_prefixes`: '
+                f'missing_keys={missing_keys}, '
+                f'unexpected_keys={unexpected_keys}')
+
+        skipped_keys = [
+            name for name in self.state_dict()
+            if self._skip_pretrained_key(name)
+        ]
+        overwatch.info('Retaining initialized weights for pretrained keys: '
+                       f'{skipped_keys}')
 
     def _mapped_name_candidates(self, name: str) -> List:
         candidates = []
@@ -472,7 +528,7 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         # the root VLM FSDP instance.
         return build_combined_wrap_policy(fsdp_policy_list)
 
-    def from_pretrained(self):
+    def from_pretrained(self) -> None:
         # Load weights based on file format
         if self.pretrained_name_or_path is None:
             return
@@ -506,12 +562,17 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
             raise ValueError(f'Unsupported checkpoint format: '
                              f'{self.pretrained_name_or_path}')
 
+        self._validate_pretrained_skip_prefixes()
+
         # Load weights with name_mapping handling
         if not self.name_mapping:
-            self.load_state_dict(
-                pretrained_weights, strict=self.strict_mapping)
+            self._load_unmapped_pretrained_weights(pretrained_weights)
         else:
             for name, param in self.named_parameters():
+                if self._skip_pretrained_key(name):
+                    overwatch.info(
+                        f"Retaining initialized parameter '{name}'.")
+                    continue
                 if self.name_mapping is None:
                     if self.strict_mapping and name not in pretrained_weights:
                         raise ValueError(
