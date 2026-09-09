@@ -57,7 +57,7 @@ LIBERO_SUITE_TASK_COUNTS = {
     'libero_10': 10,
     'libero_90': 90,
 }
-REPORT_KINDS = frozenset({'libero', 'robocasa'})
+REPORT_KINDS = frozenset({'libero', 'robocasa', 'robodojo'})
 ROBOCASA_GROUP_ORDER = ('Cabinet', 'Drawer', 'Microwave', 'Generalization')
 
 
@@ -178,6 +178,21 @@ def _require_bool(value, name: str) -> bool:
     return value
 
 
+def _require_episode_count_overrides(value, name: str) -> dict[str, int]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise EvaluationEventError(f'{name} must be a mapping')
+    normalized = {}
+    for task_id, count in value.items():
+        task_id = _require_string(task_id, f'{name} key')
+        if task_id in normalized:
+            raise EvaluationEventError(
+                f'{name} contains duplicate task id {task_id!r}')
+        normalized[task_id] = _require_int(count, f'{name}[{task_id!r}]', 1)
+    return normalized
+
+
 def _require_datetime(value, name: str) -> tuple[str, float]:
     value = _require_string(value, name)
     normalized = value[:-1] + '+00:00' if value.endswith('Z') else value
@@ -228,8 +243,10 @@ class FluxVLAROSEvaluationReporter:
         config_path: Authoritative FluxVLA MMEngine config path.
         ckpt_path: Authoritative model checkpoint path.
         eval_config: The selected FluxVLA eval runner config. It must define
-            ``model_family`` and ``num_trials_per_task``. LIBERO additionally
-            requires ``task_suite_name``; RoboCasa requires ``task_list``.
+            ``model_family`` and ``num_trials_per_task``. Optional
+            ``num_trials_per_task_overrides`` entries replace that default
+            for exact task ids. LIBERO additionally requires
+            ``task_suite_name``; RoboCasa requires ``task_list``.
         report_kind: Optional explicit ``libero`` or ``robocasa`` selector.
         logger: Optional ``Callable[[str], None]``. Defaults to Overwatch.
         feishu: Optional mapping with ``sheet_url``, ``app_id``, ``app_secret``
@@ -265,6 +282,11 @@ class FluxVLAROSEvaluationReporter:
         self.num_trials_per_task = _require_int(
             _cfg_get(self.eval_config, 'num_trials_per_task'),
             'eval_config.num_trials_per_task', 1)
+        self.num_trials_per_task_overrides = \
+            _require_episode_count_overrides(
+                _cfg_get(self.eval_config,
+                         'num_trials_per_task_overrides'),
+                'eval_config.num_trials_per_task_overrides')
         self.action_order = _require_string(
             _cfg_get(self.eval_config, 'action_order',
                      'n15' if self.model_family == 'groot' else 'fluxvla'),
@@ -455,10 +477,6 @@ class FluxVLAROSEvaluationReporter:
             payload.get('total_episodes'), 'payload.total_episodes', 1)
         full_suite = _require_bool(
             payload.get('full_suite'), 'payload.full_suite')
-        if total_episodes != total_tasks * episodes_per_task:
-            raise EvaluationEventError(
-                'payload.total_episodes must equal total_tasks * '
-                'episodes_per_task')
         tasks_value = payload.get('tasks')
         if (not isinstance(tasks_value, Sequence)
                 or isinstance(tasks_value, (str, bytes))):
@@ -514,6 +532,29 @@ class FluxVLAROSEvaluationReporter:
             tasks_by_id[task_id] = entry
             tasks_by_index[task_index] = entry
 
+        episode_counts_value = payload.get('episodes_per_task_by_task')
+        if episode_counts_value is None:
+            episodes_per_task_by_task = {
+                task_id: episodes_per_task
+                for task_id in tasks_by_id
+            }
+        else:
+            episodes_per_task_by_task = _require_episode_count_overrides(
+                episode_counts_value, 'payload.episodes_per_task_by_task')
+            expected_task_ids = set(tasks_by_id)
+            actual_task_ids = set(episodes_per_task_by_task)
+            if actual_task_ids != expected_task_ids:
+                missing = sorted(expected_task_ids - actual_task_ids)
+                extra = sorted(actual_task_ids - expected_task_ids)
+                raise EvaluationEventError(
+                    'payload.episodes_per_task_by_task must exactly match '
+                    f'the task manifest; missing={missing}, extra={extra}')
+        expected_total_episodes = sum(episodes_per_task_by_task.values())
+        if total_episodes != expected_total_episodes:
+            raise EvaluationEventError(
+                'payload.total_episodes must equal the sum of '
+                'episodes_per_task_by_task')
+
         run_id, run_dir = self._allocate_run_dir(run_name)
         run_dir.mkdir(parents=True, exist_ok=False)
         (run_dir / 'rank_progress').mkdir()
@@ -531,6 +572,7 @@ class FluxVLAROSEvaluationReporter:
                 'run_name': run_name,
                 'seed': seed,
                 'episodes_per_task': episodes_per_task,
+                'episodes_per_task_by_task': episodes_per_task_by_task,
                 'max_episode_steps': max_episode_steps,
                 'execute_horizon': execute_horizon,
                 'total_tasks': total_tasks,
@@ -627,6 +669,12 @@ class FluxVLAROSEvaluationReporter:
             payload.get('termination_reason'), 'payload.termination_reason')
         model_calls = _require_int(
             payload.get('model_calls'), 'payload.model_calls', 0)
+        score = payload.get('score')
+        if score is not None:
+            score = _require_number(score, 'payload.score', 0.0)
+            if score > 1.0:
+                raise EvaluationEventError(
+                    f'payload.score must be <= 1.0, got {score!r}')
         info = _require_mapping(payload.get('info', {}), 'payload.info')
         prediction_metadata = payload.get('prediction_metadata', [])
         if (not isinstance(prediction_metadata, Sequence)
@@ -657,25 +705,51 @@ class FluxVLAROSEvaluationReporter:
             'info': info,
             'prediction_metadata': prediction_metadata,
         }
+        if score is not None:
+            result['score'] = score
         state.episodes.append(result)
         state.completed_keys.add(episode_key)
         del state.active_episodes[episode_key]
         successes = sum(bool(item['success']) for item in state.episodes)
         success_rate = successes / len(state.episodes) * 100
-        _write_json_atomic(state.run_dir / 'rank_progress' / 'rank0.json', {
+        scores = [
+            float(item['score']) for item in state.episodes
+            if item.get('score') is not None
+        ]
+        mean_score = sum(scores) / len(scores) if scores else None
+        rank_progress = {
             'rank': 0,
             'episodes': len(state.episodes),
             'successes': successes,
-        })
+        }
+        if score is not None:
+            rank_progress['score'] = score
+        if mean_score is not None:
+            rank_progress['scored_episodes'] = len(scores)
+            rank_progress['mean_score'] = mean_score
+        _write_json_atomic(state.run_dir / 'rank_progress' / 'rank0.json',
+                           rank_progress)
+        score_log = ''
+        if score is not None:
+            score_log += f'# local score: {score * 100:.1f}%\n'
+        if mean_score is not None:
+            score_log += f'# local mean score: {mean_score * 100:.1f}%\n'
         self._append_log(
             state, f'Success: {success}\n'
             f'# local episodes completed so far: {len(state.episodes)}\n'
-            f'# local successes: {successes} ({success_rate:.1f}%)\n')
+            f'# local successes: {successes} ({success_rate:.1f}%)\n'
+            f'{score_log}')
+        score_progress = ''
+        if score is not None:
+            score_progress += f' score={score * 100:.2f}%'
+        if mean_score is not None:
+            score_progress += f' mean_score={mean_score * 100:.2f}%'
         self._log('[eval-progress] '
                   f'episodes={len(state.episodes)}/'
                   f"{state.start['total_episodes']} "
                   f'successes={successes} '
-                  f'success_rate={success_rate:.2f}%')
+                  f'success_rate={success_rate:.2f}%'
+                  f'{score_progress}')
 
     def _episode_identity(
             self, state: _RunState,
@@ -696,9 +770,11 @@ class FluxVLAROSEvaluationReporter:
                 f'task {task_id!r} description changed during the run')
         episode_index = _require_int(
             payload.get('episode_index'), 'payload.episode_index', 0)
-        if episode_index >= state.start['episodes_per_task']:
+        episodes_per_task = self._episodes_for_task(state, task)
+        if episode_index >= episodes_per_task:
             raise EvaluationEventError(
-                'payload.episode_index exceeds episodes_per_task')
+                f'payload.episode_index exceeds episodes_per_task for '
+                f'task {task.task_id!r}')
         seed = _require_int(payload.get('seed'), 'payload.seed')
         return task, episode_index, seed, description
 
@@ -792,6 +868,7 @@ class FluxVLAROSEvaluationReporter:
         total_trials = 0
         total_time = 0.0
         max_time = 0.0
+        all_scores = []
         for task_index in sorted(grouped):
             episodes = sorted(
                 grouped[task_index], key=lambda item: item['episode_index'])
@@ -809,6 +886,14 @@ class FluxVLAROSEvaluationReporter:
             start_time = time.strftime('%Y-%m-%d %H:%M:%S',
                                        time.localtime(start_epoch))
             count = len(episodes)
+            scores = [
+                float(item['score']) for item in episodes
+                if item.get('score') is not None
+            ]
+            score_metrics = ({
+                'scored_episodes': len(scores),
+                'mean_score': sum(scores) / len(scores),
+            } if scores else {})
             per_task = {
                 'task_suite': self.task_suite_name,
                 'task_id': task_index,
@@ -820,6 +905,7 @@ class FluxVLAROSEvaluationReporter:
                 'start_time': start_time,
                 'duration': duration,
                 'gpu_id': self.result_gpu_id,
+                **score_metrics,
             }
             _write_json_atomic(suite_dir / f'task{task_index}_results.json',
                                per_task)
@@ -829,7 +915,7 @@ class FluxVLAROSEvaluationReporter:
                 manager_suite_dir /
                 f'gpu{self.result_gpu_id}_task{task_index}_results.json',
                 per_task)
-            complete = count == state.start['episodes_per_task']
+            complete = count == self._episodes_for_task(state, task)
             task_state = 'SUCCESS' if complete else 'PARTIAL'
             (status_dir /
              f'{self.task_suite_name}_task{task_index}.status').write_text(
@@ -842,7 +928,9 @@ class FluxVLAROSEvaluationReporter:
                 'total_episodes': count,
                 'successes': successes,
                 'task_description': task.description,
+                **score_metrics,
             }
+            all_scores.extend(scores)
             total_successes += successes
             total_trials += count
             total_time += duration
@@ -880,12 +968,22 @@ class FluxVLAROSEvaluationReporter:
                 'average_task_time': average_time,
             },
         }
+        if all_scores:
+            score_metrics = {
+                'scored_episodes': len(all_scores),
+                'mean_score': sum(all_scores) / len(all_scores),
+            }
+            summary['suite_stats'][self.task_suite_name].update(score_metrics)
+            summary['overall'].update(score_metrics)
         summary_path = state.run_dir / 'summary.json'
         _write_json_atomic(summary_path, summary)
         self._log(f'# episodes completed: {total_trials}')
         self._log(f'# successes: {total_successes} ({success_rate:.1f}%)')
-        self._log(f'[ros-eval] wrote LIBERO summary artifacts to '
-                  f'{state.run_dir}')
+        if all_scores:
+            self._log(f'# mean score: '
+                      f'{sum(all_scores) / len(all_scores) * 100:.1f}%')
+        self._log(f'[ros-eval] wrote {self.report_kind.upper()} summary '
+                  f'artifacts to {state.run_dir}')
         return summary_path
 
     def _write_robocasa_summary_artifacts(self, state: _RunState) -> Path:
@@ -959,7 +1057,7 @@ class FluxVLAROSEvaluationReporter:
                 manager_result_dir /
                 f'gpu{self.result_gpu_id}_task{task_index}_results.json',
                 per_task)
-            complete = count == state.start['episodes_per_task']
+            complete = count == self._episodes_for_task(state, task)
             if not complete:
                 incomplete_tasks.append(task_index)
             start_epoch = min(item['started_epoch'] for item in episodes)
@@ -1098,6 +1196,10 @@ class FluxVLAROSEvaluationReporter:
             f'model_family: {self.model_family}',
             f'task_ids: {task_ids}',
             f"num_trials_per_task: {state.start['episodes_per_task']}",
+            'episodes_per_task_by_task: ' + json.dumps(
+                state.start['episodes_per_task_by_task'],
+                ensure_ascii=False,
+                sort_keys=True),
             f"eval_chunk_size: {state.start['execute_horizon']}",
             f"num_steps_wait: {_cfg_get(cfg, 'num_steps_wait', None)}",
             f'num_inference_steps: '
@@ -1182,18 +1284,31 @@ class FluxVLAROSEvaluationReporter:
             return False, 'total task count does not match eval metadata'
         if state.start['episodes_per_task'] != self.num_trials_per_task:
             return False, 'episodes_per_task does not match eval metadata'
-        expected_total = len(self.expected_task_indexes) * \
-            self.num_trials_per_task
+        expected_counts = {
+            task.task_id:
+            self.num_trials_per_task_overrides.get(task.task_id,
+                                                   self.num_trials_per_task)
+            for task in state.tasks_by_index.values()
+        }
+        if state.start['episodes_per_task_by_task'] != expected_counts:
+            return (False,
+                    'episodes_per_task_by_task does not match eval metadata')
+        expected_total = sum(expected_counts.values())
         if (end['completed_episodes'] != end['total_episodes']
                 or end['total_episodes'] != expected_total):
             return False, 'completed episode total is not the full suite total'
         counts = defaultdict(int)
         for episode in state.episodes:
             counts[episode['task_index']] += 1
-        if any(counts[index] != self.num_trials_per_task
+        if any(counts[index] != expected_counts[
+                state.tasks_by_index[index].task_id]
                for index in self.expected_task_indexes):
             return False, 'one or more tasks has an incomplete episode count'
         return True, 'eligible full-suite evaluation'
+
+    @staticmethod
+    def _episodes_for_task(state: _RunState, task: _TaskManifestEntry) -> int:
+        return state.start['episodes_per_task_by_task'][task.task_id]
 
     def _expected_task_indexes(self) -> Optional[set[int]]:
         if self.task_list is not None:
