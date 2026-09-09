@@ -64,6 +64,8 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## 📢 Latest News
 
+**\[2026/09/09\]** 🔥 FluxVLA now supports checkpoint-free GPT-6 Astra evaluation on LIBERO through the OpenAI Responses API, including multi-view observations, native LIBERO action control, environment-configured credentials, and organized rollout artifacts.
+
 **\[2026/09/09\]** 🔥 FluxVLA-native GR00T N1.7 is now open sourced, including training and inference workflows for LIBERO, RoboCasa, and Franka robots.
 
 **\[2026/08/25\]** 🔥 FluxVLA-native DiT4DiT support is now available, including training and inference workflows for LIBERO and RoboCasa.
