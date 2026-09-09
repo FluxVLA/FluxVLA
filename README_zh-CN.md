@@ -67,6 +67,8 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 📢 最新动态
 
+**\[2026/09/09\]** 🔥 FluxVLA 现已支持通过 OpenAI Responses API 使用 GPT-6 Astra 进行无需 checkpoint 的 LIBERO 评测，包括多视角观测、原生 LIBERO 动作控制、环境变量凭据配置和结构化 rollout 产物。
+
 **\[2026/09/09\]** 🔥 FluxVLA-native GR00T N1.7 现已开源，包含 LIBERO、RoboCasa 和 Franka 机器人的训练与推理流程。
 
 **\[2026/08/25\]** 🔥 现已支持 FluxVLA-native DiT4DiT，包含 LIBERO 与 RoboCasa 的训练和推理流程。

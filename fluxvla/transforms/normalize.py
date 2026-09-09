@@ -361,6 +361,8 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
                 raise KeyError(
                     'Action normalization statistics must contain either '
                     "'action' or 'actions'.")
+            stats = self._select_action_stats(stats,
+                                              data.get('action_horizon_index'))
             cont = self._denormalize_by_type(action, stats, self.norm_type,
                                              self.action_norm_mask)
             if self.discrete_action_dims:
@@ -378,6 +380,57 @@ class DenormalizePrivateAction(DenormalizeLiberoAction):
             else:
                 action = cont
         return action
+
+    @staticmethod
+    def _stats_horizon(stats: Dict) -> Optional[int]:
+        """Return the shared horizon of time-dependent statistic fields."""
+        horizons = {
+            np.asarray(value).shape[0]
+            for value in stats.values() if np.asarray(value).ndim >= 2
+        }
+        if not horizons:
+            return None
+        if len(horizons) != 1:
+            raise ValueError(
+                'Action statistic fields have inconsistent horizons: '
+                f'{sorted(horizons)}.')
+        return horizons.pop()
+
+    def get_action_stats_horizon(self) -> Optional[int]:
+        """Return the configured action-statistics horizon, if present."""
+        if self.norm_stats is None:
+            return None
+        norm_stats = self.norm_stats[self.statistic_name]
+        stats = norm_stats.get('action', norm_stats.get('actions'))
+        if stats is None:
+            raise KeyError(
+                'Action normalization statistics must contain either '
+                "'action' or 'actions'.")
+        return self._stats_horizon(stats)
+
+    def _select_action_stats(self, stats: Dict, action_horizon_index) -> Dict:
+        """Select one temporal statistics row for one predicted action."""
+        if action_horizon_index is None:
+            return stats
+        if (isinstance(action_horizon_index, bool)
+                or not isinstance(action_horizon_index, (int, np.integer))):
+            raise TypeError('action_horizon_index must be an integer, got '
+                            f'{action_horizon_index!r}.')
+
+        index = int(action_horizon_index)
+        horizon = self._stats_horizon(stats)
+        if horizon is None:
+            return stats
+        if not 0 <= index < horizon:
+            raise IndexError(
+                f'action_horizon_index={index} is outside action statistics '
+                f'horizon={horizon}. Regenerate horizon-dependent action '
+                'statistics before executing a longer action chunk.')
+        return {
+            key: (np.asarray(value)[index]
+                  if np.asarray(value).ndim >= 2 else value)
+            for key, value in stats.items()
+        }
 
     def _denormalize_by_type(self,
                              action: np.ndarray,

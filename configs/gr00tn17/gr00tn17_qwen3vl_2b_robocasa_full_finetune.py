@@ -2638,7 +2638,6 @@ eval = dict(
         'action.right_hand': (20, 26),
         'action.waist': (26, 29),
     },
-    denormalize_action_chunk=True,
     save_video=False,
     deterministic_env=True,
     deterministic_action_sampling=True,
