@@ -50,6 +50,7 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 | ------------------- | ------------------- | ------- | ------ | --------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
 | FluxVLA(GR00T N1.5) | 24 タスク、30 デモ  | 22.7%   | 35.7%  | 32.5%     | 48.9%          | [44.3%(50trials)](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64)                  |
 | FluxVLA(GR00T N1.7) | 24 タスク、全データ | 53.00%  | 51.00% | 47.00%    | 45.11%         | [46.42%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_native_robocasa_full_finetune_bs512)         |
+| FluxVLA(FastWAM)    | 24 タスク、全データ | 55.00%  | 47.00% | 47.00%    | 50.00%         | [49.92%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robocasa_full_data_full_finetune_bs256)        |
 | FluxVLA(PI0)        | 24 タスク、全データ | 60.00%  | 56.00% | 48.00%    | 49.33%         | [51.00%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256)  |
 | FluxVLA(PI0.5)      | 24 タスク、全データ | 60.00%  | 51.00% | 52.00%    | 50.44%         | [51.42%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robocasa_full_data_full_finetune_bs256) |
 | FluxVLA(DiT4DiT)    | 24 タスク、全データ | 63.00%  | 52.00% | 59.00%    | 57.00%         | [57.25%（各タスク 50 試行）](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robocasa_full_data_full_finetune_bs64)         |
@@ -61,6 +62,8 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 - `Microwave`：`PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`。
 - `Generalization`：残り 18 個のポストトレーニング新規タスク。
 - RoboCasa の結果は、各タスク 50 試行で評価しています。
+- FastWAM の結果は、評価済み checkpoint のうち最良の
+  `step-095000-epoch-002-loss=0.1350`（599/1200 episode 成功）を使用しています。
 
 ## 📢 最新情報
 
