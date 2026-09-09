@@ -68,8 +68,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         action_order: Optional action-order label used in evaluation reports.
         action_keys: Config-defined mapping from RoboCasa environment action
             keys to ``(start, end)`` slices in the policy action vector.
-        denormalize_action_chunk: Denormalize the complete predicted action
-            chunk in one call. Required for horizon-dependent statistics.
         norm_stats_path: Optional explicit dataset statistics path.
         grouped_norm_stats: Whether to load one statistics file per group.
         norm_stats_group_names: Per-task group names for grouped statistics.
@@ -106,7 +104,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                  norm_stats_path: Optional[str] = None,
                  action_order: Optional[str] = None,
                  action_keys: Optional[Dict[str, List[int]]] = None,
-                 denormalize_action_chunk: bool = False,
                  grouped_norm_stats: bool = False,
                  norm_stats_group_names: Optional[List[str]] = None,
                  deterministic_env: bool = True,
@@ -275,11 +272,13 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     f'evaluation invalid. Current transforms: '
                     f'{transform_names}')
 
-        self.eval_chunk_size = eval_chunk_size
+        self.eval_chunk_size = int(eval_chunk_size)
+        if self.eval_chunk_size <= 0:
+            raise ValueError('eval_chunk_size must be positive, got '
+                             f'{self.eval_chunk_size}.')
         self.model_family = model_family
         self.action_keys = self._validate_action_keys(action_keys)
         self.action_order = action_order or 'config'
-        self.denormalize_action_chunk = bool(denormalize_action_chunk)
         self.task_list = task_list
         self.max_episode_steps = max_episode_steps
         self.num_trials_per_task = num_trials_per_task
@@ -320,6 +319,30 @@ class RobocasaEvalRunner(BaseEvalRunner):
         if isinstance(value, str):
             return value.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
         return bool(value)
+
+    def _get_action_stats_horizon(self) -> Optional[int]:
+        getter = getattr(self._active_denorm, 'get_action_stats_horizon', None)
+        return getter() if callable(getter) else None
+
+    @staticmethod
+    def _validate_action_horizons(eval_chunk_size: int,
+                                  model_output_horizon: int,
+                                  action_stats_horizon: Optional[int]) -> None:
+        if eval_chunk_size > model_output_horizon:
+            raise ValueError(
+                f'eval_chunk_size={eval_chunk_size} exceeds model output '
+                f'horizon={model_output_horizon}. Regenerating action '
+                'statistics alone cannot make the model produce additional '
+                'actions. Reduce eval_chunk_size, or increase the model '
+                'action_horizon and retrain/adapt the checkpoint.')
+        if (action_stats_horizon is not None
+                and eval_chunk_size > action_stats_horizon):
+            raise ValueError(
+                f'eval_chunk_size={eval_chunk_size} exceeds action '
+                f'statistics horizon={action_stats_horizon}, while model '
+                f'output horizon={model_output_horizon} is sufficient. '
+                'Regenerate horizon-dependent action statistics with at least '
+                f'{eval_chunk_size} rows before executing this chunk.')
 
     @staticmethod
     def _validate_action_keys(
@@ -889,8 +912,31 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         with torch.no_grad():
                             actions = self.vla.predict_action(**batch)
 
-                    # actions shape: (1, chunk_size, max_action_dim)
-                    if len(actions.shape) == 3:
+                    # actions shape: (1, model_horizon, action_dim)
+                    if actions.ndim == 3:
+                        if actions.shape[0] != 1:
+                            raise ValueError(
+                                'RoboCasa evaluation requires action batch '
+                                f'size 1, got shape {tuple(actions.shape)}.')
+                        model_output_horizon = int(actions.shape[1])
+                    elif actions.ndim == 2:
+                        if actions.shape[0] != 1:
+                            raise ValueError(
+                                'RoboCasa single-action output requires batch '
+                                f'size 1, got shape {tuple(actions.shape)}.')
+                        model_output_horizon = 1
+                    else:
+                        raise ValueError(
+                            'Expected predicted actions with shape [1, T, D] '
+                            f'or [1, D], got {tuple(actions.shape)}.')
+
+                    action_stats_horizon = self._get_action_stats_horizon()
+                    self._validate_action_horizons(
+                        self.eval_chunk_size,
+                        model_output_horizon,
+                        action_stats_horizon,
+                    )
+                    if actions.ndim == 3:
                         actions = actions[
                             0, :self.eval_chunk_size, :].cpu().numpy()
                     else:
@@ -910,38 +956,20 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                        f'mean={action_mean}\n')
 
                     raw_state = getattr(self.dataset, 'last_raw_state', None)
-                    if self.denormalize_action_chunk:
+
+                    # Execute one action chunk. Horizon-dependent statistics
+                    # are indexed relative to this newly predicted chunk.
+                    for chunk_index, action in enumerate(actions):
                         denorm_input = dict(
-                            action=actions,
+                            action=action,
+                            action_horizon_index=chunk_index,
                             task_suite_name=self.unnorm_key,
                         )
                         if raw_state is not None:
+                            # Every delta in the chunk is relative to the same
+                            # state snapshot used for this policy prediction.
                             denorm_input['state'] = raw_state
-                        actions_to_execute = np.asarray(
-                            self._active_denorm(denorm_input))
-                        if actions_to_execute.ndim == 1:
-                            actions_to_execute = actions_to_execute[None, :]
-                        if actions_to_execute.shape[0] != actions.shape[0]:
-                            raise ValueError(
-                                'Chunk denormalization changed the action '
-                                f'horizon from {actions.shape[0]} to '
-                                f'{actions_to_execute.shape[0]}.')
-                    else:
-                        actions_to_execute = actions
-
-                    # Execute one action chunk.
-                    for action in actions_to_execute:
-                        # Denormalize from [-1, 1] to raw joint positions.
-                        if self.denormalize_action_chunk:
-                            action_denormed = action
-                        else:
-                            denorm_input = dict(
-                                action=action,
-                                task_suite_name=self.unnorm_key,
-                            )
-                            if raw_state is not None:
-                                denorm_input['state'] = raw_state
-                            action_denormed = self._active_denorm(denorm_input)
+                        action_denormed = self._active_denorm(denorm_input)
 
                         if t == 0:
                             denorm_min = format(action_denormed.min(), '.6g')
