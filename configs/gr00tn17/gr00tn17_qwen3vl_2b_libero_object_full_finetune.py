@@ -428,7 +428,7 @@ runner = dict(
 
 eval = dict(
     type='LiberoEvalRunner',
-    model_family='groot_n17_native',
+    model_family='groot_n17',
     task_suite_name=_SUITE,
     num_trials_per_task=50,
     eval_chunk_size=8,

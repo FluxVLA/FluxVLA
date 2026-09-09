@@ -2619,7 +2619,7 @@ eval = dict(
     type='RobocasaEvalRunner',
     benchmark='robocasa',
     task_suite_name='robocasa',
-    model_family='groot_n17_native',
+    model_family='groot_n17',
     task_list=[
         f'gr1_unified/{task_name}_GR1ArmsAndWaistFourierHands_Env'
         for task_name in _TASK_NAMES

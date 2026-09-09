@@ -18,7 +18,7 @@ pose and gripper targets are absolute, matching the PI0.5 Franka EE-pose
 recipe and the 20260519 LeRobot dataset.
 """
 
-_base_ = ['./gr00t_n17_native_libero_10_full_finetune.py']
+_base_ = ['./gr00tn17_qwen3vl_2b_libero_10_full_finetune.py']
 
 _DATASET_ROOT = (
     '/mnt/data/cpfs/mnt/data/liyinhao/datasets/'

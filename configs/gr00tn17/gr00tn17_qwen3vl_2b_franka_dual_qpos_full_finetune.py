@@ -13,7 +13,7 @@
 # limitations under the License.
 """Native GR00T N1.7 dual-Franka qpos training and real-robot inference."""
 
-_base_ = ['./gr00t_n17_native_libero_10_full_finetune.py']
+_base_ = ['./gr00tn17_qwen3vl_2b_libero_10_full_finetune.py']
 
 _DATASET_ROOT = (
     '/mnt/data/cpfs/mnt/data/liyinhao/datasets/'
