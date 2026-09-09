@@ -63,6 +63,9 @@ class LiberoEvalRunner(BaseEvalRunner):
         task_suite_name (str): Name of the task suite for evaluation.
         dataset (Dict): Configuration for the dataset to be used in evaluation.
         denormalize_action (Dict): Configuration for denormalizing actions.
+        dataset_stats_path (str): Optional explicit dataset statistics path.
+        requires_dataset_stats (bool): Whether missing dataset statistics
+            should fail runner construction. Defaults to True.
         eval_chunk_size (int): Size of the chunks for evaluation.
             Default is 1.
         resize_size (int): Size to which images will be resized.
@@ -109,6 +112,8 @@ class LiberoEvalRunner(BaseEvalRunner):
             paths are resolved under the active video root.
         run_id_suffix (str): Optional suffix appended to the eval run id.
             Useful when launching several single-task eval workers at once.
+        output_dir (str): Optional root for normal evaluation artifacts.
+            Runs are written under ``<output_dir>/eval_runs/<group>/<run>``.
         result_output_dir (str): Optional manager output root. When set,
             per-worker eval artifacts are written under its ``eval_runs``
             subdirectory, and manager-compatible per-task result files are
@@ -124,6 +129,8 @@ class LiberoEvalRunner(BaseEvalRunner):
 
     @staticmethod
     def _inject_checkpoint_tokenizer(dataset: Dict, ckpt_path: str) -> None:
+        if ckpt_path is None:
+            return
         model_path = Path(ckpt_path).resolve().parent.parent
         tokenizer_path = model_path / 'tokenizer'
         if not tokenizer_path.is_dir():
@@ -287,35 +294,43 @@ class LiberoEvalRunner(BaseEvalRunner):
         return run_id
 
     @staticmethod
-    def _build_ckpt_tag(ckpt_path: str) -> str:
+    def _build_ckpt_tag(ckpt_path: str, inference_tag: str = None) -> str:
         """Stable per-checkpoint folder name for grouping eval runs."""
+        if ckpt_path is None:
+            tag = str(inference_tag or 'inference-only')
+            return tag.replace('/', '-').replace('\\', '-')
         return Path(ckpt_path).resolve().stem
 
     @staticmethod
     def _build_run_dir(ckpt_path: str,
                        run_id: str,
-                       output_dir: str = None) -> str:
+                       output_dir: str = None,
+                       inference_tag: str = None) -> str:
         """Per-checkpoint, per-run output directory."""
         root = (
             Path(output_dir).expanduser().resolve() if output_dir is not None
-            else Path(ckpt_path).resolve().parent.parent)
-        return os.path.join(root, 'eval_runs',
-                            LiberoEvalRunner._build_ckpt_tag(ckpt_path),
-                            run_id)
+            else Path(ckpt_path).resolve().parent.parent
+            if ckpt_path is not None else Path('work_dirs').resolve())
+        return os.path.join(
+            root, 'eval_runs',
+            LiberoEvalRunner._build_ckpt_tag(
+                ckpt_path, inference_tag=inference_tag), run_id)
 
     @classmethod
     def _build_log_file_path(cls,
                              ckpt_path: str,
                              run_id: str,
                              rank: int,
-                             output_dir: str = None) -> str:
+                             output_dir: str = None,
+                             inference_tag: str = None) -> str:
         """Per-rank log path inside the per-run directory.
 
         Encoding the rank in the filename avoids the previous collision where
         ranks sharing a wall-clock second overwrote the same log file.
         """
         return os.path.join(
-            cls._build_run_dir(ckpt_path, run_id, output_dir),
+            cls._build_run_dir(
+                ckpt_path, run_id, output_dir, inference_tag=inference_tag),
             f'rank{rank}.txt')
 
     def _should_collect_replay_images(self) -> bool:
@@ -381,6 +396,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  denormalize_action: Dict,
                  norm_stats_key: str = None,
                  dataset_stats_path: str = None,
+                 requires_dataset_stats: bool = True,
                  eval_chunk_size: int = 1,
                  resize_size: int = 224,
                  num_trials_per_task: int = 50,
@@ -399,6 +415,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  save_multi_view_rollout_videos: bool = False,
                  rollout_dir: str = None,
                  run_id_suffix: str = None,
+                 output_dir: str = None,
                  result_output_dir: str = None,
                  result_gpu_id: int = None,
                  mixed_precision_dtype: str = 'bf16',
@@ -456,11 +473,16 @@ class LiberoEvalRunner(BaseEvalRunner):
             self.load_eval_state_dict(state_dict, allowed_missing_key_prefixes)
             del state_dict
             gc.collect()
-        data_stat_path = (
-            dataset_stats_path if dataset_stats_path is not None else
-            self.default_stats_path(self.ckpt_path))
-        assert os.path.exists(data_stat_path), \
-            f'Dataset statistics file not found at {data_stat_path}!'
+        data_stat_path = dataset_stats_path
+        if data_stat_path is None and self.ckpt_path is not None:
+            data_stat_path = self.default_stats_path(self.ckpt_path)
+        if requires_dataset_stats:
+            assert data_stat_path is not None, (
+                'dataset_stats_path or ckpt_path is required for this '
+                'LIBERO evaluation config.')
+        if data_stat_path is not None:
+            assert os.path.exists(data_stat_path), \
+                f'Dataset statistics file not found at {data_stat_path}!'
         # Load dataset and denormalization action
         denormalize_action['norm_stats'] = data_stat_path
         self.norm_stats_key = norm_stats_key or f'{task_suite_name}_no_noops'
@@ -496,15 +518,22 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.save_multi_view_rollout_videos = save_multi_view_rollout_videos
         self.rollout_dir = rollout_dir
         self.run_id_suffix = run_id_suffix
-        self.result_output_dir = result_output_dir
+        self.output_dir = (
+            str(Path(output_dir).expanduser().resolve())
+            if output_dir is not None else None)
+        # Normalize once so downstream video/result paths do not accidentally
+        # prepend the same relative output root twice.
+        self.result_output_dir = (
+            str(Path(result_output_dir).expanduser().resolve())
+            if result_output_dir is not None else None)
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
 
-        if os.path.isfile(data_stat_path):
+        if data_stat_path is not None and os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
                 norm_stats = json.load(f)
             self.update_model_norm_stats(norm_stats)
-        else:
+        elif requires_dataset_stats:
             overwatch.warning(
                 'WARNING: No local dataset_statistics.json file found for current checkpoint.\n'  # noqa: E501
                 'You can ignore this if you are loading the base VLA (i.e. not fine-tuned) checkpoint.'  # noqa: E501
@@ -514,12 +543,16 @@ class LiberoEvalRunner(BaseEvalRunner):
     def run_setup(self):
         """Set up the evaluation environment and model."""
         set_seed_everywhere(self.seed)
-        torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
         self.vla.eval()
         self.vla.freeze_vision_backbone = True
         self.vla.freeze_llm_backbone = True
         self.vla.freeze_projector = True
         self.vla.freeze_vlm_backbone = True
+        if self.model_build_device == 'cpu':
+            self.vla.to(device='cpu')
+            return
+
+        torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
         if self.enable_mixed_precision_training:
             self.vla.to(
                 device=self.device_id, dtype=self.mixed_precision_dtype)
@@ -593,16 +626,22 @@ class LiberoEvalRunner(BaseEvalRunner):
             suffix=self.run_id_suffix)
         # Isolate each evaluation run in its own directory. Manager-launched
         # workers keep their artifacts under the manager output root.
+        output_root = self.output_dir
+        if output_root is None:
+            output_root = self.result_output_dir
         self.run_dir = self._build_run_dir(
-            self.ckpt_path, run_id, output_dir=self.result_output_dir)
+            self.ckpt_path,
+            run_id,
+            output_dir=output_root,
+            inference_tag=self.model_family)
         os.makedirs(self.run_dir, exist_ok=True)
         progress_dir = os.path.join(self.run_dir, 'rank_progress')
         total_eval_episodes = len(
             self._build_global_episodes(num_tasks, self.num_trials_per_task,
                                         task_ids))
         local_log_filepath = self._build_log_file_path(self.ckpt_path, run_id,
-                                                       rank,
-                                                       self.result_output_dir)
+                                                       rank, output_root,
+                                                       self.model_family)
         log_file = open(local_log_filepath, 'w')
         total_episodes, total_successes = torch.zeros(
             1, device=torch.cuda.current_device()), torch.zeros(
@@ -667,8 +706,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                     initial_states = self._repeat_initial_states(
                         task_suite.get_task_init_states(task_id),
                         self.num_trials_per_task)
+                    # Preserve the historical 256px render floor for local
+                    # policies, while allowing API-hosted VLMs to request a
+                    # larger source render instead of upscaling a 256px frame.
                     env, task_description = get_libero_env(
-                        task, resolution=256)
+                        task, resolution=max(256, int(self.resize_size)))
                     current_task_id = task_id
                     overwatch.info(f'\nTask: {task_description}')
                     log_file.write(f'\nTask: {task_description}\n')
@@ -775,15 +817,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_durations[task_id] += episode_duration
                 trial_success_grid[task_id, trial_id] = float(bool(done))
                 if self._should_save_rollout_video(done):
-                    video_root = (
-                        self.result_output_dir if self.result_output_dir
-                        is not None else self.run_dir)
+                    # Keep videos with the summary/logs for this exact run,
+                    # matching the standard checkpoint-eval layout:
+                    # ``.../<run_id>/rollouts/<date>/*.mp4``.
+                    video_root = self.run_dir
                     rollout_dir = self.rollout_dir
-                    if (rollout_dir is None
-                            and self.result_output_dir is not None):
-                        rollout_dir = os.path.join(self.result_output_dir,
-                                                   self.task_suite_name,
-                                                   'videos')
                     if rollout_dir is not None:
                         rollout_dir = os.path.expanduser(rollout_dir)
                         if not os.path.isabs(rollout_dir):
@@ -1029,7 +1067,9 @@ class LiberoEvalRunner(BaseEvalRunner):
                      f'{self._format_duration(max_time)}\n')
 
         # summary.csv -- single suite, so ``Overall`` mirrors the suite column.
-        title = os.path.basename(self.ckpt_path)
+        title = (
+            os.path.basename(self.ckpt_path)
+            if self.ckpt_path else self.model_family)
         summary_csv = os.path.join(self.run_dir, 'summary.csv')
         with open(summary_csv, 'w') as f:
             f.write(f'{title}\n')

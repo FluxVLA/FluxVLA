@@ -7,12 +7,18 @@
 #     MLP_WORKER_0_HOST, MLP_WORKER_0_PORT
 # Falls back to a sensible single-node default when none are set.
 
-CONFIG=$1
-CKPT_PATH=$2
+CONFIG=${1:-}
 
-if [[ $# -lt 2 ]]; then
-  echo "Usage: bash scripts/eval.sh CONFIG CKPT_PATH [ARGS...]" >&2
+if [[ $# -lt 1 ]]; then
+  echo "Usage: bash scripts/eval.sh CONFIG [CKPT_PATH] [ARGS...]" >&2
   exit 1
+fi
+shift
+
+CKPT_PATH=""
+if [[ $# -gt 0 && "$1" != --* ]]; then
+  CKPT_PATH="$1"
+  shift
 fi
 
 NPROC_PER_NODE="${NPROC_PER_NODE:-${MLP_WORKER_GPU:-1}}"
@@ -29,6 +35,11 @@ if [[ "${NPROC_PER_NODE}" == "1" && -z "${OMP_NUM_THREADS:-}" ]]; then
   export OMP_NUM_THREADS=1
 fi
 
+EVAL_ARGS=(--config "${CONFIG}")
+if [[ -n "${CKPT_PATH}" ]]; then
+  EVAL_ARGS+=(--ckpt-path "${CKPT_PATH}")
+fi
+
 torchrun \
   --nproc-per-node="${NPROC_PER_NODE}" \
   --nnodes="${WORLD_SIZE}" \
@@ -36,6 +47,5 @@ torchrun \
   --master_addr="${MASTER_ADDR}" \
   --master_port="${MASTER_PORT}" \
   "scripts/eval.py" \
-  --config "${CONFIG}" \
-  --ckpt-path "${CKPT_PATH}" \
-  "${@:3}"
+  "${EVAL_ARGS[@]}" \
+  "$@"
