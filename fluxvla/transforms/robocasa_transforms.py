@@ -532,6 +532,10 @@ class RobocasaEvalDataset:
             lang_masks=torch.tensor(token_mask).unsqueeze(0).cuda(),
         )
 
+        if data.get('image_grid_thw', None) is not None:
+            batch['image_grid_thw'] = torch.as_tensor(
+                data['image_grid_thw']).unsqueeze(0)
+
         if 'states' in data:
             batch['states'] = torch.from_numpy(
                 data['states']).bfloat16().cuda().unsqueeze(0)

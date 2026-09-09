@@ -7,7 +7,7 @@
 # OUTPUT_DIR/robocasa, and the manager aggregates them into one summary.
 #
 # Usage:
-#   CONFIG=configs/gr00t/gr00t_eagle_3b_robocasa_finetune.py \
+#   CONFIG=configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
 #   CKPT=/path/to/checkpoint.safetensors \
 #     bash scripts/eval_robocasa_manager.sh
 #

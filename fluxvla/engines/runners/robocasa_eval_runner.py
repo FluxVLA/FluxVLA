@@ -37,27 +37,6 @@ from .base_eval_runner import BaseEvalRunner
 
 overwatch = initialize_overwatch(__name__)
 
-# Split RoboCasa GR1 29D actions into the dict format required by env.step.
-# FluxVLA converted data order: left_arm + left_hand + right_arm + right_hand
-# + waist.
-ROBOCASA_FLUXVLA_ACTION_KEYS = {
-    'action.left_arm': (0, 7),  # left arm, 7D
-    'action.left_hand': (7, 13),  # left hand, 6D
-    'action.right_arm': (13, 20),  # right arm, 7D
-    'action.right_hand': (20, 26),  # right hand, 6D
-    'action.waist': (26, 29),  # waist, 3D
-}
-
-# Official GR00T N1.5 fourier_gr1_arms_waist order:
-# left_arm + right_arm + left_hand + right_hand + waist.
-ROBOCASA_N15_ACTION_KEYS = {
-    'action.left_arm': (0, 7),  # left arm, 7D
-    'action.right_arm': (7, 14),  # right arm, 7D
-    'action.left_hand': (14, 20),  # left hand, 6D
-    'action.right_hand': (20, 26),  # right hand, 6D
-    'action.waist': (26, 29),  # waist, 3D
-}
-
 
 @RUNNERS.register_module()
 class RobocasaEvalRunner(BaseEvalRunner):
@@ -86,8 +65,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
             ``<output_dir>/eval_runs/<ckpt>/<run_id>`` to match LIBERO.
         save_video: Whether to save rollout videos.
         rollout_video_key: Observation image key used for rollout videos.
-        action_order: Action split order. Defaults to ``n15`` for GR00T and
-            ``fluxvla`` otherwise.
+        action_order: Optional action-order label used in evaluation reports.
+        action_keys: Config-defined mapping from RoboCasa environment action
+            keys to ``(start, end)`` slices in the policy action vector.
+        denormalize_action_chunk: Denormalize the complete predicted action
+            chunk in one call. Required for horizon-dependent statistics.
         norm_stats_path: Optional explicit dataset statistics path.
         grouped_norm_stats: Whether to load one statistics file per group.
         norm_stats_group_names: Per-task group names for grouped statistics.
@@ -123,6 +105,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                      'video.ego_view_pad_res256_freq20'),
                  norm_stats_path: Optional[str] = None,
                  action_order: Optional[str] = None,
+                 action_keys: Optional[Dict[str, List[int]]] = None,
+                 denormalize_action_chunk: bool = False,
                  grouped_norm_stats: bool = False,
                  norm_stats_group_names: Optional[List[str]] = None,
                  deterministic_env: bool = True,
@@ -293,15 +277,9 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
         self.eval_chunk_size = eval_chunk_size
         self.model_family = model_family
-        if action_order is None:
-            action_order = 'n15' if model_family == 'groot' else 'fluxvla'
-        if action_order not in ('fluxvla', 'n15'):
-            raise ValueError(f'Unsupported action_order={action_order}. '
-                             "Expected 'fluxvla' or 'n15'.")
-        self.action_keys = (
-            ROBOCASA_N15_ACTION_KEYS
-            if action_order == 'n15' else ROBOCASA_FLUXVLA_ACTION_KEYS)
-        self.action_order = action_order
+        self.action_keys = self._validate_action_keys(action_keys)
+        self.action_order = action_order or 'config'
+        self.denormalize_action_chunk = bool(denormalize_action_chunk)
         self.task_list = task_list
         self.max_episode_steps = max_episode_steps
         self.num_trials_per_task = num_trials_per_task
@@ -342,6 +320,38 @@ class RobocasaEvalRunner(BaseEvalRunner):
         if isinstance(value, str):
             return value.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
         return bool(value)
+
+    @staticmethod
+    def _validate_action_keys(
+            action_keys: Optional[Dict[str, List[int]]]) -> Dict[str, tuple]:
+        if not action_keys:
+            raise ValueError(
+                'action_keys must be provided by the RoboCasa eval config.')
+        normalized = {}
+        intervals = []
+        for key, bounds in action_keys.items():
+            if not isinstance(key, str) or not key:
+                raise ValueError(
+                    f'RoboCasa action key must be a non-empty string: {key!r}')
+            if not isinstance(bounds, (list, tuple)) or len(bounds) != 2:
+                raise ValueError(
+                    f'action_keys[{key!r}] must be a (start, end) pair.')
+            start, end = (int(bounds[0]), int(bounds[1]))
+            if start < 0 or end <= start:
+                raise ValueError(
+                    f'Invalid action slice for {key!r}: {(start, end)}')
+            normalized[key] = (start, end)
+            intervals.append((start, end, key))
+
+        intervals.sort()
+        for (_, previous_end,
+             previous_key), (current_start, _,
+                             current_key) in zip(intervals, intervals[1:]):
+            if current_start < previous_end:
+                raise ValueError(
+                    f'Overlapping action slices for {previous_key!r} and '
+                    f'{current_key!r}.')
+        return normalized
 
     def _get_rollout_video_keys(self) -> List[str]:
         """Return candidate obs image keys for stable rollout videos."""
@@ -899,18 +909,39 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                        f'max={action_max}, '
                                        f'mean={action_mean}\n')
 
-                    # Execute one action chunk.
-                    for action in actions:
-                        # Denormalize from [-1, 1] to raw joint positions.
+                    raw_state = getattr(self.dataset, 'last_raw_state', None)
+                    if self.denormalize_action_chunk:
                         denorm_input = dict(
-                            action=action,
+                            action=actions,
                             task_suite_name=self.unnorm_key,
                         )
-                        raw_state = getattr(self.dataset, 'last_raw_state',
-                                            None)
                         if raw_state is not None:
                             denorm_input['state'] = raw_state
-                        action_denormed = self._active_denorm(denorm_input)
+                        actions_to_execute = np.asarray(
+                            self._active_denorm(denorm_input))
+                        if actions_to_execute.ndim == 1:
+                            actions_to_execute = actions_to_execute[None, :]
+                        if actions_to_execute.shape[0] != actions.shape[0]:
+                            raise ValueError(
+                                'Chunk denormalization changed the action '
+                                f'horizon from {actions.shape[0]} to '
+                                f'{actions_to_execute.shape[0]}.')
+                    else:
+                        actions_to_execute = actions
+
+                    # Execute one action chunk.
+                    for action in actions_to_execute:
+                        # Denormalize from [-1, 1] to raw joint positions.
+                        if self.denormalize_action_chunk:
+                            action_denormed = action
+                        else:
+                            denorm_input = dict(
+                                action=action,
+                                task_suite_name=self.unnorm_key,
+                            )
+                            if raw_state is not None:
+                                denorm_input['state'] = raw_state
+                            action_denormed = self._active_denorm(denorm_input)
 
                         if t == 0:
                             denorm_min = format(action_denormed.min(), '.6g')
@@ -925,6 +956,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         # Split 29D action into RoboCasa's dict action format.
                         action_dict = {}
                         for key, (start, end) in self.action_keys.items():
+                            if end > action_denormed.shape[-1]:
+                                raise ValueError(
+                                    f'Action slice {(start, end)} for {key!r} '
+                                    f'exceeds action width '
+                                    f'{action_denormed.shape[-1]}.')
                             action_dict[key] = action_denormed[start:end]
 
                         # Step the environment.

@@ -659,6 +659,13 @@ eval = dict(
     seed=eval_seed,  # Match the GR00T RoboCasa evaluation initial states.
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='fluxvla',
+    action_keys={
+        'action.left_arm': (0, 7),
+        'action.left_hand': (7, 13),
+        'action.right_arm': (13, 20),
+        'action.right_hand': (20, 26),
+        'action.waist': (26, 29),
+    },
     dataset=dict(
         type='RobocasaEvalDataset',
         unnorm_key=_ROBOCASA_STATISTIC_NAME,

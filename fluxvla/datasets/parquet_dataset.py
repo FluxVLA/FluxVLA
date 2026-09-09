@@ -627,6 +627,9 @@ class PrivateInferenceDataset:
             Defaults to 180.
         use_quantiles (bool): Whether to use quantiles for normalization.
             Defaults to True.
+        inject_model_path (bool): Whether to add model_path to transform
+            configs that do not define it. Disable this for pipelines whose
+            transforms use explicit component paths. Defaults to True.
     """
 
     def __init__(self,
@@ -639,12 +642,14 @@ class PrivateInferenceDataset:
                  max_len: int = 180,
                  use_quantiles=True,
                  embodiment_id: int = None,
+                 inject_model_path: bool = True,
                  extra_tensor_keys: Optional[List[str]] = None) -> None:
         from fluxvla.engines import build_transform_from_cfg
         self.transforms = list()
         for transform in transforms:
             transform = dict(transform)
-            transform.setdefault('model_path', model_path)
+            if inject_model_path:
+                transform.setdefault('model_path', model_path)
             self.transforms.append(build_transform_from_cfg(transform))
         if isinstance(norm_stats, str):
             with open(norm_stats, 'r', encoding='utf-8') as f:
@@ -680,20 +685,19 @@ class PrivateInferenceDataset:
             inputs = transform(inputs)
 
         batch = dict(
-            images=torch.from_numpy(
-                inputs['images']).unsqueeze(0).cuda(),  # noqa: E501
+            images=_batched_cuda_tensor(inputs['images']),
             img_masks=torch.tensor([[True for _ in range(len(self.img_keys))]
                                     ]).cuda(),  # noqa: E501
-            lang_tokens=torch.from_numpy(
-                inputs['lang_tokens']).unsqueeze(0).cuda(),
-            lang_masks=torch.from_numpy(
-                inputs['lang_masks']).unsqueeze(0).cuda(),
-            states=torch.from_numpy(
-                inputs['states']).float().cuda().unsqueeze(0))
+            lang_tokens=_batched_cuda_tensor(inputs['lang_tokens']),
+            lang_masks=_batched_cuda_tensor(inputs['lang_masks']),
+            states=_batched_cuda_tensor(inputs['states']).float())
         if 'embodiment_ids' in inputs:
-            batch['embodiment_ids'] = torch.from_numpy(
-                np.asarray(inputs['embodiment_ids'])).int().cuda().unsqueeze(0)
+            batch['embodiment_ids'] = _batched_cuda_tensor(
+                inputs['embodiment_ids']).int()
         _add_tensor_fields(batch, inputs, self.extra_tensor_keys)
+        if inputs.get('image_grid_thw', None) is not None:
+            batch['image_grid_thw'] = _batched_cuda_tensor(
+                inputs['image_grid_thw'])
         return batch
 
     def _normalize(self, normalized_states: np.ndarray, stats: Dict):

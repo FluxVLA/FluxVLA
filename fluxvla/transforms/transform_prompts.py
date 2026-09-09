@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import os
+import re
 from typing import Dict, List, Optional
 
 import numpy as np
@@ -294,11 +295,19 @@ class ProcessPromptsWithImage:
             img_tokens_source: str = 'fixed',
             fixed_img_tokens: Optional[int] = 256,
             num_images: Optional[int] = 3,
+            num_image_tokens_key: str = 'num_image_tokens',
+            image_grid_thw_key: str = 'image_grid_thw',
+            image_merge_size: int = 2,
             # ===== tokenization/padding options =====
             pad_to_max_len: bool = True,
             padding_side: str = 'left',  # 'left' or 'right'
             use_eos_as_pad: bool = True,
+            truncate: bool = True,
+            lowercase_task_description: bool = False,
+            strip_task_punctuation: bool = False,
+            attention_mask_dtype: str = 'int32',
             return_text: bool = False,
+            output_keys: Optional[List[str]] = None,
             model_path=None):  # noqa: E129
         from fluxvla.engines import build_tokenizer_from_cfg
         if model_path is not None:
@@ -324,11 +333,20 @@ class ProcessPromptsWithImage:
         self.img_tokens_source = img_tokens_source
         self.num_images = num_images
         self.fixed_img_tokens = fixed_img_tokens
+        self.num_image_tokens_key = num_image_tokens_key
+        self.image_grid_thw_key = image_grid_thw_key
+        self.image_merge_size = image_merge_size
 
         self.pad_to_max_len = pad_to_max_len
         self.padding_side = padding_side
         self.use_eos_as_pad = use_eos_as_pad
+        self.truncate = truncate
+        self.lowercase_task_description = lowercase_task_description
+        self.strip_task_punctuation = strip_task_punctuation
+        self.attention_mask_dtype = np.dtype(attention_mask_dtype)
         self.return_text = return_text
+        self.output_keys = tuple(
+            output_keys) if output_keys is not None else None
 
         # If tokenizer has no pad_token, use eos as pad (common trick)
         if self.tokenizer.pad_token_id is None and self.use_eos_as_pad:
@@ -371,6 +389,35 @@ class ProcessPromptsWithImage:
 
         return ''.join(parts)
 
+    def _resolve_image_token_counts(self, inputs: Dict) -> List[int]:
+        if self.img_tokens_source == 'fixed':
+            if self.fixed_img_tokens is None or self.num_images is None:
+                raise ValueError(
+                    'fixed image tokens require fixed_img_tokens and '
+                    'num_images.')
+            return [int(self.fixed_img_tokens)] * int(self.num_images)
+        if self.img_tokens_source == 'from_inputs':
+            if self.num_image_tokens_key not in inputs:
+                raise KeyError(
+                    f'Missing image token key: {self.num_image_tokens_key!r}')
+            counts = np.asarray(inputs[self.num_image_tokens_key]).reshape(-1)
+            return [int(value) for value in counts]
+        if self.img_tokens_source == 'from_image_grid_thw':
+            if self.image_grid_thw_key not in inputs:
+                raise KeyError(
+                    f'Missing image grid key: {self.image_grid_thw_key!r}')
+            grids = np.asarray(inputs[self.image_grid_thw_key])
+            if grids.ndim == 1:
+                grids = grids[None, :]
+            if grids.ndim != 2 or grids.shape[-1] != 3:
+                raise ValueError(
+                    f'{self.image_grid_thw_key} must have shape [N, 3], '
+                    f'got {grids.shape}.')
+            merge_length = self.image_merge_size**2
+            return [int(np.prod(grid) // merge_length) for grid in grids]
+        raise ValueError(
+            f'Unsupported img_tokens_source: {self.img_tokens_source!r}')
+
     def __call__(self, inputs: Dict):
         """Tokenize and process the prompt with image
         context in the input data.The method constructs a
@@ -384,10 +431,15 @@ class ProcessPromptsWithImage:
         assert 'task_description' in inputs, "inputs must contain 'task_description'"  # noqa: E501
 
         # (1) resolve per-image token counts
-        per_img = [int(self.fixed_img_tokens)] * self.num_images
+        per_img = self._resolve_image_token_counts(inputs)
 
         # (2) build GR00T-style text
-        text = self._build_text(inputs['task_description'], per_img)
+        task_description = str(inputs['task_description'])
+        if self.lowercase_task_description:
+            task_description = task_description.lower()
+        if self.strip_task_punctuation:
+            task_description = re.sub(r'[^\w\s]', '', task_description)
+        text = self._build_text(task_description, per_img)
 
         # (3) tokenize
         encoded = self.tokenizer(text, add_special_tokens=True)
@@ -414,6 +466,10 @@ class ProcessPromptsWithImage:
                     if self.with_labels:
                         labels = labels + [-100] * pad_len
             else:
+                if not self.truncate and L > self.max_len:
+                    raise ValueError(
+                        f'Tokenized prompt has length {L}, exceeding '
+                        f'max_len={self.max_len}.')
                 if self.padding_side == 'left':
                     tokens = tokens[-self.max_len:]
                     mask = mask[-self.max_len:]
@@ -426,11 +482,17 @@ class ProcessPromptsWithImage:
                         labels = labels[:self.max_len]
 
         inputs['lang_tokens'] = np.asarray(tokens, dtype=np.int64)
-        inputs['lang_masks'] = np.asarray(mask, dtype=np.int32)
+        inputs['lang_masks'] = np.asarray(
+            mask, dtype=self.attention_mask_dtype)
         if self.with_labels:
             inputs['labels'] = np.asarray(labels, dtype=np.int64)
         if self.return_text:
             inputs['text'] = text
+        if self.output_keys is not None:
+            inputs = {
+                key: inputs[key]
+                for key in self.output_keys if key in inputs
+            }
         return inputs
 
 

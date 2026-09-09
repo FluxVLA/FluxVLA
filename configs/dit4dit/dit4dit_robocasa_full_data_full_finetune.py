@@ -371,6 +371,13 @@ eval = dict(
     deterministic_action_sampling=False,
     unnorm_key=_ROBOCASA_STATISTIC_NAME,
     action_order='n15',
+    action_keys={
+        'action.left_arm': (0, 7),
+        'action.right_arm': (7, 14),
+        'action.left_hand': (14, 20),
+        'action.right_hand': (20, 26),
+        'action.waist': (26, 29),
+    },
     # The source wrapper always runs Cosmos under BF16 autocast. Its
     # ``--use_bf16`` switch controls parameter casting, not this autocast.
     enable_mixed_precision_training=True,

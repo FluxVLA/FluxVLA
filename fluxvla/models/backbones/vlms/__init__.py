@@ -24,6 +24,7 @@ import_heterogeneous_runtime_symbols(
     {
         'cosmos25': ['Cosmos25Backbone'],
         'florence2': ['Florence2Backbone'],
+        'groot_n17_qwen3_backbone': ['GrootN17Qwen3Backbone'],
         'paligemma': ['PaliGemma'],
         'qwen2_5_vl': ['QWen2_5VL'],
         'smolvlm': ['SmolVLMBackbone'],
