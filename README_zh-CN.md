@@ -320,7 +320,7 @@ scripts/run_docker.sh
 <details>
 <summary><b>RoboCasa GR00T 源码 checkout（可选）</b></summary>
 
-GR00T N1.5 和 N1.7 配置分别位于 `configs/gr00tn15/` 和 `configs/gr00tn17/`。RoboCasa GR00T N1.5 配置（如 `configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py`）需要固定版本的 Isaac-GR00T 与 RoboCasa GR1 任务 checkout。一键安装器会在 `sim-only` 和 `full` 模式下默认处理这些源码，并放到 `./src`：
+GR00T N1.5 和 N1.7 配置分别位于 `configs/gr00tn15/` 和 `configs/gr00tn17/`。RoboCasa GR00T N1.5 配置（如 `configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py`）需要固定版本的 Isaac-GR00T 与 RoboCasa GR1 任务 checkout。一键安装器会在 `sim-only` 和 `full` 模式下默认处理这些源码，并放到 `./src`：
 
 ```bash
 bash scripts/install_env.sh sim-only
@@ -920,7 +920,7 @@ RoboCasa GR00T 冒烟训练示例：
 ```bash
 WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
-  --config configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   --work-dir work_dirs/smoke_groot_robocasa_train \
   --cfg-options \
     runner.type=FSDPTrainRunner \
@@ -955,7 +955,7 @@ RoboCasa GR00T 评估示例：
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
 PYTHONHASHSEED=7 \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
-  --config configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   --ckpt-path work_dirs/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64/checkpoints/step-010000.safetensors \
   --cfg-options \
     eval.norm_stats_path=work_dirs/official_groot_gr1_dataset_statistics.json \

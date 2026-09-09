@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-CONFIG=${1:-"configs/gr00tn15/gr00t_eagle_3b_libero_10_full_finetune.py"}
+CONFIG=${1:-"configs/gr00tn15/gr00tn15_eagle_3b_libero_10_full_finetune.py"}
 WORK_DIR=${2:-"work_dirs/gr00t_eagle_3b_libero_10_full_finetune"}
 EXTRA_ARGS=("${@:3}")
 

@@ -320,7 +320,7 @@ scripts/run_docker.sh
 <details>
 <summary><b>RoboCasa GR00T ソース checkout（任意）</b></summary>
 
-GR00T N1.5 と N1.7 の設定は、それぞれ `configs/gr00tn15/` と `configs/gr00tn17/` に配置されています。RoboCasa GR00T N1.5 設定（例：`configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py`）では、固定された Isaac-GR00T と RoboCasa GR1 task checkout が必要です。ワンクリックインストーラは `sim-only` と `full` でこれらをデフォルト処理し、`./src` に配置します：
+GR00T N1.5 と N1.7 の設定は、それぞれ `configs/gr00tn15/` と `configs/gr00tn17/` に配置されています。RoboCasa GR00T N1.5 設定（例：`configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py`）では、固定された Isaac-GR00T と RoboCasa GR1 task checkout が必要です。ワンクリックインストーラは `sim-only` と `full` でこれらをデフォルト処理し、`./src` に配置します：
 
 ```bash
 bash scripts/install_env.sh sim-only
@@ -925,7 +925,7 @@ RoboCasa GR00T のスモーク学習の例：
 ```bash
 WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
-  --config configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   --work-dir work_dirs/smoke_groot_robocasa_train \
   --cfg-options \
     runner.type=FSDPTrainRunner \
@@ -960,7 +960,7 @@ RoboCasa GR00T の評価の例：
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
 PYTHONHASHSEED=7 \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
-  --config configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   --ckpt-path work_dirs/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64/checkpoints/step-010000.safetensors \
   --cfg-options \
     eval.norm_stats_path=work_dirs/official_groot_gr1_dataset_statistics.json \

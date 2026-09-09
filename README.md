@@ -372,7 +372,7 @@ scripts/run_docker.sh
 <details>
 <summary><b>Optional: RoboCasa GR00T source checkouts</b></summary>
 
-GR00T N1.5 and N1.7 configs are organized under `configs/gr00tn15/` and `configs/gr00tn17/`, respectively. RoboCasa GR00T N1.5 configs such as `configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py` require the pinned Isaac-GR00T and RoboCasa GR1 task checkouts. The one-click installer handles them for `sim-only` and `full` by default and places them under `./src`:
+GR00T N1.5 and N1.7 configs are organized under `configs/gr00tn15/` and `configs/gr00tn17/`, respectively. RoboCasa GR00T N1.5 configs such as `configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py` require the pinned Isaac-GR00T and RoboCasa GR1 task checkouts. The one-click installer handles them for `sim-only` and `full` by default and places them under `./src`:
 
 ```bash
 bash scripts/install_env.sh sim-only
@@ -1003,7 +1003,7 @@ RoboCasa GR00T smoke training example:
 ```bash
 WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/train.py \
-  --config configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   --work-dir work_dirs/smoke_groot_robocasa_train \
   --cfg-options \
     runner.type=FSDPTrainRunner \
@@ -1038,7 +1038,7 @@ RoboCasa GR00T evaluation example:
 MUJOCO_GL=egl WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
 PYTHONHASHSEED=7 \
 torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
-  --config configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   --ckpt-path work_dirs/gr00t_eagle_3b_robocasa_gr1_24x30_finetune_bs64/checkpoints/step-010000.safetensors \
   --cfg-options \
     eval.norm_stats_path=work_dirs/official_groot_gr1_dataset_statistics.json \

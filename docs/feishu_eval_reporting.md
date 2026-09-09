@@ -217,7 +217,7 @@ CUDA_VISIBLE_DEVICES=0,1 \
 NPROC_PER_NODE=2 \
 HF_ENDPOINT=https://hf-mirror.com \
 bash scripts/eval.sh \
-  configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   work_dirs/gr00t_eagle_3b_robocasa_finetune/checkpoints/latest-checkpoint.safetensors \
   --cfg-options \
     eval.num_trials_per_task=1 \
@@ -275,7 +275,7 @@ NPROC_PER_NODE=2 \
 WANDB_MODE=disabled \
 HF_ENDPOINT=https://hf-mirror.com \
 bash scripts/train.sh \
-  configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py \
+  configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
   work_dirs/gr00t_eagle_3b_robocasa_finetune \
   --eval-after-train \
   --cfg-options \
@@ -303,7 +303,7 @@ NPROC_PER_NODE=2 \
 WANDB_MODE=disabled \
 HF_ENDPOINT=https://hf-mirror.com \
 bash scripts/train.sh \
-  configs/gr00tn15/gr00t_eagle_3b_libero_10_full_finetune.py \
+  configs/gr00tn15/gr00tn15_eagle_3b_libero_10_full_finetune.py \
   work_dirs/gr00t_eagle_3b_libero_10_full_finetune \
   --eval-after-train \
   --cfg-options \
@@ -336,7 +336,7 @@ from fluxvla.engines.utils.feishu_reporter import maybe_report_summary_to_feishu
 result = maybe_report_summary_to_feishu(
     "$SUMMARY",
     "robocasa",
-    config="configs/gr00tn15/gr00t_eagle_3b_robocasa_30_eps_full_finetune.py",
+    config="configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py",
     logger=print,
     log_unconfigured=True,
 )

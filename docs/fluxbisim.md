@@ -58,13 +58,13 @@ For more details about the data format, see [Data Conversion](data_convert.md).
 
 FluxBisim training configs are provided for `GR00T` and `PI0.5`:
 
-| Task                    | GR00T Config                                                                   | PI0.5 Config                                                               |
-| ----------------------- | ------------------------------------------------------------------------------ | -------------------------------------------------------------------------- |
-| Pick Banana to Plate    | `configs/gr00tn15/fluxbisim/gr00t_eagle_3b_pick_place_banana_full_finetune.py` | `configs/pi05/fluxbisim/pi05_paligemma_pick_place_banana_full_finetune.py` |
-| Place Nut and Close Box | `configs/gr00tn15/fluxbisim/gr00t_eagle_3b_close_box_full_finetune.py`         | `configs/pi05/fluxbisim/pi05_paligemma_close_box_full_finetune.py`         |
-| Store Apple in Drawer   | `configs/gr00tn15/fluxbisim/gr00t_eagle_3b_pull_push_drawer_full_finetune.py`  | `configs/pi05/fluxbisim/pi05_paligemma_pull_push_drawer_full_finetune.py`  |
-| Screw Pitcher Lid       | `configs/gr00tn15/fluxbisim/gr00t_eagle_3b_screw_pitcher_lid_full_finetune.py` | `configs/pi05/fluxbisim/pi05_paligemma_screw_pitcher_lid_full_finetune.py` |
-| Handover Book           | `configs/gr00tn15/fluxbisim/gr00t_eagle_3b_handover_book_full_finetune.py`     | `configs/pi05/fluxbisim/pi05_paligemma_handover_book_full_finetune.py`     |
+| Task                    | GR00T Config                                                                      | PI0.5 Config                                                               |
+| ----------------------- | --------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Pick Banana to Plate    | `configs/gr00tn15/fluxbisim/gr00tn15_eagle_3b_pick_place_banana_full_finetune.py` | `configs/pi05/fluxbisim/pi05_paligemma_pick_place_banana_full_finetune.py` |
+| Place Nut and Close Box | `configs/gr00tn15/fluxbisim/gr00tn15_eagle_3b_close_box_full_finetune.py`         | `configs/pi05/fluxbisim/pi05_paligemma_close_box_full_finetune.py`         |
+| Store Apple in Drawer   | `configs/gr00tn15/fluxbisim/gr00tn15_eagle_3b_pull_push_drawer_full_finetune.py`  | `configs/pi05/fluxbisim/pi05_paligemma_pull_push_drawer_full_finetune.py`  |
+| Screw Pitcher Lid       | `configs/gr00tn15/fluxbisim/gr00tn15_eagle_3b_screw_pitcher_lid_full_finetune.py` | `configs/pi05/fluxbisim/pi05_paligemma_screw_pitcher_lid_full_finetune.py` |
+| Handover Book           | `configs/gr00tn15/fluxbisim/gr00tn15_eagle_3b_handover_book_full_finetune.py`     | `configs/pi05/fluxbisim/pi05_paligemma_handover_book_full_finetune.py`     |
 
 Example training command:
 

@@ -91,7 +91,7 @@ and WebSocket on construction.
 
 ```bash
 python scripts/inference_real_robot.py \
-  --config configs/gr00tn15/gr00t_eagle_3b_oli_full_finetune.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_oli_full_finetune.py \
   --ckpt-path /path/to/oli_checkpoint.safetensors
 ```
 

@@ -596,7 +596,7 @@ Copy the following content into `launch.json`:
     "python": "{CONDA_ENV_PATH}/bin/python",
     "args": [
         "scripts/inference_real_robot.py",
-        "--config", "{PROJECT_PATH}/configs/gr00tn15/gr00t_eagle_3b_ur3_full_finetune.py",
+        "--config", "{PROJECT_PATH}/configs/gr00tn15/gr00tn15_eagle_3b_ur3_full_finetune.py",
         "--ckpt-path", "{CHECKPOINT_PATH}/checkpoints/step-001000-epoch-00-loss=0.0072.pt"
     ],
     "console": "integratedTerminal",
