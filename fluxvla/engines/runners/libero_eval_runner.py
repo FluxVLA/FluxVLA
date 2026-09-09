@@ -543,6 +543,12 @@ class LiberoEvalRunner(BaseEvalRunner):
     def run_setup(self):
         """Set up the evaluation environment and model."""
         set_seed_everywhere(self.seed)
+        # API-backed policies can keep the model itself on CPU, but the
+        # distributed metric tensors below still use CUDA/NCCL. Bind every
+        # rank to its local GPU before the CPU-model early return so parallel
+        # evaluation does not put all ranks' collectives on cuda:0.
+        if torch.cuda.is_available():
+            torch.cuda.set_device(self.device_id)
         self.vla.eval()
         self.vla.freeze_vision_backbone = True
         self.vla.freeze_llm_backbone = True
@@ -552,7 +558,6 @@ class LiberoEvalRunner(BaseEvalRunner):
             self.vla.to(device='cpu')
             return
 
-        torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
         if self.enable_mixed_precision_training:
             self.vla.to(
                 device=self.device_id, dtype=self.mixed_precision_dtype)
