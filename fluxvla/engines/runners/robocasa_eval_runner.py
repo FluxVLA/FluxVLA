@@ -472,11 +472,20 @@ class RobocasaEvalRunner(BaseEvalRunner):
             self.vla.to(device='cpu')
             return
 
-        if self.enable_mixed_precision_training:
-            self.vla.to(
-                device=self.device_id, dtype=self.mixed_precision_dtype)
-        else:
+        # Preserve the historical checkpoint-evaluation behavior unless the
+        # config explicitly requests a construction-time device or dtype.
+        # ``enable_mixed_precision_training`` controls autocast below; it must
+        # not implicitly cast every model parameter to BF16 because some
+        # policies intentionally keep selected flow modules in FP32.
+        if self.model_build_device is None and self.model_build_dtype is None:
             self.vla.cuda(self.device_id)
+            return
+
+        target_device = self.model_build_device or self.device_id
+        to_kwargs = dict(device=target_device)
+        if self.model_build_dtype is not None:
+            to_kwargs['dtype'] = self.model_build_dtype
+        self.vla.to(**to_kwargs)
 
     @staticmethod
     def _format_duration(seconds: float) -> str:
