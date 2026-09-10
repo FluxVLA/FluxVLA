@@ -62,8 +62,6 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 - `Microwave`：`PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`。
 - `Generalization`：残り 18 個のポストトレーニング新規タスク。
 - RoboCasa の結果は、各タスク 50 試行で評価しています。
-- FastWAM の結果は、評価済み checkpoint のうち最良の
-  `step-095000-epoch-002-loss=0.1350`（599/1200 episode 成功）を使用しています。
 
 ## 📢 最新情報
 

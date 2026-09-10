@@ -62,8 +62,6 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 - `Microwave`: `PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`.
 - `Generalization`: the remaining 18 post-train novel tasks.
 - The RoboCasa results are evaluated with 50 trials per task.
-- The FastWAM result uses the best evaluated checkpoint,
-  `step-095000-epoch-002-loss=0.1350` (599/1200 successful episodes).
 
 ## 📢 Latest News
 

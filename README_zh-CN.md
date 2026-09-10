@@ -62,8 +62,6 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 - `Microwave`：`PnPMilkToMicrowaveClose` + `PnPPotatoToMicrowaveClose`。
 - `Generalization`：剩余的 18 个后训练新任务。
 - RoboCasa 结果均使用每个任务 50 次试验评测。
-- FastWAM 结果使用已评估 checkpoint 中表现最优的
-  `step-095000-epoch-002-loss=0.1350`（成功 599/1200 个 episode）。
 
 ## 📢 最新动态
 
