@@ -44,6 +44,7 @@ model = dict(
     frame_window_size=_frame_window_size,
     proprio_dim=8,
     action_horizon=_action_window_size,
+    num_inference_steps=10,
     mot_checkpoint_mixed_attn=True,
     vlm_backbone=dict(
         type='Wan22Backbone',
@@ -269,7 +270,6 @@ eval = dict(
         # to ``task`` for its single-task workers.
         eval_shard_strategy='episode',
         preprocess_every_step=False,
-        num_inference_steps=10,
         max_steps=dict(
             libero_10=700,
             libero_goal=400,

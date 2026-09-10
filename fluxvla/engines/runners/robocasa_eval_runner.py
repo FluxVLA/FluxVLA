@@ -1004,11 +1004,12 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         model_output_horizon,
                         action_stats_horizon,
                     )
+                    # (1, H, D) or (1, D) -> (H, D), float32 NumPy.
                     if actions.ndim == 3:
-                        actions = actions[
-                            0, :self.eval_chunk_size, :].cpu().numpy()
+                        actions = actions[0, :self.eval_chunk_size, :]
                     else:
-                        actions = actions[0, None, :].cpu().numpy()
+                        actions = actions[0, None, :]
+                    actions = actions.detach().float().cpu().numpy()
 
                     if t == 0:
                         action_min = format(actions.min(), '.6g')
