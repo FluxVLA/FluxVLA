@@ -13,9 +13,8 @@
 # limitations under the License.
 """Checkpoint-free GPT-6 Astra evaluation on LIBERO.
 
-The default is intentionally a one-episode smoke evaluation to limit API
-usage. Override ``eval.task_ids`` and ``eval.num_trials_per_task`` for a full
-benchmark after validating the controller on the local simulator.
+The default evaluates every task in the suite once. Override
+``eval.num_trials_per_task`` to increase the number of episodes per task.
 
 Connection settings are intentionally read from the environment so this
 config works with either the official OpenAI endpoint or an OpenAI-compatible
@@ -64,6 +63,12 @@ inference_model = dict(
     # Empirical end-effector displacement per unit action and simulator step
     # under LIBERO's OSC_POSE controller.
     position_action_scale=0.01,
+    # Empirical angular displacement (radians) per unit action / sim step,
+    # not OSC's raw 0.5-radian goal offset. rotation_delta is the total
+    # WORLD-frame axis-angle increment requested for one GPT call. Limit
+    # rotation independently from translation (~0.25 rad / ten-step chunk).
+    rotation_action_scale=0.1,
+    max_rotation_speed_fraction=0.25,
     gripper_settle_steps=8,
     workspace_bounds=[[-0.45, 0.45], [-0.45, 0.45], [-0.05, 1.40]],
     # GPT does not share LIBERO's HOPE-object visual vocabulary. Supply only
@@ -83,7 +88,7 @@ del _environ, _DEFAULT_OPENAI_BASE_URL, _OPENAI_BASE_URL, _OPENAI_API_KEY_ENV
 eval = dict(
     type='LiberoEvalRunner',
     task_suite_name='libero_object',
-    task_ids=[0],
+    task_ids=None,
     model_family='gpt6-astra',
     eval_chunk_size=10,
     resize_size=512,

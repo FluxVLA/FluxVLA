@@ -423,6 +423,26 @@ class DenormalizeRobocasaAction:
         return 0.5 * (action + 1) * (high - low) + low
 
 
+@TRANSFORMS.register_module()
+class IdentityRobocasaAction:
+    """Return native RoboCasa action targets without denormalization."""
+
+    def __init__(self,
+                 norm_stats=None,
+                 action_dim: int = 29,
+                 clip: bool = False) -> None:
+        del norm_stats
+        self.action_dim = int(action_dim)
+        self.clip = bool(clip)
+
+    def __call__(self, data: Dict) -> np.ndarray:
+        action = np.asarray(data['action'], dtype=np.float32)
+        action = action[..., :self.action_dim]
+        if self.clip:
+            action = np.clip(action, -1.0, 1.0)
+        return action
+
+
 @DATASETS.register_module()
 class RobocasaEvalDataset:
     """RoboCasa eval dataset wrapper.

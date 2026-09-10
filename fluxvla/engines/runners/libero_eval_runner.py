@@ -39,8 +39,30 @@ LIBERO_TASK_SHARDING_ALLOWED_ENV = 'FLUXVLA_ALLOW_LIBERO_TASK_SHARDING'
 
 
 def _get_libero_benchmark():
+    # LIBERO creates ``~/.libero`` during package import with a racy
+    # ``exists()`` + ``makedirs()`` sequence. Under torchrun, several ranks
+    # can observe the directory as missing and one then fails with
+    # FileExistsError. Pre-create it idempotently and let one process per node
+    # initialize config.yaml before the remaining local ranks import LIBERO.
+    libero_config_path = os.environ.get('LIBERO_CONFIG_PATH',
+                                        os.path.expanduser('~/.libero'))
+    os.makedirs(libero_config_path, exist_ok=True)
+
+    is_distributed = dist.is_available() and dist.is_initialized()
+    local_rank = overwatch.local_rank() if is_distributed else 0
+    benchmark = None
     try:
-        from libero.libero import benchmark
+        if not is_distributed or local_rank == 0:
+            from libero.libero import benchmark as imported_benchmark
+            benchmark = imported_benchmark
+        if is_distributed:
+            dist.barrier()
+            if local_rank != 0:
+                from libero.libero import benchmark as imported_benchmark
+                benchmark = imported_benchmark
+            # Do not let an early rank read config.yaml while another local
+            # rank is still completing its first LIBERO import.
+            dist.barrier()
     except ModuleNotFoundError as exc:
         raise ModuleNotFoundError(
             'LIBERO is required for simulation evaluation. Install it with '
@@ -543,6 +565,12 @@ class LiberoEvalRunner(BaseEvalRunner):
     def run_setup(self):
         """Set up the evaluation environment and model."""
         set_seed_everywhere(self.seed)
+        # API-backed policies can keep the model itself on CPU, but the
+        # distributed metric tensors below still use CUDA/NCCL. Bind every
+        # rank to its local GPU before the CPU-model early return so parallel
+        # evaluation does not put all ranks' collectives on cuda:0.
+        if torch.cuda.is_available():
+            torch.cuda.set_device(self.device_id)
         self.vla.eval()
         self.vla.freeze_vision_backbone = True
         self.vla.freeze_llm_backbone = True
@@ -552,7 +580,6 @@ class LiberoEvalRunner(BaseEvalRunner):
             self.vla.to(device='cpu')
             return
 
-        torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
         if self.enable_mixed_precision_training:
             self.vla.to(
                 device=self.device_id, dtype=self.mixed_precision_dtype)
