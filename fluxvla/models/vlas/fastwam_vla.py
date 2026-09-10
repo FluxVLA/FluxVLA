@@ -64,6 +64,11 @@ class FastWAMVLA(BaseVLA):
     ``images`` is ``[B, 3, T, H, W]`` after ``PrepareVideo``, ``states`` holds
     proprioception, ``actions`` holds the target action window, and
     ``action_masks`` / ``frame_masks`` use ``True`` for valid entries.
+
+    Args:
+        num_inference_steps: Default denoising steps for action and video
+            inference. Individual prediction calls may override this value.
+            Defaults to 20.
     """
 
     def __init__(
@@ -81,7 +86,9 @@ class FastWAMVLA(BaseVLA):
         freeze_vlm_backbone: bool = True,
         device: str = 'cpu',
         torch_dtype: torch.dtype = torch.float32,
+        num_inference_steps: int = 20,
     ) -> None:
+        """Initialize FastWAM and its default inference sampling budget."""
         super().__init__(
             vlm_backbone=None,
             vla_head=None,
@@ -107,6 +114,10 @@ class FastWAMVLA(BaseVLA):
         self.proprio_dim = None if proprio_dim is None else int(proprio_dim)
         self.action_horizon = (None if action_horizon is None else
                                int(action_horizon))
+        if num_inference_steps <= 0:
+            raise ValueError('num_inference_steps must be positive, got '
+                             f'{num_inference_steps}.')
+        self.num_inference_steps = num_inference_steps
         self.action_norm_type = str(action_norm_type)
         if self.action_norm_type not in ('mean_std', 'quantile', 'min_max',
                                          'none'):
@@ -369,13 +380,24 @@ class FastWAMVLA(BaseVLA):
         lang_masks: Optional[torch.Tensor] = None,
         task_description=None,
         states: Optional[torch.Tensor] = None,
-        num_inference_steps: int = 20,
+        num_inference_steps: Optional[int] = None,
         sigma_shift: Optional[float] = None,
         seed: Optional[int] = None,
         rand_device: str = 'cpu',
         tiled: bool = False,
         **kwargs,
     ) -> torch.Tensor:
+        """Predict actions with the configured denoising step count.
+
+        Args:
+            num_inference_steps: Optional per-call override. If None, use
+                the model's configured denoising step count.
+
+        Returns:
+            Actions, shape (B, action_horizon, action_dim).
+        """
+        if num_inference_steps is None:
+            num_inference_steps = self.num_inference_steps
         # Adapt the shared ``LiberoParquetEvalDataset`` batch
         # (images / lang_tokens / lang_masks / states) to FastWAM inputs.
         # Explicit ``input_image`` / ``proprio`` take priority; tokenization
@@ -478,13 +500,24 @@ class FastWAMVLA(BaseVLA):
         proprio: Optional[torch.Tensor] = None,
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
-        num_inference_steps: int = 20,
+        num_inference_steps: Optional[int] = None,
         sigma_shift: Optional[float] = None,
         seed: Optional[int] = None,
         rand_device: str = 'cpu',
         tiled: bool = False,
         task_description=None,
-    ):
+    ) -> Dict[str, Any]:
+        """Predict video and actions with the configured sampling budget.
+
+        Args:
+            num_inference_steps: Optional per-call override. If None, use
+                the model's configured denoising step count.
+
+        Returns:
+            A dictionary containing decoded video frames and actions.
+        """
+        if num_inference_steps is None:
+            num_inference_steps = self.num_inference_steps
         if action_horizon is None:
             action_horizon = self.action_horizon
         if action_horizon is None:
