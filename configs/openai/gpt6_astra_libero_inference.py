@@ -63,6 +63,12 @@ inference_model = dict(
     # Empirical end-effector displacement per unit action and simulator step
     # under LIBERO's OSC_POSE controller.
     position_action_scale=0.01,
+    # Empirical angular displacement (radians) per unit action / sim step,
+    # not OSC's raw 0.5-radian goal offset. rotation_delta is the total
+    # WORLD-frame axis-angle increment requested for one GPT call. Limit
+    # rotation independently from translation (~0.25 rad / ten-step chunk).
+    rotation_action_scale=0.1,
+    max_rotation_speed_fraction=0.25,
     gripper_settle_steps=8,
     workspace_bounds=[[-0.45, 0.45], [-0.45, 0.45], [-0.05, 1.40]],
     # GPT does not share LIBERO's HOPE-object visual vocabulary. Supply only

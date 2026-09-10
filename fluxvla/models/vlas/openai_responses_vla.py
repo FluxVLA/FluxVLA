@@ -23,6 +23,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from numbers import Real
 from typing import Any, Dict, List, Sequence
 
 import numpy as np
@@ -41,9 +42,17 @@ call to make progress on the instruction. The simulator, not you, decides
 when the task succeeds.
 
 The move_to tool accepts an absolute end-effector position in MuJoCo world
-coordinates. Unspecified dimensions hold their current value. The default
-downward-facing gripper orientation is held fixed. Use small, deliberate
-motions and re-check the next observation after every command. Approach an
+coordinates and an optional rotation_delta [rx, ry, rz]. This is a relative
+axis-angle rotation vector in radians about WORLD axes, NOT Euler angles or
+an absolute orientation. Its direction is the rotation axis and its length
+is the angle, using the right-hand rule. For example [0, 0, 0.2] turns the
+gripper about world z; [0, 0, -0.2] turns it the other way. It is the total
+requested rotation for this call, not a delta to repeat at every step.
+Omitted position dimensions and omitted rotation hold their previous value.
+Rotate to align the fingertips with an object's grasp axis or a handle before
+descending; tilt only when needed. Motions are speed-limited and may only
+partially reach a requested target. Re-check the reported pose and images
+after every command rather than assuming the target was reached. Approach an
 object from above, descend only after it is centered between the fingertips,
 close the gripper, lift clear of obstacles, move above the destination,
 descend, open the gripper, and retreat when appropriate.
@@ -113,6 +122,8 @@ class OpenAIResponsesVLA(nn.Module):
                  action_horizon: int = 10,
                  max_speed_fraction: float = 0.25,
                  position_action_scale: float = 0.01,
+                 rotation_action_scale: float = 0.1,
+                 max_rotation_speed_fraction: float = 0.25,
                  gripper_settle_steps: int = 8,
                  workspace_bounds: Sequence[Sequence[float]] = ((-0.45, 0.45),
                                                                 (-0.45, 0.45),
@@ -127,10 +138,22 @@ class OpenAIResponsesVLA(nn.Module):
             raise ValueError('action_horizon must be at least 1')
         if not 0 < max_speed_fraction <= 1:
             raise ValueError('max_speed_fraction must be in (0, 1]')
-        if position_action_scale <= 0:
-            raise ValueError('position_action_scale must be positive')
-        if len(workspace_bounds) != 3:
-            raise ValueError('workspace_bounds must contain x/y/z bounds')
+        if (not math.isfinite(position_action_scale)
+                or position_action_scale <= 0):
+            raise ValueError(
+                'position_action_scale must be finite and positive')
+        if (not math.isfinite(rotation_action_scale)
+                or rotation_action_scale <= 0):
+            raise ValueError(
+                'rotation_action_scale must be finite and positive')
+        if not 0 < max_rotation_speed_fraction <= 1:
+            raise ValueError('max_rotation_speed_fraction must be in (0, 1]')
+        bounds_array = np.asarray(workspace_bounds, dtype=np.float64)
+        if (bounds_array.shape != (3, 2)
+                or not np.all(np.isfinite(bounds_array))
+                or np.any(bounds_array[:, 0] >= bounds_array[:, 1])):
+            raise ValueError(
+                'workspace_bounds must contain finite, ordered x/y/z bounds')
 
         self.model = model
         self.base_url = base_url.rstrip('/')
@@ -148,6 +171,8 @@ class OpenAIResponsesVLA(nn.Module):
         self.action_horizon = int(action_horizon)
         self.max_speed_fraction = float(max_speed_fraction)
         self.position_action_scale = float(position_action_scale)
+        self.rotation_action_scale = float(rotation_action_scale)
+        self.max_rotation_speed_fraction = float(max_rotation_speed_fraction)
         self.gripper_settle_steps = int(gripper_settle_steps)
         self.workspace_bounds = tuple((float(bounds[0]), float(bounds[1]))
                                       for bounds in workspace_bounds)
@@ -176,10 +201,19 @@ class OpenAIResponsesVLA(nn.Module):
     @property
     def tools(self) -> List[Dict[str, Any]]:
         x_bounds, y_bounds, z_bounds = self.workspace_bounds
+        max_rotation = (
+            self.action_horizon * self.rotation_action_scale *
+            self.max_rotation_speed_fraction)
         description = (
             'Move the robot end effector to an absolute Cartesian target. '
-            'Omitted x/y/z dimensions keep their current value. The fixed '
-            'downward gripper orientation is preserved. Bounds: '
+            'Omitted x/y/z dimensions keep their current value. Optional '
+            'rotation_delta is a relative WORLD-frame axis-angle vector '
+            'in radians for the whole call, not Euler angles. Omit it to '
+            'hold orientation. Rotation magnitude is limited to approximately '
+            f'{max_rotation:.3f} '
+            'radians per call; inspect the next observation for the '
+            'achieved pose. '
+            'Position bounds (meters): '
             f'x=[{x_bounds[0]}, {x_bounds[1]}], '
             f'y=[{y_bounds[0]}, {y_bounds[1]}], '
             f'z=[{z_bounds[0]}, {z_bounds[1]}]. Gripper target 0 is fully '
@@ -202,6 +236,23 @@ class OpenAIResponsesVLA(nn.Module):
                             },
                             'z': {
                                 'type': 'number'
+                            },
+                            'rotation_delta': {
+                                'type':
+                                'array',
+                                'items': {
+                                    'type': 'number'
+                                },
+                                'minItems':
+                                3,
+                                'maxItems':
+                                3,
+                                'description':
+                                ('Relative world-axis rotation vector '
+                                 '[rx, ry, rz], radians, right-hand rule. '
+                                 'For yaw alignment use [0, 0, angle]. '
+                                 'Not Euler angles; omit to hold '
+                                 'orientation.'),
                             },
                             'gripper': {
                                 'type': 'number',
@@ -316,16 +367,22 @@ class OpenAIResponsesVLA(nn.Module):
                              eef_quaternion: Any,
                              gripper_position: Any,
                              joint_position: Any = None) -> Dict[str, Any]:
-        position = self._unbatch_array(eef_position).reshape(-1)
-        quaternion = self._unbatch_array(eef_quaternion).reshape(-1)
+        position = self._state_vector(eef_position, 3, 'eef_position')
+        quaternion = self._state_vector(eef_quaternion, 4, 'eef_quaternion')
+        if np.linalg.norm(quaternion) < 1e-8:
+            raise RuntimeError('eef_quaternion must be nonzero')
         gripper = self._unbatch_array(gripper_position).reshape(-1)
+        identify, grasp, release = [
+            max(1, math.ceil(self.max_llm_calls * fraction))
+            for fraction in (0.2, 0.5, 0.9)
+        ]
         lines = [
             'Current observation.',
             f'Instruction: {task_description}',
             (f'Action call: {self._llm_calls + 1}/{self.max_llm_calls}. '
              'Use the call budget efficiently: identify the target by call '
-             '10, aim to grasp by call 25, and release it at the destination '
-             'by call 45.'),
+             f'{identify}, aim to grasp by call {grasp}, and release it at '
+             f'the destination by call {release}.'),
             'robot0_eef_pos (x, y, z meters): ' +
             np.array2string(position, precision=5, separator=', '),
             'robot0_eef_quat (x, y, z, w): ' +
@@ -450,38 +507,88 @@ class OpenAIResponsesVLA(nn.Module):
             )
         return calls[0]
 
+    @classmethod
+    def _state_vector(cls, value: Any, length: int, name: str) -> np.ndarray:
+        vector = cls._unbatch_array(value).astype(np.float64)
+        if vector.shape != (length, ) or not np.all(np.isfinite(vector)):
+            raise RuntimeError(f'{name} must contain {length} finite values')
+        return vector
+
+    @staticmethod
+    def _target_number(value: Any, name: str) -> float:
+        if (isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
+                or not math.isfinite(value)):
+            raise RuntimeError(f'move_to.{name} must be a finite number')
+        return float(value)
+
     def _actions_from_targets(self, targets: Dict[str, Any],
                               eef_position: Any) -> torch.Tensor:
-        current = self._unbatch_array(eef_position).astype(
-            np.float64).reshape(-1)[:3]
+        if not isinstance(targets, dict):
+            raise RuntimeError('move_to.targets must be an object')
+        unknown = set(targets) - {'x', 'y', 'z', 'rotation_delta', 'gripper'}
+        if unknown:
+            raise RuntimeError(
+                f'Unknown move_to target fields: {sorted(unknown)}')
+        current = self._state_vector(eef_position, 3, 'eef_position')
         target = current.copy()
         for index, key in enumerate(('x', 'y', 'z')):
             if key in targets:
                 lo, hi = self.workspace_bounds[index]
-                target[index] = np.clip(float(targets[key]), lo, hi)
+                target[index] = np.clip(
+                    self._target_number(targets[key], key), lo, hi)
 
         delta = target - current
         max_step = self.position_action_scale * self.max_speed_fraction
-        move_steps = int(math.ceil(np.max(np.abs(delta)) / max_step)) \
-            if np.any(delta) else 1
+        move_steps = 1
+        if np.any(delta):
+            move_steps = math.ceil(
+                min(self.action_horizon,
+                    np.max(np.abs(delta)) / max_step))
 
-        gripper_target = targets.get('gripper')
-        if gripper_target is None:
+        rotation_delta = np.zeros(3, dtype=np.float64)
+        if 'rotation_delta' in targets:
+            value = targets['rotation_delta']
+            if not isinstance(value, (list, tuple)) or len(value) != 3:
+                raise RuntimeError(
+                    'move_to.rotation_delta must contain 3 finite numbers')
+            rotation_delta = np.array([
+                self._target_number(item, 'rotation_delta') for item in value
+            ])
+        rotation_angle = math.hypot(*rotation_delta)
+        if not math.isfinite(rotation_angle):
+            raise RuntimeError(
+                'move_to.rotation_delta magnitude must be finite')
+        max_rotation_step = (
+            self.rotation_action_scale * self.max_rotation_speed_fraction)
+        # Bound the vector's norm, not its individual coordinates, to preserve
+        # the requested world rotation axis. LIBERO's fixed Panda base is
+        # world-aligned. Native OSC rotation inputs are axis-angle deltas, not
+        # Euler angles or deltas in the gripper's local frame.
+        max_rotation = self.action_horizon * max_rotation_step
+        if rotation_angle > max_rotation:
+            rotation_delta *= max_rotation / rotation_angle
+            rotation_angle = max_rotation
+        rotation_steps = max(1, math.ceil(rotation_angle / max_rotation_step))
+
+        if 'gripper' not in targets:
             gripper_action = self._last_gripper_action
             gripper_steps = 1
-        elif float(gripper_target) >= 0.5:
-            gripper_action = -1.0
-            gripper_steps = self.gripper_settle_steps
         else:
-            gripper_action = 1.0
+            gripper_target = self._target_number(targets['gripper'], 'gripper')
+            if not 0 <= gripper_target <= 1:
+                raise RuntimeError('move_to.gripper must be in [0, 1]')
+            gripper_action = -1.0 if gripper_target >= 0.5 else 1.0
             gripper_steps = self.gripper_settle_steps
         self._last_gripper_action = gripper_action
 
-        num_steps = min(self.action_horizon, max(1, move_steps, gripper_steps))
+        num_steps = min(self.action_horizon,
+                        max(1, move_steps, rotation_steps, gripper_steps))
         xyz_action = np.clip(delta / (num_steps * self.position_action_scale),
                              -self.max_speed_fraction, self.max_speed_fraction)
+        rotation_action = rotation_delta / (
+            num_steps * self.rotation_action_scale)
         action = np.concatenate(
-            [xyz_action, np.zeros(3),
+            [xyz_action, rotation_action,
              np.array([gripper_action])])
         actions = np.repeat(action[None], num_steps, axis=0)
         return torch.from_numpy(actions.astype(np.float32)).unsqueeze(0)
@@ -538,7 +645,12 @@ class OpenAIResponsesVLA(nn.Module):
             raise RuntimeError(
                 f'Invalid move_to arguments: {call.get("arguments")!r}') \
                 from exc
-        targets = arguments.get('targets', {})
+        if not isinstance(arguments, dict):
+            raise RuntimeError('move_to arguments must be an object')
+        unknown = set(arguments) - {'targets', 'note'}
+        if unknown:
+            raise RuntimeError(f'Unknown move_to arguments: {sorted(unknown)}')
+        targets = arguments.get('targets')
         if not isinstance(targets, dict):
             raise RuntimeError('move_to.targets must be an object')
         self.last_note = str(arguments.get('note', ''))
