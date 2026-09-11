@@ -111,6 +111,7 @@ class DiT4DiTActionHead(nn.Module):
         num_timestep_buckets: int = 1000,
         ori_action_dim: Optional[int] = None,
         output_action_dim: Optional[int] = None,
+        rtc_training_config: Optional[Dict] = None,
         *args,
         **kwargs,
     ) -> None:
@@ -142,6 +143,7 @@ class DiT4DiTActionHead(nn.Module):
         self.num_timestep_buckets = int(num_timestep_buckets)
         self.noise_s = float(noise_s)
         self.ori_action_dim = output_action_dim or ori_action_dim
+        self.rtc_training_config = dict(rtc_training_config or {})
 
         self.model = DiT(**diffusion_model_cfg)
         self.input_embedding_dim = (
@@ -268,14 +270,41 @@ class DiT4DiTActionHead(nn.Module):
         # RNG state produces the same flow-matching noise tensor.
         noise = torch.randn(
             actions.shape, device=actions.device, dtype=actions.dtype)
-        t = self.sample_time(
+        t_scalar = self.sample_time(
             actions.shape[0], device=actions.device, dtype=actions.dtype)
-        t = t[:, None, None]
-        noisy_trajectory = (1.0 - t) * actions + t * noise
+        action_horizon = actions.shape[1]
+        if self.rtc_training_config.get('enabled', False):
+            from fluxvla.engines.utils.rtc_training import (
+                apply_rtc_time_conditioning, sample_training_delay)
+            delays = sample_training_delay(
+                batch_size=actions.shape[0],
+                max_delay=self.rtc_training_config.get('max_delay', 5),
+                distribution=self.rtc_training_config.get(
+                    'distribution', 'exponential'),
+                temperature=self.rtc_training_config.get('temperature', 1.0),
+                device=actions.device,
+            )
+            # DiT4DiT interpolates action -> noise as t goes from 0 -> 1,
+            # hence a known/clean prefix uses t=0 (the inverse of the generic
+            # FlowMatchingHead convention).
+            action_time, action_mask = apply_rtc_time_conditioning(
+                t_scalar,
+                action_mask,
+                delays,
+                action_horizon,
+                clean_time=0.0,
+            )
+        else:
+            action_time = t_scalar[:, None].expand(-1, action_horizon)
+
+        noisy_trajectory = ((1.0 - action_time.unsqueeze(-1)) * actions +
+                            action_time.unsqueeze(-1) * noise)
         velocity = noise - actions
 
-        t_discretized = (t[:, 0, 0] * self.num_timestep_buckets).long()
-        action_features = self.action_encoder(noisy_trajectory, t_discretized)
+        action_timesteps = (action_time * self.num_timestep_buckets).long()
+        global_timestep = (t_scalar * self.num_timestep_buckets).long()
+        action_features = self.action_encoder(noisy_trajectory,
+                                              action_timesteps)
         action_features = self._add_position_embedding(action_features)
 
         state = self._prepare_state(state, actions.shape[0])
@@ -290,7 +319,7 @@ class DiT4DiTActionHead(nn.Module):
             hidden_states=model_inputs,
             encoder_hidden_states=vl_embs,
             encoder_attention_mask=encoder_attention_mask,
-            timestep=t_discretized,
+            timestep=global_timestep,
             return_all_hidden_states=False,
         )
         pred = self.action_decoder(model_output)
@@ -299,7 +328,7 @@ class DiT4DiTActionHead(nn.Module):
         # rules. Depending on the DiT output dtype this can reduce in FP32 or
         # BF16; do not force a different dtype here.
         loss = ((pred_actions - velocity)**2) * action_mask
-        return loss.sum() / action_mask.sum()
+        return loss.sum() / action_mask.sum().clamp_min(1)
 
     @torch.no_grad()
     def predict_action(self,
@@ -309,6 +338,9 @@ class DiT4DiTActionHead(nn.Module):
                        states: Optional[torch.Tensor] = None,
                        encoder_attention_mask: Optional[torch.Tensor] = None,
                        attention_mask: Optional[torch.Tensor] = None,
+                       prev_actions: Optional[torch.Tensor] = None,
+                       prefix_len: int = 0,
+                       rtc_config: Optional[Dict] = None,
                        **kwargs) -> torch.Tensor:
         vl_embs = self._resolve_alias(vl_embs, input_features, 'vl_embs',
                                       'input_features')
@@ -330,6 +362,42 @@ class DiT4DiTActionHead(nn.Module):
         )
         dt = 1.0 / self.num_inference_timesteps
 
+        use_prefix_rtc = (
+            prev_actions is not None and prefix_len > 0
+            and rtc_config is not None and rtc_config.get('enabled', True))
+        if use_prefix_rtc:
+            method = rtc_config.get('method', 'prefix')
+            if method != 'prefix':
+                raise NotImplementedError(
+                    'DiT4DiTActionHead currently supports only RTC prefix '
+                    f'conditioning, got method={method!r}.')
+            if prev_actions.ndim == 2:
+                prev_actions = prev_actions.unsqueeze(0)
+            if prev_actions.ndim != 3:
+                raise ValueError('RTC prev_actions must have shape [B, T, D], '
+                                 f'got {tuple(prev_actions.shape)}.')
+            if prev_actions.shape[0] != batch_size:
+                raise ValueError('RTC prev_actions batch size does not match '
+                                 f'input batch: {prev_actions.shape[0]} != '
+                                 f'{batch_size}.')
+            if prefix_len > self.action_horizon:
+                raise ValueError(
+                    f'RTC prefix_len={prefix_len} exceeds action horizon '
+                    f'{self.action_horizon}.')
+            if prefix_len > prev_actions.shape[1]:
+                raise ValueError(
+                    f'RTC prefix_len={prefix_len} exceeds prev_actions '
+                    f'horizon {prev_actions.shape[1]}.')
+            if prev_actions.shape[-1] < self.action_dim:
+                prev_actions = F.pad(
+                    prev_actions,
+                    (0, self.action_dim - prev_actions.shape[-1]),
+                    value=0.0,
+                )
+            elif prev_actions.shape[-1] > self.action_dim:
+                prev_actions = prev_actions[..., :self.action_dim]
+            prev_actions = prev_actions.to(device=device, dtype=actions.dtype)
+
         state = self._prepare_state(state, batch_size)
         state_features = (
             self.state_encoder(state.to(device=device, dtype=vl_embs.dtype))
@@ -343,7 +411,18 @@ class DiT4DiTActionHead(nn.Module):
                                    dtype=torch.long,
                                    device=device)
 
-            action_features = self.action_encoder(actions, timesteps)
+            action_timesteps = timesteps
+            if use_prefix_rtc:
+                actions[:, :prefix_len] = prev_actions[:, :prefix_len]
+                action_timesteps = torch.full(
+                    (batch_size, self.action_horizon),
+                    t_discretized,
+                    dtype=torch.long,
+                    device=device,
+                )
+                action_timesteps[:, :prefix_len] = 0
+
+            action_features = self.action_encoder(actions, action_timesteps)
             action_features = self._add_position_embedding(action_features)
             model_inputs = (
                 torch.cat((state_features, action_features), dim=1)
@@ -358,6 +437,9 @@ class DiT4DiTActionHead(nn.Module):
             pred = self.action_decoder(model_output)
             pred_velocity = pred[:, -self.action_horizon:]
             actions = actions - dt * pred_velocity
+
+        if use_prefix_rtc:
+            actions[:, :prefix_len] = prev_actions[:, :prefix_len]
 
         if self.ori_action_dim is not None:
             actions = actions[..., :self.ori_action_dim]

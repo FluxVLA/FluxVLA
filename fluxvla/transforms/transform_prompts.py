@@ -37,9 +37,13 @@ class ProcessCosmos25Prompt:
 
     def __init__(self,
                  tokenizer: Dict,
+                 model_path: str = None,
                  input_key: str = 'prompt',
                  remove_input_key: bool = False) -> None:
         from fluxvla.engines import build_tokenizer_from_cfg
+        tokenizer = dict(tokenizer)
+        if model_path is not None:
+            tokenizer['model_path'] = os.path.join(model_path, 'tokenizer')
         self.tokenizer = build_tokenizer_from_cfg(tokenizer)
         self.input_key = input_key
         self.remove_input_key = bool(remove_input_key)
