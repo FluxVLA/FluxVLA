@@ -64,6 +64,31 @@ STATE_JOINT_NAMES = [
 DEFAULT_KP = 140.0
 DEFAULT_KD = 4.0
 
+# Positional wire order of the five poses published by /cur_keybody.
+KEYBODY_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
+                 'right_wrist')
+
+# Base rotation is a hybrid action encoded as rot6d.
+# After conversion to ZYX Euler angles, yaw is a per-step delta while pitch
+# and roll are current-step values. It is not a generic SO(3) delta.
+KEYPOINT_UPPER_ONLY_ACTION_SLICES = {
+    'left_wrist': slice(0, 9),
+    'right_wrist': slice(9, 18),
+    'head': slice(18, 27),
+    'base_rotation_delta': slice(27, 33),
+}
+KEYPOINT_UPPER_ONLY_HAND_START = 33
+
+KEYPOINT_FULL_ACTION_SLICES = {
+    'head': slice(0, 9),
+    'left_foot': slice(9, 18),
+    'right_foot': slice(18, 27),
+    'left_wrist': slice(27, 36),
+    'right_wrist': slice(36, 45),
+}
+KEYPOINT_FULL_BASE_ACTION_SLICE = slice(45, 54)
+KEYPOINT_FULL_HAND_START = 54
+
 
 class NumpySafeEncoder(json.JSONEncoder):
     """JSON encoder that tolerates numpy scalars and arrays."""
@@ -151,6 +176,23 @@ def _wrap_to_pi(angle):
     return (angle + np.pi) % (2 * np.pi) - np.pi
 
 
+def _normalise_quat_wxyz(value, label):
+    quat = np.asarray(value, dtype=np.float64).reshape(-1)
+    if quat.shape != (4, ) or not np.isfinite(quat).all():
+        raise RuntimeError(f'{label} must be a finite 4-D quaternion')
+    norm = float(np.linalg.norm(quat))
+    if norm < 1e-8:
+        raise RuntimeError(f'{label} quaternion has zero norm')
+    return quat / norm
+
+
+def _quat_wxyz_to_rot6d(value, label):
+    """Convert a transport quaternion to the model's 6D rotation."""
+    quat_wxyz = _normalise_quat_wxyz(value, label)
+    quat_xyzw = quat_wxyz[[1, 2, 3, 0]]
+    return Rotation.from_quat(quat_xyzw).as_matrix()[:2].reshape(6)
+
+
 @OPERATORS.register_module()
 class OliOperator(BaseOperator):
     """Oli whole-body (loco-manipulation) operator.
@@ -164,13 +206,24 @@ class OliOperator(BaseOperator):
     Default state (33-dim): 31 joint positions + 2 hand-closed flags.
     Default action (42-dim):
         [0:31]  joint position commands (q)
-        [31:34] base_link position (xyz, absolute)
+        [31:34] base_link position command
         [34:40] base_link rotation (rot6d)
         [40]    left_hand_closed
         [41]    right_hand_closed
 
+    The WebSocket backend treats the base position and rotation as absolute.
+    The MROS joint backend treats x/y as per-step translations in the current
+    base frame, z as an absolute height, and yaw as a per-step rotation that
+    is integrated into the published world-frame base pose.
+
     With ``hand_mode='finger'`` in MROS mode, the state/action instead carry
     the 12 individual finger values: 43-dim state and 52-dim action.
+
+    ``command_mode='keypoint'`` exposes named absolute xyz+rot6d key-body
+    commands. Base commands retain joint mode's delta-x/y, absolute-z, and
+    rotation-delta semantics. Quaternion conversion, base integration, and the
+    nine-anchor ``/teleop_cmd`` envelope stay internal here. State input is
+    selected independently with ``state_mode``.
     """
 
     def __init__(self,
@@ -181,11 +234,18 @@ class OliOperator(BaseOperator):
                  ws_accid=None,
                  control_backend='websocket',
                  left_wrist_rgb_topic=None,
+                 right_wrist_rgb_topic=None,
                  finger_state_topic='/brainco1/hand/state',
                  finger_cmd_topic='/brainco1/hand/cmd',
                  teleop_wbt_topic='/teleop_cmd_WBT',
+                 teleop_command_topic='/teleop_cmd',
+                 keybody_state_topic='/cur_keybody',
+                 base_height_topic='/current_base_height',
+                 base_quat_topic='/curr_base_quat',
                  finger_force_levels=None,
-                 hand_mode: str = 'binary'):
+                 hand_mode: str = 'binary',
+                 state_mode: str = 'joint',
+                 command_mode: str = 'joint'):
         """Initialize OliOperator.
 
         Args:
@@ -206,25 +266,43 @@ class OliOperator(BaseOperator):
             hand_mode (str): ``binary`` uses two hand-open/closed values;
                 ``finger`` uses 12 individual finger values and is supported
                 only by MROS. Defaults to ``binary``.
+            state_mode (str): ``joint`` returns joints plus hands;
+                ``keypoint`` returns named left/right wrist and head
+                Cartesian features plus hands.
+            command_mode (str): ``joint`` or ``keypoint``. Keypoint mode
+                uses the MROS Cartesian teleop topic; hand commands follow
+                the configured ``hand_mode``.
         """
         if control_backend not in {'websocket', 'mros'}:
             raise ValueError(
                 f'Unsupported Oli control_backend: {control_backend}')
         if hand_mode not in {'binary', 'finger'}:
             raise ValueError(f'Unsupported Oli hand_mode: {hand_mode}')
+        if state_mode not in {'joint', 'keypoint'}:
+            raise ValueError(f'Unsupported Oli state_mode: {state_mode}')
         if hand_mode == 'finger' and control_backend != 'mros':
             raise ValueError("hand_mode='finger' is only supported with "
                              "control_backend='mros'")
+        if command_mode not in {'joint', 'keypoint'}:
+            raise ValueError(f'Unsupported Oli command_mode: {command_mode}')
+        if command_mode == 'keypoint' and control_backend != 'mros':
+            raise ValueError("command_mode='keypoint' requires MROS")
 
         self.head_rgb_topic = head_rgb_topic
         self.left_wrist_rgb_topic = left_wrist_rgb_topic
+        self.right_wrist_rgb_topic = right_wrist_rgb_topic
         self.joint_state_topic = joint_state_topic
         self.finger_state_topic = finger_state_topic
         self.finger_cmd_topic = finger_cmd_topic
         self.teleop_wbt_topic = teleop_wbt_topic
+        self.teleop_command_topic = teleop_command_topic
+        self.keybody_state_topic = keybody_state_topic
+        self.base_height_topic = base_height_topic
+        self.base_quat_topic = base_quat_topic
         self.control_backend = control_backend
         self.hand_mode = hand_mode
-        self.command_mode = 'joint'
+        self.state_mode = state_mode
+        self.command_mode = command_mode
 
         self.robot_ip = robot_ip
         self.ws_port = ws_port
@@ -240,6 +318,7 @@ class OliOperator(BaseOperator):
         self._accum_base_pos = np.array([0.0, 0.0, 0.9], dtype=np.float64)
         self._accum_base_yaw = 0.0
         self._accum_base_rot = Rotation.identity()
+        self._latest_keypoint_state = None
         self._last_get_frame_warning_time = {}
 
         super().__init__(sync_warning_enabled=False)
@@ -281,7 +360,7 @@ class OliOperator(BaseOperator):
         import mros
         from mros.controller_msgs.msg import JointState
         from mros.sensor_msgs.msg import CompressedImage
-        from mros.std_msgs.msg import Float32Array
+        from mros.std_msgs.msg import Float32Array, Float64, Float64Array
         from mros.teleop_msgs.msg import TeleopMsg
 
         mros.init('FluxVLAOliNode')
@@ -291,20 +370,38 @@ class OliOperator(BaseOperator):
         if self.left_wrist_rgb_topic:
             self.left_wrist_color_subscriber = mros.subscribe(
                 self.left_wrist_rgb_topic, CompressedImage, None)
+        self.right_wrist_color_subscriber = None
+        if self.right_wrist_rgb_topic:
+            self.right_wrist_color_subscriber = mros.subscribe(
+                self.right_wrist_rgb_topic, CompressedImage, None)
         self.joint_state_subscriber = mros.subscribe(self.joint_state_topic,
                                                      JointState, None)
         self.finger_state_subscriber = mros.subscribe(self.finger_state_topic,
                                                       Float32Array, None)
-
-        self.teleop_wbt_publisher = mros.advertise(self.teleop_wbt_topic,
-                                                   TeleopMsg, None)
+        self.keybody_subscriber = None
+        self.base_height_subscriber = None
+        self.base_quat_subscriber = None
+        command_topic = (
+            self.teleop_command_topic
+            if self.command_mode == 'keypoint' else self.teleop_wbt_topic)
+        self.teleop_wbt_publisher = mros.advertise(command_topic, TeleopMsg,
+                                                   None)
         self.finger_publisher = mros.advertise(
             self.finger_cmd_topic, Float32Array, queue_size=10)
+        if (self.command_mode == 'keypoint' or self.state_mode == 'keypoint'):
+            self.keybody_subscriber = mros.subscribe(self.keybody_state_topic,
+                                                     Float64Array, None)
+            self.base_height_subscriber = mros.subscribe(
+                self.base_height_topic, Float64, None)
+            self.base_quat_subscriber = mros.subscribe(self.base_quat_topic,
+                                                       Float64Array, None)
         left_wrist_topic = self.left_wrist_rgb_topic or 'disabled'
+        right_wrist_topic = self.right_wrist_rgb_topic or 'disabled'
         print(
             '[mros] OliOperator subscribed to '
             f'head={self.head_rgb_topic}, '
             f'left_wrist={left_wrist_topic}, '
+            f'right_wrist={right_wrist_topic}, '
             f'joint_state={self.joint_state_topic}, '
             f'finger_state={self.finger_state_topic}',
             flush=True)
@@ -445,6 +542,30 @@ class OliOperator(BaseOperator):
                          float(right_avg > 20.0)],
                         dtype=np.float32)
 
+    def _sync_base_state(self, height, quaternion):
+        """Synchronize the base integrator from measured z and rotation."""
+        height = float(height)
+        if not np.isfinite(height):
+            raise RuntimeError('base height is not finite')
+        quat_wxyz = _normalise_quat_wxyz(quaternion, 'base quaternion')
+        rotation = Rotation.from_quat(quat_wxyz[[1, 2, 3, 0]])
+        self._accum_base_pos[2] = height
+        self._accum_base_yaw = _wrap_to_pi(rotation.as_euler('ZYX')[0])
+        self._accum_base_rot = rotation
+        rot6d = rotation.as_matrix()[:2].reshape(6)
+        return np.concatenate((self._accum_base_pos[:2], [height], rot6d))
+
+    @staticmethod
+    def _keypoint_observation(keypoints, base_pose, hands):
+        """Return all measured key-body, base, and hand state."""
+        state = {
+            f'{name}_pose': keypoints[name].astype(np.float32)
+            for name in KEYBODY_NAMES
+        }
+        state['base_pose'] = np.asarray(base_pose, dtype=np.float32).copy()
+        state['hands'] = np.asarray(hands, dtype=np.float32).copy()
+        return state
+
     def _get_mros_frame(self, timeout=0.05):
         """Read head/wrist images and the configured WBT state from MROS."""
         head_img = self._read_mros_compressed_rgb(self.color_subscriber,
@@ -465,25 +586,15 @@ class OliOperator(BaseOperator):
                     f'{self.left_wrist_rgb_topic}')
                 return False
 
-        joint_msg = self._read_mros_message(self.joint_state_subscriber,
-                                            timeout)
-        if joint_msg is None:
-            self._warn_get_frame_missing(
-                'joint_state',
-                f'No joint state received from {self.joint_state_topic}')
-            return False
-        joint_state = np.asarray(joint_msg.q, dtype=np.float32)
-        if joint_state.size < len(STATE_JOINT_NAMES):
-            self._warn_get_frame_missing(
-                'joint_state_size', f'Joint state size {joint_state.size} < '
-                f'{len(STATE_JOINT_NAMES)}')
-            return False
-        joint_state = joint_state[:len(STATE_JOINT_NAMES)]
-        if not np.all(np.isfinite(joint_state)):
-            self._warn_get_frame_missing(
-                'joint_state_finite',
-                'Non-finite joint positions received; dropping frame')
-            return False
+        right_wrist_img = None
+        if self.right_wrist_color_subscriber is not None:
+            right_wrist_img = self._read_mros_compressed_rgb(
+                self.right_wrist_color_subscriber, timeout)
+            if right_wrist_img is None:
+                self._warn_get_frame_missing(
+                    'right_wrist_img', 'No right wrist image received from '
+                    f'{self.right_wrist_rgb_topic}')
+                return False
 
         finger_msg = self._read_mros_message(self.finger_state_subscriber,
                                              timeout)
@@ -492,9 +603,66 @@ class OliOperator(BaseOperator):
             if finger_state.size >= 12:
                 self.last_finger_state = finger_state[:12].copy()
 
-        state = np.concatenate([joint_state, self._get_hand_observation()])
+        base_pose = None
+        if (self.base_height_subscriber is not None
+                and self.base_quat_subscriber is not None):
+            height_msg = self._read_mros_message(self.base_height_subscriber,
+                                                 timeout)
+            quat_msg = self._read_mros_message(self.base_quat_subscriber,
+                                               timeout)
+            if height_msg is None or quat_msg is None:
+                self._warn_get_frame_missing(
+                    'base_state', 'No complete base state received from '
+                    f'{self.base_height_topic} and {self.base_quat_topic}')
+                return False
+            base_pose = self._sync_base_state(height_msg.data, quat_msg.data)
+
+        keypoint_state = None
+        if self.keybody_subscriber is not None:
+            keybody_msg = self._read_mros_message(self.keybody_subscriber,
+                                                  timeout)
+            if keybody_msg is None:
+                self._warn_get_frame_missing(
+                    'keypoint_state', f'No keypoint state received from '
+                    f'{self.keybody_state_topic}')
+                return False
+            keypoints = self._decode_keybody_poses(keybody_msg.data,
+                                                   self.keybody_state_topic)
+            keypoint_state = self._keypoint_observation(
+                keypoints, base_pose, self._get_hand_observation())
+            self._latest_keypoint_state = keypoint_state
+
+        if self.state_mode == 'keypoint':
+            state = keypoint_state
+        elif self.state_mode == 'joint':
+            joint_msg = self._read_mros_message(self.joint_state_subscriber,
+                                                timeout)
+            if joint_msg is None:
+                self._warn_get_frame_missing(
+                    'joint_state',
+                    f'No joint state received from {self.joint_state_topic}')
+                return False
+            joint_state = np.asarray(joint_msg.q, dtype=np.float32)
+            if joint_state.size < len(STATE_JOINT_NAMES):
+                self._warn_get_frame_missing(
+                    'joint_state_size',
+                    f'Joint state size {joint_state.size} < '
+                    f'{len(STATE_JOINT_NAMES)}')
+                return False
+            joint_state = joint_state[:len(STATE_JOINT_NAMES)]
+            if not np.all(np.isfinite(joint_state)):
+                self._warn_get_frame_missing(
+                    'joint_state_finite',
+                    'Non-finite joint positions received; dropping frame')
+                return False
+            state = np.concatenate([joint_state, self._get_hand_observation()])
+        else:
+            raise ValueError(f'Unsupported Oli state_mode: {self.state_mode}')
+
         if left_wrist_img is None:
             return (head_img, state)
+        if right_wrist_img is not None:
+            return (head_img, left_wrist_img, right_wrist_img, state)
         return (head_img, left_wrist_img, state)
 
     # ========== WebSocket control output ==========
@@ -612,26 +780,152 @@ class OliOperator(BaseOperator):
 
     # ========== Command helpers ==========
 
+    @staticmethod
+    def _decode_keybody_poses(values, label):
+        values = np.asarray(values, dtype=np.float64).reshape(-1)
+        if values.shape != (35, ) or not np.isfinite(values).all():
+            raise RuntimeError(f'{label} must contain 35 finite values')
+        poses = {}
+        for index, name in enumerate(KEYBODY_NAMES):
+            pose = values[index * 7:(index + 1) * 7].copy()
+            rot6d = _quat_wxyz_to_rot6d(pose[3:], f'{label}:{name}')
+            poses[name] = np.concatenate([pose[:3], rot6d])
+        return poses
+
+    def _keypoint_action_layout(self, action):
+        """Identify the configured hand representation's action layout."""
+        hand_dim = 12 if self.hand_mode == 'finger' else 2
+        upper_only_dim = KEYPOINT_UPPER_ONLY_HAND_START + hand_dim
+        full_dim = KEYPOINT_FULL_HAND_START + hand_dim
+        if action.shape == (upper_only_dim, ):
+            return 'upper_only'
+        if action.shape == (full_dim, ):
+            return 'full'
+        raise ValueError(
+            f'keypoint action must use the upper_only ({upper_only_dim}-D) '
+            f'or full ({full_dim}-D) layout, got {action.shape}')
+
+    def _decode_keypoint_action(self, action, action_layout):
+        """Normalize either flat keypoint layout into a named command."""
+        if action_layout == 'full':
+            command = {
+                name: action[action_slice].copy()
+                for name, action_slice in KEYPOINT_FULL_ACTION_SLICES.items()
+            }
+            command['base'] = action[KEYPOINT_FULL_BASE_ACTION_SLICE].copy()
+            command['hand'] = action[KEYPOINT_FULL_HAND_START:].copy()
+            return command
+
+        if self._latest_keypoint_state is None:
+            raise RuntimeError(
+                'No keypoint state available for upper_only action')
+
+        command = {
+            name: self._latest_keypoint_state[f'{name}_pose'].copy()
+            for name in KEYBODY_NAMES
+        }
+        for name in ('left_wrist', 'right_wrist', 'head'):
+            command[name] = action[
+                KEYPOINT_UPPER_ONLY_ACTION_SLICES[name]].copy()
+
+        base_pose = self._latest_keypoint_state['base_pose']
+        base_rotation_delta = action[
+            KEYPOINT_UPPER_ONLY_ACTION_SLICES['base_rotation_delta']]
+        command['base'] = np.concatenate(([0.0, 0.0,
+                                           base_pose[2]], base_rotation_delta))
+        command['hand'] = action[KEYPOINT_UPPER_ONLY_HAND_START:].copy()
+        return command
+
+    def send_keypoint_action(self, action):
+        """Validate and publish a compact or full keypoint action."""
+        if self.command_mode != 'keypoint':
+            raise RuntimeError(
+                'Keypoint actions require keypoint command mode')
+        action = np.asarray(action, dtype=np.float64)
+        if action.ndim != 1 or not np.isfinite(action).all():
+            raise ValueError(
+                f'keypoint action must be a finite vector, got {action.shape}')
+        action_layout = self._keypoint_action_layout(action)
+        command = self._decode_keypoint_action(action, action_layout)
+        hand_action = command['hand']
+        invalid_fingers = (
+            np.any(hand_action < 0.0) or np.any(hand_action > 100.0))
+        if self.hand_mode == 'finger' and invalid_fingers:
+            raise ValueError('Finger actions must stay in [0, 100]')
+
+        for name in KEYBODY_NAMES:
+            pose = command[name]
+            if _is_degenerate_rot6d(pose[3:]):
+                raise ValueError(f'{name} contains a degenerate rot6d')
+        base_action = command['base']
+        base_pos, base_quat = self._integrate_base_action(
+            base_action[:3], base_action[3:])
+
+        def anchor(pose):
+            quat_wxyz = _rot6d_to_quat_xyzw(pose[3:])[[3, 0, 1, 2]]
+            return pose[:3], quat_wxyz
+
+        neutral = (np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]))
+        left_wrist = anchor(command['left_wrist'])
+        right_wrist = anchor(command['right_wrist'])
+        anchors = {
+            'left_hand': left_wrist,
+            'right_hand': right_wrist,
+            'head': anchor(command['head']),
+            'torso': neutral,
+            'base': (base_pos, base_quat[[3, 0, 1, 2]]),
+            'left_foot': anchor(command['left_foot']),
+            'right_foot': anchor(command['right_foot']),
+            'left_wrist': left_wrist,
+            'right_wrist': right_wrist,
+        }
+        self._publish_teleop_command(anchors, hand_action)
+
     def send_action(self, action):
         """Send a whole-body action through the configured transport.
 
         Args:
-            action (np.ndarray): Action vector with at least 42 WBT dims, or
-                52 dims when ``hand_mode='finger'``.
+            action (np.ndarray): Action vector for the configured command mode.
         """
         action = np.asarray(action, dtype=np.float64)
-        expected_dim = 52 if self.hand_mode == 'finger' else 42
-        if action.ndim != 1 or action.size < expected_dim:
-            raise ValueError(
-                f'OliOperator expects a (D>={expected_dim},) action, got '
-                f'{action.shape}')
-        if not np.all(np.isfinite(action)):
-            raise ValueError('OliOperator received a non-finite action')
+        if self.command_mode == 'joint':
+            expected_dim = 52 if self.hand_mode == 'finger' else 42
+            if action.ndim != 1 or action.size < expected_dim:
+                raise ValueError(
+                    f'OliOperator expects a (D>={expected_dim},) action, got '
+                    f'{action.shape}')
+            if not np.all(np.isfinite(action)):
+                raise ValueError('OliOperator received a non-finite action')
+            if self.hand_mode == 'finger':
+                fingers = action[40:52]
+                if np.any(fingers < 0.0) or np.any(fingers > 100.0):
+                    raise ValueError('Finger actions must stay in [0, 100]')
 
-        if self.control_backend == 'mros':
-            self._send_action_mros(action)
+            if self.control_backend == 'mros':
+                self._send_action_mros(action)
+            else:
+                self._send_action_websocket(action)
+        elif self.command_mode == 'keypoint':
+            self.send_keypoint_action(action)
         else:
-            self._send_action_websocket(action)
+            raise RuntimeError(
+                f'Unsupported Oli command_mode: {self.command_mode}')
+
+    def _publish_teleop_command(self, anchors, hand_action):
+        """Publish the internal nine-anchor TeleopMsg envelope."""
+        from mros.teleop_msgs.msg import TeleopMsg
+
+        if self.control_backend != 'mros':
+            raise RuntimeError('Cartesian teleop commands require MROS')
+        message = TeleopMsg()
+        message.header.frame_id = 'pico_headset'
+        message.world.orientation.w = 1.0
+        message.anchors = [
+            self._make_keypoint(name, position, quaternion)
+            for name, (position, quaternion) in anchors.items()
+        ]
+        self.teleop_wbt_publisher.publish(message)
+        self._send_hand_action(hand_action)
 
     def _send_action_websocket(self, action):
         """Send one action using the legacy WebSocket requests."""
@@ -650,7 +944,7 @@ class OliOperator(BaseOperator):
     def _make_keypoint(self,
                        name,
                        pos=(0.0, 0.0, 0.0),
-                       quat_xyzw=(0.0, 0.0, 0.0, 1.0)):
+                       quat_wxyz=(1.0, 0.0, 0.0, 0.0)):
         from mros.teleop_msgs.msg import KeyPoint
 
         keypoint = KeyPoint()
@@ -658,14 +952,19 @@ class OliOperator(BaseOperator):
         keypoint.pose.position.x = float(pos[0])
         keypoint.pose.position.y = float(pos[1])
         keypoint.pose.position.z = float(pos[2])
-        keypoint.pose.orientation.x = float(quat_xyzw[0])
-        keypoint.pose.orientation.y = float(quat_xyzw[1])
-        keypoint.pose.orientation.z = float(quat_xyzw[2])
-        keypoint.pose.orientation.w = float(quat_xyzw[3])
+        keypoint.pose.orientation.w = float(quat_wxyz[0])
+        keypoint.pose.orientation.x = float(quat_wxyz[1])
+        keypoint.pose.orientation.y = float(quat_wxyz[2])
+        keypoint.pose.orientation.z = float(quat_wxyz[3])
         return keypoint
 
     def _integrate_base_action(self, base_pos_action, base_rot6d_action):
-        """Integrate body-frame x/y/yaw deltas into an absolute pose."""
+        """Convert the hybrid base action into an absolute command pose.
+
+        ``x/y`` and yaw are body-frame per-step deltas; height and the pitch
+        and roll decoded from rot6d are current-step values. Only yaw is
+        accumulated, matching the keypoint action contract.
+        """
         cos_yaw = np.cos(self._accum_base_yaw)
         sin_yaw = np.sin(self._accum_base_yaw)
         delta_x, delta_y = base_pos_action[:2]
@@ -709,7 +1008,7 @@ class OliOperator(BaseOperator):
         teleop_msg.world.orientation.w = 1.0
         teleop_msg.joint_cmd = joint_cmd
         teleop_msg.anchors = [
-            self._make_keypoint('base_link', base_pos, base_quat)
+            self._make_keypoint('base_link', base_pos, base_quat[[3, 0, 1, 2]])
         ]
         self.teleop_wbt_publisher.publish(teleop_msg)
         hand_end = 52 if self.hand_mode == 'finger' else 42
@@ -842,6 +1141,9 @@ class OliOperator(BaseOperator):
         """
         if prepare_pose is None:
             raise ValueError('Oli gohome requires a prepare_pose')
+        if self.command_mode != 'joint':
+            raise NotImplementedError(
+                'Oli prepare-pose motion requires joint command mode')
         if self.control_backend != 'mros':
             raise NotImplementedError(
                 'Oli prepare-pose motion currently requires MROS')

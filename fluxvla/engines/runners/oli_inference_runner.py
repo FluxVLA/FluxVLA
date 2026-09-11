@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import signal
 import time
 import unicodedata
@@ -22,6 +23,8 @@ from typing import Dict
 import numpy as np
 import torch
 
+from ..operators.oli_operator import KEYBODY_NAMES
+from ..utils import build_vla_from_cfg
 from ..utils.root import RUNNERS
 from .base_inference_runner import BaseInferenceRunner
 
@@ -34,9 +37,9 @@ class _ShutdownRequested(Exception):
 class OliInferenceRunner(BaseInferenceRunner):
     """Runner for Oli whole-body (loco-manipulation) inference.
 
-    Supports one or two cameras and either the legacy 33-dim state/42-dim
-    action hand-open/closed representation or the MROS 43-dim state/52-dim
-    individual-finger representation. Each predicted action step is sent to
+    Supports the legacy joint action layouts and complete named Cartesian
+    keypoint targets. State input independently selects flat joints plus hands
+    or named keypoint features. Each predicted action step is sent to
     ``OliOperator`` with time-based control.
 
     No RTC, interpolation, async execution, or done-driven prompt switching.
@@ -54,8 +57,15 @@ class OliInferenceRunner(BaseInferenceRunner):
                  prepare_pose=None,
                  prepare_pose_duration_sec: float = 5.0,
                  prepare_pose_prompt_id: str = None,
+                 policy_mode: str = 'checkpoint',
                  *args,
                  **kwargs):
+        if policy_mode not in {'checkpoint', 'openai'}:
+            raise ValueError(f'Unsupported Oli policy_mode: {policy_mode}')
+        self.policy_mode = policy_mode
+        cfg = kwargs.get('cfg')
+        if self.policy_mode == 'openai':
+            self._validate_openai_request(cfg, kwargs.get('ckpt_path'))
         self.execute_horizon = execute_horizon
         self.interactive = bool(interactive)
         self.default_prompt_id = default_prompt_id
@@ -68,7 +78,7 @@ class OliInferenceRunner(BaseInferenceRunner):
                                        else str(prepare_pose_prompt_id))
         if self.execute_horizon is not None and self.execute_horizon <= 0:
             raise ValueError('execute_horizon must be positive or None')
-        if self.interactive and self.default_execution_count <= 0:
+        if self.default_execution_count <= 0:
             raise ValueError('default_execution_count must be positive')
         if self.prepare_pose is not None:
             if self.prepare_pose.shape not in ((33, ), (43, )):
@@ -103,6 +113,9 @@ class OliInferenceRunner(BaseInferenceRunner):
 
         super().__init__(*args, **kwargs)
 
+        if self.policy_mode == 'openai':
+            self._setup_openai(cfg)
+
         if self.prepare_pose is not None:
             hand_mode = getattr(self.ros_operator, 'hand_mode', 'binary')
             state_dim = 43 if hand_mode == 'finger' else 33
@@ -135,6 +148,40 @@ class OliInferenceRunner(BaseInferenceRunner):
         self._selected_execution_count = self.default_execution_count
 
         signal.signal(signal.SIGINT, self._signal_handler)
+
+    @staticmethod
+    def _validate_openai_request(cfg, ckpt_path):
+        """Fail before constructing MROS when credentials are unavailable."""
+        if ckpt_path is not None:
+            raise ValueError('OpenAI OLI inference is checkpoint-free')
+        if cfg is None:
+            raise ValueError('OpenAI OLI inference requires cfg')
+        api_key_env = cfg.inference_model.get('api_key_env', 'OPENAI_API_KEY')
+        if not os.environ.get(api_key_env):
+            raise RuntimeError(
+                f'Missing API key in environment variable {api_key_env!r}')
+
+    def _setup_openai(self, cfg):
+        """Build the API policy and validate its fixed robot contract."""
+        self.vla = build_vla_from_cfg(cfg.inference_model).eval()
+        contract = (self.ros_operator.command_mode,
+                    self.ros_operator.hand_mode, self.ros_operator.state_mode)
+        if contract != ('keypoint', 'finger', 'keypoint'):
+            raise ValueError(
+                'OpenAI OLI inference requires keypoint commands, raw '
+                'fingers, and keypoint state')
+        expected_cameras = ['head', 'left_wrist', 'right_wrist']
+        if self.camera_names != expected_cameras:
+            raise ValueError(f'OpenAI OLI cameras must be {expected_cameras}')
+        if self.execute_horizon is not None:
+            raise ValueError(
+                'OpenAI OLI inference requires complete trajectories')
+
+    def run_setup(self):
+        if self.policy_mode == 'openai':
+            self.vla.to(device='cpu')
+        else:
+            super().run_setup()
 
     def _signal_handler(self, signum, frame):
         """Handle SIGINT for graceful shutdown."""
@@ -251,13 +298,62 @@ class OliInferenceRunner(BaseInferenceRunner):
                 if self.interactive:
                     while self._running:
                         self._run_episode(initial_instruction)
+                elif self.policy_mode == 'openai':
+                    self._run_episode(initial_instruction)
                 else:
                     self._run_continuous()
             except _ShutdownRequested:
                 pass
 
-    def _infer_and_execute_chunk(self, instruction):
+    def _infer_and_execute_openai_chunk(self, instruction, reset_history):
+        """Request and execute one GPT action chunk."""
+        if not reset_history and self.vla._llm_calls >= self.vla.max_llm_calls:
+            print('[GPT] API call limit reached.', flush=True)
+            return None
+        result = self.get_ros_observation()
+        if result is None:
+            return None
+        images = list(result[:-1])
+        state = result[-1]
+        required_state = {f'{name}_pose' for name in KEYBODY_NAMES}
+        required_state.update({'base_pose', 'hands'})
+        if not isinstance(state, dict) or not required_state.issubset(state):
+            raise ValueError(
+                'OpenAI OLI inference requires all key-body poses and hands')
+        poses = {
+            name: np.asarray(state[f'{name}_pose'], dtype=np.float64)
+            for name in KEYBODY_NAMES
+        }
+        hands = np.asarray(state['hands'], dtype=np.float64).reshape(-1)
+        if hands.shape != (12, ) or not np.isfinite(hands).all():
+            raise ValueError('OpenAI OLI hands must be finite (12,)')
+        base_pose = np.asarray(
+            state['base_pose'], dtype=np.float64).reshape(-1)
+        if base_pose.shape != (9, ) or not np.isfinite(base_pose).all():
+            raise ValueError('OpenAI OLI base_pose must be finite (9,)')
+        actions = self.vla.predict_action(
+            images=images,
+            image_names=self.camera_names,
+            task_description=instruction,
+            poses=poses,
+            base_pose=base_pose,
+            hands=hands,
+            reset_history=reset_history,
+        )[0].detach().cpu().numpy()
+        if self.disable_puppet_arm:
+            self.vla.record_execution_outcome(False, 'observation-only run')
+            return 0
+        sent_steps = self._execute_actions(actions, None)
+        completed = sent_steps == len(actions)
+        self.vla.record_execution_outcome(
+            completed, None if completed else 'execution interrupted')
+        return sent_steps
+
+    def _infer_and_execute_chunk(self, instruction, reset_history=False):
         """Predict and execute one action chunk, preserving its context."""
+        if self.policy_mode == 'openai':
+            return self._infer_and_execute_openai_chunk(
+                instruction, reset_history)
         self._action_ctx = SimpleNamespace(instruction=instruction)
         inputs = self._preprocess(instruction)
 
@@ -307,7 +403,10 @@ class OliInferenceRunner(BaseInferenceRunner):
                     or (self.max_publish_step
                         and published_steps >= self.max_publish_step)):
                 break
-            sent_steps = self._infer_and_execute_chunk(instruction)
+            sent_steps = self._infer_and_execute_chunk(
+                instruction, reset_history=execution_index == 1)
+            if sent_steps is None or not self._running:
+                break
 
             if self._poll_keyboard_pause():
                 self._handle_keyboard_pause()
@@ -346,9 +445,15 @@ class OliInferenceRunner(BaseInferenceRunner):
         Returns:
             Dict: Latest observation with ``qpos`` and configured images.
         """
+        state_mode = getattr(self.ros_operator, 'state_mode', 'joint')
         if self.observation_window is None:
             self.observation_window = deque(maxlen=2)
-            dummy_obs = {'qpos': None}
+            if state_mode == 'keypoint':
+                dummy_obs = {f'{name}_pose': None for name in KEYBODY_NAMES}
+                dummy_obs['base_pose'] = None
+                dummy_obs['hands'] = None
+            else:
+                dummy_obs = {'qpos': None}
             for camera_name in self.camera_names:
                 dummy_obs[camera_name] = None
             self.observation_window.append(dummy_obs)
@@ -365,7 +470,12 @@ class OliInferenceRunner(BaseInferenceRunner):
                 f'OliOperator returned {len(images)} image(s), but '
                 f'camera_names={self.camera_names}')
 
-        observation = {'qpos': state}
+        if state_mode == 'keypoint':
+            if not isinstance(state, dict):
+                raise ValueError('Keypoint state must be a dictionary')
+            observation = dict(state)
+        else:
+            observation = {'qpos': state}
         for camera_name, image in zip(self.camera_names, images):
             if self.apply_jpeg_compression:
                 bgr = image[:, :, ::-1]
