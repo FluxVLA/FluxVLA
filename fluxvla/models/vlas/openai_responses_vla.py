@@ -30,6 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
+from scipy.spatial.transform import Rotation
 
 from fluxvla.engines import VLAS, initialize_overwatch
 
@@ -94,6 +95,20 @@ hand, and retreat. Keep the unused hand open and away from the workspace.
 Include a short note describing what you see and why you chose the command.
 Use only the camera images and reported robot state; do not assume hidden
 simulator metadata."""
+
+DEFAULT_OLI_SYSTEM_PROMPT = """You control an OLI humanoid through three
+absolute Cartesian targets: left wrist, right wrist, and head. At every turn
+you receive head, left-wrist, and right-wrist camera images, the current poses,
+and both hand states. Use exactly one control_oli tool call. Omitted targets
+hold their current values.
+
+Make one small, deliberate move, then inspect the next observation. To grasp,
+open the selected hand, approach from above, align, descend, close, and lift.
+Keep the unused wrist and head still unless moving them is necessary. Position
+units are metres in the robot world frame. Include a short note explaining the
+visible evidence and the requested move. Every command requires operator
+approval and is bounded again by the runtime; never assume it was executed
+until the next observation confirms the change."""
 
 
 @VLAS.register_module()
@@ -681,6 +696,346 @@ class OpenAIResponsesVLA(nn.Module):
             'output':
             f'executing move_to over {actions.shape[1]} steps',
         })
+        return actions
+
+
+@VLAS.register_module()
+class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
+    """Checkpoint-free GPT controller for OLI's absolute four-point wire."""
+
+    ACTION_SEGMENTS = {
+        'left_wrist': (0, 9),
+        'right_wrist': (9, 18),
+        'head': (18, 27),
+        'base': (27, 33),
+        'hands': (33, 35),
+    }
+    IDENTITY_ROT6D = np.array([1., 0., 0., 0., 1., 0.])
+
+    def __init__(self,
+                 model: str = 'gpt-6-astra',
+                 base_url: str = 'https://api.openai.com/v1',
+                 api_key_env: str = 'OPENAI_API_KEY',
+                 reasoning_effort: str = 'medium',
+                 max_output_tokens: int = None,
+                 request_timeout: float = 120.0,
+                 max_retries: int = 2,
+                 retry_backoff: float = 2.0,
+                 image_detail: str = 'high',
+                 image_format: str = 'JPEG',
+                 jpeg_quality: int = 95,
+                 image_horizon: int = 2,
+                 max_llm_calls: int = 50,
+                 action_horizon: int = 50,
+                 hand_settle_steps: int = 15,
+                 max_wrist_delta: float = 0.08,
+                 max_head_delta: float = 0.03,
+                 workspace_bounds: Sequence[Sequence[float]] = ((-0.30, 0.80),
+                                                                (-0.65, 0.65),
+                                                                (-0.30, 1.50)),
+                 system_prompt: str = DEFAULT_OLI_SYSTEM_PROMPT,
+                 device: str = None,
+                 torch_dtype=None) -> None:
+        super().__init__(
+            model=model,
+            base_url=base_url,
+            api_key_env=api_key_env,
+            reasoning_effort=reasoning_effort,
+            max_output_tokens=max_output_tokens,
+            request_timeout=request_timeout,
+            max_retries=max_retries,
+            retry_backoff=retry_backoff,
+            image_detail=image_detail,
+            image_format=image_format,
+            jpeg_quality=jpeg_quality,
+            image_horizon=image_horizon,
+            max_llm_calls=max_llm_calls,
+            action_horizon=action_horizon,
+            workspace_bounds=workspace_bounds,
+            system_prompt=system_prompt,
+            device=device,
+            torch_dtype=torch_dtype)
+        if max_wrist_delta <= 0 or max_head_delta <= 0:
+            raise ValueError('OLI point displacement limits must be positive')
+        if action_horizon < 2:
+            raise ValueError('OLI action_horizon must be at least 2')
+        if not 0 <= hand_settle_steps <= action_horizon - 2:
+            raise ValueError(
+                'hand_settle_steps must leave at least two motion steps')
+        self.max_wrist_delta = float(max_wrist_delta)
+        self.max_head_delta = float(max_head_delta)
+        self.hand_settle_steps = int(hand_settle_steps)
+
+    @property
+    def tools(self) -> List[Dict[str, Any]]:
+        point = {
+            'type': 'object',
+            'properties':
+            {axis: {
+                'type': 'number'
+            }
+             for axis in ('x', 'y', 'z')},
+            'additionalProperties': False,
+        }
+        return [{
+            'type':
+            'function',
+            'name':
+            'control_oli',
+            'description':
+            ('Request one bounded absolute Cartesian OLI move. Omitted '
+             'points, coordinates, and hand states hold their current '
+             'values.'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'targets': {
+                        'type': 'object',
+                        'properties': {
+                            'left_wrist': point,
+                            'right_wrist': point,
+                            'head': point,
+                            'left_hand': {
+                                'type': 'string',
+                                'enum': ['hold', 'open', 'close'],
+                            },
+                            'right_hand': {
+                                'type': 'string',
+                                'enum': ['hold', 'open', 'close'],
+                            },
+                        },
+                        'additionalProperties': False,
+                    },
+                    'note': {
+                        'type': 'string'
+                    },
+                },
+                'required': ['targets', 'note'],
+                'additionalProperties': False,
+            },
+            'strict':
+            False,
+        }]
+
+    @staticmethod
+    def _quat_wxyz_to_rot6d(quat: Any) -> np.ndarray:
+        quat = np.asarray(quat, dtype=np.float64).reshape(-1)
+        if quat.shape != (4, ) or not np.isfinite(quat).all():
+            raise RuntimeError(
+                'OLI quaternion must contain four finite values')
+        norm = float(np.linalg.norm(quat))
+        if norm < 1e-8:
+            raise RuntimeError('OLI quaternion must be nonzero')
+        xyzw = (quat / norm)[[1, 2, 3, 0]]
+        return Rotation.from_quat(xyzw).as_matrix()[:2].reshape(6)
+
+    @classmethod
+    def _current_oli_action(cls, poses: Dict[str, Any], hands: Any):
+        required = {'left_wrist', 'right_wrist', 'head'}
+        if not isinstance(poses, dict) or not required.issubset(poses):
+            raise RuntimeError(f'OLI poses must contain {sorted(required)}')
+        action = np.zeros(35, dtype=np.float64)
+        for pose_name, segment_name in (('left_wrist', 'left_wrist'),
+                                        ('right_wrist',
+                                         'right_wrist'), ('head', 'head')):
+            pose = np.asarray(poses[pose_name], dtype=np.float64).reshape(-1)
+            if pose.shape != (7, ) or not np.isfinite(pose).all():
+                raise RuntimeError(
+                    f'{pose_name} must contain seven finite xyz+wxyz values')
+            start, _ = cls.ACTION_SEGMENTS[segment_name]
+            action[start:start + 3] = pose[:3]
+            action[start + 3:start + 9] = cls._quat_wxyz_to_rot6d(pose[3:])
+        base_start, _ = cls.ACTION_SEGMENTS['base']
+        action[base_start:base_start + 6] = cls.IDENTITY_ROT6D
+        hands = np.asarray(hands, dtype=np.float64).reshape(-1)
+        if hands.shape[0] < 2 or not np.isfinite(hands[:2]).all():
+            raise RuntimeError('OLI hands must contain two finite values')
+        hand_start, _ = cls.ACTION_SEGMENTS['hands']
+        action[hand_start:hand_start + 2] = hands[:2] >= 0.5
+        return action
+
+    def _oli_observation_message(self, images, image_names, task_description,
+                                 poses, hands):
+        lines = [
+            'Current OLI observation.',
+            f'Instruction: {task_description}',
+            f'Action call: {self._llm_calls + 1}/{self.max_llm_calls}.',
+            f'Max wrist displacement per call: {self.max_wrist_delta:.3f} m.',
+            f'Max head displacement per call: {self.max_head_delta:.3f} m.',
+            'Workspace xyz bounds: ' + np.array2string(
+                np.asarray(self.workspace_bounds), precision=3,
+                separator=', '),
+        ]
+        for name in ('left_wrist', 'right_wrist', 'head'):
+            pose = np.asarray(poses[name], dtype=np.float64).reshape(-1)
+            lines.append(
+                f'{name} xyz: ' +
+                np.array2string(pose[:3], precision=5, separator=', '))
+        hands = np.asarray(hands).reshape(-1)
+        lines.append(f"hands: left={'closed' if hands[0] >= 0.5 else 'open'}, "
+                     f"right={'closed' if hands[1] >= 0.5 else 'open'}")
+        content = [{
+            'type': 'input_text',
+            'text': '\n'.join(lines),
+        }]
+        for name, image in zip(image_names, images):
+            image_item = {
+                'type': 'input_image',
+                'image_url': self._image_data_url(image),
+            }
+            if self.image_detail:
+                image_item['detail'] = self.image_detail
+            content.extend([{
+                'type': 'input_text',
+                'text': f"camera '{name}':",
+            }, image_item])
+        return {'role': 'user', 'content': content}
+
+    @staticmethod
+    def _oli_function_call(response):
+        calls = [
+            item for item in response.get('output', [])
+            if item.get('type') == 'function_call'
+            and item.get('name') == 'control_oli'
+        ]
+        if len(calls) != 1:
+            raise RuntimeError(
+                f'Expected exactly one control_oli call, got {len(calls)}')
+        return calls[0]
+
+    def _apply_oli_targets(self, current, targets):
+        if not isinstance(targets, dict):
+            raise RuntimeError('control_oli.targets must be an object')
+        allowed = {
+            'left_wrist', 'right_wrist', 'head', 'left_hand', 'right_hand'
+        }
+        unknown = set(targets) - allowed
+        if unknown:
+            raise RuntimeError(
+                f'Unknown control_oli targets: {sorted(unknown)}')
+        target = current.copy()
+        for name, limit in (('left_wrist', self.max_wrist_delta),
+                            ('right_wrist', self.max_wrist_delta),
+                            ('head', self.max_head_delta)):
+            requested = targets.get(name)
+            if requested is None:
+                continue
+            if not isinstance(requested, dict):
+                raise RuntimeError(f'control_oli.{name} must be an object')
+            unknown_axes = set(requested) - {'x', 'y', 'z'}
+            if unknown_axes:
+                raise RuntimeError(
+                    f'Unknown {name} axes: {sorted(unknown_axes)}')
+            start, _ = self.ACTION_SEGMENTS[name]
+            old = current[start:start + 3]
+            new = old.copy()
+            for axis, key in enumerate(('x', 'y', 'z')):
+                if key in requested:
+                    value = self._target_number(requested[key],
+                                                f'{name}.{key}')
+                    lo, hi = self.workspace_bounds[axis]
+                    new[axis] = np.clip(value, lo, hi)
+            delta = new - old
+            norm = float(np.linalg.norm(delta))
+            if norm > limit:
+                new = old + delta * limit / norm
+            target[start:start + 3] = new
+        hand_start, _ = self.ACTION_SEGMENTS['hands']
+        for index, key in enumerate(('left_hand', 'right_hand')):
+            command = str(targets.get(key, 'hold')).lower()
+            if command not in {'hold', 'open', 'close'}:
+                raise RuntimeError(f'{key} must be hold, open, or close')
+            if command != 'hold':
+                target[hand_start + index] = float(command == 'close')
+        return target
+
+    def _oli_trajectory(self, current, target):
+        motion_steps = self.action_horizon - self.hand_settle_steps
+        alpha = np.linspace(0.0, 1.0, motion_steps)
+        blend = 10 * alpha**3 - 15 * alpha**4 + 6 * alpha**5
+        actions = np.repeat(current[None], self.action_horizon, axis=0)
+        for name in ('left_wrist', 'right_wrist', 'head'):
+            start, _ = self.ACTION_SEGMENTS[name]
+            actions[:motion_steps, start:start + 3] = (
+                current[start:start + 3] + blend[:, None] *
+                (target[start:start + 3] - current[start:start + 3]))
+            actions[motion_steps:, start:start + 3] = \
+                target[start:start + 3]
+        if self.hand_settle_steps:
+            hand_start, hand_end = self.ACTION_SEGMENTS['hands']
+            actions[-self.hand_settle_steps:, hand_start:hand_end] = \
+                target[hand_start:hand_end]
+        return torch.from_numpy(actions.astype(np.float32)).unsqueeze(0)
+
+    def record_execution_outcome(self, executed: bool, detail: str = None):
+        if (not self._history
+                or self._history[-1].get('type') != 'function_call_output'):
+            raise RuntimeError('No pending OLI command outcome')
+        result = 'executed' if executed else 'rejected by operator'
+        if detail:
+            result += f': {detail}'
+        self._history[-1]['output'] = result
+
+    @torch.inference_mode()
+    def predict_action(self,
+                       images: Sequence[Any],
+                       task_description: str,
+                       poses: Dict[str, Any],
+                       hands: Any,
+                       image_names: Sequence[str] = None,
+                       reset_history: bool = False,
+                       **kwargs) -> torch.Tensor:
+        del kwargs
+        task_description = self._unbatch_text(task_description)
+        if reset_history or self._task_description != task_description:
+            self._reset_episode(task_description)
+        image_names = image_names or [
+            f'camera_{index}' for index in range(len(images))
+        ]
+        current = self._current_oli_action(poses, hands)
+        if self._llm_calls >= self.max_llm_calls:
+            hold = np.repeat(current[None], self.action_horizon, axis=0)
+            return torch.from_numpy(hold.astype(np.float32)).unsqueeze(0)
+        self._history.append(
+            self._oli_observation_message(images, image_names,
+                                          task_description, poses, hands))
+        started = time.monotonic()
+        response = self._post_json(self._request_body())
+        latency = time.monotonic() - started
+        self._llm_calls += 1
+        call = self._oli_function_call(response)
+        try:
+            arguments = json.loads(call.get('arguments', '{}'))
+        except json.JSONDecodeError as exc:
+            raise RuntimeError('Invalid control_oli arguments') from exc
+        if not isinstance(arguments, dict):
+            raise RuntimeError('control_oli arguments must be an object')
+        unknown = set(arguments) - {'targets', 'note'}
+        if unknown:
+            raise RuntimeError(
+                f'Unknown control_oli arguments: {sorted(unknown)}')
+        target = self._apply_oli_targets(current, arguments.get('targets'))
+        actions = self._oli_trajectory(current, target)
+        self.last_note = str(arguments.get('note', ''))
+        usage = response.get('usage') or {}
+        self.last_response_metadata = {
+            'id': response.get('id'),
+            'model': response.get('model', self.model),
+            'latency_seconds': latency,
+            'input_tokens': usage.get('input_tokens'),
+            'output_tokens': usage.get('output_tokens'),
+        }
+        call_id = call.get('call_id')
+        self._history.extend([{
+            'type': 'function_call',
+            'call_id': call_id,
+            'name': 'control_oli',
+            'arguments': call.get('arguments', '{}'),
+        }, {
+            'type': 'function_call_output',
+            'call_id': call_id,
+            'output': 'awaiting operator confirmation',
+        }])
         return actions
 
 

@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import os
 import signal
 import time
 import unicodedata
@@ -22,6 +23,7 @@ from typing import Dict
 import numpy as np
 import torch
 
+from ..utils import build_vla_from_cfg
 from ..utils.root import RUNNERS
 from .base_inference_runner import BaseInferenceRunner
 
@@ -54,8 +56,28 @@ class OliInferenceRunner(BaseInferenceRunner):
                  prepare_pose=None,
                  prepare_pose_duration_sec: float = 5.0,
                  prepare_pose_prompt_id: str = None,
+                 policy_mode: str = 'checkpoint',
+                 require_confirmation: bool = True,
+                 max_iterations: int = None,
                  *args,
                  **kwargs):
+        if policy_mode not in {'checkpoint', 'openai'}:
+            raise ValueError(f'Unsupported Oli policy_mode: {policy_mode}')
+        self.policy_mode = policy_mode
+        self.require_confirmation = bool(require_confirmation)
+        self.max_iterations = max_iterations
+        cfg = kwargs.get('cfg')
+        ckpt_path = kwargs.get('ckpt_path')
+        if self.policy_mode == 'openai':
+            if ckpt_path is not None:
+                raise ValueError('OpenAI OLI inference is checkpoint-free')
+            if cfg is None:
+                raise ValueError('OpenAI OLI inference requires cfg')
+            api_key_env = cfg.inference_model.get('api_key_env',
+                                                  'OPENAI_API_KEY')
+            if not os.environ.get(api_key_env):
+                raise RuntimeError(
+                    f'Missing API key in environment variable {api_key_env!r}')
         self.execute_horizon = execute_horizon
         self.interactive = bool(interactive)
         self.default_prompt_id = default_prompt_id
@@ -103,6 +125,31 @@ class OliInferenceRunner(BaseInferenceRunner):
 
         super().__init__(*args, **kwargs)
 
+        if self.policy_mode == 'openai':
+            self.vla = build_vla_from_cfg(cfg.inference_model).eval()
+            if self.ros_operator.command_mode != 'four_point':
+                raise ValueError(
+                    'OpenAI OLI inference requires four-point command mode')
+            if self.ros_operator.hand_mode != 'binary':
+                raise ValueError(
+                    'OpenAI OLI inference currently requires binary hands')
+            if self.camera_names != ['head', 'left_wrist', 'right_wrist']:
+                raise ValueError(
+                    'OpenAI OLI inference requires head, left_wrist, and '
+                    'right_wrist cameras in that order')
+            if self.execute_horizon is not None:
+                raise ValueError(
+                    'OpenAI OLI inference executes complete bounded '
+                    'trajectories; execute_horizon must be None')
+            if not self.disable_puppet_arm and not self.require_confirmation:
+                raise ValueError(
+                    'Live GPT OLI control requires per-action confirmation')
+            self.max_iterations = (
+                int(getattr(self.vla, 'max_llm_calls', 1))
+                if self.max_iterations is None else int(self.max_iterations))
+            if self.max_iterations <= 0:
+                raise ValueError('max_iterations must be positive')
+
         if self.prepare_pose is not None:
             hand_mode = getattr(self.ros_operator, 'hand_mode', 'binary')
             state_dim = 43 if hand_mode == 'finger' else 33
@@ -135,6 +182,13 @@ class OliInferenceRunner(BaseInferenceRunner):
         self._selected_execution_count = self.default_execution_count
 
         signal.signal(signal.SIGINT, self._signal_handler)
+
+    def run_setup(self):
+        if self.policy_mode == 'openai':
+            self.vla.to(device='cpu')
+            self.ros_operator.ensure_baseline()
+            return
+        super().run_setup()
 
     def _signal_handler(self, signum, frame):
         """Handle SIGINT for graceful shutdown."""
@@ -246,6 +300,10 @@ class OliInferenceRunner(BaseInferenceRunner):
         overwatch = initialize_overwatch(__name__)
         overwatch.info('Starting Oli whole-body inference runner')
 
+        if self.policy_mode == 'openai':
+            self._run_openai()
+            return
+
         with torch.inference_mode():
             try:
                 if self.interactive:
@@ -255,6 +313,92 @@ class OliInferenceRunner(BaseInferenceRunner):
                     self._run_continuous()
             except _ShutdownRequested:
                 pass
+
+    def _confirm_action(self, input_fn=input):
+        """Return execute/reject/quit; fail closed on EOF or interruption."""
+        while self._running:
+            try:
+                answer = input_fn(
+                    'Execute this GPT action? [y]es / [n]o / [q]uit: ')
+            except (EOFError, KeyboardInterrupt):
+                return 'quit'
+            answer = answer.strip().lower()
+            if answer in {'y', 'yes'}:
+                return 'execute'
+            if answer in {'n', 'no'}:
+                return 'reject'
+            if answer in {'q', 'quit'}:
+                return 'quit'
+            print('Please enter y, n, or q.', flush=True)
+        return 'quit'
+
+    @staticmethod
+    def _gpt_action_summary(actions):
+        actions = np.asarray(actions, dtype=np.float64)
+        if actions.ndim != 2 or actions.shape[1] != 35:
+            raise ValueError('GPT OLI actions must have shape (T, 35), got '
+                             f'{actions.shape}')
+        first, last = actions[0], actions[-1]
+        lines = []
+        for name, start in (('left_wrist', 0), ('right_wrist', 9), ('head',
+                                                                    18)):
+            delta = last[start:start + 3] - first[start:start + 3]
+            lines.append(f'{name} delta={np.round(delta, 4).tolist()}')
+        lines.append(f'hands={last[33:35].astype(int).tolist()}')
+        return ' | '.join(lines)
+
+    def _run_openai(self):
+        instruction = self._get_task_description(self.default_prompt_id)
+        iteration = 0
+        try:
+            while self._running and iteration < self.max_iterations:
+                if iteration >= int(getattr(self.vla, 'max_llm_calls', 1)):
+                    break
+                result = self.get_ros_observation()
+                if result is None:
+                    break
+                images = list(result[:-1])
+                state = np.asarray(result[-1])
+                poses = self.ros_operator.read_keybody_poses()
+                actions = self.vla.predict_action(
+                    images=images,
+                    image_names=self.camera_names,
+                    task_description=instruction,
+                    poses=poses,
+                    hands=state[-2:],
+                    reset_history=iteration == 0,
+                )[0].detach().cpu().numpy()
+                print(
+                    f'GPT: {self.vla.last_note}\n  '
+                    f'{self._gpt_action_summary(actions)}',
+                    flush=True)
+                iteration += 1
+                if self.disable_puppet_arm:
+                    self.vla.record_execution_outcome(False,
+                                                      'observation-only run')
+                    continue
+                decision = self._confirm_action()
+                if decision == 'quit':
+                    self.vla.record_execution_outcome(
+                        False, 'operator stopped the run')
+                    break
+                if decision == 'reject':
+                    self.vla.record_execution_outcome(False)
+                    print(
+                        'Action rejected; taking a fresh observation.',
+                        flush=True)
+                    continue
+                sent_steps = self._execute_actions(actions, None)
+                completed = sent_steps == len(actions)
+                self.vla.record_execution_outcome(
+                    completed, None if completed else 'execution interrupted')
+                if not completed:
+                    break
+        except KeyboardInterrupt:
+            self._running = False
+            print(
+                '\nStopped; no further commands will be published.',
+                flush=True)
 
     def _infer_and_execute_chunk(self, instruction):
         """Predict and execute one action chunk, preserving its context."""
