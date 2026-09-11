@@ -18,10 +18,11 @@ separately from `/current_base_height` and `/curr_base_quat`. Its command API
 accepts five absolute key-body poses. The 9-D base action uses the same
 contract as joint mode: body-frame x/y deltas, absolute height, and a hybrid
 rotation action encoded as rot6d. After conversion to ZYX Euler angles, yaw is
-a per-step delta and is accumulated, while pitch and roll are current-step
-values. This is not a generic SO(3) delta. The Operator converts it into the
-absolute pose required by the bag-compatible nine-anchor `TeleopMsg` published
-on `/teleop_cmd`.
+a per-step delta and is accumulated, while pitch and roll are absolute
+world-frame targets. Identity rot6d therefore requests zero pitch/roll; it is
+not a hold command. A degenerate all-zero rot6d is reserved as the hold
+sentinel. The Operator converts the action into the absolute pose required by
+the bag-compatible nine-anchor `TeleopMsg` published on `/teleop_cmd`.
 
 State input is selected independently: `state_mode='joint'` returns 31 joints
 plus the configured hand representation, while `state_mode='keypoint'` returns
@@ -35,10 +36,11 @@ in their original order, followed by the configured force levels.
 
 The GPT policy builds every action from the current observation. Unchanged
 key-body poses are echoed from that frame. To hold the base it emits zero x/y
-and rotation deltas together with the current measured height. GPT does not
-currently control base rotation. If that is exposed later, its tool interface
-should use explicit `yaw_delta`, `pitch`, and `roll` values and convert them to
-rot6d inside the policy rather than asking GPT to produce rot6d directly.
+and the all-zero rotation sentinel together with the current measured height.
+GPT does not currently control base rotation. If that is exposed later, its
+tool interface should use explicit `yaw_delta`, `pitch`, and `roll` values and
+convert them to rot6d inside the policy rather than asking GPT to produce
+rot6d directly.
 
 The Operator accepts `upper_only` and `full` keypoint action layouts. With raw
 fingers they are 45-D and 66-D; with binary hands they are 35-D and 56-D.
@@ -50,17 +52,20 @@ supplies all five key-body poses, the full base action, and hands.
 
 `OpenAIResponsesOliVLA` reuses main's Responses API implementation. It sends
 the three RGB views, current left/right wrist and head poses, and a summary of
-the 12-D finger state to GPT-6. The `control_oli` tool can request absolute xyz
-targets and open/close either hand. Wrist/head orientation, base, and feet
-cannot be changed by GPT.
+the 12-D finger state to GPT-6. The `control_oli` tool can request base-frame
+wrist and head xyz deltas, relative wrist-frame RPY deltas, and all six native
+channels of either hand. The policy adds the head delta to the observed
+absolute head pose, so the 66-D action and Operator/WBT contract remain
+absolute. Base and feet cannot be changed by GPT.
 
 Every GPT command is constrained before it reaches MROS:
 
 - wrist displacement is limited to 8 cm per call;
 - head displacement is limited to 3 cm per call;
+- wrist rotation is limited to 15 degrees per call;
 - xyz is clipped to the configured workspace;
-- the target is converted to a 50-step minimum-jerk trajectory;
-- hand changes occur only in the final settling steps.
+- keypoint poses and hands are linearly interpolated to the target over all 50
+  steps.
 
 ## Running
 

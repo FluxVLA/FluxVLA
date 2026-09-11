@@ -24,9 +24,9 @@ inference_model = dict(
     image_horizon=2,
     max_llm_calls=50,
     action_horizon=50,
-    hand_settle_steps=15,
     max_wrist_delta=0.08,
     max_head_delta=0.03,
+    max_rotation_delta_deg=15.0,
     workspace_bounds=[[-0.30, 0.80], [-0.65, 0.65], [-0.30, 1.50]],
 )
 
@@ -38,11 +38,18 @@ inference = dict(
     interactive=True,
     default_prompt_id='1',
     default_execution_count=1,
-    task_descriptions={'1': 'Pick up the candy.'},
+    task_descriptions={
+        '1': ('pick up the white candy and place it in the left section of '
+              'the snack tray with left arm'),
+        '2': ('pick up the purple candy and place it in the right section of '
+              'the snack tray with left arm'),
+        '3': ('pick up the red candy and place it in the middle section of '
+              'the snack tray with left arm'),
+    },
     # Observation-only and one API call by default. Live control must be
     # enabled explicitly by setting disable_puppet_arm=False.
     disable_puppet_arm=True,
-    publish_rate=50.0,
+    publish_rate=30.0,
     camera_names=['head', 'left_wrist', 'right_wrist'],
     operator=dict(
         type='OliOperator',

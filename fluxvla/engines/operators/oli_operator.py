@@ -70,7 +70,9 @@ KEYBODY_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
 
 # Base rotation is a hybrid action encoded as rot6d.
 # After conversion to ZYX Euler angles, yaw is a per-step delta while pitch
-# and roll are current-step values. It is not a generic SO(3) delta.
+# and roll are absolute world-frame targets. Identity rot6d therefore means
+# zero yaw delta with zero pitch/roll, not "hold the measured orientation".
+# A degenerate all-zero rot6d is the explicit hold sentinel.
 KEYPOINT_UPPER_ONLY_ACTION_SLICES = {
     'left_wrist': slice(0, 9),
     'right_wrist': slice(9, 18),
@@ -285,8 +287,9 @@ class OliOperator(BaseOperator):
                              "control_backend='mros'")
         if command_mode not in {'joint', 'keypoint'}:
             raise ValueError(f'Unsupported Oli command_mode: {command_mode}')
-        if command_mode == 'keypoint' and control_backend != 'mros':
-            raise ValueError("command_mode='keypoint' requires MROS")
+        if ((state_mode == 'keypoint' or command_mode == 'keypoint')
+                and control_backend != 'mros'):
+            raise ValueError('Keypoint state and commands require MROS')
 
         self.head_rgb_topic = head_rgb_topic
         self.left_wrist_rgb_topic = left_wrist_rgb_topic
@@ -319,6 +322,7 @@ class OliOperator(BaseOperator):
         self._accum_base_yaw = 0.0
         self._accum_base_rot = Rotation.identity()
         self._latest_keypoint_state = None
+        self._previous_keypoint_quats = {}
         self._last_get_frame_warning_time = {}
 
         super().__init__(sync_warning_enabled=False)
@@ -861,21 +865,25 @@ class OliOperator(BaseOperator):
         base_pos, base_quat = self._integrate_base_action(
             base_action[:3], base_action[3:])
 
-        def anchor(pose):
+        def anchor(name, pose):
             quat_wxyz = _rot6d_to_quat_xyzw(pose[3:])[[3, 0, 1, 2]]
+            previous = self._previous_keypoint_quats.get(name)
+            if previous is not None and np.dot(quat_wxyz, previous) < 0.0:
+                quat_wxyz = -quat_wxyz
+            self._previous_keypoint_quats[name] = quat_wxyz
             return pose[:3], quat_wxyz
 
         neutral = (np.zeros(3), np.array([1.0, 0.0, 0.0, 0.0]))
-        left_wrist = anchor(command['left_wrist'])
-        right_wrist = anchor(command['right_wrist'])
+        left_wrist = anchor('left_wrist', command['left_wrist'])
+        right_wrist = anchor('right_wrist', command['right_wrist'])
         anchors = {
             'left_hand': left_wrist,
             'right_hand': right_wrist,
-            'head': anchor(command['head']),
+            'head': anchor('head', command['head']),
             'torso': neutral,
             'base': (base_pos, base_quat[[3, 0, 1, 2]]),
-            'left_foot': anchor(command['left_foot']),
-            'right_foot': anchor(command['right_foot']),
+            'left_foot': anchor('left_foot', command['left_foot']),
+            'right_foot': anchor('right_foot', command['right_foot']),
             'left_wrist': left_wrist,
             'right_wrist': right_wrist,
         }
@@ -961,9 +969,9 @@ class OliOperator(BaseOperator):
     def _integrate_base_action(self, base_pos_action, base_rot6d_action):
         """Convert the hybrid base action into an absolute command pose.
 
-        ``x/y`` and yaw are body-frame per-step deltas; height and the pitch
-        and roll decoded from rot6d are current-step values. Only yaw is
-        accumulated, matching the keypoint action contract.
+        ``x/y`` and yaw are body-frame per-step deltas. Height and the pitch
+        and roll decoded from rot6d are absolute world-frame targets. Only
+        yaw is accumulated. A degenerate rot6d leaves rotation unchanged.
         """
         cos_yaw = np.cos(self._accum_base_yaw)
         sin_yaw = np.sin(self._accum_base_yaw)
