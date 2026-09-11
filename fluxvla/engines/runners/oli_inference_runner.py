@@ -34,9 +34,10 @@ class _ShutdownRequested(Exception):
 class OliInferenceRunner(BaseInferenceRunner):
     """Runner for Oli whole-body (loco-manipulation) inference.
 
-    Supports one or two cameras, a 33-dim state (31 joints + 2 hand-closed),
-    and a 42-dim action (31 joint q + 9 base pose + 2 hand-closed). Each
-    predicted action step is sent to ``OliOperator`` with time-based control.
+    Supports one or two cameras and either the legacy 33-dim state/42-dim
+    action hand-open/closed representation or the MROS 43-dim state/52-dim
+    individual-finger representation. Each predicted action step is sent to
+    ``OliOperator`` with time-based control.
 
     No RTC, interpolation, async execution, or done-driven prompt switching.
     Interactive execution selects a prompt ID and a positive execution count;
@@ -50,9 +51,9 @@ class OliInferenceRunner(BaseInferenceRunner):
                  default_prompt_id: str = None,
                  default_execution_count: int = 1,
                  apply_jpeg_compression: bool = False,
-                 zero_prompt_resets: bool = False,
-                 initial_state=None,
-                 reset_duration_sec: float = 5.0,
+                 prepare_pose=None,
+                 prepare_pose_duration_sec: float = 5.0,
+                 prepare_pose_prompt_id: str = None,
                  *args,
                  **kwargs):
         self.execute_horizon = execute_horizon
@@ -60,23 +61,27 @@ class OliInferenceRunner(BaseInferenceRunner):
         self.default_prompt_id = default_prompt_id
         self.default_execution_count = int(default_execution_count)
         self.apply_jpeg_compression = bool(apply_jpeg_compression)
-        self.zero_prompt_resets = bool(zero_prompt_resets)
-        self.initial_state = (None if initial_state is None else np.asarray(
-            initial_state, dtype=np.float64))
-        self.reset_duration_sec = float(reset_duration_sec)
+        self.prepare_pose = (None if prepare_pose is None else np.asarray(
+            prepare_pose, dtype=np.float64))
+        self.prepare_pose_duration_sec = float(prepare_pose_duration_sec)
+        self.prepare_pose_prompt_id = (None if prepare_pose_prompt_id is None
+                                       else str(prepare_pose_prompt_id))
         if self.execute_horizon is not None and self.execute_horizon <= 0:
             raise ValueError('execute_horizon must be positive or None')
-        if self.default_execution_count <= 0:
+        if self.interactive and self.default_execution_count <= 0:
             raise ValueError('default_execution_count must be positive')
-        if self.initial_state is not None:
-            if self.initial_state.shape != (33, ):
+        if self.prepare_pose is not None:
+            if self.prepare_pose.shape not in ((33, ), (43, )):
                 raise ValueError(
-                    'Oli initial_state must contain 31 joints and 2 hand '
-                    f'flags, got shape {self.initial_state.shape}')
-            if not np.all(np.isfinite(self.initial_state)):
-                raise ValueError('Oli initial_state must be finite')
-        if self.reset_duration_sec <= 0:
-            raise ValueError('reset_duration_sec must be positive')
+                    'Oli prepare_pose must contain 31 joints and either 2 '
+                    'hand flags or 12 finger positions, got shape '
+                    f'{self.prepare_pose.shape}')
+            if not np.all(np.isfinite(self.prepare_pose)):
+                raise ValueError('Oli prepare_pose must be finite')
+        if self.prepare_pose_duration_sec <= 0:
+            raise ValueError('prepare_pose_duration_sec must be positive')
+        if self.prepare_pose_prompt_id == '':
+            raise ValueError('prepare_pose_prompt_id must not be empty')
 
         if 'camera_names' not in kwargs or kwargs['camera_names'] is None:
             kwargs['camera_names'] = ['head']
@@ -98,6 +103,14 @@ class OliInferenceRunner(BaseInferenceRunner):
 
         super().__init__(*args, **kwargs)
 
+        if self.prepare_pose is not None:
+            hand_mode = getattr(self.ros_operator, 'hand_mode', 'binary')
+            state_dim = 43 if hand_mode == 'finger' else 33
+            if self.prepare_pose.shape != (state_dim, ):
+                raise ValueError(
+                    f'Oli prepare_pose must have shape ({state_dim},) for '
+                    'the configured hand representation')
+
         if not self.task_descriptions:
             raise ValueError('task_descriptions must not be empty')
         if self.default_prompt_id is None:
@@ -107,14 +120,14 @@ class OliInferenceRunner(BaseInferenceRunner):
             raise ValueError(
                 f'default_prompt_id {self.default_prompt_id!r} is not in '
                 f'task_descriptions={list(self.task_descriptions)}')
-        if self.zero_prompt_resets:
-            if self.initial_state is None:
+        if self.prepare_pose_prompt_id is not None:
+            if self.prepare_pose is None:
+                raise ValueError('prepare_pose is required when '
+                                 'prepare_pose_prompt_id is configured')
+            if self.prepare_pose_prompt_id in self.task_descriptions:
                 raise ValueError(
-                    'initial_state is required when zero_prompt_resets=True')
-            if self.default_prompt_id == '0':
-                raise ValueError(
-                    'default_prompt_id cannot be 0 when 0 is the reset '
-                    'command')
+                    f'prepare_pose_prompt_id {self.prepare_pose_prompt_id!r} '
+                    'conflicts with a task prompt ID')
 
         self._running = True
         self._dt = 1.0 / self.publish_rate
@@ -127,6 +140,14 @@ class OliInferenceRunner(BaseInferenceRunner):
         """Handle SIGINT for graceful shutdown."""
         print('\nShutdown requested...')
         self._running = False
+
+    def _handle_keyboard_pause(self):
+        """Return an interactive run to prompt selection at a safe boundary."""
+        self.reset_inference_history()
+        print(
+            '[pause] Paused after the current action chunk; '
+            'returning to prompt selection.',
+            flush=True)
 
     def _get_task_description(self, task_id: str) -> str:
         """Fall back to the first configured Oli task rather than the base
@@ -150,11 +171,13 @@ class OliInferenceRunner(BaseInferenceRunner):
             return [description] * self.default_execution_count
 
         prompt_ids = ', '.join(self.task_descriptions)
-        reset_hint = '; 0 resets robot' if self.zero_prompt_resets else ''
+        prepare_hint = (
+            f'; {self.prepare_pose_prompt_id} moves to prepare pose'
+            if self.prepare_pose_prompt_id is not None else '')
         while self._running:
             try:
                 value = input(f'Prompt ID [{self.default_prompt_id}] '
-                              f'(available: {prompt_ids}{reset_hint}; '
+                              f'(available: {prompt_ids}{prepare_hint}; '
                               'q to quit): ')
             except (EOFError, KeyboardInterrupt):
                 self._running = False
@@ -165,9 +188,9 @@ class OliInferenceRunner(BaseInferenceRunner):
                 return []
             if prompt_id == '':
                 prompt_id = self.default_prompt_id
-            if prompt_id == '0' and self.zero_prompt_resets:
+            if prompt_id == self.prepare_pose_prompt_id:
                 self._move_to_prepare_pose()
-                print('[reset] Oli initial state restored.', flush=True)
+                print('[prepare] Oli prepare pose reached.', flush=True)
                 continue
             if prompt_id in self.task_descriptions:
                 break
@@ -179,8 +202,8 @@ class OliInferenceRunner(BaseInferenceRunner):
         while self._running:
             try:
                 value = input(
-                    f'Execution count [{self.default_execution_count}] '
-                    '(q to quit): ')
+                    'Number of action chunks '
+                    f'(default: {self.default_execution_count}, q to quit): ')
             except (EOFError, KeyboardInterrupt):
                 self._running = False
                 return []
@@ -225,10 +248,53 @@ class OliInferenceRunner(BaseInferenceRunner):
 
         with torch.inference_mode():
             try:
-                while self._running:
-                    self._run_episode(initial_instruction)
+                if self.interactive:
+                    while self._running:
+                        self._run_episode(initial_instruction)
+                else:
+                    self._run_continuous()
             except _ShutdownRequested:
                 pass
+
+    def _infer_and_execute_chunk(self, instruction):
+        """Predict and execute one action chunk, preserving its context."""
+        self._action_ctx = SimpleNamespace(instruction=instruction)
+        inputs = self._preprocess(instruction)
+
+        with torch.autocast(
+                'cuda',
+                dtype=self.mixed_precision_dtype,
+                enabled=(self.enable_mixed_precision
+                         and not self._use_remote)):
+            raw_action = self._predict_action(inputs)
+
+        actions = self._postprocess_actions(raw_action)
+        sent_steps = self._execute_actions(actions, None)
+        self._prev_ctx = self._action_ctx
+        return sent_steps
+
+    def _run_continuous(self):
+        """Run the default prompt continuously without reading stdin."""
+        prompt_id = self.default_prompt_id
+        instruction = self._get_task_description(prompt_id)
+        self._selected_prompt_id = prompt_id
+        self._prev_ctx = None
+        published_steps = 0
+        print(
+            f'[continuous] prompt_id={prompt_id} '
+            f'description={instruction!r}',
+            flush=True)
+
+        while self._running:
+            if (self.max_publish_step
+                    and published_steps >= self.max_publish_step):
+                break
+            sent_steps = self._infer_and_execute_chunk(instruction)
+            published_steps += sent_steps
+            print(
+                f'[continuous] prompt_id={prompt_id} '
+                f'published_steps={sent_steps} total_steps={published_steps}',
+                flush=True)
 
     def _run_episode(self, default_instruction):
         """Execute the selected prompt for the requested chunk count."""
@@ -237,22 +303,16 @@ class OliInferenceRunner(BaseInferenceRunner):
         published_steps = 0
 
         for execution_index, instruction in enumerate(instructions, start=1):
-            if not self._running or published_steps >= self.max_publish_step:
+            if (not self._running
+                    or (self.max_publish_step
+                        and published_steps >= self.max_publish_step)):
                 break
-            self._action_ctx = SimpleNamespace()
-            self._action_ctx.instruction = instruction
-            inputs = self._preprocess(instruction)
+            sent_steps = self._infer_and_execute_chunk(instruction)
 
-            with torch.autocast(
-                    'cuda',
-                    dtype=self.mixed_precision_dtype,
-                    enabled=(self.enable_mixed_precision
-                             and not self._use_remote)):
-                raw_action = self._predict_action(inputs)
+            if self._poll_keyboard_pause():
+                self._handle_keyboard_pause()
+                return
 
-            actions = self._postprocess_actions(raw_action)
-            sent_steps = self._execute_actions(actions, None)
-            self._prev_ctx = self._action_ctx
             published_steps += sent_steps
             print(
                 f'[execution] prompt_id={self._selected_prompt_id} '
@@ -264,7 +324,7 @@ class OliInferenceRunner(BaseInferenceRunner):
         """Poll the operator until a synchronized observation is available.
 
         Returns:
-            tuple: Camera images followed by ``state_33d``, or ``None``.
+            tuple: Camera images followed by the configured state, or ``None``.
         """
         last_wait_print = 0.0
         while self._running:
@@ -315,7 +375,7 @@ class OliInferenceRunner(BaseInferenceRunner):
         return self.observation_window[-1]
 
     def _execute_actions(self, actions: np.ndarray, rate):
-        """Send each 42-dim action to the operator with rate control."""
+        """Send each whole-body action to the operator with rate control."""
         del rate
         if self.disable_puppet_arm:
             return 0
@@ -331,16 +391,17 @@ class OliInferenceRunner(BaseInferenceRunner):
         return sent_steps
 
     def _move_to_prepare_pose(self):
-        """Smoothly restore the configured 33-dim Oli initial state."""
-        if self.initial_state is None:
-            raise RuntimeError('No Oli initial_state is configured')
+        """Smoothly move to the configured Oli prepare pose."""
+        if self.prepare_pose is None:
+            raise RuntimeError('No Oli prepare_pose is configured')
         if self.disable_puppet_arm:
             print(
-                '[reset] disable_puppet_arm=True; reset not sent.', flush=True)
-            return self.initial_state.copy()
+                '[prepare] disable_puppet_arm=True; command not sent.',
+                flush=True)
+            return self.prepare_pose.copy()
         target = self.ros_operator.gohome(
-            self.initial_state,
-            duration_sec=self.reset_duration_sec,
+            self.prepare_pose,
+            duration_sec=self.prepare_pose_duration_sec,
             publish_rate=self.publish_rate,
             running_flag_fn=lambda: self._running)
         self.observation_window = None

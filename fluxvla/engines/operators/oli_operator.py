@@ -161,13 +161,16 @@ class OliOperator(BaseOperator):
     on ``/teleop_cmd_WBT``.  Both modes share BaseOperator lifecycle and
     trajectory state.
 
-    state (33-dim): 31 joint positions + 2 hand-closed flags.
-    action (42-dim):
+    Default state (33-dim): 31 joint positions + 2 hand-closed flags.
+    Default action (42-dim):
         [0:31]  joint position commands (q)
         [31:34] base_link position (xyz, absolute)
         [34:40] base_link rotation (rot6d)
         [40]    left_hand_closed
         [41]    right_hand_closed
+
+    With ``hand_mode='finger'`` in MROS mode, the state/action instead carry
+    the 12 individual finger values: 43-dim state and 52-dim action.
     """
 
     def __init__(self,
@@ -179,9 +182,10 @@ class OliOperator(BaseOperator):
                  control_backend='websocket',
                  left_wrist_rgb_topic=None,
                  finger_state_topic='/brainco1/hand/state',
-                 finger_cmd_topic='/brainco1/hand/cmd_vla',
+                 finger_cmd_topic='/brainco1/hand/cmd',
                  teleop_wbt_topic='/teleop_cmd_WBT',
-                 finger_force_levels=None):
+                 finger_force_levels=None,
+                 hand_mode: str = 'binary'):
         """Initialize OliOperator.
 
         Args:
@@ -199,10 +203,18 @@ class OliOperator(BaseOperator):
             teleop_wbt_topic (str): Whole-body command topic in MROS mode.
             finger_force_levels (tuple, optional): Left/right hand force
                 levels. Defaults to (3, 3) for WebSocket and (2, 2) for MROS.
+            hand_mode (str): ``binary`` uses two hand-open/closed values;
+                ``finger`` uses 12 individual finger values and is supported
+                only by MROS. Defaults to ``binary``.
         """
         if control_backend not in {'websocket', 'mros'}:
             raise ValueError(
                 f'Unsupported Oli control_backend: {control_backend}')
+        if hand_mode not in {'binary', 'finger'}:
+            raise ValueError(f'Unsupported Oli hand_mode: {hand_mode}')
+        if hand_mode == 'finger' and control_backend != 'mros':
+            raise ValueError("hand_mode='finger' is only supported with "
+                             "control_backend='mros'")
 
         self.head_rgb_topic = head_rgb_topic
         self.left_wrist_rgb_topic = left_wrist_rgb_topic
@@ -211,6 +223,7 @@ class OliOperator(BaseOperator):
         self.finger_cmd_topic = finger_cmd_topic
         self.teleop_wbt_topic = teleop_wbt_topic
         self.control_backend = control_backend
+        self.hand_mode = hand_mode
         self.command_mode = 'joint'
 
         self.robot_ip = robot_ip
@@ -372,18 +385,7 @@ class OliOperator(BaseOperator):
             print('Non-finite joint positions; dropping frame')
             return False
 
-        # Hand-closed flags mirror the last sent finger command
-        # (data-collection convention), not a direct sensor reading; both are
-        # 0 before the first send_action call.
-        left_cmd_avg = float(np.mean(self.last_finger_cmd[0:12:2]))
-        right_cmd_avg = float(np.mean(self.last_finger_cmd[1:12:2]))
-        left_hand_closed = 1.0 if left_cmd_avg > 20 else 0.0
-        right_hand_closed = 1.0 if right_cmd_avg > 20 else 0.0
-
-        state = np.concatenate([
-            joint_state,
-            np.array([left_hand_closed, right_hand_closed], dtype=np.float32)
-        ])
+        state = np.concatenate([joint_state, self._get_hand_observation()])
         return (head_img, state)
 
     def _warn_get_frame_missing(self, key, message, interval=1.0):
@@ -430,7 +432,13 @@ class OliOperator(BaseOperator):
             time.sleep(0.005)
         return None
 
-    def _hand_closed_state(self):
+    def _get_hand_observation(self):
+        """Return the configured 12-dim finger or 2-dim hand observation."""
+        if self.hand_mode == 'finger':
+            return self.last_finger_state.copy()
+
+        # Binary hand state mirrors the last sent command rather than a sensor
+        # reading, matching the data-collection convention.
         left_avg = float(np.mean(self.last_finger_cmd[0:12:2]))
         right_avg = float(np.mean(self.last_finger_cmd[1:12:2]))
         return np.array([float(left_avg > 20.0),
@@ -438,7 +446,7 @@ class OliOperator(BaseOperator):
                         dtype=np.float32)
 
     def _get_mros_frame(self, timeout=0.05):
-        """Read head/wrist images and the 33-dim WBT state from MROS."""
+        """Read head/wrist images and the configured WBT state from MROS."""
         head_img = self._read_mros_compressed_rgb(self.color_subscriber,
                                                   timeout)
         if head_img is None:
@@ -484,7 +492,7 @@ class OliOperator(BaseOperator):
             if finger_state.size >= 12:
                 self.last_finger_state = finger_state[:12].copy()
 
-        state = np.concatenate([joint_state, self._hand_closed_state()])
+        state = np.concatenate([joint_state, self._get_hand_observation()])
         if left_wrist_img is None:
             return (head_img, state)
         return (head_img, left_wrist_img, state)
@@ -608,12 +616,15 @@ class OliOperator(BaseOperator):
         """Send a whole-body action through the configured transport.
 
         Args:
-            action (np.ndarray): Action vector with at least the 42 WBT dims.
+            action (np.ndarray): Action vector with at least 42 WBT dims, or
+                52 dims when ``hand_mode='finger'``.
         """
         action = np.asarray(action, dtype=np.float64)
-        if action.ndim != 1 or action.size < 42:
+        expected_dim = 52 if self.hand_mode == 'finger' else 42
+        if action.ndim != 1 or action.size < expected_dim:
             raise ValueError(
-                f'OliOperator expects a (D>=42,) action, got {action.shape}')
+                f'OliOperator expects a (D>={expected_dim},) action, got '
+                f'{action.shape}')
         if not np.all(np.isfinite(action)):
             raise ValueError('OliOperator received a non-finite action')
 
@@ -628,16 +639,13 @@ class OliOperator(BaseOperator):
         joint_cmd_q = action[0:31]
         base_pos = action[31:34]
         base_rot6d = action[34:40]
-        left_closed = float(action[40])
-        right_closed = float(action[41])
-
         self._send_joints(joint_cmd_q)
         if _is_degenerate_rot6d(base_rot6d):
             print('OliOperator: degenerate base rot6d; skipping base pose')
         else:
             base_quat_xyzw = _rot6d_to_quat_xyzw(base_rot6d)
             self._send_base_pose(base_pos, base_quat_xyzw)
-        self._send_hands(left_closed, right_closed)
+        self._send_hand_action(action[40:42])
 
     def _make_keypoint(self,
                        name,
@@ -704,7 +712,8 @@ class OliOperator(BaseOperator):
             self._make_keypoint('base_link', base_pos, base_quat)
         ]
         self.teleop_wbt_publisher.publish(teleop_msg)
-        self._send_hands(float(action[40]), float(action[41]))
+        hand_end = 52 if self.hand_mode == 'finger' else 42
+        self._send_hand_action(action[40:hand_end])
 
     def _send_joints(self, q):
         """Send 31 joint position targets via ``request_servoj``."""
@@ -742,33 +751,49 @@ class OliOperator(BaseOperator):
                 ],
             })
 
-    def _send_hands(self, left_closed, right_closed):
-        """Send dexterous-hand open/close command.
+    def _send_hand_action(self, hand_action):
+        """Convert and publish the configured 2-dim or 12-dim hand action."""
+        hand_action = np.asarray(hand_action, dtype=np.float32)
+        expected_dim = 12 if self.hand_mode == 'finger' else 2
+        if hand_action.shape != (expected_dim, ):
+            raise ValueError(
+                f'Hand action must have shape ({expected_dim},), got '
+                f'{hand_action.shape}')
+        if not np.all(np.isfinite(hand_action)):
+            raise ValueError('Hand action must be finite')
 
-        NOTE (hardware integration point): the hand-command request title is
-        robot-SDK specific. The 14-dim payload (12 finger + 2 force levels)
-        matches the data-collection convention.
-        """
-        left_val = 100.0 if left_closed >= 0.5 else 0.0
-        right_val = 100.0 if right_closed >= 0.5 else 0.0
-        finger_cmd = [0.0] * 14
-        for i in range(0, 12, 2):
-            finger_cmd[i] = left_val
-        for i in range(1, 12, 2):
-            finger_cmd[i] = right_val
-        # Indices 2/3: left/right thumb-aux fingers; always closed for grasp.
-        finger_cmd[2] = 100.0
-        finger_cmd[3] = 100.0
-        force_levels = self.finger_force_levels
-        if force_levels is None:
-            force_levels = ((2.0, 2.0) if self.control_backend == 'mros' else
-                            (3.0, 3.0))
-        if len(force_levels) != 2:
-            raise ValueError('finger_force_levels must contain 2 values')
-        finger_cmd[12] = float(force_levels[0])
-        finger_cmd[13] = float(force_levels[1])
+        if self.hand_mode == 'finger':
+            if self.control_backend != 'mros':
+                raise NotImplementedError(
+                    'Individual finger commands require the MROS backend')
+            finger_cmd = hand_action.tolist()
+            force_levels = self.finger_force_levels
+            if force_levels is None:
+                force_levels = (2.0, 2.0)
+            if len(force_levels) != 2:
+                raise ValueError('finger_force_levels must contain 2 values')
+            finger_cmd.extend(float(value) for value in force_levels)
+        else:
+            left_val = 100.0 if hand_action[0] >= 0.5 else 0.0
+            right_val = 100.0 if hand_action[1] >= 0.5 else 0.0
+            finger_cmd = [0.0] * 14
+            finger_cmd[0:12:2] = [left_val] * 6
+            finger_cmd[1:12:2] = [right_val] * 6
+            # Thumb-aux fingers and force levels follow the main-branch
+            # 14-dimensional hand-command contract.
+            finger_cmd[2] = 100.0
+            finger_cmd[3] = 100.0
+            force_levels = self.finger_force_levels
+            if force_levels is None:
+                force_levels = ((2.0,
+                                 2.0) if self.control_backend == 'mros' else
+                                (3.0, 3.0))
+            if len(force_levels) != 2:
+                raise ValueError('finger_force_levels must contain 2 values')
+            finger_cmd[12] = float(force_levels[0])
+            finger_cmd[13] = float(force_levels[1])
 
-        self.last_finger_cmd = np.array(finger_cmd, dtype=np.float32)
+        self.last_finger_cmd = np.asarray(finger_cmd, dtype=np.float32)
         if self.control_backend == 'mros':
             from mros.std_msgs.msg import Float32Array
             finger_msg = Float32Array()
@@ -801,44 +826,47 @@ class OliOperator(BaseOperator):
             values = list(np.asarray(gripper_targets).reshape(-1))
         if len(values) != 2:
             raise ValueError('Oli gripper target must contain left and right')
-        self._send_hands(float(values[0]), float(values[1]))
+        self._send_hand_action(values)
 
     def gohome(self,
-               initial_state=None,
+               prepare_pose=None,
                duration_sec=5.0,
                publish_rate=30.0,
                running_flag_fn=None):
-        """Smoothly move the MROS robot to a configured 33-dim state.
+        """Smoothly move the MROS robot to a configured WBT state.
 
-        The reset state contains 31 joint targets and two hand-closed flags.
-        Base x/y/yaw are held at the operator's current accumulated target;
-        they are not part of ``/joint/state`` and therefore are not guessed.
+        The prepare pose contains 31 joint targets plus either two hand-closed
+        flags or twelve individual finger positions. Base x/y/yaw are held at
+        the operator's current accumulated target; they are not part of
+        ``/joint/state`` and therefore are not guessed.
         """
-        if initial_state is None:
-            raise ValueError('Oli gohome requires a 33-dim initial_state')
+        if prepare_pose is None:
+            raise ValueError('Oli gohome requires a prepare_pose')
         if self.control_backend != 'mros':
             raise NotImplementedError(
-                'Oli configured-state reset currently requires MROS')
+                'Oli prepare-pose motion currently requires MROS')
 
-        target = np.asarray(initial_state, dtype=np.float64)
-        if target.shape != (33, ) or not np.all(np.isfinite(target)):
+        target = np.asarray(prepare_pose, dtype=np.float64)
+        state_dim = 43 if self.hand_mode == 'finger' else 33
+        if target.shape != (state_dim, ) or not np.all(np.isfinite(target)):
             raise ValueError(
-                'Oli initial_state must be a finite 33-dim vector')
+                f'Oli prepare_pose must be a finite {state_dim}-dim vector')
         duration_sec = float(duration_sec)
         publish_rate = float(publish_rate)
         if duration_sec <= 0 or publish_rate <= 0:
             raise ValueError(
-                'Reset duration and publish rate must be positive')
+                'Prepare-pose duration and publish rate must be positive')
 
         joint_msg = self._read_mros_message(
             self.joint_state_subscriber, timeout=1.0)
         if joint_msg is None:
             raise RuntimeError(
                 f'No joint state received from {self.joint_state_topic}; '
-                'reset was not started')
+                'prepare-pose motion was not started')
         start_q = np.asarray(joint_msg.q, dtype=np.float64)
         if start_q.size < 31 or not np.all(np.isfinite(start_q[:31])):
-            raise RuntimeError('Invalid joint state; reset was not started')
+            raise RuntimeError(
+                'Invalid joint state; prepare-pose motion was not started')
         start_q = start_q[:31].copy()
 
         steps = max(1, int(round(duration_sec * publish_rate)))
@@ -850,11 +878,15 @@ class OliOperator(BaseOperator):
                 break
             ratio = step / steps
             blend = ratio**3 * (10.0 + ratio * (-15.0 + 6.0 * ratio))
-            action = np.zeros(42, dtype=np.float64)
+            action = np.zeros(
+                52 if self.hand_mode == 'finger' else 42, dtype=np.float64)
             action[:31] = start_q + blend * (target[:31] - start_q)
             action[31:34] = [0.0, 0.0, self._accum_base_pos[2]]
             action[34:40] = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0]
-            action[40:42] = target[31:33]
+            if self.hand_mode == 'finger':
+                action[40:52] = target[31:43]
+            else:
+                action[40:42] = target[31:33]
             self.send_action(action)
 
             next_publish_time += period
@@ -863,9 +895,9 @@ class OliOperator(BaseOperator):
             completed = True
 
         if not completed:
-            raise RuntimeError('Oli initial-state reset was interrupted')
+            raise RuntimeError('Oli prepare-pose motion was interrupted')
         print(
-            f'[reset] Reached configured Oli initial state in '
+            f'[prepare] Reached configured Oli prepare pose in '
             f'{duration_sec:.1f}s ({steps} steps).',
             flush=True)
         return target.copy()
