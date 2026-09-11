@@ -289,6 +289,9 @@ class DiT4DiTVLA(BaseVLA):
         states: Optional[torch.Tensor] = None,
         lang_tokens: Optional[torch.Tensor] = None,
         lang_masks: Optional[torch.Tensor] = None,
+        prev_actions: Optional[torch.Tensor] = None,
+        prefix_len: int = 0,
+        rtc_config: Optional[Dict] = None,
         **kwargs,
     ) -> torch.Tensor:
         del kwargs
@@ -312,6 +315,9 @@ class DiT4DiTVLA(BaseVLA):
                 input_features=last_hidden,
                 states=states,
                 attention_mask=backbone_outputs.attention_mask,
+                prev_actions=prev_actions,
+                prefix_len=prefix_len,
+                rtc_config=rtc_config,
             )
         if not torch.is_tensor(actions):
             raise TypeError('DiT4DiTActionHead.predict_action must return a '
