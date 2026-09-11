@@ -97,8 +97,8 @@ Use only the camera images and reported robot state; do not assume hidden
 simulator metadata."""
 
 DEFAULT_OLI_SYSTEM_PROMPT = """You control an OLI humanoid through relative
-wrist and head motions. At every turn you receive head, left-wrist, and
-right-wrist camera images, the current absolute poses, and both hand states.
+keypoint and base motions. At every turn you receive available camera images,
+the current absolute keypoint and base poses, and both hand states.
 Use exactly one control_oli tool call. Omitted targets hold their current
 values.
 
@@ -111,18 +111,21 @@ Useful reference profiles are open [0, 98, 0, 0, 0, 0], normal grasp
 [30, 92, 40, 98, 98, 98], and firm grasp [58, 92, 58, 98, 98, 98]. Values
 between profiles provide partial closure. Channel 1 controls lateral thumb
 splay rather than finger flexion, so its open value intentionally stays near
-98. Omit an unused hand to hold all six current channels. Keep the unused wrist
-and head still unless moving them is necessary. Position units are metres in
-the robot base frame: +x points forward from the robot, +y points to the
-robot's left, and +z points upward. Wrist and head dx/dy/dz commands are
-relative displacements in that frame. Wrist rotation commands are relative to a
-right-handed hand frame: local +x points from wrist to fingers, local +y lies
-laterally across the palm, and local +z is the outward palm normal. Roll twists
-the wrist about +x, pitch moves the fingers up/down about +y, and yaw moves the
-fingers left/right about +z. Positive angles follow the right-hand rule. Use
-wrist rotation when the visible finger or palm alignment requires it. Include
-a short note explaining the visible evidence and requested move. Runtime limits
-each command; use the next observation to verify what was executed."""
+98. Omit an unused hand to hold all six current channels. Keep unused
+keypoints still. Position units are metres in the robot base frame: +x points
+forward from the robot, +y points to the robot's left, and +z points upward.
+All dx/dy/dz commands are relative displacements. Base dx/dy and yaw are total
+body-frame changes over the next action chunk; base dz changes its height.
+Base roll_deg and pitch_deg are absolute world-frame orientation targets.
+Keypoint rotations are local relative [roll, pitch, yaw] changes. A wrist's
+local +x points from wrist to fingers, +y lies laterally across the palm, and
++z is the outward palm normal. A foot's local +x points forward, +y points
+left, and +z points upward. Roll twists about +x, pitch rotates about +y, and
+yaw rotates about +z. Positive angles follow the right-hand rule. Use base and
+feet when locomotion, turning, or changing stance is needed, coordinating them
+with the upper body. Include a short note explaining the visible evidence and
+requested move. Runtime limits each command; use the next observation to verify
+what was executed."""
 
 
 @VLAS.register_module()
@@ -734,7 +737,11 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
     def __init__(self,
                  max_wrist_delta: float = 0.08,
                  max_head_delta: float = 0.03,
+                 max_foot_delta: float = 0.08,
+                 max_base_xy_delta: float = 0.10,
+                 max_base_height_delta: float = 0.08,
                  max_rotation_delta_deg: float = 15.0,
+                 max_base_tilt_deg: float = 15.0,
                  workspace_bounds: Sequence[Sequence[float]] = ((-0.30, 0.80),
                                                                 (-0.65, 0.65),
                                                                 (-0.30, 1.50)),
@@ -752,14 +759,19 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
             workspace_bounds=workspace_bounds,
             system_prompt=system_prompt,
             **kwargs)
-        if (max_wrist_delta <= 0 or max_head_delta <= 0
-                or max_rotation_delta_deg <= 0):
+        if (max_wrist_delta <= 0 or max_head_delta <= 0 or max_foot_delta <= 0
+                or max_base_xy_delta <= 0 or max_base_height_delta <= 0
+                or max_rotation_delta_deg <= 0 or max_base_tilt_deg <= 0):
             raise ValueError('OLI motion limits must be positive')
         if self.action_horizon < 2:
             raise ValueError('OLI action_horizon must be at least 2')
         self.max_wrist_delta = float(max_wrist_delta)
         self.max_head_delta = float(max_head_delta)
+        self.max_foot_delta = float(max_foot_delta)
+        self.max_base_xy_delta = float(max_base_xy_delta)
+        self.max_base_height_delta = float(max_base_height_delta)
         self.max_rotation_delta_deg = float(max_rotation_delta_deg)
+        self.max_base_tilt_deg = float(max_base_tilt_deg)
 
     @property
     def tools(self) -> List[Dict[str, Any]]:
@@ -790,7 +802,7 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
              for axis in ('dx', 'dy', 'dz')},
             'additionalProperties': False,
         }
-        wrist = {
+        keypoint = {
             'type': 'object',
             'properties':
             {axis: {
@@ -799,7 +811,7 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
              for axis in ('dx', 'dy', 'dz')},
             'additionalProperties': False,
         }
-        wrist['properties']['rotation_delta_rpy_deg'] = {
+        keypoint['properties']['rotation_delta_rpy_deg'] = {
             'type':
             'array',
             'items': {
@@ -810,9 +822,36 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
             'maxItems':
             3,
             'description':
-            ('Relative wrist [roll, pitch, yaw] in degrees. Local +x '
+            ('Local relative [roll, pitch, yaw] in degrees. For a wrist, +x '
              'points wrist-to-fingers, +y runs laterally across the palm, '
-             'and +z is the outward palm normal. Omit to hold rotation.'),
+             'and +z is the outward palm normal. For a foot, +x points '
+             'forward, +y left, and +z up. Omit to hold rotation.'),
+        }
+        base = {
+            'type': 'object',
+            'properties': {
+                **{axis: {
+                    'type': 'number'
+                }
+                   for axis in ('dx', 'dy', 'dz')},
+                'yaw_delta_deg': {
+                    'type': 'number',
+                    'description': 'Total relative yaw over this chunk.',
+                },
+                'roll_deg': {
+                    'type': 'number',
+                    'minimum': -self.max_base_tilt_deg,
+                    'maximum': self.max_base_tilt_deg,
+                    'description': 'Absolute world-frame roll target.',
+                },
+                'pitch_deg': {
+                    'type': 'number',
+                    'minimum': -self.max_base_tilt_deg,
+                    'maximum': self.max_base_tilt_deg,
+                    'description': 'Absolute world-frame pitch target.',
+                },
+            },
+            'additionalProperties': False,
         }
         return [{
             'type':
@@ -820,18 +859,20 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
             'name':
             'control_oli',
             'description':
-            ('Request bounded base-frame-relative wrist and head motion, and '
-             'native hand channels. Omitted fields hold '
-             'their current values.'),
+            ('Request bounded relative keypoint and base motion, and native '
+             'hand channels. Omitted fields hold their current values.'),
             'parameters': {
                 'type': 'object',
                 'properties': {
                     'targets': {
                         'type': 'object',
                         'properties': {
-                            'left_wrist': wrist,
-                            'right_wrist': wrist,
+                            'left_wrist': keypoint,
+                            'right_wrist': keypoint,
+                            'left_foot': keypoint,
+                            'right_foot': keypoint,
                             'head': translation_delta,
+                            'base': base,
                             'left_hand': hand,
                             'right_hand': hand,
                         },
@@ -890,8 +931,15 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
             f'Action call: {self._llm_calls + 1}/{self.max_llm_calls}.',
             f'Max wrist displacement per call: {self.max_wrist_delta:.3f} m.',
             f'Max head displacement per call: {self.max_head_delta:.3f} m.',
-            ('Max relative rotation per call: '
+            f'Max foot displacement per call: {self.max_foot_delta:.3f} m.',
+            ('Max base xy displacement per call: '
+             f'{self.max_base_xy_delta:.3f} m.'),
+            ('Max base height change per call: '
+             f'{self.max_base_height_delta:.3f} m.'),
+            ('Max keypoint rotation and base yaw per call: '
              f'{self.max_rotation_delta_deg:.1f} degrees.'),
+            ('Max absolute base roll/pitch: '
+             f'{self.max_base_tilt_deg:.1f} degrees.'),
             'Workspace xyz bounds: ' + np.array2string(
                 np.asarray(self.workspace_bounds), precision=3,
                 separator=', '),
@@ -909,6 +957,11 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
         lines.append(
             'base xyz in world frame: ' +
             np.array2string(base_pose[:3], precision=5, separator=', '))
+        base_ypr = self._rotation_from_rot6d(base_pose[3:]).as_euler(
+            'ZYX', degrees=True)
+        lines.append(
+            'base world-frame roll/pitch/yaw in degrees: ' +
+            np.array2string(base_ypr[[2, 1, 0]], precision=3, separator=', '))
         hands = np.asarray(hands).reshape(-1)
         lines.append(
             'left_hand [thumb_flex, thumb_splay, index, middle, ring, '
@@ -929,14 +982,15 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
         if not isinstance(targets, dict):
             raise RuntimeError('control_oli.targets must be an object')
         allowed = {
-            'left_wrist', 'right_wrist', 'head', 'left_hand', 'right_hand'
+            'left_wrist', 'right_wrist', 'left_foot', 'right_foot', 'head',
+            'base', 'left_hand', 'right_hand'
         }
         unknown = set(targets) - allowed
         if unknown:
             raise RuntimeError(
                 f'Unknown control_oli targets: {sorted(unknown)}')
         target = current.copy()
-        for name in ('left_wrist', 'right_wrist'):
+        for name in ('left_wrist', 'right_wrist', 'left_foot', 'right_foot'):
             requested = targets.get(name)
             if requested is None:
                 continue
@@ -953,13 +1007,18 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
                 self._target_number(requested.get(key, 0.0), f'{name}.{key}')
                 for key in ('dx', 'dy', 'dz')
             ])
+            max_delta = (
+                self.max_wrist_delta
+                if 'wrist' in name else self.max_foot_delta)
             norm = float(np.linalg.norm(delta_base))
-            if norm > self.max_wrist_delta:
-                delta_base *= self.max_wrist_delta / norm
+            if norm > max_delta:
+                delta_base *= max_delta / norm
             new = old + delta_base
-            target[start:start + 3] = np.clip(
-                new, [bounds[0] for bounds in self.workspace_bounds],
-                [bounds[1] for bounds in self.workspace_bounds])
+            if 'wrist' in name:
+                new = np.clip(new,
+                              [bounds[0] for bounds in self.workspace_bounds],
+                              [bounds[1] for bounds in self.workspace_bounds])
+            target[start:start + 3] = new
             rpy = requested.get('rotation_delta_rpy_deg')
             if rpy is not None:
                 rpy = np.asarray(rpy, dtype=np.float64).reshape(-1)
@@ -997,6 +1056,55 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
             target[start:start + 3] = np.clip(
                 new, [bounds[0] for bounds in self.workspace_bounds],
                 [bounds[1] for bounds in self.workspace_bounds])
+        requested = targets.get('base')
+        if requested is not None:
+            if not isinstance(requested, dict):
+                raise RuntimeError('control_oli.base must be an object')
+            allowed_axes = {
+                'dx', 'dy', 'dz', 'yaw_delta_deg', 'roll_deg', 'pitch_deg'
+            }
+            unknown_axes = set(requested) - allowed_axes
+            if unknown_axes:
+                raise RuntimeError(
+                    f'Unknown base axes: {sorted(unknown_axes)}')
+            start, _ = self.ACTION_SEGMENTS['base']
+            delta_xy = np.array([
+                self._target_number(requested.get(key, 0.0), f'base.{key}')
+                for key in ('dx', 'dy')
+            ])
+            norm = float(np.linalg.norm(delta_xy))
+            if norm > self.max_base_xy_delta:
+                delta_xy *= self.max_base_xy_delta / norm
+            target[start:start + 2] = delta_xy
+            dz = np.clip(
+                self._target_number(requested.get('dz', 0.0), 'base.dz'),
+                -self.max_base_height_delta, self.max_base_height_delta)
+            target[start + 2] = np.clip(base_pose[2] + dz,
+                                        self.workspace_bounds[2][0],
+                                        self.workspace_bounds[2][1])
+            rotation_keys = {'yaw_delta_deg', 'roll_deg', 'pitch_deg'}
+            if rotation_keys.intersection(requested):
+                measured_rotation = self._rotation_from_rot6d(base_pose[3:])
+                measured_rpy = measured_rotation.as_euler('ZYX', degrees=True)
+                yaw = np.clip(
+                    self._target_number(
+                        requested.get('yaw_delta_deg', 0.0),
+                        'base.yaw_delta_deg'), -self.max_rotation_delta_deg,
+                    self.max_rotation_delta_deg)
+                pitch = np.clip(
+                    self._target_number(
+                        requested.get('pitch_deg', measured_rpy[1]),
+                        'base.pitch_deg'), -self.max_base_tilt_deg,
+                    self.max_base_tilt_deg)
+                roll = np.clip(
+                    self._target_number(
+                        requested.get('roll_deg', measured_rpy[2]),
+                        'base.roll_deg'), -self.max_base_tilt_deg,
+                    self.max_base_tilt_deg)
+                target_rotation = Rotation.from_euler(
+                    'ZYX', [yaw, pitch, roll], degrees=True)
+                target[start + 3:start +
+                       9] = self._rotation_to_rot6d(target_rotation)
         hand_start, hand_end = self.ACTION_SEGMENTS['hands']
         for index, key in enumerate(('left_hand', 'right_hand')):
             command = targets.get(key)
@@ -1022,10 +1130,11 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
     def _rotation_to_rot6d(rotation):
         return rotation.as_matrix()[:2].reshape(6)
 
-    def _oli_trajectory(self, current, target):
+    def _oli_trajectory(self, current, target, base_pose):
         blend = np.linspace(0.0, 1.0, self.action_horizon)
         actions = np.repeat(current[None], self.action_horizon, axis=0)
-        for name in ('left_wrist', 'right_wrist', 'head'):
+        for name in ('left_wrist', 'right_wrist', 'left_foot', 'right_foot',
+                     'head'):
             start, _ = self.ACTION_SEGMENTS[name]
             actions[:, start:start + 3] = (
                 current[start:start + 3] + blend[:, None] *
@@ -1040,6 +1149,28 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
                 blend[:, None] * rotation_delta)
             actions[:, start + 3:start + 9] = (
                 rotations.as_matrix()[:, :2].reshape(-1, 6))
+        base_start, _ = self.ACTION_SEGMENTS['base']
+        actions[:, base_start:base_start + 2] = (
+            target[base_start:base_start + 2] / self.action_horizon)
+        actions[:, base_start + 2] = (
+            current[base_start + 2] + blend *
+            (target[base_start + 2] - current[base_start + 2]))
+        if np.any(target[base_start + 3:base_start + 9]):
+            current_ypr = self._rotation_from_rot6d(base_pose[3:]).as_euler(
+                'ZYX', degrees=True)
+            target_ypr = self._rotation_from_rot6d(
+                target[base_start + 3:base_start + 9]).as_euler(
+                    'ZYX', degrees=True)
+            ypr = np.column_stack((
+                np.full(self.action_horizon,
+                        target_ypr[0] / self.action_horizon),
+                current_ypr[1] + blend * (target_ypr[1] - current_ypr[1]),
+                current_ypr[2] + blend * (target_ypr[2] - current_ypr[2]),
+            ))
+            actions[:, base_start + 3:base_start + 9] = (
+                Rotation.from_euler('ZYX', ypr,
+                                    degrees=True).as_matrix()[:, :2].reshape(
+                                        -1, 6))
         hand_start, hand_end = self.ACTION_SEGMENTS['hands']
         actions[:, hand_start:hand_end] = (
             current[hand_start:hand_end] + blend[:, None] *
@@ -1097,7 +1228,7 @@ class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
                 f'Unknown control_oli arguments: {sorted(unknown)}')
         target = self._apply_oli_targets(current, arguments.get('targets'),
                                          base_pose)
-        actions = self._oli_trajectory(current, target)
+        actions = self._oli_trajectory(current, target, base_pose)
         self.last_note = str(arguments.get('note', ''))
         usage = response.get('usage') or {}
         self.last_response_metadata = {

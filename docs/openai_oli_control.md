@@ -35,12 +35,13 @@ declared by its modality. The final twelve keypoint action values are published
 in their original order, followed by the configured force levels.
 
 The GPT policy builds every action from the current observation. Unchanged
-key-body poses are echoed from that frame. To hold the base it emits zero x/y
-and the all-zero rotation sentinel together with the current measured height.
-GPT does not currently control base rotation. If that is exposed later, its
-tool interface should use explicit `yaw_delta`, `pitch`, and `roll` values and
-convert them to rot6d inside the policy rather than asking GPT to produce
-rot6d directly.
+key-body poses are echoed from that frame. Its base tool uses total body-frame
+`dx/dy`, relative height `dz`, relative `yaw_delta_deg`, and absolute
+world-frame `roll_deg/pitch_deg` for one action chunk. The policy divides
+x/y/yaw across the 50 published points because the Operator integrates those
+fields per point. Height, roll, and pitch remain absolute targets and are
+linearly interpolated. Omitted base motion emits zero x/y and the all-zero
+rotation sentinel together with the current measured height.
 
 The Operator accepts `upper_only` and `full` keypoint action layouts. With raw
 fingers they are 45-D and 66-D; with binary hands they are 35-D and 56-D.
@@ -51,19 +52,22 @@ supplies all five key-body poses, the full base action, and hands.
 ## GPT-6 policy
 
 `OpenAIResponsesOliVLA` reuses main's Responses API implementation. It sends
-the three RGB views, current left/right wrist and head poses, and a summary of
+the available RGB views, all five key-body poses, base pose, and a summary of
 the 12-D finger state to GPT-6. The `control_oli` tool can request base-frame
-wrist and head xyz deltas, relative wrist-frame RPY deltas, and all six native
-channels of either hand. The policy adds the head delta to the observed
-absolute head pose, so the 66-D action and Operator/WBT contract remain
-absolute. Base and feet cannot be changed by GPT.
+xyz deltas for wrists, feet, and head; local relative RPY deltas for wrists and
+feet; base translation, height, and yaw changes; and all six native channels
+of either hand. The policy converts relative keypoint requests into absolute
+poses, so the 66-D Operator/WBT contract remains unchanged.
 
 Every GPT command is constrained before it reaches MROS:
 
 - wrist displacement is limited to 8 cm per call;
 - head displacement is limited to 3 cm per call;
-- wrist rotation is limited to 15 degrees per call;
-- xyz is clipped to the configured workspace;
+- foot displacement is limited to 8 cm per call;
+- base xy displacement is limited to 10 cm and height change to 8 cm per call;
+- keypoint rotation and base yaw are limited to 15 degrees per call;
+- absolute base roll and pitch are limited to 15 degrees;
+- wrist and head xyz are clipped to the configured workspace;
 - keypoint poses and hands are linearly interpolated to the target over all 50
   steps.
 

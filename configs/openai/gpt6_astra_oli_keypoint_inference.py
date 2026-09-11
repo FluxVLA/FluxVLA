@@ -26,7 +26,11 @@ inference_model = dict(
     action_horizon=50,
     max_wrist_delta=0.08,
     max_head_delta=0.03,
+    max_foot_delta=0.08,
+    max_base_xy_delta=0.10,
+    max_base_height_delta=0.08,
     max_rotation_delta_deg=15.0,
+    max_base_tilt_deg=15.0,
     workspace_bounds=[[-0.30, 0.80], [-0.65, 0.65], [-0.30, 1.50]],
 )
 
