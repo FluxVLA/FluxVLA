@@ -16,12 +16,8 @@ from torch.distributed.fsdp import FullStateDictConfig
 from torch.distributed.fsdp import FullyShardedDataParallel as FSDP
 from torch.distributed.fsdp import ShardingStrategy, StateDictType
 
-# Importing FluxVLA's optional RADIO backbone queries device capability at
-# module import time. Stub only that query; all tests below remain CPU-only.
-with mock.patch.object(
-        torch.cuda, 'get_device_capability', return_value=(8, 0)):
-    from fluxvla.engines.runners import base_train_runner, fsdp_train_runner
-    from fluxvla.engines.runners.fsdp_train_runner import FSDPTrainRunner
+from fluxvla.engines.runners import base_train_runner, fsdp_train_runner
+from fluxvla.engines.runners.fsdp_train_runner import FSDPTrainRunner
 
 
 class _TinyModel(nn.Module):

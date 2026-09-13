@@ -15,18 +15,122 @@
 import gc
 import os
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pytest
 import torch
+from transformers import PaliGemmaForConditionalGeneration
 
 from fluxvla.engines import build_vlm_backbone_from_cfg
+from fluxvla.models.backbones.vlms.configs import VLM_BACKBONE_CONFIGS
 
-QWEN2_5_VL_CKPT_PATH = './checkpoints/Qwen2.5-VL-3B-Instruct'
-PALIGEMMA_DATA_DIR = 'test/data/models/vlm_backbones/paligemma'
-QWEN_VL_DATA_DIR = 'test/data/models/vlm_backbones/qwen_vl'
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+QWEN2_5_VL_CKPT_PATH = str(PROJECT_ROOT / 'checkpoints/Qwen2.5-VL-3B-Instruct')
+PALIGEMMA_DATA_DIR = str(PROJECT_ROOT /
+                         'test/data/models/vlm_backbones/paligemma')
+QWEN_VL_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlm_backbones/qwen_vl')
 
 
+class LegacyLanguageModelPaliGemma(PaliGemmaForConditionalGeneration):
+    """Expose the dependency attribute expected by FluxVLA's constructor.
+
+    Transformers 5 nests this module under ``model``. This test-only adapter
+    changes no initialization/forward math. It tests the wrapper's numerical
+    contract, NOT unadapted Transformers-5 constructor compatibility.
+    """
+
+    @property
+    def language_model(self):
+        return self.model.language_model
+
+
+@pytest.mark.parametrize('use_llm', [False, True])
+def test_tiny_paligemma_multiview_forward_backward(monkeypatch, use_llm):
+    config_id = 'test_paligemma_legacy_language_model_api'
+    monkeypatch.setitem(
+        VLM_BACKBONE_CONFIGS, config_id,
+        dict(
+            VLM_BACKBONE_CONFIGS['paligemma_3b_pt_224'],
+            model_cls=LegacyLanguageModelPaliGemma))
+    backbone = build_vlm_backbone_from_cfg(
+        dict(
+            type='PaliGemma',
+            vlm_backbone_id=config_id,
+            use_llm=use_llm,
+            vlm_config=dict(
+                vocab_size=64,
+                hidden_size=16,
+                projection_dim=16,
+                image_token_index=63,
+                pad_token_id=0,
+                text_config=dict(
+                    vocab_size=64,
+                    hidden_size=16,
+                    intermediate_size=32,
+                    num_hidden_layers=1,
+                    num_attention_heads=2,
+                    num_key_value_heads=1,
+                    head_dim=8,
+                    pad_token_id=0,
+                    attention_dropout=0.0),
+                vision_config=dict(
+                    hidden_size=16,
+                    intermediate_size=32,
+                    num_hidden_layers=1,
+                    num_attention_heads=2,
+                    image_size=8,
+                    patch_size=4,
+                    projection_dim=16,
+                    attention_dropout=0.0),
+            ),
+        )).eval()
+    images = torch.linspace(-1, 1, 6 * 8 * 8).reshape(1, 6, 8, 8)
+    tokens = torch.tensor([[1, 5, 2, 0]])
+    kwargs = dict(
+        images=images,
+        lang_tokens=tokens,
+        img_masks=torch.tensor([[True, False]]),
+        lang_masks=tokens != 0)
+    features, pad_masks, attn_masks = backbone(**kwargs)
+    assert features.shape == (1, 12, 16)
+    torch.testing.assert_close(
+        pad_masks,
+        torch.tensor([[True] * 4 + [False] * 4 + [True, True, True, False]]))
+    assert not attn_masks.any()
+    assert backbone.vlm.language_model is backbone.vlm.model.language_model
+    assert not hasattr(backbone.vlm.model.language_model, 'embed_tokens')
+    with torch.no_grad():
+        # Independent assembly checks view order and image/language scaling.
+        model = backbone.vlm.model
+        image_features = [
+            model.multi_modal_projector(
+                model.vision_tower(view).last_hidden_state)
+            for view in images.split(3, dim=1)
+        ]
+        expected = torch.cat(
+            image_features + [backbone.embed_tokens(tokens) * 4], dim=1)
+        if use_llm:
+            # Preserve PaliGemma's masking and 1-based position handling.
+            expected = backbone.vlm.model(
+                inputs_embeds=expected,
+                attention_mask=pad_masks,
+                use_cache=False).last_hidden_state
+    torch.testing.assert_close(features, expected)
+    features[..., 0].sum().backward()
+    assert backbone.embed_tokens.weight.grad.abs().sum() > 0
+    vision_grads = [
+        p.grad for name, p in backbone.named_parameters()
+        if 'vision_tower' in name and p.grad is not None
+    ]
+    assert vision_grads and all(torch.isfinite(g).all() for g in vision_grads)
+    assert any(g.abs().sum() > 0 for g in vision_grads)
+    with torch.no_grad():
+        repeated, _, _ = backbone(**kwargs)
+    torch.testing.assert_close(features, repeated, rtol=0, atol=0)
+
+
+@pytest.mark.checkpoint
 class TestPaligemmaBackbone(unittest.TestCase):
 
     def setUp(self):
@@ -88,8 +192,6 @@ class TestPaligemmaBackbone(unittest.TestCase):
         np.random.seed(0)
         torch.manual_seed(0)
         torch.cuda.manual_seed(0)
-        import tensorflow as tf
-        tf.random.set_seed(0)
         self.vlm_backbone = build_vlm_backbone_from_cfg(
             self.cfg).cuda().to(dtype=torch.bfloat16)
 
@@ -153,6 +255,7 @@ class TestPaligemmaBackbone(unittest.TestCase):
 @pytest.mark.skipif(
     not os.path.exists(QWEN2_5_VL_CKPT_PATH),
     reason=f'Checkpoint not found: {QWEN2_5_VL_CKPT_PATH}')
+@pytest.mark.checkpoint
 class TestQWenVLBackbone(unittest.TestCase):
 
     def setUp(self):
@@ -212,8 +315,6 @@ class TestQWenVLBackbone(unittest.TestCase):
         np.random.seed(0)
         torch.manual_seed(0)
         torch.cuda.manual_seed(0)
-        import tensorflow as tf
-        tf.random.set_seed(0)
         self.vlm_backbone = build_vlm_backbone_from_cfg(
             self.cfg).cuda().to(dtype=torch.bfloat16)
 

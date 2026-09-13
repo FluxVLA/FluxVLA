@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -68,7 +69,6 @@ class _FakeTextEncoder(nn.Module):
         return SimpleNamespace(hidden_states=(values, hidden_one, hidden_two))
 
 
-@VLM_BACKBONES.register_module(name='ContractTestBackbone', force=True)
 class _ContractTestBackbone(nn.Module):
 
     def __init__(self, output_style='standard'):
@@ -90,7 +90,6 @@ class _ContractTestBackbone(nn.Module):
         )
 
 
-@HEADS.register_module(name='ContractTestActionHead', force=True)
 class _ContractTestActionHead(nn.Module):
     action_dim = 2
     action_horizon = 2
@@ -121,6 +120,15 @@ class _ContractTestActionHead(nn.Module):
     def predict_action(self, input_features, **kwargs):
         return input_features.new_zeros(input_features.shape[0],
                                         self.action_horizon, self.action_dim)
+
+
+@pytest.fixture(autouse=True)
+def register_test_components(monkeypatch):
+    # Do not leave test-only classes in production registries at collection.
+    monkeypatch.setitem(VLM_BACKBONES.module_dict, 'ContractTestBackbone',
+                        _ContractTestBackbone)
+    monkeypatch.setitem(HEADS.module_dict, 'ContractTestActionHead',
+                        _ContractTestActionHead)
 
 
 def _build_lightweight_vla():

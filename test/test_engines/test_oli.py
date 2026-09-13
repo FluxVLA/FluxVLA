@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import numpy as np
 
 
@@ -26,11 +28,10 @@ def test_oli_runner_registered_and_subclass():
 
 
 def test_oli_config_loads():
-    import os
-
     from mmengine import Config
-    path = os.path.join('configs', 'gr00t',
-                        'gr00t_eagle_3b_oli_full_finetune.py')
+    path = (
+        Path(__file__).resolve().parents[2] /
+        'configs/gr00tn15/gr00tn15_eagle_3b_oli_full_finetune.py')
     cfg = Config.fromfile(path)
     assert cfg.inference.type == 'OliInferenceRunner'
     assert cfg.inference.operator.type == 'OliOperator'

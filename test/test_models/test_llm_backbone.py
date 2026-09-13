@@ -15,6 +15,7 @@
 import gc
 import os
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -22,15 +23,65 @@ import torch
 
 from fluxvla.engines import build_llm_backbone_from_cfg
 
-LLAMA2_CKPT_PATH = './checkpoints/Llama-2-7b-hf'
-LLAMA_DATA_DIR = 'test/data/models/llm_backbones/llama'
-GEMMA_DATA_DIR = 'test/data/models/llm_backbones/gemma'
-QWEN_DATA_DIR = 'test/data/models/llm_backbones/qwen'
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+LLAMA2_CKPT_PATH = str(PROJECT_ROOT / 'checkpoints/Llama-2-7b-hf')
+LLAMA_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/llm_backbones/llama')
+GEMMA_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/llm_backbones/gemma')
+QWEN_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/llm_backbones/qwen')
+
+
+@pytest.mark.parametrize('model_type,backbone_id,family', [
+    ('LLaMa2LLMBackbone', 'llama2-7b-pure_causal', 'llama'),
+    ('GemmaLLMBackbone', 'gemma-2b_causal', 'gemma'),
+    ('Qwen2LLMBackbone', 'qwen2-0.5b_causal', 'qwen2'),
+])
+def test_tiny_llm_forward_backward_and_causal_mask(model_type, backbone_id,
+                                                   family):
+    """Real transformer layers, not mocked logits or downloaded weights."""
+    backbone = build_llm_backbone_from_cfg(
+        dict(
+            type=model_type,
+            llm_backbone_id=backbone_id,
+            llm_family=family,
+            llm_path=None,
+            tokenizer_length=64,
+            llm_config=dict(
+                vocab_size=64,
+                hidden_size=16,
+                intermediate_size=32,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                head_dim=8,
+                max_position_embeddings=64,
+                attention_dropout=0.0,
+                pad_token_id=0),
+        )).eval()
+    tokens = torch.tensor([[1, 5, 9, 2], [1, 8, 3, 2]])
+    masks = torch.ones_like(tokens)
+    result = backbone(input_ids=tokens, attention_mask=masks, labels=tokens)
+    assert result.logits.shape == (2, 4, 64)
+    assert torch.isfinite(result.loss)
+    result.loss.backward()
+    grads = [p.grad for p in backbone.parameters() if p.grad is not None]
+    assert grads and all(torch.isfinite(g).all() for g in grads)
+    assert backbone.llm.get_input_embeddings().weight.grad.abs().sum() > 0
+
+    with torch.no_grad():
+        embedded = backbone(
+            inputs_embeds=backbone.embed_input_ids(tokens),
+            attention_mask=masks)
+        changed = tokens.clone()
+        changed[:, -1] = 12
+        future = backbone(input_ids=changed, attention_mask=masks)
+    torch.testing.assert_close(embedded.logits, result.logits)
+    torch.testing.assert_close(future.logits[:, :-1], result.logits[:, :-1])
 
 
 @pytest.mark.skipif(
     not os.path.exists(LLAMA2_CKPT_PATH),
     reason=f'Checkpoint not found: {LLAMA2_CKPT_PATH}')
+@pytest.mark.checkpoint
 class TestLLaMaLLMBackbone(unittest.TestCase):
 
     def setUp(self):
@@ -49,10 +100,10 @@ class TestLLaMaLLMBackbone(unittest.TestCase):
         np.random.seed(0)
         torch.manual_seed(0)
         torch.cuda.manual_seed(0)
-        import tensorflow as tf
-        tf.random.set_seed(0)
-        self.llm_backbone = build_llm_backbone_from_cfg(self.cfg).cuda()
-        self.llm_backbone.llm
+        # The saved reference uses FP32 weights/inputs; HF now preserves
+        # the checkpoint's FP16 dtype unless explicitly converted.
+        self.llm_backbone = build_llm_backbone_from_cfg(
+            self.cfg).float().cuda().eval()
 
     @pytest.mark.skipif(
         condition=torch.cuda.is_available() is False,
@@ -80,6 +131,7 @@ class TestLLaMaLLMBackbone(unittest.TestCase):
                 rtol=1e-2))
 
 
+@pytest.mark.checkpoint
 class TestGemmaLLMBackbone(unittest.TestCase):
 
     def setUp(self):
@@ -120,8 +172,6 @@ class TestGemmaLLMBackbone(unittest.TestCase):
         np.random.seed(0)
         torch.manual_seed(0)
         torch.cuda.manual_seed(0)
-        import tensorflow as tf
-        tf.random.set_seed(0)
         self.llm_backbone = build_llm_backbone_from_cfg(self.cfg).cuda()
 
     @pytest.mark.skipif(
@@ -135,6 +185,7 @@ class TestGemmaLLMBackbone(unittest.TestCase):
         self.assertEqual(outputs['logits'].shape, (1, 180, 257152))
 
 
+@pytest.mark.checkpoint
 class TestQWen2LLMBackbone(unittest.TestCase):
 
     def setUp(self):
@@ -166,8 +217,6 @@ class TestQWen2LLMBackbone(unittest.TestCase):
         np.random.seed(0)
         torch.manual_seed(0)
         torch.cuda.manual_seed(0)
-        import tensorflow as tf
-        tf.random.set_seed(0)
         self.llm_backbone = build_llm_backbone_from_cfg(self.cfg).cuda()
 
     @pytest.mark.skipif(
@@ -178,5 +227,6 @@ class TestQWen2LLMBackbone(unittest.TestCase):
             os.path.join(QWEN_DATA_DIR, 'inputs_embeds.npy'),
             allow_pickle=True)
         inputs_embeds = torch.from_numpy(inputs_embeds).cuda()
-        outputs = self.llm_backbone(inputs_embeds=inputs_embeds)
+        outputs = self.llm_backbone(
+            inputs_embeds=inputs_embeds, output_hidden_states=True)
         self.assertEqual(outputs['hidden_states'][-1].shape, (4, 390, 896))

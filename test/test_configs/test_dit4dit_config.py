@@ -1,11 +1,16 @@
 # Copyright 2026 Limx Dynamics
 
+from pathlib import Path
+
 from mmengine import Config
+
+CONFIG = (
+    Path(__file__).resolve().parents[2] /
+    'configs/dit4dit/dit4dit_libero_all_full_finetune.py')
 
 
 def test_dit4dit_training_budget_matches_released_checkpoint():
-    cfg = Config.fromfile(
-        'configs/dit4dit/dit4dit_libero_all_full_finetune.py')
+    cfg = Config.fromfile(CONFIG)
 
     assert cfg.train_dataloader.per_device_batch_size == 8
     assert cfg.runner.grad_accumulation_steps == 1
@@ -21,8 +26,7 @@ def test_dit4dit_training_budget_matches_released_checkpoint():
 
 
 def test_dit4dit_core_source_contract_is_preserved():
-    cfg = Config.fromfile(
-        'configs/dit4dit/dit4dit_libero_all_full_finetune.py')
+    cfg = Config.fromfile(CONFIG)
 
     assert cfg.model.type == 'DiT4DiTVLA'
     assert cfg.model.repeated_diffusion_steps == 4

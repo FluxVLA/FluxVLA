@@ -12,10 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+from pathlib import Path
+
 from mmengine import Config
 
-NANO_CONFIG = 'configs/cosmos3/cosmos3nano_libero_10_full_finetune.py'
-EDGE_CONFIG = 'configs/cosmos3/cosmos3edge_libero_10_full_finetune.py'
+ROOT = Path(__file__).resolve().parents[2]
+NANO_CONFIG = ROOT / 'configs/cosmos3/cosmos3nano_libero_10_full_finetune.py'
+EDGE_CONFIG = ROOT / 'configs/cosmos3/cosmos3edge_libero_10_full_finetune.py'
 
 
 def _get_transform(transforms, transform_type):

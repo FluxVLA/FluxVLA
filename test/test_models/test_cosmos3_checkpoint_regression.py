@@ -47,6 +47,7 @@ def _required_assets_exist():
     reason=('Set RUN_COSMOS3_REGRESSION=1 with CUDA and the Cosmos3-Nano '
             'checkpoint available to run this full-checkpoint regression.'),
 )
+@pytest.mark.checkpoint
 def test_cosmos3_nano_inverse_dynamics_checkpoint_regression(tmp_path):
     metadata = json.loads(METADATA_PATH.read_text())
     expected_actions = np.asarray(

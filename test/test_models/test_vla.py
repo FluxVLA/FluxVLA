@@ -17,6 +17,7 @@ import json
 import os
 import pickle
 import unittest
+from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np
@@ -28,24 +29,316 @@ import torch.nn.functional as F
 from fluxvla.engines import (VLM_BACKBONES, build_vla_from_cfg,
                              set_seed_everywhere)
 
-OPENVLA_CKPT_PATH = './checkpoints/openvla-7b-finetuned-libero-10'
-LLAMA2_CKPT_PATH = './checkpoints/Llama-2-7b-hf'
-DINO_CKPT_PATH = './checkpoints/vit_large_patch14_reg4_dinov2.lvd142m/model.safetensors'  # noqa: E501
-SIGLIP_CKPT_PATH = './checkpoints/ViT-SO400M-14-SigLIP/open_clip_model.safetensors'  # noqa: E501
-PI0_CKPT_PATH = './checkpoints/pi0_base/model.safetensors'
-PI05_CKPT_PATH = './checkpoints/pi05_base/model.safetensors'
-GR00T_CKPT_PATH = './checkpoints/GR00T-N1.5-3B'
-DREAMZERO_CKPT_PATH = './checkpoints/DreamZero-AgiBot'
-SMOLVLA_CKPT_PATH = './checkpoints/smolvla_base/model.safetensors'
-DIT4DIT_CKPT_PATH = './checkpoints/dit4dit-model/dit4dit_libero/final_model/pytorch_model.pt'  # noqa: E501
-OPENVLA_DATA_DIR = 'test/data/models/vlas/openvla'
-LLAVAVLA_DATA_DIR = 'test/data/models/vlas/llavavla'
-GR00T_DATA_DIR = 'test/data/models/vlas/gr00t'
-PI0_DATA_DIR = 'test/data/models/vlas/pi0'
-PI05_DATA_DIR = 'test/data/models/vlas/pi05'
-DREAMZERO_DATA_DIR = 'test/data/models/vlas/dreamzero'
-DIT4DIT_DATA_DIR = 'test/data/models/vlas/dit4dit'
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+OPENVLA_CKPT_PATH = str(PROJECT_ROOT /
+                        'checkpoints/openvla-7b-finetuned-libero-10')
+LLAMA2_CKPT_PATH = str(PROJECT_ROOT / 'checkpoints/Llama-2-7b-hf')
+DINO_CKPT_PATH = str(
+    PROJECT_ROOT /
+    'checkpoints/vit_large_patch14_reg4_dinov2.lvd142m/model.safetensors')
+SIGLIP_CKPT_PATH = str(
+    PROJECT_ROOT /
+    'checkpoints/ViT-SO400M-14-SigLIP/open_clip_model.safetensors')
+PI0_CKPT_PATH = str(PROJECT_ROOT / 'checkpoints/pi0_base/model.safetensors')
+PI05_CKPT_PATH = str(PROJECT_ROOT / 'checkpoints/pi05_base/model.safetensors')
+GR00T_CKPT_PATH = str(PROJECT_ROOT / 'checkpoints/GR00T-N1.5-3B')
+DREAMZERO_CKPT_PATH = str(PROJECT_ROOT / 'checkpoints/DreamZero-AgiBot')
+SMOLVLA_CKPT_PATH = str(PROJECT_ROOT /
+                        'checkpoints/smolvla_base/model.safetensors')
+DIT4DIT_CKPT_PATH = str(
+    PROJECT_ROOT /
+    'checkpoints/dit4dit-model/dit4dit_libero/final_model/pytorch_model.pt')
+OPENVLA_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlas/openvla')
+LLAVAVLA_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlas/llavavla')
+GR00T_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlas/gr00t')
+PI0_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlas/pi0')
+PI05_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlas/pi05')
+DREAMZERO_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlas/dreamzero')
+DIT4DIT_DATA_DIR = str(PROJECT_ROOT / 'test/data/models/vlas/dit4dit')
 DREAMZERO_NUM_INFERENCE_STEPS = 2
+
+
+def _tiny_vision_llm_config(vocab_size=64):
+    return dict(
+        vision_backbone=dict(
+            type='SigLIPViTBackbone',
+            vision_backbone_id='siglip_224',
+            vision_config=dict(
+                hidden_size=16,
+                intermediate_size=32,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                image_size=8,
+                patch_size=4,
+                attention_dropout=0.0)),
+        llm_backbone=dict(
+            type='LLaMa2LLMBackbone',
+            llm_backbone_id='llama2-7b-pure_causal',
+            llm_family='llama',
+            llm_path=None,
+            tokenizer_length=vocab_size,
+            llm_config=dict(
+                vocab_size=vocab_size,
+                hidden_size=16,
+                intermediate_size=32,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                max_position_embeddings=64,
+                attention_dropout=0.0,
+                output_hidden_states=True)),
+        projector=dict(type='LinearProjector', in_dim=16, out_dim=16),
+        enable_mixed_precision_training=False,
+        freeze_vision_backbone=False,
+        freeze_llm_backbone=False)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='Requires CUDA.')
+def test_tiny_openvla_forward_backward_and_predict_action(monkeypatch):
+    from fluxvla.models.backbones.visions.configs import \
+        VISION_BACKBONE_CONFIGS
+
+    # Match OpenVLA's dual-timm vision contract with smaller real ViTs. Only
+    # architecture IDs and external tokenizer loading are substituted.
+    for name in ('test_dino', 'test_siglip'):
+        monkeypatch.setitem(VISION_BACKBONE_CONFIGS, name,
+                            dict(model_id='vit_tiny_patch16_224'))
+    monkeypatch.setattr(
+        'fluxvla.tokenizers.action_tokenizer.AutoTokenizer.from_pretrained',
+        lambda *args, **kwargs: SimpleNamespace(vocab_size=32000))
+    backbone_cfg = _tiny_vision_llm_config(vocab_size=32064)
+    backbone_cfg.update(
+        vision_backbone=dict(
+            type='DinoSigLIPViTBackbone',
+            vision_backbone_id='dinosiglip-vit-so-224px',
+            dino_config=dict(model_id='test_dino'),
+            siglip_config=dict(model_id='test_siglip'),
+            pretrained=False,
+            img_size=16),
+        projector=dict(type='LinearProjector', in_dim=384, out_dim=16),
+        enable_mixed_precision_training=True)
+    policy = build_vla_from_cfg(
+        dict(
+            backbone_cfg,
+            type='OpenVLA',
+            vla_head=dict(
+                type='OpenVLAHead', vocab_size=32000, norm_stats=None),
+            tokenizer=dict(
+                type='ActionTokenizer', model_path='unused', bins=256),
+            norm_stats={
+                'test': {
+                    'action': {
+                        'q01': [-1.] * 3,
+                        'q99': [1.] * 3
+                    }
+                }
+            },
+        )).cuda().eval()
+    images = torch.linspace(
+        -1, 1, 6 * 16 * 16, device='cuda').reshape(1, 6, 16, 16)
+    tokens = torch.tensor([[1, 7, 31990, 31991, 31992]], device='cuda')
+    labels = tokens.clone()
+    labels[:, :2] = -100
+    with torch.autocast('cuda', dtype=torch.bfloat16):
+        output = policy(
+            images=images,
+            lang_tokens=tokens,
+            lang_masks=torch.ones_like(tokens),
+            labels=labels,
+            dataset_names=['test'])
+    assert policy.vision_backbone.num_patches == 1
+    assert output['predictions'].shape == (1, 6, 32064)
+    assert torch.isfinite(output['loss'])
+    output['loss'].backward()
+    for module in (policy.vision_backbone, policy.llm_backbone,
+                   policy.projector):
+        grads = [p.grad for p in module.parameters() if p.grad is not None]
+        assert grads and all(torch.isfinite(g).all() for g in grads)
+        assert any(g.abs().sum() > 0 for g in grads)
+    with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+        first = policy.predict_action(images=images, lang_tokens=tokens[:, :2])
+        second = policy.predict_action(
+            images=images, lang_tokens=tokens[:, :2])
+    assert first.shape == (1, 3)
+    assert torch.isfinite(first).all() and (first.abs() <= 1).all()
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+
+
+def test_tiny_llava_flow_matching_forward_backward_and_predict_action():
+    """GR00T-style action DiT and wrapper with tiny real backbones."""
+    backbone_cfg = _tiny_vision_llm_config()
+    # Continuous actions consume hidden states, not a causal LM's logits.
+    backbone_cfg['llm_backbone'].update(
+        type='Qwen2LLMBackbone',
+        llm_backbone_id='qwen2-0.5b',
+        llm_family='qwen2')
+    policy = build_vla_from_cfg(
+        dict(
+            backbone_cfg,
+            type='LlavaVLA',
+            vla_head=dict(
+                type='FlowMatchingHead',
+                state_dim=4,
+                hidden_size=16,
+                input_embedding_dim=16,
+                backbone_embedding_dim=16,
+                num_inference_timesteps=2,
+                num_steps=3,
+                action_dim=4,
+                ori_action_dim=3,
+                max_num_embodiments=1,
+                num_target_vision_tokens=2,
+                max_seq_len=16,
+                vl_self_attention_cfg=dict(
+                    attention_head_dim=8,
+                    num_attention_heads=2,
+                    num_layers=1,
+                    dropout=0.0,
+                    final_dropout=False),
+                diffusion_model_cfg=dict(
+                    attention_head_dim=8,
+                    num_attention_heads=2,
+                    num_layers=2,
+                    cross_attention_dim=16,
+                    output_dim=16,
+                    dropout=0.0,
+                    final_dropout=False)),
+        )).eval()
+    inputs = dict(
+        images=torch.linspace(-1, 1, 3 * 8 * 8).reshape(1, 3, 8, 8),
+        lang_tokens=torch.tensor([[1, 5, 2]]),
+        lang_masks=torch.ones(1, 3, dtype=torch.bool),
+        states=torch.zeros(1, 4),
+        embodiment_ids=torch.zeros(1, dtype=torch.long))
+    actions = torch.linspace(-0.5, 0.5, 12).reshape(1, 3, 4)
+    result = policy(
+        **inputs,
+        actions=actions,
+        action_masks=torch.ones(1, 3, dtype=torch.bool))
+    assert torch.isfinite(result['loss'])
+    assert result['pred_actions'].shape == (1, 3, 3)
+    result['loss'].backward()
+    for module in (policy.vision_backbone, policy.llm_backbone,
+                   policy.vla_head):
+        grads = [p.grad for p in module.parameters() if p.grad is not None]
+        assert grads and all(torch.isfinite(g).all() for g in grads)
+        assert any(g.abs().sum() > 0 for g in grads)
+    results = []
+    for _ in range(2):
+        torch.manual_seed(23)
+        with torch.no_grad():
+            results.append(policy.predict_action(**inputs))
+    assert results[0].shape == (1, 3, 3)
+    assert torch.isfinite(results[0]).all()
+    torch.testing.assert_close(results[0], results[1], rtol=0, atol=0)
+
+
+@pytest.fixture(params=['PI0FlowMatching', 'PI05FlowMatching'])
+def tiny_pi_policy(request):
+    """Actual SigLIP + Gemma backbone/expert, including cached inference."""
+    gemma = dict(
+        type='ConditionGemmaModel',
+        vocab_size=64,
+        hidden_size=16,
+        intermediate_size=32,
+        num_hidden_layers=1,
+        num_attention_heads=2,
+        num_key_value_heads=1,
+        head_dim=8,
+        max_position_embeddings=64,
+        attention_dropout=0.0,
+        pad_token_id=0,
+        adarms_cond_dim=None,
+        hidden_activation='gelu_pytorch_tanh')
+
+    def linear(in_dim, out_dim):
+        return dict(type='LinearProjector', in_dim=in_dim, out_dim=out_dim)
+
+    cfg = dict(
+        type=request.param,
+        llm_backbone=gemma,
+        llm_expert=dict(gemma),
+        vision_backbone=dict(
+            type='SigLIPViTBackbone',
+            vision_backbone_id='siglip_224',
+            vision_config=dict(
+                hidden_size=16,
+                intermediate_size=32,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                image_size=8,
+                patch_size=4,
+                attention_dropout=0.0)),
+        projector=linear(16, 16),
+        proj_width=16,
+        action_in_proj=linear(4, 16),
+        action_out_proj=linear(16, 4),
+        max_action_dim=4,
+        ori_action_dim=3,
+        n_action_steps=3,
+        num_steps=2,
+        enable_mixed_precision_training=False,
+        freeze_vision_backbone=False,
+        freeze_llm_backbone=False)
+    if request.param == 'PI0FlowMatching':
+        cfg.update(
+            state_proj=linear(4, 16),
+            action_time_mlp_in=linear(32, 16),
+            action_time_mlp_out=linear(16, 16))
+    else:
+        cfg.update(time_mlp_in=linear(16, 16), time_mlp_out=linear(16, 16))
+        cfg['llm_expert']['adarms_cond_dim'] = 16
+    policy = build_vla_from_cfg(cfg).float().eval()
+    inputs = dict(
+        images=torch.linspace(-1, 1, 2 * 6 * 8 * 8).reshape(2, 6, 8, 8),
+        img_masks=torch.tensor([[True, True], [True, False]]),
+        lang_tokens=torch.tensor([[1, 5, 2, 0], [1, 7, 3, 2]]),
+        lang_masks=torch.tensor([[True, True, True, False], [True] * 4]),
+        states=torch.linspace(-0.5, 0.5, 8).reshape(2, 4),
+        noise=torch.linspace(-1, 1, 24).reshape(2, 3, 4),
+    )
+    return policy, inputs
+
+
+def test_tiny_pi_forward_backward(tiny_pi_policy):
+    policy, inputs = tiny_pi_policy
+    actions = torch.linspace(-0.5, 0.5, 24).reshape(2, 3, 4)
+    masks = torch.tensor([[True, True, False], [True, False, False]])
+    time = torch.tensor([0.25, 0.75])
+    rng = torch.random.get_rng_state().clone()
+    # PI attention masks are BF16; exercise mixed precision with FP32 masters.
+    with torch.autocast('cpu', dtype=torch.bfloat16):
+        result = policy(
+            **inputs, actions=actions, action_masks=masks, time=time)
+    assert result['predictions'].shape == (2, 3, 3)
+    target = (inputs['noise'] - actions)[..., :3]
+    errors = (result['predictions'].float() - target).square()
+    torch.testing.assert_close(result['loss'], errors[masks].mean())
+    torch.testing.assert_close(torch.random.get_rng_state(), rng)
+    result['loss'].backward()
+    for module in (policy.vision_backbone, policy.llm_backbone,
+                   policy.llm_expert, policy.action_out_proj):
+        grads = [p.grad for p in module.parameters() if p.grad is not None]
+        assert grads and all(torch.isfinite(g).all() for g in grads)
+        assert any(g.abs().sum() > 0 for g in grads)
+
+
+def test_tiny_pi_predict_action(tiny_pi_policy):
+    policy, inputs = tiny_pi_policy
+    noise = inputs['noise'].clone()
+    rng = torch.random.get_rng_state().clone()
+    # The Euler solver updates its initial noise in place. Each invocation
+    # needs its own copy of the same starting state.
+    with torch.no_grad(), torch.autocast('cpu', dtype=torch.bfloat16):
+        first = policy.predict_action(**{
+            **inputs, 'noise': noise.clone()
+        }).clone()
+        second = policy.predict_action(**{**inputs, 'noise': noise.clone()})
+    assert first.shape == (2, 3, 4)
+    assert torch.isfinite(first).all()
+    torch.testing.assert_close(first, second, rtol=0, atol=0)
+    torch.testing.assert_close(inputs['noise'], noise, rtol=0, atol=0)
+    torch.testing.assert_close(torch.random.get_rng_state(), rng)
 
 
 def _load_dit4dit_pickle(path):
@@ -78,7 +371,6 @@ def _dit4dit_artifacts_exist():
         ))
 
 
-@VLM_BACKBONES.register_module(name='DiT4DiTParityBackbone', force=True)
 class DiT4DiTParityBackbone(nn.Module):
 
     def __init__(self, inputs_path):
@@ -98,12 +390,19 @@ class DiT4DiTParityBackbone(nn.Module):
         return SimpleNamespace(hidden_states=[hidden_states])
 
 
+@pytest.fixture
+def dit4dit_parity_backbone(monkeypatch):
+    monkeypatch.setitem(VLM_BACKBONES.module_dict, 'DiT4DiTParityBackbone',
+                        DiT4DiTParityBackbone)
+
+
 @pytest.mark.skipif(
     not os.path.exists(OPENVLA_CKPT_PATH)
     or not os.path.exists(LLAMA2_CKPT_PATH)
     or not os.path.exists(DINO_CKPT_PATH)
     or not os.path.exists(SIGLIP_CKPT_PATH),
     reason=f'Checkpoint not found: {OPENVLA_CKPT_PATH}')
+@pytest.mark.checkpoint
 class TestOpenVLA(unittest.TestCase):
 
     def setUp(self):
@@ -119,7 +418,6 @@ class TestOpenVLA(unittest.TestCase):
                     model_id='dino',
                     file=  # noqa: E251
                     DINO_CKPT_PATH),
-                image_resize_strategy='resize-naive',
                 siglip_config=dict(
                     model_id='siglip_224',
                     file=  # noqa: E251
@@ -180,17 +478,18 @@ class TestOpenVLA(unittest.TestCase):
         expected_logits = np.load(os.path.join(OPENVLA_DATA_DIR, 'logits.npy'))
         self.assertAlmostEqual(
             output['loss'].cpu().detach().numpy(), expected_loss, delta=1e-2)
-        self.assertTrue(
-            np.allclose(
-                output['logits'].cpu().float().detach().numpy()[:, ::10, ::10],
-                expected_logits,
-                rtol=1e-3,
-                atol=1e-1))
+        np.testing.assert_allclose(
+            output['logits'].cpu().float().detach().numpy()[:, ::10, ::10],
+            expected_logits,
+            rtol=1e-3,
+            atol=1e-1,
+            equal_nan=False)
 
 
 @pytest.mark.skipif(
     not os.path.exists(GR00T_CKPT_PATH),
     reason=f'Checkpoint not found: {GR00T_CKPT_PATH}')
+@pytest.mark.checkpoint
 class TestGr00t(unittest.TestCase):
 
     def setUp(self):
@@ -209,10 +508,10 @@ class TestGr00t(unittest.TestCase):
                 state_dim=64,
                 hidden_size=1024,
                 input_embedding_dim=1536,
-                num_layers=1,
-                num_heads=4,
                 num_inference_timesteps=4,
-                traj_length=10,
+                num_steps=10,
+                zero_padded_action_dims=False,
+                clamp_sample_time=False,
                 action_dim=32,
                 ori_action_dim=7),
             freeze_vlm_backbone=False,
@@ -262,9 +561,12 @@ class TestGr00t(unittest.TestCase):
                     actions=actions.bfloat16(),
                     action_masks=torch.ones((1, 10)).cuda(),
                     embodiment_ids=embodiment_ids)
-        self.assertTrue(
-            np.allclose(
-                output['loss'].cpu().detach().numpy(), 0.5135, atol=1e-2))
+        np.testing.assert_allclose(
+            output['loss'].cpu().detach().numpy(),
+            0.5135,
+            atol=1e-2,
+            rtol=1e-5,
+            equal_nan=False)
 
     def test_predict_action(self):
         images = np.load(
@@ -300,16 +602,18 @@ class TestGr00t(unittest.TestCase):
                     lang_masks=lang_masks,
                     states=states,
                     embodiment_ids=embodiment_ids)
-        self.assertTrue(
-            np.allclose(
-                pred_actions.cpu().detach().numpy(),
-                pred_actions_target,
-                atol=1e-2))
+        np.testing.assert_allclose(
+            pred_actions.cpu().detach().numpy(),
+            pred_actions_target,
+            atol=1e-2,
+            rtol=1e-5,
+            equal_nan=False)
 
 
 @pytest.mark.skipif(
     not os.path.exists(PI0_CKPT_PATH),
     reason=f'Checkpoint not found: {PI0_CKPT_PATH}')
+@pytest.mark.checkpoint
 class TestPI0FlowMatching(unittest.TestCase):
 
     def setUp(self):
@@ -472,17 +776,24 @@ class TestPI0FlowMatching(unittest.TestCase):
                     img_masks=img_masks,
                     lang_tokens=lang_tokens,
                     lang_masks=lang_masks)
-        self.assertTrue(
-            np.allclose(
-                embs.float().cpu().detach().numpy()[:, ::10, ::10],
-                embs_target,
-                atol=1e-1))
-        self.assertTrue(
-            np.allclose(pad_masks.float().cpu().detach().numpy(),
-                        pad_masks_target))
-        self.assertTrue(
-            np.allclose(att_masks.float().cpu().detach().numpy(),
-                        att_masks_target))
+        np.testing.assert_allclose(
+            embs.float().cpu().detach().numpy()[:, ::10, ::10],
+            embs_target,
+            atol=1e-1,
+            rtol=1e-5,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            pad_masks.float().cpu().detach().numpy(),
+            pad_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            att_masks.float().cpu().detach().numpy(),
+            att_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
 
     def test_suffix_forward(self):
         states = np.load(
@@ -511,17 +822,24 @@ class TestPI0FlowMatching(unittest.TestCase):
                     adarms_cond,
                 ) = self.vla.embed_suffix(states, x_t, time)
 
-        self.assertTrue(
-            np.allclose(
-                suffix_embs.float().cpu().detach().numpy()[:, :, ::10],
-                suffix_embs_target,
-                atol=1e-2))
-        self.assertTrue(
-            np.allclose(suffix_pad_masks.float().cpu().detach().numpy(),
-                        suffix_pad_masks_target))
-        self.assertTrue(
-            np.allclose(suffix_att_masks.float().cpu().detach().numpy(),
-                        suffix_att_masks_target))
+        np.testing.assert_allclose(
+            suffix_embs.float().cpu().detach().numpy()[:, :, ::10],
+            suffix_embs_target,
+            atol=1e-2,
+            rtol=1e-5,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            suffix_pad_masks.float().cpu().detach().numpy(),
+            suffix_pad_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            suffix_att_masks.float().cpu().detach().numpy(),
+            suffix_att_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
 
     def test_forward(self):
         from fluxvla.engines.utils.model_utils import make_att_2d_masks
@@ -592,11 +910,12 @@ class TestPI0FlowMatching(unittest.TestCase):
                 actions = self.vla.action_out_proj(
                     suffix_out[:, -self.vla.n_action_steps:])
 
-                self.assertTrue(
-                    np.allclose(
-                        actions.float().cpu().detach().numpy(),
-                        actions_target,
-                        atol=1e-1))
+                np.testing.assert_allclose(
+                    actions.float().cpu().detach().numpy(),
+                    actions_target,
+                    atol=1e-1,
+                    rtol=1e-5,
+                    equal_nan=False)
 
     def test_predict_actions(self):
         images = np.load(
@@ -630,16 +949,18 @@ class TestPI0FlowMatching(unittest.TestCase):
                     lang_masks=lang_masks,
                     noise=noise)
 
-        self.assertTrue(
-            np.allclose(
-                actions.float().cpu().detach().numpy(),
-                pred_actions_target,
-                atol=5e-1))
+        np.testing.assert_allclose(
+            actions.float().cpu().detach().numpy(),
+            pred_actions_target,
+            atol=5e-1,
+            rtol=1e-5,
+            equal_nan=False)
 
 
 @pytest.mark.skipif(
     not os.path.exists(PI05_CKPT_PATH),
     reason=f'Checkpoint not found: {PI05_CKPT_PATH}')
+@pytest.mark.checkpoint
 class TestPI05FlowMatching(unittest.TestCase):
 
     def setUp(self):
@@ -793,17 +1114,24 @@ class TestPI05FlowMatching(unittest.TestCase):
                     img_masks=img_masks,
                     lang_tokens=lang_tokens,
                     lang_masks=lang_masks)
-        self.assertTrue(
-            np.allclose(
-                embs.float().cpu().detach().numpy()[:, ::10, ::10],
-                embs_target,
-                atol=5e-1))
-        self.assertTrue(
-            np.allclose(pad_masks.float().cpu().detach().numpy(),
-                        pad_masks_target))
-        self.assertTrue(
-            np.allclose(att_masks.float().cpu().detach().numpy(),
-                        att_masks_target))
+        np.testing.assert_allclose(
+            embs.float().cpu().detach().numpy()[:, ::10, ::10],
+            embs_target,
+            atol=5e-1,
+            rtol=1e-5,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            pad_masks.float().cpu().detach().numpy(),
+            pad_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            att_masks.float().cpu().detach().numpy(),
+            att_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
 
     def test_suffix_forward(self):
         states = np.load(
@@ -832,17 +1160,24 @@ class TestPI05FlowMatching(unittest.TestCase):
                     adarms_cond,
                 ) = self.vla.embed_suffix(states, x_t, time)
 
-        self.assertTrue(
-            np.allclose(
-                suffix_embs.float().cpu().detach().numpy()[:, :, ::10],
-                suffix_embs_target,
-                atol=1e-2))
-        self.assertTrue(
-            np.allclose(suffix_pad_masks.float().cpu().detach().numpy(),
-                        suffix_pad_masks_target))
-        self.assertTrue(
-            np.allclose(suffix_att_masks.float().cpu().detach().numpy(),
-                        suffix_att_masks_target))
+        np.testing.assert_allclose(
+            suffix_embs.float().cpu().detach().numpy()[:, :, ::10],
+            suffix_embs_target,
+            atol=1e-2,
+            rtol=1e-5,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            suffix_pad_masks.float().cpu().detach().numpy(),
+            suffix_pad_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            suffix_att_masks.float().cpu().detach().numpy(),
+            suffix_att_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
 
     def test_forward(self):
         from fluxvla.engines.utils.model_utils import make_att_2d_masks
@@ -912,11 +1247,12 @@ class TestPI05FlowMatching(unittest.TestCase):
 
                 actions = self.vla.action_out_proj(suffix_out)
 
-                self.assertTrue(
-                    np.allclose(
-                        actions.float().cpu().detach().numpy(),
-                        actions_target,
-                        atol=1e-1))
+                np.testing.assert_allclose(
+                    actions.float().cpu().detach().numpy(),
+                    actions_target,
+                    atol=1e-1,
+                    rtol=1e-5,
+                    equal_nan=False)
 
     def test_predict_actions(self):
         images = np.load(
@@ -950,16 +1286,18 @@ class TestPI05FlowMatching(unittest.TestCase):
                     lang_masks=lang_masks,
                     noise=noise)
 
-        self.assertTrue(
-            np.allclose(
-                actions.float().cpu().detach().numpy(),
-                pred_actions_target,
-                atol=1e-1))
+        np.testing.assert_allclose(
+            actions.float().cpu().detach().numpy(),
+            pred_actions_target,
+            atol=1e-1,
+            rtol=1e-5,
+            equal_nan=False)
 
 
 @unittest.skipUnless(
     torch.cuda.is_available() and os.path.exists(DREAMZERO_CKPT_PATH),
     'DreamZero checkpoint not available or CUDA is not available')
+@pytest.mark.checkpoint
 class TestDreamZero(unittest.TestCase):
     """Compare DreamZero forward outputs with reference implementation IO."""
 
@@ -1074,19 +1412,24 @@ class TestDreamZero(unittest.TestCase):
                     embodiment_ids=embodiment_ids,
                 )
 
-        self.assertTrue(
-            np.allclose(
-                output['loss'].float().cpu().numpy(), loss_ref, atol=1e-3))
-        self.assertTrue(
-            np.allclose(
-                output['dynamics_loss'].float().cpu().numpy(),
-                dynamics_loss_ref,
-                atol=1e-3))
-        self.assertTrue(
-            np.allclose(
-                output['action_loss'].float().cpu().numpy(),
-                action_loss_ref,
-                atol=1e-3))
+        np.testing.assert_allclose(
+            output['loss'].float().cpu().numpy(),
+            loss_ref,
+            atol=1e-3,
+            rtol=1e-5,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            output['dynamics_loss'].float().cpu().numpy(),
+            dynamics_loss_ref,
+            atol=1e-3,
+            rtol=1e-5,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            output['action_loss'].float().cpu().numpy(),
+            action_loss_ref,
+            atol=1e-3,
+            rtol=1e-5,
+            equal_nan=False)
 
     def test_predict_action(self):
         if not os.path.isdir(DREAMZERO_DATA_DIR):
@@ -1128,16 +1471,19 @@ class TestDreamZero(unittest.TestCase):
                     embodiment_ids=embodiment_ids,
                 )
 
-        self.assertTrue(
-            np.allclose(
-                pred_actions.float().cpu().numpy(),
-                pred_actions_ref,
-                atol=1e-2))
+        np.testing.assert_allclose(
+            pred_actions.float().cpu().numpy(),
+            pred_actions_ref,
+            atol=1e-2,
+            rtol=1e-5,
+            equal_nan=False)
 
 
 @pytest.mark.skipif(
     not torch.cuda.is_available() or not _dit4dit_artifacts_exist(),
     reason='DiT4DiT checkpoint or test data not found.')
+@pytest.mark.checkpoint
+@pytest.mark.usefixtures('dit4dit_parity_backbone')
 class TestDiT4DiT(unittest.TestCase):
 
     def setUp(self):
@@ -1185,12 +1531,12 @@ class TestDiT4DiT(unittest.TestCase):
                 task_description=self.inputs['task_description'],
             )
 
-        self.assertTrue(
-            np.allclose(
-                output['loss'].cpu().numpy(),
-                self.expected['loss'].cpu().numpy(),
-                atol=1e-5,
-                rtol=1e-4))
+        np.testing.assert_allclose(
+            output['loss'].cpu().numpy(),
+            self.expected['loss'].cpu().numpy(),
+            atol=1e-5,
+            rtol=1e-4,
+            equal_nan=False)
 
     def test_predict_action(self):
         data = self._cuda_inputs()
@@ -1202,17 +1548,18 @@ class TestDiT4DiT(unittest.TestCase):
                 task_description=self.inputs['task_description'],
             )
 
-        self.assertTrue(
-            np.allclose(
-                pred_actions.cpu().numpy(),
-                self.expected['pred_actions'].cpu().numpy(),
-                atol=1e-5,
-                rtol=1e-4))
+        np.testing.assert_allclose(
+            pred_actions.cpu().numpy(),
+            self.expected['pred_actions'].cpu().numpy(),
+            atol=1e-5,
+            rtol=1e-4,
+            equal_nan=False)
 
 
 @pytest.mark.skipif(
     not os.path.exists(SMOLVLA_CKPT_PATH),
     reason=f'Checkpoint not found: {SMOLVLA_CKPT_PATH}')
+@pytest.mark.checkpoint
 class TestSmolVLAFlowMatching(unittest.TestCase):
 
     def setUp(self):
@@ -1344,13 +1691,20 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
             np.max(np.abs(pad_np - pad_masks_target))))
         print('[prefix] att_masks max_diff={:.6f}'.format(
             np.max(np.abs(att_np - att_masks_target))))
-        self.assertTrue(np.allclose(embs_np, embs_target, atol=5e-1))
-        self.assertTrue(
-            np.allclose(pad_masks.float().cpu().detach().numpy(),
-                        pad_masks_target))
-        self.assertTrue(
-            np.allclose(att_masks.float().cpu().detach().numpy(),
-                        att_masks_target))
+        np.testing.assert_allclose(
+            embs_np, embs_target, atol=5e-1, rtol=1e-5, equal_nan=False)
+        np.testing.assert_allclose(
+            pad_masks.float().cpu().detach().numpy(),
+            pad_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            att_masks.float().cpu().detach().numpy(),
+            att_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
 
     def test_suffix_forward(self):
         time = np.load(
@@ -1385,14 +1739,24 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
             np.max(np.abs(s_pad_np - suffix_pad_masks_target))))
         print('[suffix] att_masks max_diff={:.6f}'.format(
             np.max(np.abs(s_att_np - suffix_att_masks_target))))
-        self.assertTrue(
-            np.allclose(suffix_embs_np, suffix_embs_target, atol=1e-2))
-        self.assertTrue(
-            np.allclose(suffix_pad_masks.float().cpu().detach().numpy(),
-                        suffix_pad_masks_target))
-        self.assertTrue(
-            np.allclose(suffix_att_masks.float().cpu().detach().numpy(),
-                        suffix_att_masks_target))
+        np.testing.assert_allclose(
+            suffix_embs_np,
+            suffix_embs_target,
+            atol=1e-2,
+            rtol=1e-5,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            suffix_pad_masks.float().cpu().detach().numpy(),
+            suffix_pad_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
+        np.testing.assert_allclose(
+            suffix_att_masks.float().cpu().detach().numpy(),
+            suffix_att_masks_target,
+            rtol=1e-5,
+            atol=1e-8,
+            equal_nan=False)
 
     def test_forward(self):
         from fluxvla.engines.utils.model_utils import make_att_2d_masks
@@ -1460,8 +1824,12 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
                 a_diff = np.abs(actions_np - actions_target)
                 print('\n[forward] actions max_diff={:.6f}, '
                       'mean_diff={:.6f}'.format(a_diff.max(), a_diff.mean()))
-                self.assertTrue(
-                    np.allclose(actions_np, actions_target, atol=1e-1))
+                np.testing.assert_allclose(
+                    actions_np,
+                    actions_target,
+                    atol=1e-1,
+                    rtol=1e-5,
+                    equal_nan=False)
 
     def test_predict_actions(self):
         images = self._load_images()
@@ -1498,7 +1866,12 @@ class TestSmolVLAFlowMatching(unittest.TestCase):
         p_diff = np.abs(pred_np - pred_actions_target)
         print('\n[predict] pred_actions max_diff={:.6f}, '
               'mean_diff={:.6f}'.format(p_diff.max(), p_diff.mean()))
-        self.assertTrue(np.allclose(pred_np, pred_actions_target, atol=5e-1))
+        np.testing.assert_allclose(
+            pred_np,
+            pred_actions_target,
+            atol=5e-1,
+            rtol=1e-5,
+            equal_nan=False)
 
     def test_vlm_output_consistency(self):
         """Verify that joint forward and prefill+decode produce consistent
