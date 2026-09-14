@@ -1,0 +1,166 @@
+name: Unit tests
+
+on:
+  pull_request:
+    branches: [master, main]
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unit-tests-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  runner-config:
+    name: Check GPU runner configuration
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      labels: ${{ steps.runner.outputs.labels }}
+    steps:
+      - name: Require an explicitly configured GPU runner
+        id: runner
+        env:
+          RUNNER_LABELS: ${{ vars.FLUXVLA_UNIT_TEST_RUNNER_LABELS }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+
+          raw = os.environ.get('RUNNER_LABELS', '')
+          if not raw:
+              raise SystemExit(
+                  'Set the repository variable FLUXVLA_UNIT_TEST_RUNNER_LABELS '
+                  'to a JSON list of labels for an isolated, ephemeral GPU '
+                  'runner. Configure PR approval rules first; see test/README.md. '
+                  'The CUDA unit tests cannot run on ubuntu-latest.')
+          labels = json.loads(raw)
+          if (not isinstance(labels, list) or not labels
+                  or any(not isinstance(label, str) or not label.strip()
+                         for label in labels)):
+              raise SystemExit('Runner labels must be a nonempty JSON list of strings.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('labels=' + json.dumps(labels) + '\n')
+          PY
+
+  unit-tests:
+    name: Unit tests (CUDA, deterministic)
+    needs: runner-config
+    if: needs.runner-config.result == 'success'
+    runs-on: ${{ fromJSON(needs.runner-config.outputs.labels || '["ubuntu-latest"]') }}
+    # Configure required reviewers before enabling the runner variable above.
+    # Never attach this workflow to a persistent training/development machine.
+    environment: unit-tests-gpu
+    timeout-minutes: 30
+    env:
+      BASE_PYTHON: ${{ vars.FLUXVLA_UNIT_TEST_PYTHON || 'python3' }}
+      PYTHONNOUSERSITE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+      CUBLAS_WORKSPACE_CONFIG: ':4096:8'
+      TOKENIZERS_PARALLELISM: 'false'
+      WANDB_MODE: disabled
+      MAX_JOBS: '2'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - name: Check the pre-provisioned CUDA runtime
+        run: |
+          report_dir="$RUNNER_TEMP/fluxvla-unit-test-reports"
+          mkdir -p "$report_dir"
+          echo "REPORT_DIR=$report_dir" >> "$GITHUB_ENV"
+          "$BASE_PYTHON" - <<'PY'
+          import sys
+
+          import flash_attn
+          import torch
+          import transformers
+          from mmengine.config.utils import _is_builtin_module
+
+          if sys.version_info[:2] != (3, 10):
+              raise SystemExit('The unit-test runner must provide Python 3.10.')
+          if torch.__version__.split('+')[0] != '2.8.0' or torch.version.cuda != '12.8':
+              raise SystemExit('The validated CI runtime is PyTorch 2.8.0 with CUDA 12.8.')
+          if transformers.__version__ != '5.3.0':
+              raise SystemExit('The unit-test runner must provide Transformers 5.3.0.')
+          if not torch.cuda.is_available():
+              raise SystemExit('CUDA is required; do not skip the model tests in CI.')
+          if torch.cuda.get_device_capability()[0] < 8 or not torch.cuda.is_bf16_supported():
+              raise SystemExit('The model tests require an Ampere-or-newer BF16 GPU.')
+          if not all(_is_builtin_module(name) for name in ('os', 'copy')):
+              raise SystemExit(
+                  'MMEngine cannot recognize this interpreter standard library. '
+                  'Use a self-contained Python/Conda runtime, not an inherited venv.')
+          print('Python:', sys.version)
+          print('PyTorch:', torch.__version__, 'CUDA:', torch.version.cuda)
+          print('Transformers:', transformers.__version__)
+          print('FlashAttention:', flash_attn.__version__)
+          print('GPU:', torch.cuda.get_device_name())
+          PY
+          "$BASE_PYTHON" -c 'import os, sys; print(os.path.dirname(sys.executable))' >> "$GITHUB_PATH"
+
+      - name: Install test dependencies and build this checkout's extensions
+        run: |
+          "$BASE_PYTHON" -m pip install -r requirements-test.txt
+          "$BASE_PYTHON" -m pip install --no-build-isolation --no-deps -e .
+          "$BASE_PYTHON" -m pip freeze > "$REPORT_DIR/environment.txt"
+          git rev-parse HEAD > "$REPORT_DIR/commit.txt"
+
+      - name: Run all default unit tests with independent seeds and orders
+        id: pytest
+        run: |
+          status=0
+          for seed in 0 17 2026; do
+            PYTHONHASHSEED="$seed" "$BASE_PYTHON" -m pytest -q -ra \
+              --test-order-seed="$seed" \
+              --junitxml="$REPORT_DIR/junit-$seed.xml" \
+              2>&1 | tee "$REPORT_DIR/pytest-$seed.log" || status=1
+          done
+          exit "$status"
+
+      - name: Reject missing reports, skipped tests, or inconsistent coverage
+        if: always() && (steps.pytest.outcome == 'success' || steps.pytest.outcome == 'failure')
+        run: |
+          "$BASE_PYTHON" - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report_dir = Path(os.environ['REPORT_DIR'])
+          expected = None
+          for seed in (0, 17, 2026):
+              path = report_dir / f'junit-{seed}.xml'
+              cases = ET.parse(path).getroot().findall('.//testcase')
+              if not cases:
+                  raise SystemExit(f'No tests executed: {path}')
+              problems = [case.attrib for case in cases
+                          if any(case.find(tag) is not None
+                                 for tag in ('skipped', 'failure', 'error'))]
+              if problems:
+                  raise SystemExit(f'Non-passing unit tests in {path}: {problems}')
+              identities = sorted((case.get('classname'), case.get('name'))
+                                  for case in cases)
+              if expected is not None and identities != expected:
+                  raise SystemExit(f'The selected unit tests changed with seed {seed}.')
+              expected = identities
+              print(f'Seed {seed}: {len(cases)} passed, no skips.')
+          PY
+
+      - name: Upload test logs and JUnit reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: unit-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fluxvla-unit-test-reports/
+          if-no-files-found: warn
+          retention-days: 7
