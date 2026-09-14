@@ -1,0 +1,7 @@
+# Only for test/test_configs on a hosted CPU runner; not the full model suite.
+# Install torch==2.8.0 from https://download.pytorch.org/whl/cpu first.
+-r ../requirements-test.txt
+numpy==1.26.4
+mmengine==0.10.7
+# Keep MMEngine's OpenCV dependency compatible with NumPy 1.x.
+opencv-python==4.11.0.86

@@ -6,6 +6,11 @@ on:
   push:
     branches: [master, main]
   workflow_dispatch:
+    inputs:
+      run_gpu:
+        description: Require the full CUDA suite (needs a configured GPU runner)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -19,42 +24,162 @@ defaults:
     shell: bash
 
 jobs:
+  cpu-config-tests:
+    name: CPU config contracts (deterministic)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      CUDA_VISIBLE_DEVICES: ''
+      PYTHONNOUSERSITE: '1'
+      PYTEST_DISABLE_PLUGIN_AUTOLOAD: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.10'
+          cache: pip
+          cache-dependency-path: |
+            requirements-test.txt
+            test/requirements-cpu.txt
+
+      - name: Install CPU-only test dependencies
+        run: |
+          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          python -m pip install -r test/requirements-cpu.txt
+
+      - name: Check and record the CPU runtime
+        run: |
+          report_dir="$RUNNER_TEMP/fluxvla-cpu-test-reports"
+          mkdir -p "$report_dir"
+          echo "REPORT_DIR=$report_dir" >> "$GITHUB_ENV"
+          python - <<'PY'
+          import sys
+
+          import torch
+          from mmengine.config.utils import _is_builtin_module
+
+          if torch.version.cuda is not None or torch.cuda.is_available():
+              raise SystemExit('This job must use CPU-only PyTorch, without CUDA.')
+          if not all(_is_builtin_module(name) for name in ('os', 'copy')):
+              raise SystemExit('MMEngine must recognize the Python standard library.')
+          print('Python:', sys.version)
+          print('PyTorch:', torch.__version__)
+          PY
+          python -m pip freeze > "$report_dir/environment.txt"
+          git rev-parse HEAD > "$report_dir/commit.txt"
+
+      - name: Run CPU config contracts with independent seeds and orders
+        id: pytest
+        # Select this directory before collection: the full suite imports CUDA code.
+        run: |
+          status=0
+          for seed in 0 17 2026; do
+            PYTHONHASHSEED="$seed" python -m pytest test/test_configs -q -ra \
+              --test-order-seed="$seed" \
+              --junitxml="$REPORT_DIR/junit-$seed.xml" \
+              2>&1 | tee "$REPORT_DIR/pytest-$seed.log" || status=1
+          done
+          exit "$status"
+
+      - name: Reject missing reports, skipped tests, or inconsistent coverage
+        if: always() && (steps.pytest.outcome == 'success' || steps.pytest.outcome == 'failure')
+        run: |
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report_dir = Path(os.environ['REPORT_DIR'])
+          expected = None
+          for seed in (0, 17, 2026):
+              path = report_dir / f'junit-{seed}.xml'
+              cases = ET.parse(path).getroot().findall('.//testcase')
+              if not cases:
+                  raise SystemExit(f'No tests executed: {path}')
+              problems = [case.attrib for case in cases
+                          if any(case.find(tag) is not None
+                                 for tag in ('skipped', 'failure', 'error'))]
+              if problems:
+                  raise SystemExit(f'Non-passing unit tests in {path}: {problems}')
+              identities = sorted((case.get('classname'), case.get('name'))
+                                  for case in cases)
+              if expected is not None and identities != expected:
+                  raise SystemExit(f'The selected unit tests changed with seed {seed}.')
+              expected = identities
+              print(f'Seed {seed}: {len(cases)} passed, no skips.')
+          PY
+
+      - name: Upload CPU config test logs and JUnit reports
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cpu-config-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/fluxvla-cpu-test-reports/
+          if-no-files-found: warn
+          retention-days: 7
+
   runner-config:
     name: Check GPU runner configuration
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
+      enabled: ${{ steps.runner.outputs.enabled }}
       labels: ${{ steps.runner.outputs.labels }}
     steps:
-      - name: Require an explicitly configured GPU runner
+      - name: Select GPU coverage from the explicit runner configuration
         id: runner
         env:
           RUNNER_LABELS: ${{ vars.FLUXVLA_UNIT_TEST_RUNNER_LABELS }}
+          REQUIRE_GPU: ${{ inputs.run_gpu && 'true' || 'false' }}
         run: |
           python3 - <<'PY'
           import json
           import os
 
-          raw = os.environ.get('RUNNER_LABELS', '')
+          raw = os.environ.get('RUNNER_LABELS', '').strip()
           if not raw:
-              raise SystemExit(
-                  'Set the repository variable FLUXVLA_UNIT_TEST_RUNNER_LABELS '
-                  'to a JSON list of labels for an isolated, ephemeral GPU '
-                  'runner. Configure PR approval rules first; see test/README.md. '
-                  'The CUDA unit tests cannot run on ubuntu-latest.')
-          labels = json.loads(raw)
+              if os.environ.get('REQUIRE_GPU') == 'true':
+                  raise SystemExit(
+                      'CUDA tests were requested, but FLUXVLA_UNIT_TEST_RUNNER_LABELS '
+                      'is not configured. Set a JSON list of isolated GPU runner '
+                      'labels after configuring PR approval; see test/README.md.')
+              message = (
+                  'GPU model tests NOT RUN: FLUXVLA_UNIT_TEST_RUNNER_LABELS is not '
+                  'configured. Only CPU config contracts run automatically. '
+                  'Configure an isolated GPU runner to enable the full default '
+                  'unit suite; see test/README.md.')
+              print('::notice::' + message)
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write('## Unit test coverage\n\n' + message + '\n')
+              with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+                  output.write('enabled=false\n')
+              raise SystemExit(0)
+          try:
+              labels = json.loads(raw)
+          except json.JSONDecodeError as error:
+              raise SystemExit('FLUXVLA_UNIT_TEST_RUNNER_LABELS is not valid JSON.') from error
           if (not isinstance(labels, list) or not labels
                   or any(not isinstance(label, str) or not label.strip()
                          for label in labels)):
               raise SystemExit('Runner labels must be a nonempty JSON list of strings.')
           with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write('enabled=true\n')
               output.write('labels=' + json.dumps(labels) + '\n')
+          with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+              summary.write(
+                  '## Unit test coverage\n\nCPU config contracts and the full default '
+                  'CUDA unit suite are enabled. Check each job for its actual result. '
+                  'Full-size checkpoint regressions remain opt-in.\n')
           PY
 
   unit-tests:
     name: Unit tests (CUDA, deterministic)
     needs: runner-config
-    if: needs.runner-config.result == 'success'
+    if: needs.runner-config.outputs.enabled == 'true'
     runs-on: ${{ fromJSON(needs.runner-config.outputs.labels || '["ubuntu-latest"]') }}
     # Configure required reviewers before enabling the runner variable above.
     # Never attach this workflow to a persistent training/development machine.
