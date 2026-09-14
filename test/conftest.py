@@ -1,6 +1,7 @@
 """Offline, deterministic defaults for unit and checkpoint regression tests."""
 
 import random
+import runpy
 import socket
 from pathlib import Path
 
@@ -17,6 +18,10 @@ collect_ignore = [
 
 
 def pytest_addoption(parser):
+    parser.addoption(
+        '--cpu-model-tests',
+        action='store_true',
+        help='Run CPU model units with isolated package imports.')
     parser.addoption(
         '--run-checkpoint-tests',
         action='store_true',
@@ -76,6 +81,10 @@ def pytest_configure(config):
     }.items():
         patch.setenv(key, value)
     config.add_cleanup(patch.undo)
+    if config.getoption('--cpu-model-tests'):
+        runtime = runpy.run_path(
+            str(Path(__file__).with_name('_cpu_model_runtime.py')))
+        config.add_cleanup(runtime['bootstrap']())
 
 
 @pytest.fixture(scope='session', autouse=True)

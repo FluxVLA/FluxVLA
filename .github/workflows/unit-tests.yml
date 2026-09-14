@@ -24,8 +24,8 @@ defaults:
     shell: bash
 
 jobs:
-  cpu-config-tests:
-    name: CPU config contracts (deterministic)
+  cpu-unit-tests:
+    name: CPU model unit tests (deterministic)
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -48,8 +48,11 @@ jobs:
 
       - name: Install CPU-only test dependencies
         run: |
-          python -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          # Fetch only the CPU wheels here; resolve all dependencies against the
+          # pinned test requirements below, without temporarily installing NumPy 2.
+          python -m pip install --no-deps torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r test/requirements-cpu.txt
+          python -m pip check
 
       - name: Check and record the CPU runtime
         run: |
@@ -60,25 +63,34 @@ jobs:
           import sys
 
           import torch
+          import torchvision
+          import transformers
           from mmengine.config.utils import _is_builtin_module
 
+          if torch.__version__.split('+')[0] != '2.8.0':
+              raise SystemExit('The CPU job requires PyTorch 2.8.0.')
           if torch.version.cuda is not None or torch.cuda.is_available():
               raise SystemExit('This job must use CPU-only PyTorch, without CUDA.')
+          if transformers.__version__ != '5.3.0':
+              raise SystemExit('The CPU job requires Transformers 5.3.0.')
           if not all(_is_builtin_module(name) for name in ('os', 'copy')):
               raise SystemExit('MMEngine must recognize the Python standard library.')
           print('Python:', sys.version)
           print('PyTorch:', torch.__version__)
+          print('Torchvision:', torchvision.__version__)
+          print('Transformers:', transformers.__version__)
           PY
           python -m pip freeze > "$report_dir/environment.txt"
           git rev-parse HEAD > "$report_dir/commit.txt"
 
-      - name: Run CPU config contracts with independent seeds and orders
+      - name: Run real CPU model and config tests with independent seeds and orders
         id: pytest
-        # Select this directory before collection: the full suite imports CUDA code.
+        # Test-only import isolation avoids eager RADIO/CUDA initialization.
+        # The selected units execute actual FluxVLA modules, not fake models.
         run: |
           status=0
           for seed in 0 17 2026; do
-            PYTHONHASHSEED="$seed" python -m pytest test/test_configs -q -ra \
+            PYTHONHASHSEED="$seed" python -m pytest --cpu-model-tests @test/cpu-tests.txt -q -ra \
               --test-order-seed="$seed" \
               --junitxml="$REPORT_DIR/junit-$seed.xml" \
               2>&1 | tee "$REPORT_DIR/pytest-$seed.log" || status=1
@@ -91,8 +103,24 @@ jobs:
           python - <<'PY'
           import os
           import xml.etree.ElementTree as ET
+          from collections import Counter
           from pathlib import Path
 
+          # A green CPU job must include real model computation, not just configs.
+          required_models = {
+              'test_tiny_llm_forward_backward_and_causal_mask': 3,
+              'test_tiny_llm_kv_cache_matches_full_sequence': 3,
+              'test_tiny_siglip_multiview_forward_backward': 2,
+              'test_tiny_paligemma_multiview_forward_backward': 2,
+              'test_tiny_openvla_forward_backward_and_predict_action': 1,
+              'test_tiny_llava_flow_matching_forward_backward_and_predict_action': 1,
+              'test_tiny_pi_forward_backward': 2,
+              'test_tiny_pi_predict_action': 2,
+              'test_projector_forward_backward_and_reload': 3,
+              'test_tiny_dit4dit_head_loss_backward_and_predict': 2,
+              'test_tiny_llava_action_head_masked_loss_backward_and_predict': 2,
+              'test_tiny_flow_head_seeded_inference_and_prefix': 2,
+          }
           report_dir = Path(os.environ['REPORT_DIR'])
           expected = None
           for seed in (0, 17, 2026):
@@ -105,19 +133,28 @@ jobs:
                                  for tag in ('skipped', 'failure', 'error'))]
               if problems:
                   raise SystemExit(f'Non-passing unit tests in {path}: {problems}')
+              counts = Counter(case.get('name', '').split('[')[0] for case in cases)
+              missing = {name: count - counts[name]
+                         for name, count in required_models.items() if counts[name] < count}
+              if missing:
+                  raise SystemExit(f'Required model coverage missing in {path}: {missing}')
               identities = sorted((case.get('classname'), case.get('name'))
                                   for case in cases)
               if expected is not None and identities != expected:
                   raise SystemExit(f'The selected unit tests changed with seed {seed}.')
               expected = identities
-              print(f'Seed {seed}: {len(cases)} passed, no skips.')
+              message = (f'Seed {seed}: {len(cases)} passed, no skips; '
+                         f'all {sum(required_models.values())} required real model cases ran.')
+              print(message)
+              with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+                  summary.write(message + '\n\n')
           PY
 
-      - name: Upload CPU config test logs and JUnit reports
+      - name: Upload CPU model test logs and JUnit reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: cpu-config-test-results-${{ github.run_id }}-${{ github.run_attempt }}
+          name: cpu-unit-test-results-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/fluxvla-cpu-test-reports/
           if-no-files-found: warn
           retention-days: 7
@@ -148,8 +185,9 @@ jobs:
                       'is not configured. Set a JSON list of isolated GPU runner '
                       'labels after configuring PR approval; see test/README.md.')
               message = (
-                  'GPU model tests NOT RUN: FLUXVLA_UNIT_TEST_RUNNER_LABELS is not '
-                  'configured. Only CPU config contracts run automatically. '
+                  'CUDA integration tests NOT RUN: FLUXVLA_UNIT_TEST_RUNNER_LABELS is not '
+                  'configured. Real CPU model and config unit tests run automatically '
+                  'with test-only import isolation. '
                   'Configure an isolated GPU runner to enable the full default '
                   'unit suite; see test/README.md.')
               print('::notice::' + message)
@@ -171,7 +209,7 @@ jobs:
               output.write('labels=' + json.dumps(labels) + '\n')
           with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
               summary.write(
-                  '## Unit test coverage\n\nCPU config contracts and the full default '
+                  '## Unit test coverage\n\nCPU model/config units and the full default '
                   'CUDA unit suite are enabled. Check each job for its actual result. '
                   'Full-size checkpoint regressions remain opt-in.\n')
           PY

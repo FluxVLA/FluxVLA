@@ -1,7 +1,12 @@
-# Only for test/test_configs on a hosted CPU runner; not the full model suite.
-# Install torch==2.8.0 from https://download.pytorch.org/whl/cpu first.
+# Hosted CPU model/config unit tests, without FlashAttention or CUDA extensions.
+# Install torch==2.8.0 and torchvision==0.23.0 from the PyTorch CPU index first.
 -r ../requirements-test.txt
 numpy==1.26.4
 mmengine==0.10.7
 # Keep MMEngine's OpenCV dependency compatible with NumPy 1.x.
 opencv-python==4.11.0.86
+transformers==5.3.0
+accelerate==0.33.0
+diffusers==0.30.2
+timm==0.9.10
+einops==0.4.1

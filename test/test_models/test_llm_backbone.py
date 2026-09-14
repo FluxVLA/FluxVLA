@@ -78,6 +78,45 @@ def test_tiny_llm_forward_backward_and_causal_mask(model_type, backbone_id,
     torch.testing.assert_close(future.logits[:, :-1], result.logits[:, :-1])
 
 
+@pytest.mark.parametrize('model_type,backbone_id,family', [
+    ('LLaMa2LLMBackbone', 'llama2-7b-pure_causal', 'llama'),
+    ('GemmaLLMBackbone', 'gemma-2b_causal', 'gemma'),
+    ('Qwen2LLMBackbone', 'qwen2-0.5b_causal', 'qwen2'),
+])
+def test_tiny_llm_kv_cache_matches_full_sequence(model_type, backbone_id,
+                                                 family):
+    backbone = build_llm_backbone_from_cfg(
+        dict(
+            type=model_type,
+            llm_backbone_id=backbone_id,
+            llm_family=family,
+            llm_path=None,
+            tokenizer_length=64,
+            llm_config=dict(
+                vocab_size=64,
+                hidden_size=16,
+                intermediate_size=32,
+                num_hidden_layers=1,
+                num_attention_heads=2,
+                num_key_value_heads=1,
+                head_dim=8,
+                max_position_embeddings=64,
+                attention_dropout=0.0,
+                pad_token_id=0))).eval()
+    tokens = torch.tensor([[1, 5, 9, 2], [1, 8, 3, 2]])
+    with torch.no_grad():
+        full = backbone(input_ids=tokens, use_cache=False)
+        prefix = backbone(input_ids=tokens[:, :3], use_cache=True)
+        assert prefix.past_key_values.get_seq_length() == 3
+        cached = backbone(
+            input_ids=tokens[:, 3:],
+            attention_mask=torch.ones_like(tokens),
+            past_key_values=prefix.past_key_values,
+            use_cache=True)
+    assert cached.past_key_values.get_seq_length() == 4
+    torch.testing.assert_close(cached.logits, full.logits[:, 3:])
+
+
 @pytest.mark.skipif(
     not os.path.exists(LLAMA2_CKPT_PATH),
     reason=f'Checkpoint not found: {LLAMA2_CKPT_PATH}')

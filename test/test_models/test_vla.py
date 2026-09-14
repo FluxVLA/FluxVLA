@@ -93,11 +93,16 @@ def _tiny_vision_llm_config(vocab_size=64):
         freeze_llm_backbone=False)
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='Requires CUDA.')
-def test_tiny_openvla_forward_backward_and_predict_action(monkeypatch):
+def test_tiny_openvla_forward_backward_and_predict_action(
+        monkeypatch, request):
     from fluxvla.models.backbones.visions.configs import \
         VISION_BACKBONE_CONFIGS
 
+    # The isolated CPU job uses native timm attention. The normal GPU suite
+    # retains the production RADIO/CUDA attention path and BF16 coverage.
+    device = 'cpu' if request.config.getoption('--cpu-model-tests') else 'cuda'
+    if device == 'cuda' and not torch.cuda.is_available():
+        pytest.skip('The production import path requires CUDA.')
     # Match OpenVLA's dual-timm vision contract with smaller real ViTs. Only
     # architecture IDs and external tokenizer loading are substituted.
     for name in ('test_dino', 'test_siglip'):
@@ -116,7 +121,7 @@ def test_tiny_openvla_forward_backward_and_predict_action(monkeypatch):
             pretrained=False,
             img_size=16),
         projector=dict(type='LinearProjector', in_dim=384, out_dim=16),
-        enable_mixed_precision_training=True)
+        enable_mixed_precision_training=device == 'cuda')
     policy = build_vla_from_cfg(
         dict(
             backbone_cfg,
@@ -133,13 +138,14 @@ def test_tiny_openvla_forward_backward_and_predict_action(monkeypatch):
                     }
                 }
             },
-        )).cuda().eval()
+        )).to(device).eval()
     images = torch.linspace(
-        -1, 1, 6 * 16 * 16, device='cuda').reshape(1, 6, 16, 16)
-    tokens = torch.tensor([[1, 7, 31990, 31991, 31992]], device='cuda')
+        -1, 1, 6 * 16 * 16, device=device).reshape(1, 6, 16, 16)
+    tokens = torch.tensor([[1, 7, 31990, 31991, 31992]], device=device)
     labels = tokens.clone()
     labels[:, :2] = -100
-    with torch.autocast('cuda', dtype=torch.bfloat16):
+    with torch.autocast(
+            device, dtype=torch.bfloat16, enabled=device == 'cuda'):
         output = policy(
             images=images,
             lang_tokens=tokens,
@@ -155,7 +161,8 @@ def test_tiny_openvla_forward_backward_and_predict_action(monkeypatch):
         grads = [p.grad for p in module.parameters() if p.grad is not None]
         assert grads and all(torch.isfinite(g).all() for g in grads)
         assert any(g.abs().sum() > 0 for g in grads)
-    with torch.no_grad(), torch.autocast('cuda', dtype=torch.bfloat16):
+    with torch.no_grad(), torch.autocast(
+            device, dtype=torch.bfloat16, enabled=device == 'cuda'):
         first = policy.predict_action(images=images, lang_tokens=tokens[:, :2])
         second = policy.predict_action(
             images=images, lang_tokens=tokens[:, :2])
