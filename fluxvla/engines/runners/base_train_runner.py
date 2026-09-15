@@ -1,4 +1,4 @@
-# Copyright 2026 Limx Dynamics
+﻿# Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,7 +29,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
-from fluxvla.engines.utils import check_bloat16_supported
+from fluxvla.engines.utils import check_bf16_supported
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.torch_utils import (
     configure_deterministic_training, worker_init_function)
@@ -204,7 +204,7 @@ class BaseTrainRunner(ABC):
         if self.enable_mixed_precision_training:
             assert self.mixed_precision_dtype == torch.bfloat16, \
                 'Only BF16 mixed precision training is supported!'
-            assert check_bloat16_supported(), \
+            assert check_bf16_supported(), \
                 'BFloat16 is not supported on this hardware; unset `mixed_precision`'  # noqa: E501
 
     def _unwrap_vla(self) -> torch.nn.Module:

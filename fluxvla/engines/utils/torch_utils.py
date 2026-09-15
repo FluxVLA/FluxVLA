@@ -1,4 +1,4 @@
-# Copyright 2026 Limx Dynamics
+﻿# Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -207,7 +207,7 @@ def worker_init_function(worker_id: int) -> None:
 # === BFloat16 Support ===
 
 
-def check_bloat16_supported() -> bool:
+def check_bf16_supported() -> bool:
     try:
         import packaging.version
         import torch.cuda.nccl as nccl

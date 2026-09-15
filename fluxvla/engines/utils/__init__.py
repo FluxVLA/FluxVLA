@@ -1,4 +1,4 @@
-# Copyright 2026 Limx Dynamics
+﻿# Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -52,5 +52,5 @@ from .root import VISION_BACKBONES  # noqa: F401, F403
 from .root import VLAS  # noqa: F401, F403
 from .root import VLM_BACKBONES  # noqa: F401, F403
 from .root import WEIGHTERS  # noqa: F401, F403
-from .torch_utils import check_bloat16_supported  # noqa: F401, F403
+from .torch_utils import check_bf16_supported  # noqa: F401, F403
 from .torch_utils import set_seed_everywhere  # noqa: F401, F403
