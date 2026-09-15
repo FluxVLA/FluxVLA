@@ -1,0 +1,116 @@
+﻿name: 🐛 Bug Report
+description: Report a bug or unexpected behavior in FluxVLA
+title: "[Bug]: "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to fill out this bug report!
+        
+        Before submitting, please check if the issue has already been reported in the [existing issues](https://github.com/FluxVLA/FluxVLA/issues).
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Bug Description
+      description: A clear and concise description of what the bug is.
+      placeholder: Describe the bug you encountered...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to Reproduce
+      description: Steps to reproduce the behavior.
+      placeholder: |
+        1. Go to '...'
+        2. Run command '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected Behavior
+      description: A clear and concise description of what you expected to happen.
+      placeholder: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual Behavior
+      description: What actually happened. Include error messages and stack traces.
+      placeholder: What actually happened?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: robot
+    attributes:
+      label: Robot Model
+      description: Which robot model are you using?
+      options:
+        - Unitree Go1
+        - Unitree Go2
+        - Duow
+        - Go2W
+        - M20
+        - G1 (29 DoF)
+        - Other (please specify in description)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: simulator
+    attributes:
+      label: Simulator
+      description: Which simulator are you using?
+      options:
+        - MuJoCo
+        - MuJoCo GLFW
+        - Gazebo
+        - Real Robot
+        - Other (please specify in description)
+    validations:
+      required: true
+
+  - type: input
+    id: os
+    attributes:
+      label: Operating System
+      description: Your operating system and version.
+      placeholder: e.g., Ubuntu 22.04, Windows 11, macOS 14
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python Version
+      description: Your Python version.
+      placeholder: e.g., 3.10.12
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Error Logs / Screenshots
+      description: Add error logs, screenshots, or any other context about the problem.
+      placeholder: Paste error logs or upload screenshots...
+    validations:
+      required: false
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional Context
+      description: Add any other context about the problem here.
+      placeholder: Any additional information that might help...
+    validations:
+      required: false
