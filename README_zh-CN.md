@@ -5,6 +5,7 @@
 </p>
 
 <div align="center">
+<a href="https://arxiv.org/abs/2609.17210"><img src="https://img.shields.io/badge/arXiv-2609.17210-b31b1b" alt="arXiv"></a>
 <a href="https://huggingface.co/limxdynamics/FluxVLAEngine"><img src="https://img.shields.io/badge/HuggingFace-yellow?logo=huggingface&logoColor=white" alt="Hugging Face"></a>
 <a href="https://fluxvla.limxdynamics.com"><img src="https://img.shields.io/badge/Documentation-Purple?color=8A2BE2&logo=readthedocs"></a>
 <a href="https://fluxvla.limxdynamics.com/zh/"><img src="https://img.shields.io/badge/中文文档-red?logo=readthedocs"></a>
@@ -1120,15 +1121,14 @@ pip install numpy==1.26.4
 如果你在学术研究或工程项目中使用了 FluxVLA，欢迎引用以下工作：
 
 ```bibtex
-@software{FluxVLA2026,
-  author  = {Li, Yinhao and Mao, Weixin and Lan, Zihan and Rong, Jikun and Zhu, Minzhao and Mao, Yiming and Shen, Bowen and Huang, Xu},
-  title   = {{FluxVLA Engine: A One-Stop VLA Engineering Platform for Embodied Intelligence}},
-  year    = {2026},
-  month   = apr,
-  version = {1.0.0},
-  doi     = {10.5281/zenodo.20049506},
-  url     = {https://github.com/FluxVLA/FluxVLA},
-  license = {Apache-2.0},
+@misc{li2026fluxvlaengineonestopvla,
+  title={FluxVLA Engine: A One-Stop VLA Engineering Platform for Embodied Intelligence},
+  author={Yinhao Li and Weixin Mao and Zihan Lan and Jikun Rong and Qirui Hu and Yiming Zhang and Weipeng Deng and Bowen Shen and Minzhao Zhu and Yiming Mao and Yan Yang and Chenguang Cui and Hongyuan Chen and Xu Huang and Zheyi Zhao and Pinxi Shen and Bozhen He and Zhen Fu and Yifan Wang and Zexin Zhang and Ang Gao and Haoyu Chen and Chengqi Shi and Hua Chen},
+  year={2026},
+  eprint={2609.17210},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  url={https://arxiv.org/abs/2609.17210},
 }
 
 @InProceedings{Mao_2026_CVPR,
