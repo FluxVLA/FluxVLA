@@ -1,86 +1,98 @@
-﻿name: ✨ Feature Request
-description: Suggest an idea or enhancement for FluxVLA
-title: "[Feature]: "
-labels: ["enhancement", "triage"]
+name: Feature request
+description: Propose a FluxVLA model, dataset, training, evaluation, or deployment improvement
+title: "[Feature] "
+labels: ["enhancement"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting a new feature for FluxVLA!
-        
-        Before submitting, please check if the feature has already been requested in the [existing issues](https://github.com/FluxVLA/FluxVLA/issues).
+        Thanks for proposing an improvement. Search the [existing issues](https://github.com/FluxVLA/FluxVLA/issues) and review the [contribution guide](https://github.com/FluxVLA/FluxVLA/blob/main/CONTRIBUTING.md) first. Discuss substantial model or infrastructure changes before starting implementation.
+
+        Do not include credentials, private datasets, or private checkpoint contents. Describe the need without exposing sensitive information.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched for existing requests for this feature.
+          required: true
+        - label: I have removed credentials and private information from this request.
+          required: true
 
   - type: textarea
     id: problem
     attributes:
-      label: Is your feature request related to a problem?
-      description: A clear and concise description of what the problem is.
-      placeholder: e.g., I'm always frustrated when...
+      label: Problem or use case
+      description: Explain the workflow this feature would enable or improve and who would benefit.
     validations:
-      required: false
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Related component
+      multiple: true
+      options:
+        - Model, backbone, or action head
+        - Dataset, transforms, or collator
+        - Training, checkpointing, or optimization
+        - Evaluation or benchmark support
+        - Inference acceleration or RTC
+        - Robot operator or remote serving
+        - Installation or hardware platform support
+        - Documentation or developer tooling
+        - Other (describe in proposal)
+    validations:
+      required: true
 
   - type: textarea
     id: solution
     attributes:
-      label: Describe the solution you'd like
-      description: A clear and concise description of what you want to happen.
-      placeholder: Describe your proposed solution...
+      label: Proposed solution
+      description: Describe the expected behavior, affected interfaces, and any compatibility or dependency considerations.
     validations:
       required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Models, data, and platforms
+      description: If applicable, identify model/source repositories, checkpoint formats, dataset versions, benchmarks, robot platforms, and hardware constraints. Use public references only.
+      placeholder: Model family, LIBERO/RoboCasa task, ALOHA/UR3/Franka/Tron2/Oli platform, action layout, or new platform requirements
+    validations:
+      required: false
 
   - type: textarea
     id: alternatives
     attributes:
-      label: Describe alternatives you've considered
-      description: A clear and concise description of any alternative solutions or features you've considered.
-      placeholder: List any alternative solutions you've considered...
-    validations:
-      required: false
-
-  - type: dropdown
-    id: priority
-    attributes:
-      label: Priority
-      description: How important is this feature to you?
-      options:
-        - Low (nice to have)
-        - Medium (would improve my workflow)
-        - High (blocking my work)
-        - Critical (project cannot proceed without this)
-    validations:
-      required: true
-
-  - type: dropdown
-    id: robot
-    attributes:
-      label: Related Robot Model
-      description: Which robot model is this feature related to?
-      options:
-        - All robots
-        - Unitree Go1
-        - Unitree Go2
-        - Duow
-        - Go2W
-        - M20
-        - G1 (29 DoF)
-        - New robot support
+      label: Alternatives considered
+      description: Explain why existing configs, components, or workarounds do not address the need.
     validations:
       required: false
 
   - type: textarea
-    id: use_case
+    id: validation
     attributes:
-      label: Use Case
-      description: Describe a specific use case where this feature would be helpful.
-      placeholder: Describe your use case...
+      label: Validation plan
+      description: Suggest correctness tests, source-model parity checks, or reproducible benchmarks. Include hardware, seeds, and evaluation settings where relevant.
     validations:
       required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Possible contribution
+      description: Optional; implementation support is not required to propose a feature.
+      options:
+        - label: I can help implement the change.
+        - label: I can help test or benchmark the change.
+        - label: I can help update the documentation.
 
   - type: textarea
     id: additional
     attributes:
-      label: Additional Context
-      description: Add any other context, screenshots, or references about the feature request here.
-      placeholder: Any additional information...
+      label: Additional context
+      description: Include relevant public papers, examples, or related issues.
     validations:
       required: false

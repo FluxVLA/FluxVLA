@@ -1,116 +1,139 @@
-﻿name: 🐛 Bug Report
-description: Report a bug or unexpected behavior in FluxVLA
-title: "[Bug]: "
-labels: ["bug", "triage"]
+name: Bug report
+description: Report a reproducible FluxVLA installation, data, model, or runtime issue
+title: "[Bug] "
+labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this bug report!
-        
-        Before submitting, please check if the issue has already been reported in the [existing issues](https://github.com/FluxVLA/FluxVLA/issues).
+        Thanks for helping improve FluxVLA. Search the [existing issues](https://github.com/FluxVLA/FluxVLA/issues) and check the [installation and usage guide](https://github.com/FluxVLA/FluxVLA/blob/main/README.md) before reporting a problem.
+
+        Do not include API keys, tokens, passwords, private datasets, or unredacted environment files. For security concerns or conduct reports, contact the maintainers privately using the addresses in the [contribution guide](https://github.com/FluxVLA/FluxVLA/blob/main/docs/CONTRIBUTING.md#contact).
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched for existing reports of this issue.
+          required: true
+        - label: I have removed credentials and private information from this report.
+          required: true
 
   - type: textarea
     id: description
     attributes:
-      label: Bug Description
-      description: A clear and concise description of what the bug is.
-      placeholder: Describe the bug you encountered...
+      label: Bug description
+      description: Describe the problem and its impact on your workflow.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected component
+      multiple: true
+      options:
+        - Installation or dependencies
+        - Dataset, transforms, or collator
+        - Model, backbone, or action head
+        - Training, checkpoint loading, or resume
+        - Simulation evaluation
+        - Real-robot inference or RTC
+        - Remote serving or API-backed inference
+        - Documentation
+        - Other (describe above)
+    validations:
+      required: true
+
+  - type: input
+    id: model
+    attributes:
+      label: Model and checkpoint
+      description: Include the model family and checkpoint identifier/revision, if relevant. Do not upload private weights.
+      placeholder: PI0.5, GR00T N1.7, DiT4DiT, FastWAM, or not applicable
+    validations:
+      required: false
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Benchmark or robot platform
+      description: Select the relevant platforms. Installation and documentation issues need not involve a robot.
+      multiple: true
+      options:
+        - LIBERO
+        - RoboCasa GR1
+        - FluxBiSim / AlohaSim
+        - ALOHA
+        - UR3
+        - Franka single-arm or dual-arm
+        - Tron2
+        - Oli whole-body
+        - Custom or other (describe in reproduction steps)
+        - Not applicable
+    validations:
+      required: false
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the FluxVLA commit and relevant runtime versions. Use not applicable for fields unrelated to the issue.
+      placeholder: |
+        FluxVLA commit (git rev-parse HEAD):
+        OS and architecture:
+        Python version:
+        GPU model and NVIDIA driver (if used):
+        PyTorch version and torch.version.cuda:
+        CUDA toolkit version (if used):
+        Transformers / FlashAttention / video decoder versions (if relevant):
+        Installation command, mode, and CUDA profile:
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: Steps to Reproduce
-      description: Steps to reproduce the behavior.
+      label: Reproduction steps and configuration
+      description: Provide minimal commands, config paths and overrides, dataset version, and seed. For documentation issues, identify the file and section instead.
       placeholder: |
-        1. Go to '...'
-        2. Run command '...'
-        3. See error
+        1. Config path and overrides:
+        2. Dataset identifier/version and task or episode selection:
+        3. Exact command, worker/GPU count, and seed:
+        4. Steps that trigger the problem:
     validations:
       required: true
 
   - type: textarea
     id: expected
     attributes:
-      label: Expected Behavior
-      description: A clear and concise description of what you expected to happen.
-      placeholder: What did you expect to happen?
+      label: Expected behavior
+      description: What should happen?
     validations:
       required: true
 
   - type: textarea
     id: actual
     attributes:
-      label: Actual Behavior
-      description: What actually happened. Include error messages and stack traces.
-      placeholder: What actually happened?
-    validations:
-      required: true
-
-  - type: dropdown
-    id: robot
-    attributes:
-      label: Robot Model
-      description: Which robot model are you using?
-      options:
-        - Unitree Go1
-        - Unitree Go2
-        - Duow
-        - Go2W
-        - M20
-        - G1 (29 DoF)
-        - Other (please specify in description)
-    validations:
-      required: true
-
-  - type: dropdown
-    id: simulator
-    attributes:
-      label: Simulator
-      description: Which simulator are you using?
-      options:
-        - MuJoCo
-        - MuJoCo GLFW
-        - Gazebo
-        - Real Robot
-        - Other (please specify in description)
-    validations:
-      required: true
-
-  - type: input
-    id: os
-    attributes:
-      label: Operating System
-      description: Your operating system and version.
-      placeholder: e.g., Ubuntu 22.04, Windows 11, macOS 14
-    validations:
-      required: true
-
-  - type: input
-    id: python
-    attributes:
-      label: Python Version
-      description: Your Python version.
-      placeholder: e.g., 3.10.12
+      label: Actual behavior
+      description: What happened instead? Include relevant output shapes, metrics, or failure symptoms.
     validations:
       required: true
 
   - type: textarea
     id: logs
     attributes:
-      label: Error Logs / Screenshots
-      description: Add error logs, screenshots, or any other context about the problem.
-      placeholder: Paste error logs or upload screenshots...
+      label: Relevant logs or traceback
+      description: Paste the relevant output after removing credentials and private information.
+      render: text
     validations:
       required: false
 
   - type: textarea
     id: additional
     attributes:
-      label: Additional Context
-      description: Add any other context about the problem here.
-      placeholder: Any additional information that might help...
+      label: Additional context
+      description: Include a last known working commit, attempted workarounds, or non-sensitive screenshots if useful.
     validations:
       required: false
