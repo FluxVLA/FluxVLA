@@ -128,6 +128,7 @@ class ParquetDatasetV3(ParquetDataset):
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
                  frame_sample_stride: int = 1,
+                 require_full_window: bool = False,
                  expose_index: bool = False) -> None:
         """Initialize a parquet dataset backed by LeRobot v3 metadata.
 
@@ -149,6 +150,8 @@ class ParquetDatasetV3(ParquetDataset):
             frame_sample_stride (int): Stride (in dataset rows) between sampled
                 video frames. Defaults to 1. Increase this when the sampled
                 frames should span a longer temporal window.
+            require_full_window (bool): Reject samples whose complete action
+                window crosses an episode or dataset boundary.
             expose_index (bool): Whether to expose the concatenated row index
                 to transforms for offline sample weighting.
         """
@@ -210,6 +213,7 @@ class ParquetDatasetV3(ParquetDataset):
         self.window_start_idx = window_start_idx
         self.frame_window_size = frame_window_size
         self.frame_sample_stride = frame_sample_stride
+        self.require_full_window = require_full_window
         self.expose_index = expose_index
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
@@ -257,7 +261,15 @@ class ParquetDatasetV3(ParquetDataset):
         data = self.dataset[index]
         dataset_idx = self._get_dataset_index(index)
         while True:
-            if index == len(self.dataset) - 1:
+            window_end = index + self.window_start_idx + \
+                self.action_window_size - 1
+            if (self.require_full_window
+                    and (window_end >= len(self.dataset)
+                         or self._get_dataset_index(window_end) != dataset_idx
+                         or self.dataset[window_end]['episode_index'] !=
+                         data['episode_index'])):
+                needs_resample = True
+            elif index == len(self.dataset) - 1:
                 needs_resample = True
             else:
                 next_data = self.dataset[index + 1]

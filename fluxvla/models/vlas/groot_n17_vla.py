@@ -608,6 +608,7 @@ class GrootN17VLA(BaseVLA):
                 'image_grid_thw',
                 'states',
                 'embodiment_ids',
+                'prev_actions',
         ):
             if key not in normalized:
                 continue
@@ -626,6 +627,8 @@ class GrootN17VLA(BaseVLA):
                     value = value.reshape(1)
                 elif value.ndim > 1:
                     value = value.reshape(-1)
+            elif key == 'prev_actions' and value.ndim == 2:
+                value = value.unsqueeze(0)
             normalized[key] = value
         return normalized
 
@@ -647,6 +650,9 @@ class GrootN17VLA(BaseVLA):
                 'image_grid_thw',
                 'states',
                 'embodiment_ids',
+                'prev_actions',
+                'prefix_len',
+                'rtc_config',
             }
         }
         model_inputs = self._normalize_predict_inputs(model_inputs)
@@ -831,6 +837,9 @@ class GrootN17VLA(BaseVLA):
             attention_mask=backbone_output.attention_mask,
             embodiment_ids=inputs.get('embodiment_ids'),
             image_mask=backbone_output.auxiliary_outputs.get('image_mask'),
+            prev_actions=inputs.get('prev_actions'),
+            prefix_len=inputs.get('prefix_len', 0),
+            rtc_config=inputs.get('rtc_config'),
             seed=seed,
         )
         return actions.float()

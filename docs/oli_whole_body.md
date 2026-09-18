@@ -130,9 +130,11 @@ ID smoothly moves the MROS robot to the pose over
 `prepare_pose_duration_sec`, then returns to prompt selection.
 
 With `interactive=True`, type `p` and press Enter while actions are running to
-pause after the current chunk and return to prompt selection. The configured
-`default_execution_count` is the default number of chunks for one interactive
-selection.
+return to prompt selection. The synchronous runner pauses after the current
+chunk. The RTC runner stops after the current action has been sent, so it may
+stop partway through a model chunk while still respecting an action boundary.
+The configured `default_execution_count` is the default number of chunks for
+one interactive selection.
 
 With `interactive=False`, the runner never reads stdin. It continuously uses
 `default_prompt_id`, preserves cross-chunk history, and ignores
@@ -148,6 +150,14 @@ disables the limit.
 python scripts/inference_real_robot.py \
   --config configs/gr00tn15/gr00tn15_eagle_3b_oli_full_finetune.py \
   --ckpt-path /path/to/oli_checkpoint.safetensors
+```
+
+For asynchronous RTC inference with the Boris Candy PI0.5 checkpoint:
+
+```bash
+python scripts/inference_real_robot.py \
+  --config configs/pi05/pi05_paligemma_candy_rtc_inference.py \
+  --ckpt-path /path/to/candy_checkpoint.safetensors
 ```
 
 `dataset_statistics.json` must sit two directories above the checkpoint, per

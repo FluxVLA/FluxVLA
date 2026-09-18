@@ -239,6 +239,8 @@ class PrepareStateActionTargets:
         valid_action_dim: Optional[int] = None,
         state_dropout_prob: float = 0.0,
         dtype: str = 'float32',
+        *args,
+        **kwargs,
     ) -> None:
         if state_history_length <= 0:
             raise ValueError('state_history_length must be positive.')
