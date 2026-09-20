@@ -65,7 +65,7 @@ datasets/*
 .vscode/
 
 # Ignore local experiment directories
-src/
+/src/
 
 # Coding assistants' stuff
 .agents/
