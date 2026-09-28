@@ -58,6 +58,14 @@ ROBOTWIN_CAMERA_KEYS = (
 # ``policy_name`` and the functions below implement that contract in-process.
 
 
+def _robotwin_print(*args, **kwargs) -> None:
+    """Suppress only RoboTwin's per-action progress output."""
+    if (args and isinstance(args[0], str)
+            and args[0].startswith('step:') and kwargs.get('end') == '\r'):
+        return
+    print(*args, **kwargs)
+
+
 def _build_observation(observation: Dict[str, Any], instruction: str) -> Dict:
     """Translate a RoboTwin observation into FluxVLA inference fields."""
     cameras = observation['observation']
@@ -777,6 +785,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
                     f'Cannot load RoboTwin eval module: {module_path}')
             module = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(module)
+            base_task = importlib.import_module('envs._base_task')
+            base_task.print = _robotwin_print
         self._install_trial_hook(module)
         self._robotwin_eval_module = module
         return module
@@ -953,6 +963,42 @@ class RobotwinEvalRunner(BaseEvalRunner):
             f.write('\n')
         os.replace(tmp_path, progress_path)
 
+    @staticmethod
+    def _format_duration(seconds: float) -> str:
+        """Human-readable duration for summary files."""
+        seconds = int(round(seconds))
+        if seconds < 60:
+            return f'{seconds:02d}s'
+        if seconds < 3600:
+            return f'{seconds // 60:02d}m{seconds % 60:02d}s'
+        hours, rem = divmod(seconds, 3600)
+        return f'{hours:02d}h{rem // 60:02d}m{rem % 60:02d}s'
+
+    @staticmethod
+    def _summarize_completed_tasks(task_results: Dict[str, Dict]) -> Dict:
+        """Aggregate completed tasks, including expert validation time."""
+        completed = [
+            stats for stats in task_results.values()
+            if stats['status'] == 'COMPLETED'
+        ]
+        total_successes = sum(stats['successes'] for stats in completed)
+        total_trials = sum(stats['total_episodes'] for stats in completed)
+        total_time = sum(float(stats['duration'] or 0) for stats in completed)
+        completed_tasks = len(completed)
+        return {
+            'total_successes': total_successes,
+            'total_trials': total_trials,
+            'completed_tasks': completed_tasks,
+            'success_rate': (
+                total_successes / total_trials * 100 if total_trials else None),
+            'total_time': total_time,
+            'average_task_time': (
+                total_time / completed_tasks if completed_tasks else 0.0),
+            'max_time': max(
+                (float(stats['duration'] or 0) for stats in completed),
+                default=0.0),
+        }
+
     def _write_summary_json(self, task_results: Dict[str, Dict]) -> Dict:
         """Replace ``summary.json`` atomically and return its payload.
 
@@ -985,25 +1031,15 @@ class RobotwinEvalRunner(BaseEvalRunner):
                 total_episodes=episodes,
                 success_rate=successes / episodes * 100 if episodes else None)
 
-        completed = [
-            stats for stats in task_results.values()
-            if stats['status'] == 'COMPLETED'
-        ]
-        total_successes = sum(stats['successes'] for stats in completed)
-        total_trials = sum(stats['total_episodes'] for stats in completed)
-        total_time = sum(float(stats['duration'] or 0) for stats in completed)
-        completed_tasks = len(completed)
-        overall_rate = (
-            total_successes / total_trials * 100 if total_trials else None)
-        avg_time = total_time / completed_tasks if completed_tasks else 0.0
+        totals = self._summarize_completed_tasks(task_results)
         group = {
             'clean': 'Easy',
             'random': 'Hard',
         }.get(self.task_suite_name)
         group_stats = {
             group: {
-                'total_successes': total_successes,
-                'total_trials': total_trials,
+                'total_successes': totals['total_successes'],
+                'total_trials': totals['total_trials'],
             }
         } if group else {}
         summary.update({
@@ -1011,16 +1047,16 @@ class RobotwinEvalRunner(BaseEvalRunner):
             'group_stats': group_stats,
             'task_results': task_results,
             'overall': {
-                'success_rate': overall_rate,
+                'success_rate': totals['success_rate'],
                 'total_tasks': len(self.task_list),
-                'completed_tasks': completed_tasks,
-                'total_time': total_time,
-                'average_task_time': avg_time,
+                'completed_tasks': totals['completed_tasks'],
+                'total_time': totals['total_time'],
+                'average_task_time': totals['average_task_time'],
             },
         })
         summary_dir = Path(self.run_dir)
         summary_dir.mkdir(parents=True, exist_ok=True)
-        summary_json = summary_dir / 'summary.json'
+        summary_json = self.summary_path
         tmp_path = f'{summary_json}.tmp'
         with open(tmp_path, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=4)
@@ -1036,21 +1072,17 @@ class RobotwinEvalRunner(BaseEvalRunner):
         overall_rate = overall['success_rate']
         completed_tasks = overall['completed_tasks']
         avg_time = overall['average_task_time']
-        completed = [
-            stats for stats in summary['task_results'].values()
-            if stats['status'] == 'COMPLETED'
-        ]
-        total_trials = sum(stats['total_episodes'] for stats in completed)
-        total_successes = sum(stats['successes'] for stats in completed)
-        max_time = max((float(stats['duration'] or 0) for stats in completed),
-                       default=0.0)
+        totals = self._summarize_completed_tasks(summary['task_results'])
+        total_trials = totals['total_trials']
+        total_successes = totals['total_successes']
+        max_time = totals['max_time']
         metrics = [
             ('Success Rate (%)',
              '' if overall_rate is None else f'{overall_rate:.2f}'),
-            ('Episodes', total_trials),
-            ('Successes', total_successes),
             ('Average Time (s)', f'{avg_time:.2f}'),
             ('Max Time (s)', f'{max_time:.2f}'),
+            ('Episodes', total_trials),
+            ('Successes', total_successes),
             ('Tasks Completed', completed_tasks),
             ('Tasks Expected', overall['total_tasks']),
         ]
@@ -1058,7 +1090,7 @@ class RobotwinEvalRunner(BaseEvalRunner):
         with open(summary_csv, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([Path(summary['ckpt']).name])
-            writer.writerow(['Metric', 'Overall'])
+            writer.writerow(['', 'Overall'])
             writer.writerows(metrics)
 
         task_csv = summary_dir / 'task_success_rates.csv'
@@ -1075,10 +1107,18 @@ class RobotwinEvalRunner(BaseEvalRunner):
                     '' if rate is None else f'{rate:.2f}',
                 ])
 
-        lines = ['=== RoboTwin Evaluation Results Summary ===', '']
-        lines.extend(f'{name}: {value}' for name, value in metrics
-                     if name != 'Tasks Expected')
-        lines.append(f"Total Time (s): {overall['total_time']:.2f}")
+        display_rate = 'N/A' if overall_rate is None else f'{overall_rate:.2f}%'
+        lines = [
+            '=== Evaluation Results Summary ===', '', 'Overall statistics:',
+            f'- Tasks completed: {completed_tasks}',
+            f"- Tasks expected: {overall['total_tasks']}",
+            f'- Total attempts: {total_trials}',
+            f'- Successful attempts: {total_successes}',
+            f'- Success rate: {display_rate}',
+            f"- Total time: {self._format_duration(overall['total_time'])}",
+            f'- Average time per task: {self._format_duration(avg_time)}',
+            f'- Longest task time: {self._format_duration(max_time)}',
+        ]
         failed = [
             task for task, stats in summary['task_results'].items()
             if stats['status'] != 'COMPLETED'
@@ -1097,13 +1137,13 @@ class RobotwinEvalRunner(BaseEvalRunner):
         module = self._load_robotwin_eval_module()
         num_tasks = len(self.local_task_list)
 
-        self._log_rank(f'RoboTwin Eval: {num_tasks} tasks, '
-                       f'{self.num_trials_per_task} trials each')
-        self._log_rank(f'Model family: {self.model_family}, '
-                       f'chunk_size: {self.eval_chunk_size}')
-        self._log_rank(f'Task suite: {self.task_suite_name}, '
-                       f'instruction_type: {self.instruction_type}, '
-                       f'base seed: {self.seed}')
+        self._log_rank(f'Task suite: {self.task_suite_name}')
+        self._log_rank(f'Running evaluation on {num_tasks} tasks '
+                       f'with {self.num_trials_per_task} trials each.')
+        self._log_rank(f'Using model family: {self.model_family}')
+        self._log_rank(f'Using evaluation chunk size: {self.eval_chunk_size}')
+        self._log_rank(f'Instruction type: {self.instruction_type}')
+        self._log_rank(f'Seed: {self.seed}')
 
         for index, task_name in enumerate(self.local_task_list, start=1):
             task_dir = Path(self.run_dir) / 'tasks' / task_name
@@ -1122,7 +1162,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
             # upstream still selects its own valid episode seeds.
             set_seed_everywhere(self.seed)
             started = time.time()
-            self._log_rank(f'Task {index}/{num_tasks} ({task_name})')
+            self._log_rank(
+                f'Evaluating Task {index}/{num_tasks} ({task_name})')
             try:
                 # Run upstream ``main`` for one task; the trial hook records
                 # the success count and the result file is collected after.
@@ -1170,8 +1211,9 @@ class RobotwinEvalRunner(BaseEvalRunner):
             self._write_task_progress(task_name, stats)
             if self.world_size == 1:
                 self._write_summary_json(task_results)
-            self._log_rank(f'  Result: {successes}/{episodes} '
-                           f'({rate:.2f}%)')
+            self._log_rank(
+                f'Task {task_name} completed: {successes}/{episodes} successes')
+            self._log_rank(f"Time taken: {stats['duration']:.2f} seconds")
 
     def _wait_for_task_completion(self) -> None:
         """Wait without a deadline until every rank has finished its tasks."""
@@ -1216,15 +1258,15 @@ class RobotwinEvalRunner(BaseEvalRunner):
         if errors:
             raise RuntimeError('RoboTwin evaluation failed: ' +
                                '; '.join(errors))
-        completed = [
-            stats for stats in task_results.values()
-            if stats['status'] == 'COMPLETED'
-        ]
-        n_succ = sum(stats['successes'] for stats in completed)
-        n_ep = sum(stats['total_episodes'] for stats in completed)
-        rate = n_succ / max(n_ep, 1) * 100
-        self._log_rank(f'RoboTwin final: {n_succ}/{n_ep} ({rate:.2f}%)')
-        self._log_rank(f'[*] Wrote RoboTwin summary to {summary_json}')
+        if self.rank == 0:
+            totals = self._summarize_completed_tasks(task_results)
+            rate = totals['success_rate']
+            display_rate = 'N/A' if rate is None else f'{rate:.1f}%'
+            self._log_rank(f"# episodes completed: {totals['total_trials']}")
+            self._log_rank(
+                f"# successes: {totals['total_successes']} ({display_rate})")
+            self._log_rank(
+                f'[*] Wrote RoboTwin summary artifacts to {self.run_dir}')
         return summary_json
 
     def cleanup(self) -> None:
