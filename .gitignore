@@ -89,3 +89,4 @@ wheels/
 
 # Local change log kept out of git
 /CHANGELOG.md
+/lessons.md
