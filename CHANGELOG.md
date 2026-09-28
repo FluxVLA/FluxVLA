@@ -30,6 +30,13 @@ the latest tag, together with this changelog's documentation additions.
   without changing hardware detection behavior. External callers must update
   imports of the old name.
 
+### Removed
+
+- ALOHA HDF5-to-LeRobot data conversion tooling: `tools/convert_hdf_to_lerobot.py`,
+  `tools/hdf_to_lerobot_pipeline.py`, `tools/hdf_to_lerobot_direct_video.py`, and
+  the DataConvert guide `docs/data_convert.md`. Convert raw HDF5 recordings to the
+  LeRobot Dataset v2.1 format with external tooling before training.
+
 ## [0.1.5]
 
 ### Added

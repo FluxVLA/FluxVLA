@@ -725,11 +725,11 @@ LeRobot v3.x の SARM データセットを使う前に、動画メタデータ�
 <details>
 <summary><b>プライベートデータセットのディレクトリ構造</b></summary>
 
-fluxvla をプライベートデータセットで学習する場合、まず生データ（例：ALOHA ロボットで収集した HDF5 ファイル）を LeRobot Dataset v2.1 形式に変換する必要があります。変換手順の詳細は [データ変換ガイド](docs/data_convert.md) をご覧ください。
+fluxvla をプライベートデータセットで学習する場合は、LeRobot Dataset v2.1 形式のデータをご自身で用意してください（例：外部ツールで ALOHA ロボットが収集した HDF5 ファイルを変換）。
 
 SARM については、必要な SARM アノテーション列が含まれていれば、FluxVLA は LeRobot v2.1 と v3.x の両方を扱えます。必要なメタデータ形式は [docs/sarm.md](docs/sarm.md) にまとめています。
 
-変換後のデータセットのディレクトリ構造は次のとおりです：
+データセットのディレクトリ構造は次のとおりです：
 
 ```
 ├── data

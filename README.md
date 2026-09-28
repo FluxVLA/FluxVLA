@@ -803,11 +803,11 @@ Before using a LeRobot v3.x SARM dataset, sanity-check the video metadata:
 <details>
 <summary><b>Private dataset directory structure</b></summary>
 
-If you train with fluxvla on private datasets, you need to convert your raw data (e.g., HDF5 files collected by ALOHA robots) into the LeRobot Dataset v2.1 format. For a step-by-step conversion guide, see [Data Conversion Guide](docs/data_convert.md).
+If you train with fluxvla on private datasets, prepare your raw data (e.g., HDF5 files collected by ALOHA robots) in the LeRobot Dataset v2.1 format with your own conversion tooling before training.
 
 For SARM specifically, FluxVLA supports both LeRobot v2.1 and v3.x datasets as long as the required SARM annotation columns are present. The SARM-specific metadata contract is documented in [docs/sarm.md](docs/sarm.md).
 
-The converted dataset should follow this directory structure:
+The dataset should follow this directory structure:
 
 ```
 ├── data
