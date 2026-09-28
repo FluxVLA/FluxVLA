@@ -17,8 +17,8 @@
 and ROS 2 servers.  A server passes versioned ``run_start``,
 ``episode_start``, ``episode_end`` and ``run_end`` events to
 ``process_event``.  The reporter validates ordering and idempotency, journals
-accepted events, maintains native live progress, and writes the native LIBERO
-or RoboCasa result schema selected by the evaluation config.
+accepted events, maintains native live progress, and writes the native LIBERO,
+RoboCasa, or RoboDojo result schema selected by the evaluation config.
 
 The class deliberately has no ROS dependency.  Server adapters may construct
 it before ROS initialization and later replace the default Overwatch logger
@@ -59,6 +59,64 @@ LIBERO_SUITE_TASK_COUNTS = {
 }
 REPORT_KINDS = frozenset({'libero', 'robocasa', 'robodojo'})
 ROBOCASA_GROUP_ORDER = ('Cabinet', 'Drawer', 'Microwave', 'Generalization')
+ROBODOJO_DIMENSION_TASKS = {
+    'Generalization': (
+        'stack_bowls',
+        'push_T',
+        'pack_objects_into_box',
+        'fold_clothes',
+        'hang_mugs',
+        'sweep_blocks',
+        'pour_liquid_into_cup',
+        'make_toast',
+        'arrange_largest_number',
+        'sort_nesting_dolls_by_size',
+        'store_laptop_and_headphones',
+        'stack_blocks',
+    ),
+    'Precision': (
+        'fasten_screws',
+        'plug_in_charger',
+        'insert_tubes',
+        'pour_balls_into_vase',
+        'play_Xylophone',
+        'deposit_coin',
+        'insert_key',
+        'build_tower',
+    ),
+    'Long-Horizon': (
+        'put_bottles_into_dustbin',
+        'fill_pen_holder',
+        'classify_objects',
+        'play_tic_tac_toe',
+        'fill_egg_holder',
+        'organize_table',
+        'make_kong',
+        'play_stacking_toy',
+    ),
+    'Memory': (
+        'cover_blocks',
+        'match_and_pick_from_conveyor',
+        'swap_blocks',
+        'swap_T',
+        'press_by_number',
+        'imitate_sorting_sequence',
+    ),
+    'Open': (
+        'align_blocks',
+        'general_pickup',
+        'stack_blocks_by_language',
+        'solve_equation',
+        'classify_objects_by_language',
+        'pick_from_conveyor_by_image',
+        'store_tools_in_toolbox',
+        'pour_by_language',
+    ),
+}
+ROBODOJO_GENERALIZATION_TASKS = frozenset(
+    ROBODOJO_DIMENSION_TASKS['Generalization'])
+ROBODOJO_GENERALIZATION_HALF_EPISODES = 25
+ROBODOJO_STANDALONE_EPISODES = 50
 
 
 class EvaluationEventError(ValueError):
@@ -224,6 +282,57 @@ def _robocasa_group_name(env_name: str) -> str:
     return 'Generalization'
 
 
+def _robodojo_episode_stats(episodes: Sequence[dict],
+                            expected_episodes: int) -> dict:
+    count = len(episodes)
+    successes = sum(bool(episode['success']) for episode in episodes)
+    score_sum = sum(float(episode.get('score') or 0.0) for episode in episodes)
+    success_rate = successes / count * 100.0 if count else None
+    scored_episodes = sum(
+        episode.get('score') is not None for episode in episodes)
+    mean_score = score_sum / count * 100.0 if count else None
+    duration = sum(float(episode['duration_s']) for episode in episodes)
+    return {
+        'episodes': count,
+        'expected_episodes': expected_episodes,
+        'complete': count >= expected_episodes,
+        'successes': successes,
+        'success_rate_pct': success_rate,
+        'scored_episodes': scored_episodes,
+        'mean_score_pct': mean_score,
+        'total_duration_s': duration,
+    }
+
+
+def _robodojo_macro_stats(task_stats: Sequence[dict],
+                          expected_tasks: int) -> dict:
+    completed = [stats for stats in task_stats if stats['complete']]
+    success_rates = [stats['success_rate_pct'] for stats in completed]
+    scores = [stats['mean_score_pct'] for stats in completed]
+    success_rate = (
+        sum(success_rates) / len(success_rates) if success_rates else None)
+    mean_score = sum(scores) / len(scores) if scores else None
+    return {
+        'completed_tasks': len(completed),
+        'expected_tasks': expected_tasks,
+        'complete': len(completed) == expected_tasks,
+        'success_rate_pct': success_rate,
+        'mean_score_pct': mean_score,
+    }
+
+
+def _format_optional_metric(value) -> str:
+    return '—' if value is None else f'{float(value):.2f}'
+
+
+def _format_robodojo_metric(stats: Mapping[str, Any]) -> str:
+    score = stats.get('mean_score_pct')
+    success_rate = stats.get('success_rate_pct')
+    if score is None or success_rate is None:
+        return '—/—%'
+    return f'{float(score):.2f}/{float(success_rate):.2f}%'
+
+
 def _write_json_atomic(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f'{path.name}.tmp')
@@ -247,7 +356,8 @@ class FluxVLAROSEvaluationReporter:
             ``num_trials_per_task_overrides`` entries replace that default
             for exact task ids. LIBERO additionally requires
             ``task_suite_name``; RoboCasa requires ``task_list``.
-        report_kind: Optional explicit ``libero`` or ``robocasa`` selector.
+        report_kind: Optional explicit ``libero``, ``robocasa``, or
+            ``robodojo`` selector.
         logger: Optional ``Callable[[str], None]``. Defaults to Overwatch.
         feishu: Optional mapping with ``sheet_url``, ``app_id``, ``app_secret``
             and ``timeout``. Missing credentials retain the native environment
@@ -854,6 +964,8 @@ class FluxVLAROSEvaluationReporter:
     def _write_summary_artifacts(self, state: _RunState) -> Path:
         if self.report_kind == 'robocasa':
             return self._write_robocasa_summary_artifacts(state)
+        if self.report_kind == 'robodojo':
+            return self._write_robodojo_summary_artifacts(state)
         return self._write_libero_summary_artifacts(state)
 
     def _write_libero_summary_artifacts(self, state: _RunState) -> Path:
@@ -985,6 +1097,322 @@ class FluxVLAROSEvaluationReporter:
                       f'{sum(all_scores) / len(all_scores) * 100:.1f}%')
         self._log(f'[ros-eval] wrote {self.report_kind.upper()} summary '
                   f'artifacts to {state.run_dir}')
+        return summary_path
+
+    def _write_robodojo_summary_artifacts(self, state: _RunState) -> Path:
+        grouped = defaultdict(list)
+        for episode in state.episodes:
+            grouped[episode['task_id']].append(episode)
+        for episodes in grouped.values():
+            episodes.sort(key=lambda item: item['episode_index'])
+
+        task_result_dir = state.run_dir / 'robodojo'
+        status_dir = state.run_dir / 'task_status'
+        manager_result_dir = self.result_root / 'robodojo'
+        task_result_dir.mkdir(exist_ok=True)
+        status_dir.mkdir(exist_ok=True)
+        manager_result_dir.mkdir(parents=True, exist_ok=True)
+
+        raw_task_results = {}
+        for task_index in sorted(state.tasks_by_index):
+            task = state.tasks_by_index[task_index]
+            episodes = grouped.get(task.task_id, ())
+            expected = self._episodes_for_task(state, task)
+            stats = _robodojo_episode_stats(episodes, expected)
+            status = ('complete' if stats['complete'] else
+                      'partial' if episodes else 'missing')
+            raw_task_results[task.task_id] = {
+                'task_id': task.task_id,
+                'task_index': task_index,
+                'task_description': task.description,
+                'status': status,
+                **stats,
+            }
+            mean_score = stats['mean_score_pct']
+            normalized_mean_score = (
+                mean_score / 100.0 if mean_score is not None else None)
+            per_task = {
+                'task_suite': self.task_suite_name,
+                'task_id': task_index,
+                'task_name': task.task_id,
+                'task_description': task.description,
+                'successes': stats['successes'],
+                'total_episodes': stats['episodes'],
+                'success_rate': stats['success_rate_pct'],
+                'scored_episodes': stats['scored_episodes'],
+                'mean_score': normalized_mean_score,
+                'duration': stats['total_duration_s'],
+                'gpu_id': self.result_gpu_id,
+            }
+            _write_json_atomic(
+                task_result_dir / f'task{task_index}_results.json', per_task)
+            _write_json_atomic(
+                manager_result_dir /
+                f'gpu{self.result_gpu_id}_task{task_index}_results.json',
+                per_task)
+            start_epoch = min(
+                (episode['started_epoch'] for episode in episodes), default=0)
+            task_state = 'SUCCESS' if stats['complete'] else 'PARTIAL'
+            (status_dir / f'robodojo_task{task_index}.status').write_text(
+                f"{task_state}|{stats['successes']}|{stats['episodes']}|"
+                f'{int(start_epoch)}',
+                encoding='utf-8')
+
+        task_results = {}
+        generalization_splits = {}
+        for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+            for task_name in task_names:
+                if task_name in ROBODOJO_GENERALIZATION_TASKS:
+                    standard_episodes = list(grouped.get(task_name, ()))
+                    random_task = f'{task_name}_random'
+                    random_episodes = list(grouped.get(random_task, ()))
+                    half_count = ROBODOJO_GENERALIZATION_HALF_EPISODES
+                    standard = standard_episodes[:half_count]
+                    random = random_episodes[:half_count]
+                    standard_stats = _robodojo_episode_stats(
+                        standard, half_count)
+                    random_stats = _robodojo_episode_stats(random, half_count)
+                    stats = _robodojo_episode_stats(
+                        standard + random, ROBODOJO_STANDALONE_EPISODES)
+                    splits_complete = (
+                        standard_stats['complete']
+                        and random_stats['complete'])
+                    stats['complete'] = splits_complete
+                    stats['source_tasks'] = [task_name, random_task]
+                    generalization_splits[task_name] = {
+                        'standard': {
+                            'task_id': task_name,
+                            **standard_stats,
+                        },
+                        'random': {
+                            'task_id': random_task,
+                            **random_stats,
+                        },
+                    }
+                else:
+                    task_episodes = list(grouped.get(task_name, ()))
+                    selected = task_episodes[:ROBODOJO_STANDALONE_EPISODES]
+                    stats = _robodojo_episode_stats(
+                        selected, ROBODOJO_STANDALONE_EPISODES)
+                    stats['source_tasks'] = [task_name]
+                stats['task'] = task_name
+                stats['dimension'] = dimension
+                if stats['complete']:
+                    stats['status'] = 'complete'
+                elif stats['episodes']:
+                    stats['status'] = 'partial'
+                else:
+                    stats['status'] = 'missing'
+                task_results[task_name] = stats
+
+        dimensions = {}
+        for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+            dimension_tasks = [task_results[task] for task in task_names]
+            dimensions[dimension] = _robodojo_macro_stats(
+                dimension_tasks, len(task_names))
+        split_summary = {}
+        expected_gen_tasks = len(ROBODOJO_DIMENSION_TASKS['Generalization'])
+        for split in ('standard', 'random'):
+            split_tasks = [
+                generalization_splits[task][split]
+                for task in ROBODOJO_DIMENSION_TASKS['Generalization']
+            ]
+            split_summary[split] = _robodojo_macro_stats(
+                split_tasks, expected_gen_tasks)
+        available_dimensions = [
+            stats for stats in dimensions.values() if stats['completed_tasks']
+        ]
+        available_count = len(available_dimensions)
+        macro_success_rate = (
+            sum(stats['success_rate_pct'] for stats in available_dimensions) /
+            available_count if available_dimensions else None)
+        macro_score = (
+            sum(stats['mean_score_pct'] for stats in available_dimensions) /
+            available_count if available_dimensions else None)
+        dimensions_complete = all(stats['complete']
+                                  for stats in dimensions.values())
+        official_macro = {
+            'available_dimensions': available_count,
+            'expected_dimensions': len(ROBODOJO_DIMENSION_TASKS),
+            'complete': dimensions_complete,
+            'success_rate_pct': macro_success_rate,
+            'mean_score_pct': macro_score,
+        }
+        completed_task_cells = sum(stats['complete']
+                                   for stats in task_results.values())
+        expected_task_cells = sum(
+            len(tasks) for tasks in ROBODOJO_DIMENSION_TASKS.values())
+        total_episodes = state.start['total_episodes']
+        episode_micro = _robodojo_episode_stats(state.episodes, total_episodes)
+
+        summary = {
+            'schema_version': RUN_SCHEMA_VERSION,
+            'benchmark': 'robodojo',
+            'run_id': state.run_id,
+            'ckpt': self.ckpt_path,
+            'config': self.config_path,
+            'task_suite': self.task_suite_name,
+            'model_family': self.model_family,
+            'aggregation': {
+                'generalization': '25 standard + 25 random episodes per task',
+                'standalone': '50 episodes per task',
+                'dimension': 'macro average over complete task cells',
+                'overall': 'macro average over available dimensions',
+                'display': 'Score/SR%',
+            },
+            'run': {
+                'run_name': state.start['run_name'],
+                'seed': state.start['seed'],
+                'full_suite': state.start['full_suite'],
+                'episode_progress': {
+                    'completed': len(state.episodes),
+                    'expected': state.start['total_episodes'],
+                },
+                'official_task_progress': {
+                    'completed': completed_task_cells,
+                    'expected': expected_task_cells,
+                },
+            },
+            'overall': {
+                'official_macro': official_macro,
+                'episode_micro': episode_micro,
+            },
+            'dimensions': dimensions,
+            'generalization_split_summary': split_summary,
+            'task_results': task_results,
+            'generalization_splits': generalization_splits,
+            'raw_task_results': raw_task_results,
+        }
+        summary_path = state.run_dir / 'summary.json'
+        _write_json_atomic(summary_path, summary)
+
+        overview_stats = [
+            official_macro,
+            split_summary['standard'],
+            split_summary['random'],
+            dimensions['Precision'],
+            dimensions['Long-Horizon'],
+            dimensions['Memory'],
+            dimensions['Open'],
+        ]
+        overview_header = (
+            '| **Average** | Gen-Std | Gen-Rand | <br> | Precision | '
+            'Long-Horizon | Memory | Open<br> |')
+        overview_separator = (
+            '| ----------- | ------- | -------- | ---- | --------- | '
+            '------------ | ------ | -------- |')
+        trailing_overview_metrics = [
+            _format_robodojo_metric(stats) for stats in overview_stats[3:]
+        ]
+        overview_row = '| ' + ' | '.join([
+            _format_robodojo_metric(overview_stats[0]),
+            _format_robodojo_metric(overview_stats[1]),
+            _format_robodojo_metric(overview_stats[2]),
+            '',
+            *trailing_overview_metrics,
+        ]) + ' |'
+        markdown_lines = [
+            '# RoboDojo Evaluation Summary',
+            '',
+            'Each overview cell is `Score/SR%`.',
+            '',
+            (f'- Episodes: {len(state.episodes)}/'
+             f"{state.start['total_episodes']}"),
+            (f'- Official task cells: {completed_task_cells}/'
+             f'{expected_task_cells}'),
+            '',
+            overview_header,
+            overview_separator,
+            overview_row,
+            '',
+            '## Capability Breakdown',
+            '',
+            '| Capability | Complete Tasks | Score | SR (%) |',
+            '| ---------- | -------------: | --------: | -----: |',
+        ]
+        for dimension, stats in dimensions.items():
+            markdown_lines.append(
+                f"| {dimension} | {stats['completed_tasks']}/"
+                f"{stats['expected_tasks']} | "
+                f"{_format_optional_metric(stats['mean_score_pct'])} | "
+                f"{_format_optional_metric(stats['success_rate_pct'])} |")
+        markdown_lines.extend([
+            '',
+            '## Per-Task Results',
+            '',
+            '| Capability | Task | Status | Episodes | Score | SR (%) |',
+            '| ---------- | ---- | ------ | -------: | --------: | -----: |',
+        ])
+        for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+            for task_name in task_names:
+                stats = task_results[task_name]
+                markdown_lines.append(
+                    f"| {dimension} | `{task_name}` | {stats['status']} | "
+                    f"{stats['episodes']}/{stats['expected_episodes']} | "
+                    f"{_format_optional_metric(stats['mean_score_pct'])} | "
+                    f"{_format_optional_metric(stats['success_rate_pct'])} |")
+        (state.run_dir / 'summary.md').write_text(
+            '\n'.join(markdown_lines) + '\n', encoding='utf-8')
+
+        with (state.run_dir / 'summary.csv').open(
+                'w', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow([
+                'Metric', 'Average', 'Gen-Std', 'Gen-Rand', 'Precision',
+                'Long-Horizon', 'Memory', 'Open'
+            ])
+            writer.writerow([
+                'Score',
+                *[stats['mean_score_pct'] for stats in overview_stats],
+            ])
+            writer.writerow([
+                'Success Rate (%)',
+                *[stats['success_rate_pct'] for stats in overview_stats],
+            ])
+
+        with (state.run_dir / 'task_success_rates.csv').open(
+                'w', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow([
+                'Capability', 'Task', 'Status', 'Episodes',
+                'Expected Episodes', 'Successes', 'Success Rate (%)',
+                'Scored Episodes', 'Mean Score'
+            ])
+            for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+                for task_name in task_names:
+                    stats = task_results[task_name]
+                    writer.writerow([
+                        dimension, task_name, stats['status'],
+                        stats['episodes'], stats['expected_episodes'],
+                        stats['successes'], stats['success_rate_pct'],
+                        stats['scored_episodes'], stats['mean_score_pct']
+                    ])
+
+        incomplete_tasks = [
+            task_name for task_name, stats in task_results.items()
+            if not stats['complete']
+        ]
+        (state.run_dir / 'failed_tasks.txt').write_text(
+            ''.join(f'{task_name}\n' for task_name in incomplete_tasks),
+            encoding='utf-8')
+        text_lines = [
+            '=== RoboDojo Official Evaluation Summary ===',
+            'Metric order: Score/SR%',
+            (f'Official task cells: {completed_task_cells}/'
+             f'{expected_task_cells}'),
+            overview_header,
+            overview_separator,
+            overview_row,
+        ]
+        (state.run_dir / 'summary.txt').write_text(
+            '\n'.join(text_lines) + '\n', encoding='utf-8')
+
+        self._log('[ros-eval] RoboDojo official overview (Score/SR%):\n'
+                  f'{overview_header}\n{overview_separator}\n{overview_row}')
+        self._log(f'[ros-eval] official task cells '
+                  f'{completed_task_cells}/{expected_task_cells}')
+        self._log(f'[ros-eval] wrote RoboDojo summary artifacts to '
+                  f'{state.run_dir}')
         return summary_path
 
     def _write_robocasa_summary_artifacts(self, state: _RunState) -> Path:
