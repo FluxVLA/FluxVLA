@@ -11,12 +11,30 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Native GR00T N1.7 RoboTwin full-data training and evaluation config."""
+"""GR00T N1.7 full-data fine-tuning and evaluation on RoboTwin.
 
-_DATA_ROOT_PATHS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
-]
+The data combines clean and randomized LeRobot v2.1 datasets for all 50
+RoboTwin tasks (27,500 episodes), with three 480x640 (H x W) RGB cameras.
+The policy uses 14-D absolute joint/gripper targets and mean/std statistics
+shared by training and closed-loop evaluation.
+
+Usage (16 GPUs):
+    # Run on both nodes with NODE_RANK=0/1 and the same MASTER_ADDR.
+    torchrun --nproc-per-node=8 --nnodes=2 \
+        --node-rank=${NODE_RANK} --master-addr=${MASTER_ADDR} \
+        --master-port=29500 scripts/train.py \
+        --config \
+        configs/gr00tn17/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune.py \
+        --work-dir work_dirs/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune
+
+Evaluation:
+    torchrun --nproc-per-node=1 scripts/eval.py \
+        --config \
+        configs/gr00tn17/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune.py \
+        --ckpt-path <checkpoint.safetensors>
+
+Evaluation defaults to all 50 tasks in both clean and random suites.
+"""
 
 _STATISTIC_NAME = 'robotwin_all'
 _N17_INIT_CKPT = './checkpoints/GR00T-N1.7-3B'
@@ -71,6 +89,63 @@ _QWEN3_VL_CONFIG = dict(
 )
 
 _ACTIVE_TRACKERS = ('jsonl', )
+
+_TASK_NAMES = [
+    'adjust_bottle',
+    'beat_block_hammer',
+    'blocks_ranking_rgb',
+    'blocks_ranking_size',
+    'click_alarmclock',
+    'click_bell',
+    'dump_bin_bigbin',
+    'grab_roller',
+    'handover_block',
+    'handover_mic',
+    'hanging_mug',
+    'lift_pot',
+    'move_can_pot',
+    'move_pillbottle_pad',
+    'move_playingcard_away',
+    'move_stapler_pad',
+    'open_laptop',
+    'open_microwave',
+    'pick_diverse_bottles',
+    'pick_dual_bottles',
+    'place_a2b_left',
+    'place_a2b_right',
+    'place_bread_basket',
+    'place_bread_skillet',
+    'place_burger_fries',
+    'place_can_basket',
+    'place_cans_plasticbox',
+    'place_container_plate',
+    'place_dual_shoes',
+    'place_empty_cup',
+    'place_fan',
+    'place_mouse_pad',
+    'place_object_basket',
+    'place_object_scale',
+    'place_object_stand',
+    'place_phone_stand',
+    'place_shoe',
+    'press_stapler',
+    'put_bottles_dustbin',
+    'put_object_cabinet',
+    'rotate_qrcode',
+    'scan_object',
+    'shake_bottle',
+    'shake_bottle_horizontally',
+    'stack_blocks_three',
+    'stack_blocks_two',
+    'stack_bowls_three',
+    'stack_bowls_two',
+    'stamp_seal',
+    'turn_switch',
+]
+_DATA_PATHS = [
+    'datasets/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_randomized_lerobotv2.1',
+]
 
 _N17_MODALITY_CONFIGS = dict(
     robotwin=dict(
@@ -127,7 +202,7 @@ model = dict(
     state_dropout_prob=0.2,
     load_metadata=True,
     qwen3_runtime='compat_457',
-    freeze_vlm_backbone=False,
+    freeze_vlm_backbone=True,
     vlm_backbone=dict(
         type='GrootN17Qwen3Backbone',
         model_config=_QWEN3_VL_CONFIG,
@@ -137,11 +212,7 @@ model = dict(
         load_bf16=False,
         qwen3_runtime='compat_457',
     ),
-    vla_head=dict(
-        type='GrootN17ActionHead',
-    ),
-    freeze_vision_backbone=False,
-    freeze_llm_backbone=False,
+    vla_head=dict(type='GrootN17ActionHead'),
     use_relative_action=False,
 )
 
@@ -170,7 +241,7 @@ train_dataloader = dict(
         datasets=[
             dict(
                 type='ParquetDataset',
-                data_root_path=_DATA_ROOT_PATHS,
+                data_root_path=_DATA_PATHS,
                 statistic_name=_STATISTIC_NAME,
                 action_key='action',
                 use_delta=False,
@@ -286,8 +357,8 @@ train_dataloader = dict(
 
 runner = dict(
     type='FSDPTrainRunner',
-    max_epochs=5,
     max_steps=None,
+    max_epochs=5,
     optimizer=dict(
         lr=1e-4,
         type='AdamW',
@@ -330,64 +401,11 @@ runner = dict(
     change_key_name=False,
 )
 
-_ROBOTWIN_TASK_LIST = [
-    'adjust_bottle',
-    'beat_block_hammer',
-    'blocks_ranking_rgb',
-    'blocks_ranking_size',
-    'click_alarmclock',
-    'click_bell',
-    'dump_bin_bigbin',
-    'grab_roller',
-    'handover_block',
-    'handover_mic',
-    'hanging_mug',
-    'lift_pot',
-    'move_can_pot',
-    'move_pillbottle_pad',
-    'move_playingcard_away',
-    'move_stapler_pad',
-    'open_laptop',
-    'open_microwave',
-    'pick_diverse_bottles',
-    'pick_dual_bottles',
-    'place_a2b_left',
-    'place_a2b_right',
-    'place_bread_basket',
-    'place_bread_skillet',
-    'place_burger_fries',
-    'place_can_basket',
-    'place_cans_plasticbox',
-    'place_container_plate',
-    'place_dual_shoes',
-    'place_empty_cup',
-    'place_fan',
-    'place_mouse_pad',
-    'place_object_basket',
-    'place_object_scale',
-    'place_object_stand',
-    'place_phone_stand',
-    'place_shoe',
-    'press_stapler',
-    'put_bottles_dustbin',
-    'put_object_cabinet',
-    'rotate_qrcode',
-    'scan_object',
-    'shake_bottle',
-    'shake_bottle_horizontally',
-    'stack_blocks_three',
-    'stack_blocks_two',
-    'stack_bowls_three',
-    'stack_bowls_two',
-    'stamp_seal',
-    'turn_switch',
-]
-
 eval = dict(
     type='RobotwinEvalRunner',
+    task_suite_name=['clean', 'random'],
     model_family='groot_n17',
-    task_list=_ROBOTWIN_TASK_LIST,
-    task_suite_name='clean',
+    task_list=_TASK_NAMES,
     instruction_type='unseen',
     eval_chunk_size=40,
     num_trials_per_task=100,

@@ -11,260 +11,54 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-#
-# FastWAM world-action model (uncond) trained on all 50 RoboTwin tasks.
+"""FastWAM (uncond) full-data fine-tuning and evaluation on RoboTwin.
+
+The data combines clean and randomized LeRobot v2.1 datasets for all 50
+RoboTwin tasks (27,500 episodes), with three 480x640 (H x W) RGB cameras.
+The policy uses 14-D absolute joint/gripper targets and mean/std statistics
+shared by training and closed-loop evaluation.
+
+Usage (16 GPUs):
+    # Run on both nodes with NODE_RANK=0/1 and the same MASTER_ADDR.
+    torchrun --nproc-per-node=8 --nnodes=2 \
+        --node-rank=${NODE_RANK} --master-addr=${MASTER_ADDR} \
+        --master-port=29500 scripts/train.py \
+        --config \
+        configs/fastwam/fastwam_robotwin_all_data_full_finetune.py \
+        --work-dir work_dirs/fastwam_robotwin_all_data_full_finetune
+
+Evaluation:
+    torchrun --nproc-per-node=1 scripts/eval.py \
+        --config \
+        configs/fastwam/fastwam_robotwin_all_data_full_finetune.py \
+        --ckpt-path <checkpoint.safetensors>
+
+Evaluation defaults to all 50 tasks in both clean and random suites.
+"""
 
 seed = 42
 
-_ckpt_root = './checkpoints'
-_tokenizer = _ckpt_root + '/fastwam_base_full/tokenizer'
-_text_prompt_template = (
-    "A video recorded from a robot's point of view executing the following "
-    'instruction: {task}')
+_CKPT_ROOT = './checkpoints'
+_FASTWAM_ROOT = _CKPT_ROOT + '/fastwam_base_full'
+_FASTWAM_CHECKPOINT = _FASTWAM_ROOT + '/fastwam_base_full.safetensors'
+_FASTWAM_TOKENIZER = _FASTWAM_ROOT + '/tokenizer'
 
-_frame_window_size = 9
-_action_window_size = 32
-_frame_sample_stride = 4
-_action_dim = 14
-_state_dim = 14
+_FRAME_WINDOW_SIZE = 9
+_ACTION_WINDOW_SIZE = 32
+_FRAME_SAMPLE_STRIDE = 4
+_ACTION_DIM = 14
+_STATE_DIM = 14
+_ACTION_NORM_TYPE = 'mean_std'
 
 # Train jointly on the merged clean + randomized RoboTwin LeRobot sets.
-_data_root_paths = [
+_ROBOTWIN_DATA_ROOTS = [
     'datasets/robotwin_clean_lerobotv2.1',
     'datasets/robotwin_randomized_lerobotv2.1',
 ]
-_statistic_name = 'robotwin_all'
-
-model = dict(
-    type='FastWAMVLA',
-    pretrained_name_or_path=  # noqa: E251
-    _ckpt_root + '/fastwam_base_full/fastwam_base_full_robotwin14.safetensors',
-    torch_dtype='bf16',
-    num_views=3,
-    frame_window_size=_frame_window_size,
-    proprio_dim=_state_dim,
-    action_horizon=_action_window_size,
-    mot_checkpoint_mixed_attn=True,
-    vlm_backbone=dict(
-        type='Wan22Backbone',
-        text_embed_cache_context_len=128,
-        text_embed_cache_size=256,
-        text_embed_cache_device='cpu',
-    ),
-    vla_head=dict(
-        type='FastWAMHead',
-        video_dit_config=dict(
-            has_image_input=False,
-            patch_size=[1, 2, 2],
-            in_dim=48,
-            hidden_dim=3072,
-            ffn_dim=14336,
-            freq_dim=256,
-            text_dim=4096,
-            out_dim=48,
-            num_heads=24,
-            attn_head_dim=128,
-            num_layers=30,
-            eps=1.0e-06,
-            seperated_timestep=True,
-            require_clip_embedding=False,
-            require_vae_embedding=False,
-            fuse_vae_embedding_in_latents=True,
-            video_attention_mask_mode='first_frame_causal',
-            action_conditioned=False,
-            action_dim=_action_dim,
-            action_group_causal_mask_mode='group_diagonal',
-            use_gradient_checkpointing=True,
-        ),
-        action_dit_config=dict(
-            action_dim=_action_dim,
-            hidden_dim=1024,
-            ffn_dim=4096,
-            num_heads=24,
-            attn_head_dim=128,
-            num_layers=30,
-            text_dim=4096,
-            freq_dim=256,
-            eps=1.0e-06,
-            use_gradient_checkpointing=True,
-        ),
-        video_scheduler=dict(
-            train_shift=5.0, infer_shift=5.0, num_train_timesteps=1000),
-        # Upstream FastWAM uses shift 1.0 for the action scheduler on
-        # every task, including RoboTwin.
-        action_scheduler=dict(
-            train_shift=1.0, infer_shift=1.0, num_train_timesteps=1000),
-        loss=dict(lambda_video=1.0, lambda_action=1.0),
-    ),
-)
-
-# Training and evaluation encode unseen prompts online, then reuse a
-# per-process CPU-memory LRU cache without reading or writing cache files.
-inference_model = model.copy()
-
-train_dataloader = dict(
-    # Upstream RoboTwin recipe trains with global batch 16; on 4x72GB GPUs
-    # this is 2 microbatch x 4 GPUs x 2 accumulation (microbatch 4 OOMs on
-    # the 384x320x9 video branch).
-    per_device_batch_size=2,
-    per_device_num_workers=8,
-    dataset=dict(
-        type='DistributedRepeatingDataset',
-        reshuffle_each_epoch=True,
-        seed=42,
-        name_mappings={
-            'observation.state': ['proprio'],
-            'action': ['action'],
-        },
-        statistic_keys=['observation.state', 'timestamp', 'action'],
-        statistic_name=_statistic_name,
-        datasets=dict(
-            type='ParquetDataset',
-            data_root_path=_data_root_paths,
-            transforms=[
-                dict(
-                    type='ProcessParquetInputs',
-                    parquet_keys=[
-                        'observation.state',
-                        'timestamp',
-                        'actions',
-                        'info',
-                        'stats',
-                        'action_masks',
-                    ],
-                    video_keys=[
-                        'observation.images.cam_high',
-                        'observation.images.cam_left_wrist',
-                        'observation.images.cam_right_wrist',
-                    ],
-                    video_backend='torchcodec',
-                    name_mappings={
-                        'observation.state': ['states'],
-                        'actions': ['actions'],
-                    },
-                    embodiment_id=0,
-                ),
-                dict(
-                    type='ResizeImages',
-                    height=256,
-                    width=320,
-                    backend='torchvision',
-                    scale_to_unit_interval=True,
-                ),
-                dict(
-                    type='NormalizeImages',
-                    means=[0.5, 0.5, 0.5],
-                    stds=[0.5, 0.5, 0.5],
-                ),
-                dict(
-                    type='NormalizeStatesAndActions',
-                    action_dim=_action_dim,
-                    state_dim=_state_dim,
-                    state_key='proprio',
-                    action_key='action',
-                    norm_type='mean_std',
-                ),
-                # cam_high on top (256x320), wrist cameras side by side
-                # below (128x160 each) -> 384x320, matching the upstream
-                # ``concat_multi_camera="robotwin"`` layout.
-                dict(
-                    type='PrepareVideo',
-                    num_views=3,
-                    frame_window_size=_frame_window_size,
-                    tile_direction='top_bottom_pair',
-                    top_view=0,
-                    bottom_views=(1, 2),
-                    bottom_height_ratio=0.5,
-                ),
-                dict(
-                    type='LiberoPromptFromInputs',
-                    tokenizer=dict(
-                        type='PretrainedTokenizer', model_path=_tokenizer),
-                    max_len=128,
-                    use_conversation=False,
-                    prompt_template=_text_prompt_template,
-                ),
-            ],
-            action_window_size=_action_window_size,
-            action_key='action',
-            use_delta=False,
-            statistic_name=_statistic_name,
-            window_start_idx=0,
-            frame_window_size=_frame_window_size,
-            frame_sample_stride=_frame_sample_stride,
-        ),
-    ),
-)
-
-val_dataloader = None
-eval_dataset = None
-
-runner = dict(
-    type='FSDPTrainRunner',
-    max_epochs=5,
-    max_steps=None,
-    save_epoch_interval=1,
-    # RoboTwin epochs are ~47k steps at global batch 128; disable the
-    # step-based trigger so checkpoints are epoch-only, matching the
-    # effective LIBERO behavior (whose short epochs rarely hit 10000).
-    save_iter_interval=10000000,
-    max_keep_ckpts=10,
-    optimizer=dict(lr=1e-4, type='AdamW', weight_decay=1e-2),
-    max_grad_norm=1.0,
-    collator=dict(
-        type='DictCollator',
-        keys=[
-            'states',
-            'images',
-            'img_masks',
-            'actions',
-            'action_masks',
-            'embodiment_ids',
-            'frame_masks',
-            'lang_tokens',
-            'lang_masks',
-        ],
-        meta_keys=['task_description', 'info', 'stats', 'timestamp'],
-    ),
-    sampler=None,
-    tokenizer=dict(type='PretrainedTokenizer', model_path=_tokenizer),
-    metric=dict(
-        type='VLAMetric',
-        active_trackers=('jsonl', 'wandb'),
-        run_dir='work_dirs',
-        window_size=1,
-    ),
-    lr_scheduler=dict(
-        type='linear-warmup+cosine-decay-min-lr',
-        warmup_ratio=0.05,
-        min_lr_ratio=0.01,
-        betas=(0.9, 0.95),
-        weight_decay_style='uniform',
-    ),
-    enable_gradient_checkpointing=False,
-    enable_mixed_precision_training=True,
-    # 4x72GB memory budget: the whole 6B FastWAM head is one FSDP flat
-    # unit, so fp32 masters + fp32 grad reduction do not fit. Keep managed
-    # params, AdamW states, and gradient reduction in bf16 (matching the
-    # upstream pure-bf16 execution).
-    reduce_in_full_precision=False,
-    pre_fsdp_param_dtype='bf16',
-    grad_accumulation_steps=2,
-    mixed_precision_dtype='bf16',
-    dataset_sharding_strategy='blockwise',
-    # full-shard: on 4x72GB GPUs the 12.4B model's AdamW states alone are
-    # ~25GB per rank under shard-grad-op, which OOMs; FULL_SHARD also
-    # shards parameters.
-    sharding_strategy='full-shard',
-    evaluator=dict(
-        type='training-eval',
-        eval_every=1000,
-        num_inference_steps=10,
-        seed=42,
-        save_video=False,
-        video_fps=8,
-    ),
-)
+_STATISTIC_NAME = 'robotwin_all'
+_TEXT_PROMPT_TEMPLATE = (
+    "A video recorded from a robot's point of view executing the following "
+    'instruction: {task}')
 
 # All 50 RoboTwin tasks, matching the upstream RoboTwin benchmark.
 _ROBOTWIN_TASK_LIST = [
@@ -320,19 +114,255 @@ _ROBOTWIN_TASK_LIST = [
     'turn_switch',
 ]
 
+model = dict(
+    type='FastWAMVLA',
+    pretrained_name_or_path=_FASTWAM_CHECKPOINT,
+    pretrained_skip_prefixes=[
+        'vla_head.mot.mixtures.action.action_encoder.',
+        'vla_head.mot.mixtures.action.head.',
+        'vla_head.proprio_encoder.',
+    ],
+    torch_dtype='bf16',
+    num_views=3,
+    frame_window_size=_FRAME_WINDOW_SIZE,
+    proprio_dim=_STATE_DIM,
+    action_horizon=_ACTION_WINDOW_SIZE,
+    mot_checkpoint_mixed_attn=True,
+    vlm_backbone=dict(
+        type='Wan22Backbone',
+        text_embed_cache_context_len=128,
+        text_embed_cache_size=256,
+        text_embed_cache_device='cpu',
+    ),
+    vla_head=dict(
+        type='FastWAMHead',
+        video_dit_config=dict(
+            has_image_input=False,
+            patch_size=[1, 2, 2],
+            in_dim=48,
+            hidden_dim=3072,
+            ffn_dim=14336,
+            freq_dim=256,
+            text_dim=4096,
+            out_dim=48,
+            num_heads=24,
+            attn_head_dim=128,
+            num_layers=30,
+            eps=1.0e-06,
+            seperated_timestep=True,
+            require_clip_embedding=False,
+            require_vae_embedding=False,
+            fuse_vae_embedding_in_latents=True,
+            video_attention_mask_mode='first_frame_causal',
+            action_conditioned=False,
+            action_dim=_ACTION_DIM,
+            action_group_causal_mask_mode='group_diagonal',
+            use_gradient_checkpointing=True,
+        ),
+        action_dit_config=dict(
+            action_dim=_ACTION_DIM,
+            hidden_dim=1024,
+            ffn_dim=4096,
+            num_heads=24,
+            attn_head_dim=128,
+            num_layers=30,
+            text_dim=4096,
+            freq_dim=256,
+            eps=1.0e-06,
+            use_gradient_checkpointing=True,
+        ),
+        video_scheduler=dict(
+            train_shift=5.0, infer_shift=5.0, num_train_timesteps=1000),
+        # Upstream FastWAM uses shift 1.0 for the action scheduler on
+        # every task, including RoboTwin.
+        action_scheduler=dict(
+            train_shift=1.0, infer_shift=1.0, num_train_timesteps=1000),
+        loss=dict(lambda_video=1.0, lambda_action=1.0),
+    ),
+)
+
+# Training and evaluation encode unseen prompts online, then reuse a
+# per-process CPU-memory LRU cache without reading or writing cache files.
+inference_model = model.copy()
+
+train_dataloader = dict(
+    # Upstream RoboTwin recipe trains with global batch 16; on 4x72GB GPUs
+    # this is 2 microbatch x 4 GPUs x 2 accumulation (microbatch 4 OOMs on
+    # the 384x320x9 video branch).
+    per_device_batch_size=2,
+    per_device_num_workers=8,
+    dataset=dict(
+        type='DistributedRepeatingDataset',
+        reshuffle_each_epoch=True,
+        seed=42,
+        name_mappings={
+            'observation.state': ['proprio'],
+            'action': ['action'],
+        },
+        statistic_keys=['observation.state', 'timestamp', 'action'],
+        statistic_name=_STATISTIC_NAME,
+        datasets=dict(
+            type='ParquetDataset',
+            data_root_path=_ROBOTWIN_DATA_ROOTS,
+            transforms=[
+                dict(
+                    type='ProcessParquetInputs',
+                    parquet_keys=[
+                        'observation.state',
+                        'timestamp',
+                        'actions',
+                        'info',
+                        'stats',
+                        'action_masks',
+                    ],
+                    video_keys=[
+                        'observation.images.cam_high',
+                        'observation.images.cam_left_wrist',
+                        'observation.images.cam_right_wrist',
+                    ],
+                    video_backend='torchcodec',
+                    name_mappings={
+                        'observation.state': ['states'],
+                        'actions': ['actions'],
+                    },
+                    embodiment_id=0,
+                ),
+                dict(
+                    type='ResizeImages',
+                    height=256,
+                    width=320,
+                    backend='torchvision',
+                    scale_to_unit_interval=True,
+                ),
+                dict(
+                    type='NormalizeImages',
+                    means=[0.5, 0.5, 0.5],
+                    stds=[0.5, 0.5, 0.5],
+                ),
+                dict(
+                    type='NormalizeStatesAndActions',
+                    action_dim=_ACTION_DIM,
+                    state_dim=_STATE_DIM,
+                    state_key='proprio',
+                    action_key='action',
+                    norm_type=_ACTION_NORM_TYPE,
+                ),
+                # cam_high on top (256x320), wrist cameras side by side
+                # below (128x160 each) -> 384x320, matching the upstream
+                # ``concat_multi_camera="robotwin"`` layout.
+                dict(
+                    type='PrepareVideo',
+                    num_views=3,
+                    frame_window_size=_FRAME_WINDOW_SIZE,
+                    tile_direction='top_bottom_pair',
+                    top_view=0,
+                    bottom_views=(1, 2),
+                    bottom_height_ratio=0.5,
+                ),
+                dict(
+                    type='LiberoPromptFromInputs',
+                    tokenizer=dict(
+                        type='PretrainedTokenizer',
+                        model_path=_FASTWAM_TOKENIZER),
+                    max_len=128,
+                    use_conversation=False,
+                    prompt_template=_TEXT_PROMPT_TEMPLATE,
+                ),
+            ],
+            action_window_size=_ACTION_WINDOW_SIZE,
+            action_key='action',
+            use_delta=False,
+            statistic_name=_STATISTIC_NAME,
+            window_start_idx=0,
+            frame_window_size=_FRAME_WINDOW_SIZE,
+            frame_sample_stride=_FRAME_SAMPLE_STRIDE,
+        ),
+    ),
+)
+
+val_dataloader = None
+eval_dataset = None
+
+runner = dict(
+    type='FSDPTrainRunner',
+    max_epochs=5,
+    max_steps=None,
+    save_epoch_interval=1,
+    # RoboTwin epochs are ~47k steps at global batch 128; disable the
+    # step-based trigger so checkpoints are epoch-only, matching the
+    # effective LIBERO behavior (whose short epochs rarely hit 10000).
+    save_iter_interval=10000000,
+    max_keep_ckpts=10,
+    optimizer=dict(lr=1e-4, type='AdamW', weight_decay=1e-2),
+    max_grad_norm=1.0,
+    collator=dict(
+        type='DictCollator',
+        keys=[
+            'states',
+            'images',
+            'img_masks',
+            'actions',
+            'action_masks',
+            'embodiment_ids',
+            'frame_masks',
+            'lang_tokens',
+            'lang_masks',
+        ],
+        meta_keys=['task_description', 'info', 'stats', 'timestamp'],
+    ),
+    sampler=None,
+    tokenizer=dict(type='PretrainedTokenizer', model_path=_FASTWAM_TOKENIZER),
+    metric=dict(
+        type='VLAMetric',
+        active_trackers=('jsonl', 'wandb'),
+        run_dir='work_dirs',
+        window_size=1,
+    ),
+    lr_scheduler=dict(
+        type='linear-warmup+cosine-decay-min-lr',
+        warmup_ratio=0.05,
+        min_lr_ratio=0.01,
+        betas=(0.9, 0.95),
+        weight_decay_style='uniform',
+    ),
+    enable_gradient_checkpointing=False,
+    enable_mixed_precision_training=True,
+    # 4x72GB memory budget: the whole 6B FastWAM head is one FSDP flat
+    # unit, so fp32 masters + fp32 grad reduction do not fit. Keep managed
+    # params, AdamW states, and gradient reduction in bf16 (matching the
+    # upstream pure-bf16 execution).
+    reduce_in_full_precision=False,
+    pre_fsdp_param_dtype='bf16',
+    grad_accumulation_steps=2,
+    mixed_precision_dtype='bf16',
+    dataset_sharding_strategy='blockwise',
+    # full-shard: on 4x72GB GPUs the 12.4B model's AdamW states alone are
+    # ~25GB per rank under shard-grad-op, which OOMs; FULL_SHARD also
+    # shards parameters.
+    sharding_strategy='full-shard',
+    evaluator=dict(
+        type='training-eval',
+        eval_every=1000,
+        num_inference_steps=10,
+        seed=42,
+        save_video=False,
+        video_fps=8,
+    ),
+)
+
 eval = dict(
     runner=dict(
         type='RobotwinEvalRunner',
+        # Evaluate clean and random suites with unseen instructions,
+        # 100 episodes per task per suite, replanning every 24 of 32 actions.
+        task_suite_name=['clean', 'random'],
         model_family='fastwam',
         task_list=_ROBOTWIN_TASK_LIST,
-        # Match upstream FastWAM: random suite, unseen instructions,
-        # 100 episodes per task, and replanning every 24 of 32 actions.
-        task_suite_name='random',
         instruction_type='unseen',
         eval_chunk_size=24,
         num_trials_per_task=100,
         seed=42,
-        unnorm_key=_statistic_name,
+        unnorm_key=_STATISTIC_NAME,
         mixed_precision_dtype='bf16',
         save_video=False,
         dataset=dict(
@@ -341,19 +371,20 @@ eval = dict(
             transforms=[
                 dict(
                     type='NormalizeStatesAndActions',
-                    action_dim=_action_dim,
-                    state_dim=_state_dim,
+                    action_dim=_ACTION_DIM,
+                    state_dim=_STATE_DIM,
                     state_key='proprio',
                     action_key='action',
-                    norm_type='mean_std',
+                    norm_type=_ACTION_NORM_TYPE,
                 ),
                 dict(
                     type='LiberoPromptFromInputs',
                     tokenizer=dict(
-                        type='PretrainedTokenizer', model_path=_tokenizer),
+                        type='PretrainedTokenizer',
+                        model_path=_FASTWAM_TOKENIZER),
                     max_len=128,
                     use_conversation=False,
-                    prompt_template=_text_prompt_template,
+                    prompt_template=_TEXT_PROMPT_TEMPLATE,
                 ),
                 dict(type='ResizeImages', height=256, width=320),
                 dict(type='SimpleNormalizeImages'),
@@ -370,15 +401,8 @@ eval = dict(
         ),
         denormalize_action=dict(
             type='DenormalizePrivateAction',
-            norm_type='mean_std',
-            action_dim=_action_dim,
+            norm_type=_ACTION_NORM_TYPE,
+            action_dim=_ACTION_DIM,
         ),
     ),
-    manager=dict(
-        num_gpus=8,
-        max_tasks_per_gpu=1,
-        master_port_base=29690,
-        monitor_interval=5,
-        status_interval=30,
-        launch_delay=0.5),
 )

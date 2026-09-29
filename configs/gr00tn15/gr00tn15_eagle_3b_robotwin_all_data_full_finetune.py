@@ -11,6 +11,85 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""GR00T N1.5 full-data fine-tuning and evaluation on RoboTwin.
+
+The data combines clean and randomized LeRobot v2.1 datasets for all 50
+RoboTwin tasks (27,500 episodes), with three 480x640 (H x W) RGB cameras.
+Training uses 14-D absolute joint/gripper targets from future observation
+states, with state-derived mean/std statistics shared by training and
+closed-loop evaluation.
+
+Usage (16 GPUs):
+    # Run on both nodes with NODE_RANK=0/1 and the same MASTER_ADDR.
+    torchrun --nproc-per-node=8 --nnodes=2 \
+        --node-rank=${NODE_RANK} --master-addr=${MASTER_ADDR} \
+        --master-port=29500 scripts/train.py \
+        --config \
+        configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py \
+        --work-dir work_dirs/gr00tn15_eagle_3b_robotwin_all_data_full_finetune
+
+Evaluation:
+    torchrun --nproc-per-node=1 scripts/eval.py \
+        --config \
+        configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py \
+        --ckpt-path <checkpoint.safetensors>
+
+Evaluation defaults to all 50 tasks in both clean and random suites.
+"""
+
+# All 50 RoboTwin tasks, matching the upstream RoboTwin benchmark.
+_ROBOTWIN_TASK_LIST = [
+    'adjust_bottle',
+    'beat_block_hammer',
+    'blocks_ranking_rgb',
+    'blocks_ranking_size',
+    'click_alarmclock',
+    'click_bell',
+    'dump_bin_bigbin',
+    'grab_roller',
+    'handover_block',
+    'handover_mic',
+    'hanging_mug',
+    'lift_pot',
+    'move_can_pot',
+    'move_pillbottle_pad',
+    'move_playingcard_away',
+    'move_stapler_pad',
+    'open_laptop',
+    'open_microwave',
+    'pick_diverse_bottles',
+    'pick_dual_bottles',
+    'place_a2b_left',
+    'place_a2b_right',
+    'place_bread_basket',
+    'place_bread_skillet',
+    'place_burger_fries',
+    'place_can_basket',
+    'place_cans_plasticbox',
+    'place_container_plate',
+    'place_dual_shoes',
+    'place_empty_cup',
+    'place_fan',
+    'place_mouse_pad',
+    'place_object_basket',
+    'place_object_scale',
+    'place_object_stand',
+    'place_phone_stand',
+    'place_shoe',
+    'press_stapler',
+    'put_bottles_dustbin',
+    'put_object_cabinet',
+    'rotate_qrcode',
+    'scan_object',
+    'shake_bottle',
+    'shake_bottle_horizontally',
+    'stack_blocks_three',
+    'stack_blocks_two',
+    'stack_bowls_three',
+    'stack_bowls_two',
+    'stamp_seal',
+    'turn_switch',
+]
 
 model = dict(
     type='LlavaVLA',
@@ -157,62 +236,9 @@ runner = dict(
     mixed_precision_dtype='bf16',
     change_key_name=False)
 
-# All 50 RoboTwin tasks, matching the upstream RoboTwin benchmark.
-_ROBOTWIN_TASK_LIST = [
-    'adjust_bottle',
-    'beat_block_hammer',
-    'blocks_ranking_rgb',
-    'blocks_ranking_size',
-    'click_alarmclock',
-    'click_bell',
-    'dump_bin_bigbin',
-    'grab_roller',
-    'handover_block',
-    'handover_mic',
-    'hanging_mug',
-    'lift_pot',
-    'move_can_pot',
-    'move_pillbottle_pad',
-    'move_playingcard_away',
-    'move_stapler_pad',
-    'open_laptop',
-    'open_microwave',
-    'pick_diverse_bottles',
-    'pick_dual_bottles',
-    'place_a2b_left',
-    'place_a2b_right',
-    'place_bread_basket',
-    'place_bread_skillet',
-    'place_burger_fries',
-    'place_can_basket',
-    'place_cans_plasticbox',
-    'place_container_plate',
-    'place_dual_shoes',
-    'place_empty_cup',
-    'place_fan',
-    'place_mouse_pad',
-    'place_object_basket',
-    'place_object_scale',
-    'place_object_stand',
-    'place_phone_stand',
-    'place_shoe',
-    'press_stapler',
-    'put_bottles_dustbin',
-    'put_object_cabinet',
-    'rotate_qrcode',
-    'scan_object',
-    'shake_bottle',
-    'shake_bottle_horizontally',
-    'stack_blocks_three',
-    'stack_blocks_two',
-    'stack_bowls_three',
-    'stack_bowls_two',
-    'stamp_seal',
-    'turn_switch',
-]
-
 eval = dict(
     type='RobotwinEvalRunner',
+    task_suite_name=['clean', 'random'],
     model_family='groot',
     task_list=_ROBOTWIN_TASK_LIST,
     eval_chunk_size=50,
