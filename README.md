@@ -21,6 +21,15 @@ English | [简体中文](README_zh-CN.md) | [日本語](README_ja.md)
 
 FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying embodied intelligence applications. Built on the core design principles of unified configuration, standardized interfaces, module decoupling, and deployability, it creates a complete engineering loop from data to real-device deployment. With the goal of providing a standardized industry–academia–research foundation, it significantly lowers the engineering barrier for VLA research and development.
 
+## Real-Robot Demos
+
+<p align="center">
+  <img src="docs/fluxvla-real-robot-demo-compressed.gif" alt="FluxVLA real-robot demonstrations" width="800">
+</p>
+<p align="center">
+  <em>Mobile manipulation, tabletop tidying, bimanual cloth folding, and object retrieval from a bag (accelerated playback).</em>
+</p>
+
 ## Framework
 
 <p align="center">
@@ -70,12 +79,12 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 The full RoboDojo evaluation covers 42 benchmark tasks. Each of the 30 standalone tasks uses 50 trials; each of the 12 generalization tasks uses 25 standard-layout and 25 randomized-layout trials. This gives 2,100 trials per model. Each value is reported as progress score / success rate (%). Models are sorted by average progress score in ascending order.
 
-| Model               |        Average |         Gen-Std |      Gen-Rand |       Precision |    Long-Horizon |        Memory |          Open |
-| ------------------- | -------------: | --------------: | ------------: | --------------: | --------------: | ------------: | ------------: |
-| FluxVLA(SmolVLA)    |  5.29% / 2.98% |   8.15% / 5.33% | 0.30% / 0.00% |   8.70% / 4.50% |   8.89% / 4.75% | 3.97% / 2.33% | 0.67% / 0.67% |
-| FluxVLA(GR00T N1.5) |  5.50% / 3.17% |   6.48% / 3.33% | 1.62% / 0.67% |   2.38% / 0.00% |  15.36% / 9.25% | 5.48% / 4.33% | 0.25% / 0.25% |
-| FluxVLA(PI0)        |  5.96% / 3.37% |  13.05% / 9.67% | 0.78% / 0.00% |   7.62% / 4.00% |  11.76% / 6.00% | 3.52% / 2.00% | 0.00% / 0.00% |
-| FluxVLA(PI0.5)      | 13.61% / 8.83% | 22.65% / 16.00% | 6.25% / 2.33% | 18.28% / 10.25% | 28.04% / 18.75% | 5.10% / 4.00% | 2.20% / 2.00% |
+| Model               |       Average |        Gen-Std |     Gen-Rand |      Precision |   Long-Horizon |       Memory |         Open |
+| ------------------- | ------------: | -------------: | -----------: | -------------: | -------------: | -----------: | -----------: |
+| FluxVLA(SmolVLA)    |  5.29 / 2.98% |   8.15 / 5.33% | 0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% | 3.97 / 2.33% | 0.67 / 0.67% |
+| FluxVLA(GR00T N1.5) |  5.50 / 3.17% |   6.48 / 3.33% | 1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% | 5.48 / 4.33% | 0.25 / 0.25% |
+| FluxVLA(PI0)        |  5.96 / 3.37% |  13.05 / 9.67% | 0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% | 0.00 / 0.00% |
+| FluxVLA(PI0.5)      | 13.61 / 8.83% | 22.65 / 16.00% | 6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% | 2.20 / 2.00% |
 
 ## 📢 Latest News
 
@@ -794,11 +803,11 @@ Before using a LeRobot v3.x SARM dataset, sanity-check the video metadata:
 <details>
 <summary><b>Private dataset directory structure</b></summary>
 
-If you train with fluxvla on private datasets, you need to convert your raw data (e.g., HDF5 files collected by ALOHA robots) into the LeRobot Dataset v2.1 format. For a step-by-step conversion guide, see [Data Conversion Guide](docs/data_convert.md).
+If you train with fluxvla on private datasets, prepare your raw data (e.g., HDF5 files collected by ALOHA robots) in the LeRobot Dataset v2.1 format with your own conversion tooling before training.
 
 For SARM specifically, FluxVLA supports both LeRobot v2.1 and v3.x datasets as long as the required SARM annotation columns are present. The SARM-specific metadata contract is documented in [docs/sarm.md](docs/sarm.md).
 
-The converted dataset should follow this directory structure:
+The dataset should follow this directory structure:
 
 ```
 ├── data

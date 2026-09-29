@@ -365,7 +365,7 @@ themis = dict(
     ros_server=dict(
         ros_version=1,
         dataset_section='eval',
-        evaluation_reporting=dict(result_output_dir='work_dirs/fluxthemis', ),
+        evaluation_reporting=dict(),
         device='cuda:0',
         workers=dict(
             startup_timeout_s=900.0,

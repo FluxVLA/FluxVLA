@@ -31,7 +31,8 @@ themis = dict(
     ),
     ros_server=dict(
         evaluation_reporting=dict(
-            result_output_dir='work_dirs/fluxthemis',
+            # Optional; defaults to the directory containing checkpoints/.
+            result_output_dir=None,
             # Optional direct overrides; otherwise use the environment below.
             feishu=dict(),
         ),
@@ -43,8 +44,9 @@ themis = dict(
 
 `report_service_name` enables the acknowledged lifecycle channel. Omitting it
 keeps the PredictAction-only server compatible with older/local clients.
-`result_output_dir` defaults to `work_dirs/fluxthemis`, resolves relative to the
-FluxVLA repository, and must remain inside its `work_dirs` tree.
+`result_output_dir` defaults to the directory containing the checkpoint's
+`checkpoints/` directory. Relative overrides resolve from that same directory;
+absolute paths are also supported.
 
 For every accepted run, the server writes FluxVLA's native layout:
 

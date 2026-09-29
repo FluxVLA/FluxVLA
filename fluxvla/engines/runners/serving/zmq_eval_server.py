@@ -295,7 +295,7 @@ def build_zmq_eval_server_from_config(
         resolved_config_path = ros_server._resolve_report_config_path(
             cfg, config_path)
         result_root = ros_server._resolve_report_result_root(
-            reporting_cfg.get('result_output_dir'), resolved_config_path)
+            reporting_cfg.get('result_output_dir'), resolved_ckpt)
         reporter_eval_source = ros_server._config_get(cfg, 'eval', section_cfg)
         reporter_eval_config = copy.deepcopy(
             dict(

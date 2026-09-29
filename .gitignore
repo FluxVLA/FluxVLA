@@ -8,6 +8,9 @@
 *.svg
 *.webp
 
+# Keep the real-robot demo used by the READMEs
+!/docs/fluxvla-real-robot-demo-compressed.gif
+
 # Ignore video files
 *.mp4
 *.mkv

@@ -918,7 +918,7 @@ def build_ros_server_from_config(
         resolved_config_path = _resolve_report_config_path(cfg, config_path)
         result_root = _resolve_report_result_root(
             reporting_cfg.get('result_output_dir'),
-            resolved_config_path,
+            resolved_ckpt,
         )
         reporter_eval_source = _config_get(cfg, 'eval', section_cfg)
         reporter_eval_config = copy.deepcopy(
@@ -1115,45 +1115,21 @@ def _resolve_report_config_path(
     return path
 
 
-def _resolve_report_result_root(value: Any, config_path: Path) -> Path:
-    fluxvla_root = _find_fluxvla_root(config_path)
-    work_dirs_root = (fluxvla_root / 'work_dirs').resolve()
+def _resolve_report_result_root(value: Any, checkpoint_path: Path) -> Path:
+    checkpoint_root = checkpoint_path.parent.parent.resolve()
     if value is None:
-        candidate = work_dirs_root / 'fluxthemis'
+        return checkpoint_root
+
+    if not isinstance(value, (str, os.PathLike)) or not str(value).strip():
+        raise TypeError(
+            'themis.ros_server.evaluation_reporting.result_output_dir '
+            'must be a non-empty path')
+    requested = Path(value).expanduser()
+    if requested.is_absolute():
+        candidate = requested
     else:
-        if not isinstance(value, (str, os.PathLike)) or not str(value).strip():
-            raise TypeError(
-                'themis.ros_server.evaluation_reporting.result_output_dir '
-                'must be a non-empty path')
-        requested = Path(value).expanduser()
-        if requested.is_absolute():
-            candidate = requested
-        elif requested.parts and requested.parts[0] == 'work_dirs':
-            candidate = fluxvla_root / requested
-        else:
-            candidate = work_dirs_root / requested
-    resolved = candidate.resolve()
-    try:
-        resolved.relative_to(work_dirs_root)
-    except ValueError as exc:
-        raise ValueError(
-            'Evaluation reporting artifacts must stay inside FluxVLA '
-            f'work_dirs: {work_dirs_root}') from exc
-    return resolved
-
-
-def _find_fluxvla_root(config_path: Path) -> Path:
-    for candidate in config_path.parent.parents:
-        if ((candidate / 'fluxvla' / '__init__.py').is_file()
-                and (candidate / 'configs').is_dir()):
-            try:
-                config_path.relative_to((candidate / 'configs').resolve())
-            except ValueError:
-                continue
-            return candidate.resolve()
-    raise ValueError(
-        'Evaluation reporting config must be located under a FluxVLA '
-        f'configs directory: {config_path}')
+        candidate = checkpoint_root / requested
+    return candidate.resolve()
 
 
 def _resolve_checkpoint_path(value: Any) -> Path:
