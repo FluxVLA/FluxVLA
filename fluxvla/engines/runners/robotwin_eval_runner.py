@@ -60,8 +60,8 @@ ROBOTWIN_CAMERA_KEYS = (
 
 def _robotwin_print(*args, **kwargs) -> None:
     """Suppress only RoboTwin's per-action progress output."""
-    if (args and isinstance(args[0], str)
-            and args[0].startswith('step:') and kwargs.get('end') == '\r'):
+    if (args and isinstance(args[0], str) and args[0].startswith('step:')
+            and kwargs.get('end') == '\r'):
         return
     print(*args, **kwargs)
 
@@ -160,7 +160,8 @@ class LocalFluxVLAPolicy:
         enable_mixed_precision_training (bool): Whether to run inference
             under mixed precision autocast. Default is True.
         norm_stats_path (str): Optional explicit dataset statistics path.
-        max_episode_steps (int): Optional cap on actions per evaluation episode.
+        max_episode_steps (int): Optional cap on actions per evaluation
+            episode.
     """
 
     def __init__(self,
@@ -392,8 +393,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
         eval_chunk_size (int): Number of predicted actions executed per
             prediction. Must not exceed the trained action chunk.
         num_trials_per_task (int): Number of trials for each task.
-        max_episode_steps (int): Optional cap on actions per evaluation episode.
-            Defaults to the upstream task limit.
+        max_episode_steps (int): Optional cap on actions per evaluation
+            episode. Defaults to the upstream task limit.
         eval_shard_strategy (str): Must be ``task``. Each rank evaluates all
             trials for its assigned tasks.
         instruction_type (str): RoboTwin instruction type, such as ``seen``
@@ -495,9 +496,11 @@ class RobotwinEvalRunner(BaseEvalRunner):
             raise TypeError(
                 'Use task_suite_name=clean or random instead of task_config')
         if task_suite_name not in self.UPSTREAM_TASK_CONFIGS:
-            raise ValueError('RoboTwin task_suite_name must be clean or random')
+            raise ValueError(
+                'RoboTwin task_suite_name must be clean or random')
         self.task_suite_name = task_suite_name
-        self._upstream_task_config = self.UPSTREAM_TASK_CONFIGS[task_suite_name]
+        self._upstream_task_config = self.UPSTREAM_TASK_CONFIGS[
+            task_suite_name]
         if max_episode_steps is not None and (
                 isinstance(max_episode_steps, bool)
                 or not isinstance(max_episode_steps, int)
@@ -616,14 +619,13 @@ class RobotwinEvalRunner(BaseEvalRunner):
                     and payload.get('task_suite_name') == self.task_suite_name
                     and payload['trials_per_task'] == self.num_trials_per_task
                     and payload.get('max_episode_steps')
-                    == self.max_episode_steps
-                    and payload['seed'] == self.seed
+                    == self.max_episode_steps and payload['seed'] == self.seed
                     and payload['instruction_type'] == self.instruction_type
                     and payload['eval_chunk_size'] == self.eval_chunk_size and
                     payload.get('task_list', self.task_list) == self.task_list)
                 unfinished = (
-                    payload['overall']['completed_tasks']
-                    < payload['overall']['total_tasks'])
+                    payload['overall']['completed_tasks'] <
+                    payload['overall']['total_tasks'])
                 if same_config and unfinished:
                     return str(candidate)
         timestamp = time.strftime('%Y_%m_%d-%H_%M_%S')
@@ -986,16 +988,20 @@ class RobotwinEvalRunner(BaseEvalRunner):
         total_time = sum(float(stats['duration'] or 0) for stats in completed)
         completed_tasks = len(completed)
         return {
-            'total_successes': total_successes,
-            'total_trials': total_trials,
-            'completed_tasks': completed_tasks,
-            'success_rate': (
-                total_successes / total_trials * 100 if total_trials else None),
-            'total_time': total_time,
-            'average_task_time': (
-                total_time / completed_tasks if completed_tasks else 0.0),
-            'max_time': max(
-                (float(stats['duration'] or 0) for stats in completed),
+            'total_successes':
+            total_successes,
+            'total_trials':
+            total_trials,
+            'completed_tasks':
+            completed_tasks,
+            'success_rate':
+            (total_successes / total_trials * 100 if total_trials else None),
+            'total_time':
+            total_time,
+            'average_task_time':
+            (total_time / completed_tasks if completed_tasks else 0.0),
+            'max_time':
+            max((float(stats['duration'] or 0) for stats in completed),
                 default=0.0),
         }
 
@@ -1019,7 +1025,10 @@ class RobotwinEvalRunner(BaseEvalRunner):
             'trials_per_task': self.num_trials_per_task,
             'task_list': self.task_list,
         }
-        task_results = {task: dict(stats) for task, stats in task_results.items()}
+        task_results = {
+            task: dict(stats)
+            for task, stats in task_results.items()
+        }
         for task, stats in task_results.items():
             completed = stats['status'] == 'COMPLETED'
             successes = int(stats['successes']) if completed else 0
@@ -1107,9 +1116,12 @@ class RobotwinEvalRunner(BaseEvalRunner):
                     '' if rate is None else f'{rate:.2f}',
                 ])
 
-        display_rate = 'N/A' if overall_rate is None else f'{overall_rate:.2f}%'
+        display_rate = ('N/A'
+                        if overall_rate is None else f'{overall_rate:.2f}%')
         lines = [
-            '=== Evaluation Results Summary ===', '', 'Overall statistics:',
+            '=== Evaluation Results Summary ===',
+            '',
+            'Overall statistics:',
             f'- Tasks completed: {completed_tasks}',
             f"- Tasks expected: {overall['total_tasks']}",
             f'- Total attempts: {total_trials}',
@@ -1212,7 +1224,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
             if self.world_size == 1:
                 self._write_summary_json(task_results)
             self._log_rank(
-                f'Task {task_name} completed: {successes}/{episodes} successes')
+                f'Task {task_name} completed: {successes}/{episodes} successes'
+            )
             self._log_rank(f"Time taken: {stats['duration']:.2f} seconds")
 
     def _wait_for_task_completion(self) -> None:

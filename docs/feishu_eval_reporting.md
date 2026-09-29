@@ -306,6 +306,7 @@ process relaunches evaluation in a fresh process after saving the checkpoint,
 and the Feishu variables are inherited by that evaluation process.
 
 RoboTwin smoke example:
+
 ```bash
 cd /path/to/FluxVLA
 

@@ -223,11 +223,9 @@ def _combine_robotwin_summary_paths(summary_paths, args, cfg):
         overall = summary['overall']
         task_results = summary['task_results']
         completed = [
-            s for s in task_results.values()
-            if s['status'] == 'COMPLETED'
+            s for s in task_results.values() if s['status'] == 'COMPLETED'
         ]
-        failed = sum(s['status'] == 'FAILED'
-                     for s in task_results.values())
+        failed = sum(s['status'] == 'FAILED' for s in task_results.values())
         total_tasks = overall['total_tasks']
         completed_tasks = overall['completed_tasks']
         finished = total_tasks > 0 and completed_tasks == total_tasks
@@ -362,8 +360,8 @@ if __name__ == '__main__':
 
     overwatch = initialize_overwatch(__name__)
     configure_inference_attention_defaults()
-    default_suite = (
-        'clean' if _is_robotwin_eval_cfg(_get_eval_runner_cfg(cfg)) else None)
+    default_suite = ('clean' if _is_robotwin_eval_cfg(
+        _get_eval_runner_cfg(cfg)) else None)
     eval_options = [
         dict(suite_name=suite) for suite in _as_list(
             _get_eval_value(cfg, 'task_suite_name', default_suite))
@@ -381,5 +379,7 @@ if __name__ == '__main__':
         _combine_robotwin_summary_paths(
             summary_paths.get('robotwin', []), args, cfg)
         _maybe_report_libero_eval(libero_summary_path, args, cfg)
-        _maybe_report_robocasa_eval(summary_paths.get('robocasa', []), args, cfg)
-        _maybe_report_robotwin_eval(summary_paths.get('robotwin', []), args, cfg)
+        _maybe_report_robocasa_eval(
+            summary_paths.get('robocasa', []), args, cfg)
+        _maybe_report_robotwin_eval(
+            summary_paths.get('robotwin', []), args, cfg)

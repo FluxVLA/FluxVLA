@@ -21,17 +21,17 @@ shared by training and closed-loop evaluation.
 Usage (16 GPUs):
     # Run on both nodes with NODE_RANK=0/1 and the same MASTER_ADDR.
     torchrun --nproc-per-node=8 --nnodes=2 \
-        --node-rank=${NODE_RANK} --master-addr=${MASTER_ADDR} \
-        --master-port=29500 scripts/train.py \
-        --config \
-        configs/gr00tn17/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune.py \
-        --work-dir work_dirs/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune
+      --node-rank=${NODE_RANK} --master-addr=${MASTER_ADDR} \
+      --master-port=29500 scripts/train.py \
+      --config \
+      configs/gr00tn17/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune.py \
+      --work-dir work_dirs/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune
 
 Evaluation:
     torchrun --nproc-per-node=1 scripts/eval.py \
-        --config \
-        configs/gr00tn17/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune.py \
-        --ckpt-path <checkpoint.safetensors>
+      --config \
+      configs/gr00tn17/gr00tn17_qwen3vl_2b_robotwin_all_data_full_finetune.py \
+      --ckpt-path <checkpoint.safetensors>
 
 Evaluation defaults to all 50 tasks in both clean and random suites.
 """
@@ -161,8 +161,7 @@ _N17_MODALITY_CONFIGS = dict(
             delta_indices=list(range(40)),
             modality_keys=['joints'],
         ),
-    ),
-)
+    ), )
 
 # State/action normalization uses the merged training dataset statistics.
 # This processor metadata is consumed by image augmentation only.

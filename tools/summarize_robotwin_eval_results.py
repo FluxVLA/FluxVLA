@@ -17,7 +17,7 @@ Each ``RobotwinEvalRunner`` worker launched by the manager evaluates one
 task under a single condition (``clean`` or ``random``) and writes a
 ``summary.json``. This tool scans one manager run directory and merges
 worker summaries for each configured evaluation condition. It emits
-``summary.csv``, ``summary.txt`` and ``summary.json`` for downstream 
+``summary.csv``, ``summary.txt`` and ``summary.json`` for downstream
 comparison and reporting.
 """
 
@@ -130,8 +130,7 @@ def _collect_worker_settings(expected_tasks: List[str],
     return next(iter(worker_summaries.values()), settings or {})
 
 
-def summarize(expected_tasks: List[str],
-              worker_summaries: Dict[str, Dict],
+def summarize(expected_tasks: List[str], worker_summaries: Dict[str, Dict],
               task_suite_name: str) -> Dict:
     """Aggregate worker task results into group statistics and task details."""
     group = {
@@ -147,8 +146,9 @@ def summarize(expected_tasks: List[str],
             'max_time': 0.0,
         }
     }
-    task_results: Dict[str, Dict] = _build_task_results(
-        expected_tasks, worker_summaries)
+    task_results: Dict[str,
+                       Dict] = _build_task_results(expected_tasks,
+                                                   worker_summaries)
     stats = group_stats[group]
     for result in task_results.values():
         if result['status'] != 'COMPLETED':
@@ -164,8 +164,8 @@ def summarize(expected_tasks: List[str],
     return {'group_stats': group_stats, 'task_results': task_results}
 
 
-def _write_summary_csv(output_dir: Path, title: str,
-                       columns: List[str], rows: Dict[str, List]) -> str:
+def _write_summary_csv(output_dir: Path, title: str, columns: List[str],
+                       rows: Dict[str, List]) -> str:
     """Write the summary table to ``summary.csv``."""
     summary_csv = os.path.join(output_dir, 'summary.csv')
     with open(summary_csv, 'w', newline='') as f:
@@ -203,17 +203,19 @@ def write_summaries(summary: Dict,
     reports to ``output_dir``."""
     os.makedirs(output_dir, exist_ok=True)
     combined = conditions is not None
-    summary_items = (
-        ((condition, summary[condition]) for condition in conditions)
-        if combined else [(None, summary)])
+    summary_items = (((condition, summary[condition])
+                      for condition in conditions)
+                     if combined else [(None, summary)])
     entries = {}
     columns: List[str] = []
     rows = {'Success Rate (%)': []}
     if not combined:
         rows.update({'Average Time (s)': [], 'Max Time (s)': []})
     rows.update({
-        'Episodes': [], 'Successes': [],
-        'Tasks Completed': [], 'Tasks Expected': [],
+        'Episodes': [],
+        'Successes': [],
+        'Tasks Completed': [],
+        'Tasks Expected': [],
     })
     txt_lines = ['=== Evaluation Results Summary ===', '']
     txt_lines += ([
@@ -224,13 +226,17 @@ def write_summaries(summary: Dict,
         group_stats = condition_summary['group_stats']
         task_results = condition_summary['task_results']
         stats = next(iter(group_stats.values()))
-        rate = (stats['total_successes'] / stats['total_trials'] * 100
-                if stats['total_trials'] else None)
-        avg_time = (stats['total_time'] / stats['total_tasks']
-                    if stats['total_tasks'] else 0.0)
+        rate = (
+            stats['total_successes'] / stats['total_trials'] *
+            100 if stats['total_trials'] else None)
+        avg_time = (
+            stats['total_time'] /
+            stats['total_tasks'] if stats['total_tasks'] else 0.0)
         if combined:
-            difficulty = {'clean': 'Easy', 'random': 'Hard'}.get(
-                condition, condition)
+            difficulty = {
+                'clean': 'Easy',
+                'random': 'Hard'
+            }.get(condition, condition)
             entries[condition] = {
                 'difficulty': difficulty,
                 'success_rate': rate,
@@ -278,7 +284,9 @@ def write_summaries(summary: Dict,
             for task, res in task_results.items():
                 task_rate = res['success_rate']
                 row = [
-                    task, res['successes'], res['total_episodes'],
+                    task,
+                    res['successes'],
+                    res['total_episodes'],
                     '' if task_rate is None else f'{task_rate:.2f}',
                 ]
                 task_rows.append(row)
@@ -385,8 +393,8 @@ def _load_run_summary(run_dir: Path, args: argparse.Namespace,
     if not expected:
         return None, settings
     settings = _collect_worker_settings(expected, worker_summaries, settings)
-    summary = summarize(
-        expected, worker_summaries, settings.get('task_suite_name'))
+    summary = summarize(expected, worker_summaries,
+                        settings.get('task_suite_name'))
     return summary, settings
 
 
@@ -394,8 +402,10 @@ def _collect_conditions(run_dir: Path) -> List[str]:
     """Identify evaluation conditions from the result directories."""
     if (run_dir / 'workers').is_dir():
         return []
-    return [condition for condition in ('clean', 'random')
-            if (run_dir / condition).is_dir()]
+    return [
+        condition for condition in ('clean', 'random')
+        if (run_dir / condition).is_dir()
+    ]
 
 
 def main() -> int:
@@ -414,19 +424,25 @@ def main() -> int:
             print(f'No tasks found under {inner}.', file=sys.stderr)
             return 1
         summary_json = write_summaries(
-            summary, inner if combined else output_dir, args.title,
-            settings, ckpt=args.ckpt)
+            summary,
+            inner if combined else output_dir,
+            args.title,
+            settings,
+            ckpt=args.ckpt)
         summary_paths.append(summary_json)
         if combined:
             condition_summaries[condition] = summary
-        completed_tasks = sum(
-            stats['total_tasks'] for stats in summary['group_stats'].values())
-        complete = complete and (
-            completed_tasks == len(summary['task_results']))
+        completed_tasks = sum(stats['total_tasks']
+                              for stats in summary['group_stats'].values())
+        complete = complete and (completed_tasks == len(
+            summary['task_results']))
     if combined:
         write_summaries(
-            condition_summaries, output_dir, args.title, {},
-            ckpt=args.ckpt, conditions=conditions)
+            condition_summaries,
+            output_dir,
+            args.title, {},
+            ckpt=args.ckpt,
+            conditions=conditions)
     # The reporter consumes condition reports, not the top-level comparison.
     if args.feishu_sheet_url or args.feishu_app_id or args.feishu_app_secret:
         maybe_report_summary_to_feishu = _load_feishu_reporter()

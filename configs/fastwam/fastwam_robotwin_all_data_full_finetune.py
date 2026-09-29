@@ -404,5 +404,4 @@ eval = dict(
             norm_type=_ACTION_NORM_TYPE,
             action_dim=_ACTION_DIM,
         ),
-    ),
-)
+    ), )
