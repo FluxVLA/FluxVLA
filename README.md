@@ -88,6 +88,8 @@ The full RoboDojo evaluation covers 42 benchmark tasks. Each of the 30 standalon
 
 ## 📢 Latest News
 
+**\[2026/09/16\]** 🔥 The FluxVLA Engine [technical report](https://arxiv.org/abs/2609.17210) is now available on arXiv.
+
 **\[2026/09/09\]** 🔥 FluxVLA now supports checkpoint-free GPT-6 Astra evaluation on LIBERO through the OpenAI Responses API, including multi-view observations, native LIBERO action control, environment-configured credentials, and organized rollout artifacts.
 
 **\[2026/09/09\]** 🔥 FluxVLA-native GR00T N1.7 is now open sourced, including training and inference workflows for LIBERO, RoboCasa, and Franka robots.

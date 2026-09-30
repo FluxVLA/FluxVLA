@@ -86,6 +86,8 @@ RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 
 
 ## 📢 最新动态
 
+**\[2026/09/16\]** 🔥 FluxVLA Engine [技术报告](https://arxiv.org/abs/2609.17210) 已在 arXiv 发布。
+
 **\[2026/09/09\]** 🔥 FluxVLA 现已支持通过 OpenAI Responses API 使用 GPT-6 Astra 进行无需 checkpoint 的 LIBERO 评测，包括多视角观测、原生 LIBERO 动作控制、环境变量凭据配置和结构化 rollout 产物。
 
 **\[2026/09/09\]** 🔥 FluxVLA-native GR00T N1.7 现已开源，包含 LIBERO、RoboCasa 和 Franka 机器人的训练与推理流程。

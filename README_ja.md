@@ -86,6 +86,8 @@ RoboDojo の完全評価は 42 個のベンチマークタスクで構成され�
 
 ## 📢 最新情報
 
+**\[2026/09/16\]** 🔥 FluxVLA Engine の[技術レポート](https://arxiv.org/abs/2609.17210)を arXiv で公開しました。
+
 **\[2026/09/09\]** 🔥 FluxVLA は OpenAI Responses API を介した GPT-6 Astra のチェックポイント不要な LIBERO 評価に対応しました。マルチビュー観測、LIBERO ネイティブのアクション制御、環境変数による認証情報設定、整理されたロールアウト成果物を含みます。
 
 **\[2026/09/09\]** 🔥 FluxVLA-native GR00T N1.7 をオープンソース化しました。LIBERO、RoboCasa、Franka ロボット向けの学習・推論ワークフローを含みます。
