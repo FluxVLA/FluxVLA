@@ -1,0 +1,21 @@
+# @package _global_
+
+defaults:
+  - /env@env.train: libero_10
+  - /env@env.eval: libero_10
+  - /base/ppo
+  - /models@actor.model: pi05
+  - /backends/fsdp@actor.fsdp_config: pi05
+  - _self_
+
+runner:
+  logger:
+    experiment_name: libero_10_ppo_fluxvla_pi05
+
+env:
+  train:
+    max_episode_steps: 480
+    max_steps_per_rollout_epoch: 480
+  eval:
+    max_episode_steps: 480
+    max_steps_per_rollout_epoch: 480

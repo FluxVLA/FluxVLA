@@ -1,0 +1,50 @@
+# @package _global_
+
+defaults:
+  - /benchmarks/robotwin/pi05/base
+  - _self_
+
+experiment:
+  memory_audit: true
+  # Measured four-batch rollout takes about five minutes; also leave time
+  # for actor update, validation and a durable checkpoint before the cutoff.
+  budget_reserve_seconds: 600
+  placement_8gpu:
+    # Separate key prevents merging the four-GPU compound placement entry.
+    actor: 0-3
+    rollout: 4-5
+    env: 6-7
+
+cluster:
+  component_placement: ${experiment.placement_8gpu}
+
+runner:
+  max_epochs: 30
+  max_steps: 30
+  val_check_interval: 5
+  save_interval: 5
+  logger:
+    experiment_name: adjust_bottle_pi05_8gpu_seed1234
+
+algorithm:
+  update_epoch: 2
+
+actor:
+  micro_batch_size: 4
+  global_batch_size: 512
+  fsdp_config:
+    # Keep optimizer gradient accumulation/global batch unchanged, but reduce
+    # each microbatch. Deferred FSDP2 synchronization drifted under allocation
+    # churn in this Torch 2.8 + local BF16 stack; see accumulation probe.
+    enable_gradient_accumulation: false
+  optim:
+    lr: 1.0e-6
+    value_lr: 1.0e-4
+
+env:
+  train:
+    total_num_envs: 32
+    rollout_epoch: 4
+    enable_offload: true
+  eval:
+    enable_offload: true

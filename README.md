@@ -1016,6 +1016,9 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 
 ## Usage
 
+For optional PI0.5 and SmolVLA PPO training with RLinf, see the
+[RLinf integration guide](docs/rlinf.md) for models, benchmarks and launch instructions.
+
 <details>
 <summary><b>Local debugging</b></summary>
 

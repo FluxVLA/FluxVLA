@@ -1,0 +1,9 @@
+# @package _global_
+
+defaults:
+  - /benchmarks/robotwin/pi05/base
+  - _self_
+
+hydra:
+  searchpath:
+    - file://${oc.env:RLINF_CONFIG_DIR}

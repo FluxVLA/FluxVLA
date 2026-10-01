@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - /benchmarks/libero/base
+  - override /models@actor.model: smolvla
+  - override /backends/fsdp@actor.fsdp_config: smolvla
+  - _self_
+
+runner:
+  logger:
+    project_name: fluxvla-rl-smolvla
+    experiment_name: libero_10_ppo_fluxvla_smolvla
+
+rollout:
+  # Eval-only workers read rollout.model instead of actor.model.
+  model: ${actor.model}
