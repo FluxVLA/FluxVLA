@@ -20,10 +20,7 @@ from typing import Any, Dict
 
 import torch
 
-from fluxvla.engines.utils import initialize_overwatch
 from fluxvla.engines.utils.name_map import str_to_dtype
-
-overwatch = initialize_overwatch(__name__)
 
 
 class BaseEvalRunner:
@@ -104,19 +101,6 @@ class BaseEvalRunner:
         ]
         assert not offending, ('Missing keys while loading eval checkpoint: '
                                f'{offending[:10]}')
-
-    def set_common_eval_attrs(self, cfg: Dict, seed: int, ckpt_path: str,
-                              model_family: str, mixed_precision_dtype: str,
-                              enable_mixed_precision_training: bool) -> None:
-        """Set attributes shared by evaluation runners."""
-        self.cfg = cfg
-        self.seed = seed
-        self.ckpt_path = ckpt_path
-        self.model_family = model_family
-        self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
-        self.enable_mixed_precision_training = enable_mixed_precision_training
-        self.device_id = overwatch.local_rank()
-        self.distributed_state = overwatch.distributed_state
 
     def update_model_norm_stats(self, norm_stats: Dict[str, Any]) -> None:
         """Attach normalization statistics to the wrapped VLA model."""

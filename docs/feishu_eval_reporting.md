@@ -1,9 +1,9 @@
 # Feishu Evaluation Reporting
 
-FluxVLA can upload LIBERO and RoboCasa evaluation summaries to a Feishu
-spreadsheet. The upload is best-effort: evaluation results are still written
-locally even when Feishu reporting is not configured or the Feishu API rejects
-the write.
+FluxVLA can upload RoboTwin, RoboCasa, and LIBERO evaluation summaries to a
+Feishu spreadsheet. The upload is best-effort: evaluation results are still
+written locally even when Feishu reporting is not configured or the Feishu API
+rejects the write.
 
 This feature works with:
 
@@ -11,6 +11,8 @@ This feature works with:
 - `scripts/eval.sh`
 - `scripts/train.py --eval-after-train`
 - `scripts/train.sh ... --eval-after-train`
+- `tools/summarize_robotwin_eval_results.py`
+- `tools/summarize_robocasa_eval_results.py`
 - `tools/summarize_libero_eval_results.py`
 - `scripts/ros_inference_server.sh` with FluxThemis `ReportEvaluation`
 
@@ -75,20 +77,26 @@ and failed runs keep their native files but do not append a spreadsheet row.
 
 ## What Gets Written
 
-For an evaluation that passes the applicable reporting gate, the reporter writes
-one row per completed summary. It does not deduplicate rows, so running the same
-command twice appends two rows.
+For a summary that passes the caller's reporting checks, the reporter writes
+one row. It does not deduplicate rows; uploading the same summary again appends
+another row.
 
-LIBERO uses this header:
+RoboTwin uses this header:
 
 ```text
-id, commit id, config, ckpt_path, libero_10, libero_goal, libero_object, libero_spatial, all
+id, commit id, config, ckpt_path, Easy, Hard, all
 ```
 
 RoboCasa uses this header:
 
 ```text
 id, commit id, config, ckpt_path, Cabinet, Drawer, Microwave, Generalization, all
+```
+
+LIBERO uses this header:
+
+```text
+id, commit id, config, ckpt_path, libero_10, libero_goal, libero_object, libero_spatial, all
 ```
 
 Column behavior:
@@ -169,17 +177,18 @@ export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>?sheet=<sheet_i
 ```
 
 This is useful when you want to write to an existing tab such as `Sheet4` even
-if its title is not `libero` or `robocasa`.
+if its title is not `robotwin`, `robocasa`, or `libero`.
 
 If the URL does not include `sheet=`, FluxVLA chooses a worksheet by report
 kind:
 
-- LIBERO writes to a worksheet named `libero`.
+- RoboTwin writes to a worksheet named `robotwin`.
 - RoboCasa writes to a worksheet named `robocasa`.
+- LIBERO writes to a worksheet named `libero`.
 - If the worksheet does not exist, FluxVLA creates it.
 
 Use the spreadsheet-level URL when you want one document with separate
-`libero` and `robocasa` tabs:
+`robotwin`, `robocasa`, and `libero` tabs:
 
 ```bash
 export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>'
@@ -200,8 +209,66 @@ Successful logs include the actual target:
 ```
 
 `selection=url sheet` means the `sheet=` query selected the worksheet.
-`selection=report kind sheet` means FluxVLA selected `libero` or `robocasa`
-from the report kind.
+`selection=report kind sheet` means FluxVLA selected `robotwin`, `robocasa`, or
+`libero` from the report kind.
+
+## RoboTwin With `scripts/eval_robotwin_manager.sh`
+
+When the manager evaluates both `clean` (Easy) and `random` (Hard), its summary
+tool uploads **one row containing both Easy and Hard**. The top-level
+`summary.json` contains both difficulties in `group_stats`; the per-condition
+summaries remain in `clean/` and `random/` for inspection, but are not uploaded
+separately. The Feishu `all` column uses total successes divided by total
+trials across both difficulties, not the mean of their percentages. A
+single-condition run still fills only its own difficulty column.
+
+To report a completed manager run without rerunning simulation, use the
+directory that contains both `clean/` and `random/`:
+
+```bash
+export CONFIG='configs/dit4dit/dit4dit_robotwin_all_full_finetune.py'
+RUN_DIR='/path/to/existing/robotwin_manager_run'
+python tools/summarize_robotwin_eval_results.py \
+  --run-dir "$RUN_DIR" \
+  --output-dir "$RUN_DIR"
+```
+
+This reads the existing worker results and uses the `FEISHU_*` environment
+variables above. The checkpoint is read from the worker summaries unless
+`--ckpt` is supplied. Re-uploading appends a new combined row; it does not
+merge or remove rows previously uploaded separately. Partial runs keep missing
+difficulty rates blank and return a non-zero exit status for retry.
+
+## RoboTwin With `scripts/eval.sh`
+
+Example:
+
+```bash
+cd /path/to/FluxVLA
+
+export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>'
+export FEISHU_APP_ID='cli_xxx'
+export FEISHU_APP_SECRET='xxx'
+export WANDB_MODE=disabled
+
+CUDA_VISIBLE_DEVICES=0,1 \
+NPROC_PER_NODE=2 \
+bash scripts/eval.sh \
+  configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py \
+  work_dirs/gr00tn15_eagle_3b_robotwin_all_data_full_finetune/checkpoints/checkpoints/step-142386-epoch-03-loss=0.0027.safetensors \
+  --cfg-options \
+    eval.task_suite_name=random
+```
+
+RoboTwin uses `task_suite_name=clean` (Easy) or `task_suite_name=random`
+(Hard). To evaluate both, pass `--cfg-options eval.runner.task_suite_name=[clean,random]`
+for namespaced configs, or `eval.task_suite_name=[clean,random]` for flat configs.
+
+After multiple suites finish, `scripts/eval.py` writes
+`eval_runs/<checkpoint_stem>/robotwin_eval_summary_<timestamp>.json` beneath the
+evaluation output root, including when `feishu_report=False`. If reporting is
+enabled, it uploads one row per suite: `clean` fills `Easy`, and `random` fills
+`Hard`.
 
 ## RoboCasa With `scripts/eval.sh`
 
@@ -210,7 +277,7 @@ Example:
 ```bash
 cd /path/to/FluxVLA
 
-export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>?sheet=<sheet_id>'
+export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>'
 export FEISHU_APP_ID='cli_xxx'
 export FEISHU_APP_SECRET='xxx'
 export WANDB_MODE=disabled
@@ -220,7 +287,7 @@ NPROC_PER_NODE=2 \
 HF_ENDPOINT=https://hf-mirror.com \
 bash scripts/eval.sh \
   configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
-  work_dirs/gr00t_eagle_3b_robocasa_finetune/checkpoints/latest-checkpoint.safetensors \
+  work_dirs/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune/checkpoints/latest-checkpoint.safetensors \
   --cfg-options \
     eval.num_trials_per_task=1 \
     eval.max_episode_steps=5
@@ -253,8 +320,10 @@ bash scripts/eval.sh \
     eval.save_failed_rollout_videos=False
 ```
 
-When LIBERO evaluates multiple suites in one run, `scripts/eval.py` combines
-the per-suite summaries and writes one Feishu row containing
+After LIBERO finishes multiple suites, `scripts/eval.py` writes
+`eval_runs/<checkpoint_stem>/libero_eval_summary_<timestamp>.json` beneath the
+evaluation output root, including when `feishu_report=False`. If reporting is
+enabled and `task_ids` is unset, it uploads one row containing
 `libero_10`, `libero_goal`, `libero_object`, `libero_spatial`, and `all`.
 
 ## Eval After Train
@@ -262,6 +331,36 @@ the per-suite summaries and writes one Feishu row containing
 The same environment variables work with `--eval-after-train`. The training
 process relaunches evaluation in a fresh process after saving the checkpoint,
 and the Feishu variables are inherited by that evaluation process.
+
+RoboTwin smoke example:
+
+```bash
+cd /path/to/FluxVLA
+
+export FEISHU_SHEET_URL='https://example.feishu.cn/sheets/<token>'
+export FEISHU_APP_ID='cli_xxx'
+export FEISHU_APP_SECRET='xxx'
+
+CUDA_VISIBLE_DEVICES=0,1 \
+NPROC_PER_NODE=2 \
+WANDB_MODE=disabled \
+HF_ENDPOINT=https://hf-mirror.com \
+bash scripts/train.sh \
+  configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py \
+  work_dirs/gr00tn15_eagle_3b_robotwin_all_data_full_finetune \
+  --eval-after-train \
+  --cfg-options \
+    train_dataloader.per_device_batch_size=1 \
+    runner.max_epochs=None \
+    runner.max_steps=1 \
+    runner.save_iter_interval=1 \
+    runner.save_epoch_interval=999 \
+    runner.max_keep_ckpts=1 \
+    eval.task_suite_name=clean \
+    eval.num_trials_per_task=1 \
+    eval.max_episode_steps=5 \
+    eval.save_video=False
+```
 
 RoboCasa smoke example:
 
@@ -278,7 +377,7 @@ WANDB_MODE=disabled \
 HF_ENDPOINT=https://hf-mirror.com \
 bash scripts/train.sh \
   configs/gr00tn15/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune.py \
-  work_dirs/gr00t_eagle_3b_robocasa_finetune \
+  work_dirs/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune \
   --eval-after-train \
   --cfg-options \
     train_dataloader.per_device_batch_size=1 \
@@ -306,7 +405,7 @@ WANDB_MODE=disabled \
 HF_ENDPOINT=https://hf-mirror.com \
 bash scripts/train.sh \
   configs/gr00tn15/gr00tn15_eagle_3b_libero_10_full_finetune.py \
-  work_dirs/gr00t_eagle_3b_libero_10_full_finetune \
+  work_dirs/gr00tn15_eagle_3b_libero_10_full_finetune \
   --eval-after-train \
   --cfg-options \
     train_dataloader.per_device_batch_size=1 \
@@ -323,12 +422,38 @@ bash scripts/train.sh \
 
 ## Upload An Existing Summary
 
+You can upload existing RoboTwin summaries without rerunning evaluation.
+Before uploading, keep only the latest summary for each suite in the search
+directory. If both `clean` and `random` are present, both are uploaded.
+
+```bash
+cd /path/to/FluxVLA
+
+SUMMARY=$(find work_dirs/gr00tn15_eagle_3b_robotwin_all_data_full_finetune \
+  -path '*/EVAL-robotwin-groot-*/summary.json' \
+  -printf '%T@ %p\n' | sort -nr | head -2 | cut -d' ' -f2-)
+
+python - <<PY
+from fluxvla.engines.utils.feishu_reporter import maybe_report_summary_to_feishu
+
+for summary_path in """$SUMMARY""".splitlines():
+    result = maybe_report_summary_to_feishu(
+        summary_path,
+        "robotwin",
+        config="configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py",
+        logger=print,
+        log_unconfigured=True,
+    )
+    print(result)
+PY
+```
+
 You can upload an existing RoboCasa summary without rerunning evaluation:
 
 ```bash
 cd /path/to/FluxVLA
 
-SUMMARY=$(find work_dirs/gr00t_eagle_3b_robocasa_finetune \
+SUMMARY=$(find work_dirs/gr00tn15_eagle_3b_robocasa_30_eps_full_finetune \
   -path '*/EVAL-robocasa-groot-*/summary.json' \
   -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)
 
@@ -360,27 +485,29 @@ python tools/summarize_libero_eval_results.py \
 
 ## Config Fields
 
-Environment variables are the recommended way to pass secrets. For controlled
-internal runs, the same values can also be placed in config fields:
+Direct `eval.py` / `eval.sh` reporting and `--eval-after-train` read credentials
+from the environment; `eval.feishu_*` credential fields are not forwarded to
+the reporter.
 
 ```python
 eval = dict(
     feishu_sheet_url='https://example.feishu.cn/sheets/<token>',
     feishu_app_id='cli_xxx',
     feishu_app_secret='xxx',
-    feishu_timeout=10.0,
 )
 ```
 
-For namespaced LIBERO manager configs, `eval.manager.feishu_sheet_url`,
-`eval.manager.feishu_app_id`, and `eval.manager.feishu_app_secret` are also
-accepted. Avoid committing real secrets to git.
+For direct evaluation, set `eval.runner.feishu_report=False` in a namespaced
+config, or `eval.feishu_report=False` in a flat config, to disable uploading.
+Local summary generation still runs.
+RoboCasa and LIBERO also skip direct upload when `task_ids` is set.
+Reducing trial counts or step limits alone does not disable direct uploading.
 
 ## Troubleshooting
 
 ### `Feishu reporting is not configured`
 
-No Feishu environment variables or config fields were found. Check:
+No credentials reached the reporter. Check the launch environment:
 
 ```bash
 printf '%s\n' "$FEISHU_SHEET_URL"
@@ -415,7 +542,7 @@ worksheet, or set the first row to the exact header listed above.
 
 Open the exact URL printed in the success log. If the input URL contains
 `?sheet=<sheet_id>`, the write goes to that specific worksheet, even if another
-tab is named `libero` or `robocasa`.
+tab is named `robotwin`, `robocasa`, or `libero`.
 
 Repeated runs append rows. If you ran an older version before the append fix,
 one row may have been written far below the visible rows; search for the config

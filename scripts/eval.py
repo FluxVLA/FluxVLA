@@ -21,14 +21,6 @@ from pathlib import Path
 
 from mmengine import Config, DictAction
 
-from fluxvla.engines import build_runner_from_cfg, initialize_overwatch
-from fluxvla.engines.utils.feishu_reporter import \
-    maybe_report_summary_to_feishu
-from fluxvla.engines.utils.torch_utils import \
-    configure_inference_attention_defaults
-
-overwatch = initialize_overwatch(__name__)
-
 
 def _as_list(value):
     if isinstance(value, (list, tuple)):
@@ -63,6 +55,7 @@ def _drop_runner_report_cfg(eval_cfg):
             'feishu_app_id',
             'feishu_app_secret',
             'feishu_timeout',
+            'feishu_report',
     ):
         if isinstance(eval_cfg, dict):
             eval_cfg.pop(key, None)
@@ -76,6 +69,38 @@ def _is_libero_eval_cfg(eval_cfg):
 
 def _is_robocasa_eval_cfg(eval_cfg):
     return _get_cfg_value(eval_cfg, 'type') == 'RobocasaEvalRunner'
+
+
+def _is_robotwin_eval_cfg(eval_cfg):
+    return _get_cfg_value(eval_cfg, 'type') == 'RobotwinEvalRunner'
+
+
+def _configure_robotwin_devices(cfg):
+    """Bind each RoboTwin worker to one GPU before CUDA initialization.
+
+    RoboTwin's planners use cuda:0, so each worker exposes only its own GPU.
+    """
+    if int(os.environ.get('WORLD_SIZE', '1')) <= 1:
+        return
+    eval_cfg = cfg.eval.runner if hasattr(cfg.eval, 'runner') else cfg.eval
+    if not _is_robotwin_eval_cfg(eval_cfg):
+        return
+
+    local_rank = int(os.environ['LOCAL_RANK'])
+    visible = os.environ.get('CUDA_VISIBLE_DEVICES')
+    if visible is None:
+        device = str(local_rank)
+    else:
+        devices = [item.strip() for item in visible.split(',') if item.strip()]
+        if local_rank >= len(devices):
+            raise ValueError(
+                'RoboTwin requires one visible GPU per local rank')
+        device = devices[local_rank]
+
+    os.environ['CUDA_VISIBLE_DEVICES'] = device
+    # MMEngine and accelerator initialization index visible GPUs by LOCAL_RANK.
+    os.environ['LOCAL_RANK'] = '0'
+    os.environ['ACCELERATE_TORCH_DEVICE'] = 'cuda:0'
 
 
 def _resolve_suite_max_steps(max_steps, suite):
@@ -97,10 +122,12 @@ def _run_eval(cfg, args, suite_name=None):
     _drop_runner_report_cfg(eval_cfg)
     is_libero_eval = _is_libero_eval_cfg(eval_cfg)
     is_robocasa_eval = _is_robocasa_eval_cfg(eval_cfg)
+    is_robotwin_eval = _is_robotwin_eval_cfg(eval_cfg)
     if suite_name is not None:
         eval_cfg.task_suite_name = suite_name
-        eval_cfg.max_steps = _resolve_suite_max_steps(
-            _get_eval_value(cfg, 'max_steps'), suite_name)
+        if not is_robotwin_eval:
+            eval_cfg.max_steps = _resolve_suite_max_steps(
+                _get_eval_value(cfg, 'max_steps'), suite_name)
     eval_cfg.cfg = cfg
     eval_cfg.ckpt_path = args.ckpt_path
     if hasattr(eval_cfg,
@@ -111,12 +138,17 @@ def _run_eval(cfg, args, suite_name=None):
         eval_runner = build_runner_from_cfg(eval_cfg)
         eval_runner.run_setup()
         eval_runner.run()
-        if (is_libero_eval or is_robocasa_eval) and hasattr(
-                eval_runner, 'run_dir'):
+        if (is_libero_eval or is_robocasa_eval
+                or is_robotwin_eval) and hasattr(eval_runner, 'run_dir'):
             summary_path = os.path.join(eval_runner.run_dir, 'summary.json')
             if os.path.exists(summary_path):
-                return ('libero' if is_libero_eval else 'robocasa',
-                        summary_path)
+                if is_libero_eval:
+                    report_kind = 'libero'
+                elif is_robocasa_eval:
+                    report_kind = 'robocasa'
+                else:
+                    report_kind = 'robotwin'
+                return report_kind, summary_path
     finally:
         _cleanup_eval_runner(eval_runner)
     return None
@@ -172,12 +204,82 @@ def _combine_libero_summary_paths(summary_paths, args, cfg):
     return str(out_path)
 
 
-def _maybe_report_libero_eval(summary_paths, args, cfg):
+def _combine_robotwin_summary_paths(summary_paths, args, cfg):
+    """Combine conditions using the same core schema as the manager."""
+    summary_paths = [path for path in summary_paths if path]
+    if len(summary_paths) == 0:
+        return None
+    if len(summary_paths) == 1:
+        return summary_paths[0]
+
+    out_dir = Path(summary_paths[0]).resolve().parent.parent
+    timestamp = time.strftime('%Y%m%d_%H%M%S')
+    out_path = out_dir / f'robotwin_eval_summary_{timestamp}.json'
+    conditions = {}
+    for summary_path in summary_paths:
+        with open(summary_path, 'r', encoding='utf-8') as f:
+            summary = json.load(f)
+        condition = summary['task_suite_name']
+        overall = summary['overall']
+        task_results = summary['task_results']
+        completed = [
+            s for s in task_results.values() if s['status'] == 'COMPLETED'
+        ]
+        failed = sum(s['status'] == 'FAILED' for s in task_results.values())
+        total_tasks = overall['total_tasks']
+        completed_tasks = overall['completed_tasks']
+        finished = total_tasks > 0 and completed_tasks == total_tasks
+        conditions[condition] = {
+            'difficulty': {
+                'clean': 'Easy',
+                'random': 'Hard',
+            }.get(condition, condition),
+            'task_suite_name': condition,
+            'status': 'COMPLETED' if finished else 'INCOMPLETE',
+            'success_rate': overall['success_rate'],
+            'successes': sum(s['successes'] for s in completed),
+            'episodes': sum(s['total_episodes'] for s in completed),
+            'total_tasks': total_tasks,
+            'completed_tasks': completed_tasks,
+            'failed_tasks': failed,
+            'pending_tasks': total_tasks - completed_tasks - failed,
+            'summary_path': os.path.relpath(summary_path, out_dir),
+            'parameters': {
+                key: summary.get(key)
+                for key in ('seed', 'instruction_type', 'eval_chunk_size',
+                            'trials_per_task', 'max_episode_steps')
+            },
+            'task_time_seconds': overall['total_time'],
+        }
+    complete = all(c['status'] == 'COMPLETED' for c in conditions.values())
+    with open(out_path, 'w', encoding='utf-8') as f:
+        json.dump(
+            {
+                'run_id': out_path.stem,
+                'ckpt': os.path.abspath(args.ckpt_path),
+                'config': getattr(cfg, 'filename', None) or args.config,
+                'status': 'COMPLETED' if complete else 'INCOMPLETE',
+                'rate_scope': 'completed_tasks_per_condition',
+                'conditions': conditions,
+            },
+            f,
+            indent=4)
+    return str(out_path)
+
+
+def _feishu_report_enabled(cfg):
+    """Report-only switch; managers set it to False on single-task workers."""
+    value = _get_eval_value(cfg, 'feishu_report', True)
+    if isinstance(value, str):
+        return value.strip().lower() not in ('0', 'false', 'no', 'off')
+    return bool(value)
+
+
+def _maybe_report_libero_eval(summary_path, args, cfg):
     if not overwatch.is_rank_zero() or _get_eval_value(cfg, 'task_ids') \
-            is not None:
+            is not None or not _feishu_report_enabled(cfg):
         return
-    summary_path = _combine_libero_summary_paths(summary_paths, args, cfg)
-    if summary_path is None:
+    if not summary_path:
         return
     maybe_report_summary_to_feishu(
         summary_path,
@@ -189,17 +291,31 @@ def _maybe_report_libero_eval(summary_paths, args, cfg):
 
 def _maybe_report_robocasa_eval(summary_paths, args, cfg):
     if not overwatch.is_rank_zero() or _get_eval_value(cfg, 'task_ids') \
-            is not None:
+            is not None or not _feishu_report_enabled(cfg):
         return
-    summary_paths = [path for path in summary_paths if path]
-    if len(summary_paths) == 0:
+    summary_path = next((path for path in summary_paths if path), None)
+    if not summary_path:
         return
     maybe_report_summary_to_feishu(
-        summary_paths[0],
+        summary_path,
         'robocasa',
         config=getattr(cfg, 'filename', None) or args.config,
         logger=overwatch.warning,
         log_unconfigured=True)
+
+
+def _maybe_report_robotwin_eval(summary_paths, args, cfg):
+    if not overwatch.is_rank_zero() or not _feishu_report_enabled(cfg):
+        return
+    for summary_path in summary_paths:
+        if not summary_path:
+            continue
+        maybe_report_summary_to_feishu(
+            summary_path,
+            'robotwin',
+            config=getattr(cfg, 'filename', None) or args.config,
+            logger=overwatch.warning,
+            log_unconfigured=True)
 
 
 def parse_args():
@@ -228,17 +344,42 @@ def parse_args():
 
 
 if __name__ == '__main__':
-    configure_inference_attention_defaults()
     args, _ = parse_args()
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:
         cfg.merge_from_dict(args.cfg_options)
-    suite_names = _as_list(_get_eval_value(cfg, 'task_suite_name'))
-    summary_paths = {'libero': [], 'robocasa': []}
-    for suite_name in suite_names:
-        result = _run_eval(cfg, args, suite_name=suite_name)
+    _configure_robotwin_devices(cfg)
+
+    # Importing engines initializes accelerate and can initialize CUDA.
+    # RoboTwin must select its worker device before these imports.
+    from fluxvla.engines import build_runner_from_cfg, initialize_overwatch
+    from fluxvla.engines.utils.feishu_reporter import \
+        maybe_report_summary_to_feishu
+    from fluxvla.engines.utils.torch_utils import \
+        configure_inference_attention_defaults
+
+    overwatch = initialize_overwatch(__name__)
+    configure_inference_attention_defaults()
+    default_suite = ('clean' if _is_robotwin_eval_cfg(
+        _get_eval_runner_cfg(cfg)) else None)
+    eval_options = [
+        dict(suite_name=suite) for suite in _as_list(
+            _get_eval_value(cfg, 'task_suite_name', default_suite))
+    ]
+    summary_paths = {'libero': [], 'robocasa': [], 'robotwin': []}
+    for options in eval_options:
+        result = _run_eval(cfg, args, **options)
         if result is not None:
             report_kind, summary_path = result
             summary_paths.setdefault(report_kind, []).append(summary_path)
-    _maybe_report_libero_eval(summary_paths.get('libero', []), args, cfg)
-    _maybe_report_robocasa_eval(summary_paths.get('robocasa', []), args, cfg)
+    # Local summaries must be written even when Feishu reporting is disabled.
+    if overwatch.is_rank_zero():
+        libero_summary_path = _combine_libero_summary_paths(
+            summary_paths.get('libero', []), args, cfg)
+        _combine_robotwin_summary_paths(
+            summary_paths.get('robotwin', []), args, cfg)
+        _maybe_report_libero_eval(libero_summary_path, args, cfg)
+        _maybe_report_robocasa_eval(
+            summary_paths.get('robocasa', []), args, cfg)
+        _maybe_report_robotwin_eval(
+            summary_paths.get('robotwin', []), args, cfg)

@@ -38,6 +38,11 @@ ROBOCASA_RESULT_COLUMNS = [
     'Generalization',
     'all',
 ]
+ROBOTWIN_RESULT_COLUMNS = [
+    'Easy',
+    'Hard',
+    'all',
+]
 
 REPORT_SPECS = {
     'libero': {
@@ -51,6 +56,12 @@ REPORT_SPECS = {
         'robocasa',
         'headers':
         ['id', 'commit id', 'config', 'ckpt_path'] + ROBOCASA_RESULT_COLUMNS,
+    },
+    'robotwin': {
+        'sheet_title':
+        'robotwin',
+        'headers':
+        ['id', 'commit id', 'config', 'ckpt_path'] + ROBOTWIN_RESULT_COLUMNS,
     },
 }
 
@@ -246,7 +257,9 @@ def build_report_row(summary: Dict[str, Any],
     commit = (
         commit_id if commit_id is not None else get_git_commit_id(repo_dir))
     cfg = config if config is not None else str(summary.get('config', ''))
-    ckpt_path = str(summary.get('ckpt') or summary.get('ckpt_path') or '')
+    ckpt_path = str(summary['ckpt']) if report_kind == 'robotwin' else str(
+        summary.get('ckpt') or summary.get('ckpt_path')
+        or summary.get('checkpoint') or '')
 
     if report_kind == 'libero':
         suite_stats = summary.get('suite_stats', {})
@@ -261,7 +274,7 @@ def build_report_row(summary: Dict[str, Any],
         lower_stats = _lower_keyed_stats(group_stats)
         values = [
             _format_rate(_rate_from_stats(lower_stats.get(group.lower())))
-            for group in ROBOCASA_RESULT_COLUMNS[:-1]
+            for group in REPORT_SPECS[report_kind]['headers'][4:-1]
         ]
         overall = _weighted_rate(lower_stats.values())
         if overall is None:

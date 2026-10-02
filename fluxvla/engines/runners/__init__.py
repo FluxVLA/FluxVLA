@@ -40,6 +40,9 @@ from .tron2_rtc_inference_runner import \
 from .ur_inference_runner import URInferenceRunner  # noqa: F401, F403
 from .ur_rtc_inference_runner import URRTCInferenceRunner  # noqa: F401, F403
 
+from .robotwin_eval_runner import (  # noqa: F401, F403  # isort: skip
+    RobotwinEvalRunner)
+
 try:
     from .libero_eval_runner import LiberoEvalRunner  # noqa: F401, F403
 except ModuleNotFoundError as exc:
