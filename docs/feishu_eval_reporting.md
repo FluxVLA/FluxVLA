@@ -212,6 +212,33 @@ Successful logs include the actual target:
 `selection=report kind sheet` means FluxVLA selected `robotwin`, `robocasa`, or
 `libero` from the report kind.
 
+## RoboTwin With `scripts/eval_robotwin_manager.sh`
+
+When the manager evaluates both `clean` (Easy) and `random` (Hard), its summary
+tool uploads **one row containing both Easy and Hard**. The top-level
+`summary.json` contains both difficulties in `group_stats`; the per-condition
+summaries remain in `clean/` and `random/` for inspection, but are not uploaded
+separately. The Feishu `all` column uses total successes divided by total
+trials across both difficulties, not the mean of their percentages. A
+single-condition run still fills only its own difficulty column.
+
+To report a completed manager run without rerunning simulation, use the
+directory that contains both `clean/` and `random/`:
+
+```bash
+export CONFIG='configs/dit4dit/dit4dit_robotwin_all_full_finetune.py'
+RUN_DIR='/path/to/existing/robotwin_manager_run'
+python tools/summarize_robotwin_eval_results.py \
+  --run-dir "$RUN_DIR" \
+  --output-dir "$RUN_DIR"
+```
+
+This reads the existing worker results and uses the `FEISHU_*` environment
+variables above. The checkpoint is read from the worker summaries unless
+`--ckpt` is supplied. Re-uploading appends a new combined row; it does not
+merge or remove rows previously uploaded separately. Partial runs keep missing
+difficulty rates blank and return a non-zero exit status for retry.
+
 ## RoboTwin With `scripts/eval.sh`
 
 Example:

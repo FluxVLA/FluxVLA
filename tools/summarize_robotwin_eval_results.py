@@ -298,6 +298,13 @@ def write_summaries(summary: Dict,
             'config': os.environ.get('CONFIG', ''),
             'ckpt': ckpt,
             'conditions': entries,
+            'group_stats': {
+                entry['difficulty']: {
+                    'total_successes': entry['successes'],
+                    'total_trials': entry['episodes'],
+                }
+                for entry in entries.values()
+            },
         }
     else:
         result = {
@@ -415,7 +422,7 @@ def main() -> int:
     conditions = _collect_conditions(run_dir)
     combined = len(conditions) > 1
     condition_summaries = {}
-    summary_paths = []
+    condition_ckpts = set()
     complete = True
     for condition in conditions or [None]:
         inner = run_dir / condition if combined else run_dir
@@ -429,33 +436,36 @@ def main() -> int:
             args.title,
             settings,
             ckpt=args.ckpt)
-        summary_paths.append(summary_json)
         if combined:
             condition_summaries[condition] = summary
+            if settings.get('ckpt'):
+                condition_ckpts.add(settings['ckpt'])
         completed_tasks = sum(stats['total_tasks']
                               for stats in summary['group_stats'].values())
         complete = complete and (completed_tasks == len(
             summary['task_results']))
     if combined:
-        write_summaries(
+        if len(condition_ckpts) > 1:
+            raise SystemExit('Inconsistent RoboTwin worker field: ckpt')
+        summary_json = write_summaries(
             condition_summaries,
             output_dir,
             args.title, {},
-            ckpt=args.ckpt,
+            ckpt=args.ckpt or next(iter(condition_ckpts), ''),
             conditions=conditions)
-    # The reporter consumes condition reports, not the top-level comparison.
+    # Upload once per manager run. The combined summary's group_stats places
+    # Easy and Hard in the same row; uploading each condition appends two rows.
     if args.feishu_sheet_url or args.feishu_app_id or args.feishu_app_secret:
         maybe_report_summary_to_feishu = _load_feishu_reporter()
-        for summary_json in summary_paths:
-            maybe_report_summary_to_feishu(
-                summary_json,
-                'robotwin',
-                sheet_url=args.feishu_sheet_url,
-                app_id=args.feishu_app_id,
-                app_secret=args.feishu_app_secret,
-                config=os.environ.get('CONFIG', ''),
-                timeout=args.feishu_timeout,
-                logger=print)
+        maybe_report_summary_to_feishu(
+            summary_json,
+            'robotwin',
+            sheet_url=args.feishu_sheet_url,
+            app_id=args.feishu_app_id,
+            app_secret=args.feishu_app_secret,
+            config=os.environ.get('CONFIG', ''),
+            timeout=args.feishu_timeout,
+            logger=print)
     # Non-zero when any expected task is missing so callers can retry.
     return 0 if complete else 1
 
