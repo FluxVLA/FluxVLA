@@ -30,7 +30,7 @@ Example `move_to` arguments:
   `-1`, respectively). Omission preserves the previous gripper command.
 
 The adapter emits normalized native `[dx, dy, dz, drx, dry, drz, gripper]`
-chunks; `IdentityLiberoAction` must not apply dataset-stat denormalization.
+chunks; `IdentityAction` must not apply dataset-stat denormalization.
 Translation and rotation share the chunk duration, but have separate speed
 limits. Rotation clipping preserves the requested axis by limiting the
 vector's norm, rather than clipping its coordinates independently.

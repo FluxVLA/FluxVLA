@@ -110,40 +110,44 @@ class BaseInferenceRunner:
         self.ckpt_path = ckpt_path
         self._use_remote = remote_inference is not None
 
-        if self._use_remote:
-            self.dataset = None
-            self.denormalize_action = None
-            self.vla = None
-            self._init_zmq_client(remote_inference)
-        elif ckpt_path is not None:
-            data_stat_path = os.path.join(
-                Path(ckpt_path).resolve().parent.parent,
-                'dataset_statistics.json')
-            assert os.path.exists(data_stat_path), (
-                f'Dataset statistics file not found at {data_stat_path}!')
-            denormalize_action['norm_stats'] = data_stat_path
-            self.denormalize_action = build_transform_from_cfg(
-                denormalize_action)
-            dataset['norm_stats'] = data_stat_path
-            dataset['model_path'] = os.path.dirname(os.path.dirname(ckpt_path))
-            self.dataset = build_dataset_from_cfg(dataset)
+        self.dataset = None
+        self.denormalize_action = None
+        self.vla = None
 
-            self.vla = build_vla_from_cfg(cfg.inference_model)
-            assert Path.exists(Path(ckpt_path)), \
-                f'Checkpoint path {ckpt_path} does not exist!'
-            if ckpt_path.endswith('.safetensors'):
-                state_dict = load_file(ckpt_path, device='cpu')
-            else:
-                checkpoint = torch.load(ckpt_path, map_location='cpu')
-                if isinstance(checkpoint, dict) and 'model' in checkpoint:
-                    state_dict = checkpoint['model']
-                else:
-                    state_dict = checkpoint
-            self.vla.load_state_dict(state_dict, strict=True)
+        if self._use_remote:
+            self._init_zmq_client(remote_inference)
         else:
-            self.dataset = None
-            self.denormalize_action = None
-            self.vla = None
+            if ckpt_path is not None:
+                data_stat_path = os.path.join(
+                    Path(ckpt_path).resolve().parent.parent,
+                    'dataset_statistics.json')
+                assert os.path.exists(data_stat_path), (
+                    f'Dataset statistics file not found at {data_stat_path}!')
+                denormalize_action['norm_stats'] = data_stat_path
+                dataset['norm_stats'] = data_stat_path
+                dataset['model_path'] = os.path.dirname(
+                    os.path.dirname(ckpt_path))
+
+            if denormalize_action is not None:
+                self.denormalize_action = build_transform_from_cfg(
+                    denormalize_action)
+            if dataset is not None:
+                self.dataset = build_dataset_from_cfg(dataset)
+            if cfg is not None and hasattr(cfg, 'inference_model'):
+                self.vla = build_vla_from_cfg(cfg.inference_model)
+
+            if ckpt_path is not None:
+                assert Path.exists(Path(ckpt_path)), \
+                    f'Checkpoint path {ckpt_path} does not exist!'
+                if ckpt_path.endswith('.safetensors'):
+                    state_dict = load_file(ckpt_path, device='cpu')
+                else:
+                    checkpoint = torch.load(ckpt_path, map_location='cpu')
+                    if isinstance(checkpoint, dict) and 'model' in checkpoint:
+                        state_dict = checkpoint['model']
+                    else:
+                        state_dict = checkpoint
+                self.vla.load_state_dict(state_dict, strict=True)
 
         # Store configuration parameters
         self.seed = seed

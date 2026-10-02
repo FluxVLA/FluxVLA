@@ -104,7 +104,7 @@ eval = dict(
         img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
         resize_size=512,
     ),
-    denormalize_action=dict(type='IdentityLiberoAction', action_dim=7),
+    denormalize_action=dict(type='IdentityAction', action_dim=7, clip=True),
     model_build_device='cpu',
     enable_mixed_precision_training=False,
     preprocess_every_step=False,

@@ -30,6 +30,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from PIL import Image
+from scipy.spatial.transform import Rotation
 
 from fluxvla.engines import VLAS, initialize_overwatch
 
@@ -95,6 +96,54 @@ Include a short note describing what you see and why you chose the command.
 Use only the camera images and reported robot state; do not assume hidden
 simulator metadata."""
 
+DEFAULT_OLI_SYSTEM_PROMPT = """Control the OLI humanoid one small motion at a
+time. Each turn provides camera images, current poses, and both hand states.
+Use exactly one control_oli tool call.
+
+Robot-base +x is forward, +y is left, and +z is up. Every head, wrist, and foot
+input and output uses an absolute position and absolute facing directions in
+this robot-base frame. Wrist finger_direction points from the wrist along the
+open fingers. palm_facing_direction points outward through the palm, not the
+back of the hand; the inward-folded thumb lies approximately along this palm
+normal. Head gaze_direction points forward from the face and head_up_direction
+points through the top of the head. Foot toe_direction points forward through
+the toes and foot_top_normal points upward through the top of the foot. The two
+directions for a pose should be perpendicular unit vectors; they determine the
+complete orientation. Omitted keypoints and fields hold their current values.
+
+The base input and output are also absolute, but use the fixed world frame:
+xyz_m is its world position, forward_direction_in_world is its forward axis,
+and up_direction_in_world is its up axis. Position values are in metres. Motion
+limits and conversion to the Operator's native base command are applied
+internally, so always request the desired absolute pose rather than estimating
+a bounded intermediate pose.
+
+The head target controls the physical head pose. When more reach is needed,
+coordinate the wrists with a small forward/lower head target; the whole-body
+controller will bend the waist as needed to realize it. During manipulation,
+use the head pose to keep both the target object and the active hand in the
+head-camera view whenever practical.
+
+Each hand target contains [thumb flexion, thumb inward fold/splay, index,
+middle, ring, little]. Useful profiles are open [0, 98, 0, 0, 0, 0], normal
+grasp [30, 92, 40, 98, 98, 98], and firm grasp
+[58, 92, 58, 98, 98, 98]. The second-channel value 98 folds the thumb inward,
+so the open profile is already pinch-pre-shaped. These are low-DoF robotic
+hands, not human hands. Treat the thumb and index as two gripper jaws: their
+tips follow fixed paths and meet only at one opposition point near the finger
+tips. Before closing, use the wrist pose to put the object between the two tips
+at this point; having the object merely under the palm is not enough. Keep both
+tip paths clear of support surfaces. If visual geometry is uncertain, begin
+with the fingertips angled modestly downward rather than a palm-down overhead
+grasp, then verify. Small objects must be pinched at the thumb-index fingertip
+opposition point, with the other fingers closed. For large objects, seat the
+object in the web between thumb and index, then wrap the whole hand around it.
+
+Infer the current task phase from the images, state, and prior turns. Continue
+from the observed state, change only what the current sub-goal needs, and use
+the next observation to verify the result. Include a short note explaining the
+visible evidence and requested motion."""
+
 
 @VLAS.register_module()
 class OpenAIResponsesVLA(nn.Module):
@@ -158,6 +207,10 @@ class OpenAIResponsesVLA(nn.Module):
         self.model = model
         self.base_url = base_url.rstrip('/')
         self.api_key_env = api_key_env
+        if not os.environ.get(self.api_key_env):
+            raise RuntimeError(
+                f'Missing OpenAI API key in environment variable '
+                f'{self.api_key_env!r}.')
         self.reasoning_effort = reasoning_effort
         self.max_output_tokens = max_output_tokens
         self.request_timeout = float(request_timeout)
@@ -359,6 +412,21 @@ class OpenAIResponsesVLA(nn.Module):
         encoded = base64.b64encode(buffer.getvalue()).decode('ascii')
         return f'data:image/{mime};base64,{encoded}'
 
+    def _image_content(self, images, image_names):
+        content = []
+        for name, image in zip(image_names, images):
+            image_item = {
+                'type': 'input_image',
+                'image_url': self._image_data_url(image),
+            }
+            if self.image_detail:
+                image_item['detail'] = self.image_detail
+            content.extend([{
+                'type': 'input_text',
+                'text': f"camera '{name}':",
+            }, image_item])
+        return content
+
     def _observation_message(self,
                              images: Sequence[Any],
                              image_names: Sequence[str],
@@ -399,18 +467,7 @@ class OpenAIResponsesVLA(nn.Module):
             'type': 'input_text',
             'text': '\n'.join(lines),
         }]
-        for name, image in zip(image_names, images):
-            content.append({
-                'type': 'input_text',
-                'text': f"camera '{name}':",
-            })
-            image_item = {
-                'type': 'input_image',
-                'image_url': self._image_data_url(image),
-            }
-            if self.image_detail:
-                image_item['detail'] = self.image_detail
-            content.append(image_item)
+        content.extend(self._image_content(images, image_names))
         return {'role': 'user', 'content': content}
 
     def _compact_history(self) -> List[Dict[str, Any]]:
@@ -491,21 +548,67 @@ class OpenAIResponsesVLA(nn.Module):
         raise AssertionError('unreachable')
 
     @staticmethod
-    def _function_call(response: Dict[str, Any]) -> Dict[str, Any]:
+    def _function_call(response: Dict[str, Any],
+                       name: str = 'move_to') -> Dict[str, Any]:
         calls = [
             item for item in response.get('output', [])
-            if item.get('type') == 'function_call'
-            and item.get('name') == 'move_to'
+            if item.get('type') == 'function_call' and item.get('name') == name
         ]
         if len(calls) != 1:
             output_types = [
                 item.get('type') for item in response.get('output', [])
             ]
             raise RuntimeError(
-                'Expected exactly one move_to tool call from the OpenAI '
+                f'Expected exactly one {name} tool call from the OpenAI '
                 f'Responses API, got {len(calls)}; output types={output_types}'
             )
         return calls[0]
+
+    def _request_tool_call(self, name: str):
+        """Send the current history and decode one tool call."""
+        request = self._request_body()
+        started = time.monotonic()
+        response = self._post_json(request)
+        latency = time.monotonic() - started
+        self._llm_calls += 1
+
+        call = self._function_call(response, name)
+        raw_arguments = call.get('arguments', '{}')
+        try:
+            arguments = json.loads(raw_arguments)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f'Invalid {name} arguments: {raw_arguments!r}') from exc
+        if not isinstance(arguments, dict):
+            raise RuntimeError(f'{name} arguments must be an object')
+
+        usage = response.get('usage') or {}
+        self.last_response_metadata = {
+            'id': response.get('id'),
+            'model': response.get('model', self.model),
+            'latency_seconds': latency,
+            'input_tokens': usage.get('input_tokens'),
+            'output_tokens': usage.get('output_tokens'),
+        }
+        return request, response, call, arguments
+
+    def _record_tool_call(self, name: str, call: Dict[str, Any],
+                          step_count: int) -> None:
+        """Keep the tool call and its execution result in GPT history."""
+        call_id = call.get('call_id')
+        self._history.extend([{
+            'type': 'function_call',
+            'call_id': call_id,
+            'name': name,
+            'arguments': call.get('arguments', '{}'),
+        }, {
+            'type':
+            'function_call_output',
+            'call_id':
+            call_id,
+            'output':
+            f'executing {name} over {step_count} steps',
+        }])
 
     @classmethod
     def _state_vector(cls, value: Any, length: int, name: str) -> np.ndarray:
@@ -634,19 +737,7 @@ class OpenAIResponsesVLA(nn.Module):
                                       eef_position, eef_quaternion,
                                       gripper_position, joint_position))
 
-        start = time.monotonic()
-        response = self._post_json(self._request_body())
-        latency = time.monotonic() - start
-        self._llm_calls += 1
-        call = self._function_call(response)
-        try:
-            arguments = json.loads(call.get('arguments', '{}'))
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                f'Invalid move_to arguments: {call.get("arguments")!r}') \
-                from exc
-        if not isinstance(arguments, dict):
-            raise RuntimeError('move_to arguments must be an object')
+        _, _, call, arguments = self._request_tool_call('move_to')
         unknown = set(arguments) - {'targets', 'note'}
         if unknown:
             raise RuntimeError(f'Unknown move_to arguments: {sorted(unknown)}')
@@ -654,33 +745,540 @@ class OpenAIResponsesVLA(nn.Module):
         if not isinstance(targets, dict):
             raise RuntimeError('move_to.targets must be an object')
         self.last_note = str(arguments.get('note', ''))
-        usage = response.get('usage') or {}
-        self.last_response_metadata = {
-            'id': response.get('id'),
-            'model': response.get('model', self.model),
-            'latency_seconds': latency,
-            'input_tokens': usage.get('input_tokens'),
-            'output_tokens': usage.get('output_tokens'),
-        }
         overwatch.info(f'GPT action {self._llm_calls}/{self.max_llm_calls}: '
                        f'{targets} | {self.last_note}')
 
-        call_id = call.get('call_id')
-        self._history.append({
-            'type': 'function_call',
-            'call_id': call_id,
-            'name': 'move_to',
-            'arguments': call.get('arguments', '{}'),
-        })
         actions = self._actions_from_targets(targets, eef_position)
-        self._history.append({
+        self._record_tool_call('move_to', call, actions.shape[1])
+        return actions
+
+
+@VLAS.register_module()
+class OpenAIResponsesOliVLA(OpenAIResponsesVLA):
+    """Checkpoint-free GPT controller for OLI's keypoint action wire."""
+
+    KEYPOINT_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
+                      'right_wrist')
+    ACTION_SEGMENTS = {
+        'head': (0, 9),
+        'left_foot': (9, 18),
+        'right_foot': (18, 27),
+        'left_wrist': (27, 36),
+        'right_wrist': (36, 45),
+        'base': (45, 54),
+        'hands': (54, 66),
+    }
+    DIRECTION_FIELDS = {
+        'left_wrist': (
+            'finger_direction_in_base',
+            'palm_facing_direction_in_base',
+        ),
+        'right_wrist': (
+            'finger_direction_in_base',
+            'palm_facing_direction_in_base',
+        ),
+        'head': ('gaze_direction_in_base', 'head_up_direction_in_base'),
+        'left_foot': ('toe_direction_in_base', 'foot_top_normal_in_base'),
+        'right_foot': ('toe_direction_in_base', 'foot_top_normal_in_base'),
+        'base': ('forward_direction_in_world', 'up_direction_in_world'),
+    }
+
+    def __init__(self,
+                 max_wrist_delta: float = 0.08,
+                 max_head_delta: float = 0.03,
+                 max_foot_delta: float = 0.08,
+                 max_base_xy_delta: float = 0.10,
+                 max_base_height_delta: float = 0.08,
+                 max_rotation_delta_deg: float = 15.0,
+                 max_base_tilt_deg: float = 15.0,
+                 trace_dir: str = None,
+                 trace_console: bool = True,
+                 workspace_bounds: Sequence[Sequence[float]] = ((-0.30, 0.80),
+                                                                (-0.65, 0.65),
+                                                                (-0.30, 1.50)),
+                 system_prompt: str = DEFAULT_OLI_SYSTEM_PROMPT,
+                 **kwargs) -> None:
+        defaults = {
+            'image_detail': 'high',
+            'jpeg_quality': 95,
+            'max_llm_calls': 50,
+            'action_horizon': 50,
+        }
+        for name, value in defaults.items():
+            kwargs.setdefault(name, value)
+        super().__init__(
+            workspace_bounds=workspace_bounds,
+            system_prompt=system_prompt,
+            **kwargs)
+        if (max_wrist_delta <= 0 or max_head_delta <= 0 or max_foot_delta <= 0
+                or max_base_xy_delta <= 0 or max_base_height_delta <= 0
+                or max_rotation_delta_deg <= 0 or max_base_tilt_deg <= 0):
+            raise ValueError('OLI motion limits must be positive')
+        if self.action_horizon < 2:
+            raise ValueError('OLI action_horizon must be at least 2')
+        self.max_wrist_delta = float(max_wrist_delta)
+        self.max_head_delta = float(max_head_delta)
+        self.max_foot_delta = float(max_foot_delta)
+        self.max_base_xy_delta = float(max_base_xy_delta)
+        self.max_base_height_delta = float(max_base_height_delta)
+        self.max_rotation_delta_deg = float(max_rotation_delta_deg)
+        self.max_base_tilt_deg = float(max_base_tilt_deg)
+        self.trace_writer = None
+        if trace_dir:
+            from .openai_trace import OpenAITraceWriter
+            self.trace_writer = OpenAITraceWriter(
+                trace_dir, model=self.model, console=trace_console)
+
+    @property
+    def tools(self) -> List[Dict[str, Any]]:
+
+        def vector(description, length=3):
+            return {
+                'type': 'array',
+                'items': {
+                    'type': 'number'
+                },
+                'minItems': length,
+                'maxItems': length,
+                'description': description,
+            }
+
+        def absolute_pose(first_name, first_description, second_name,
+                          second_description, position_description):
+            return {
+                'type': 'object',
+                'properties': {
+                    'xyz_m': vector(position_description),
+                    first_name: vector(first_description),
+                    second_name: vector(second_description),
+                },
+                'additionalProperties': False,
+            }
+
+        hand = {
             'type':
-            'function_call_output',
-            'call_id':
-            call_id,
-            'output':
-            f'executing move_to over {actions.shape[1]} steps',
-        })
+            'array',
+            'items': {
+                'type': 'number',
+                'minimum': 0,
+                'maximum': 100,
+            },
+            'minItems':
+            6,
+            'maxItems':
+            6,
+            'description':
+            ('Six channels ordered [thumb flexion, thumb inward fold/splay, '
+             'index, middle, ring, little]. A second-channel value near 98 '
+             'folds the thumb inward along the palm normal into the pinch '
+             'pre-shape. References: open [0,98,0,0,0,0], normal grasp '
+             '[30,92,40,98,98,98], firm grasp '
+             '[58,92,58,98,98,98]. Omit to hold current values.'),
+        }
+        base_position = 'Absolute target position in the fixed world frame.'
+        keypoint_position = (
+            'Absolute target position in the robot-base frame.')
+        wrist_pose = absolute_pose(
+            'finger_direction_in_base',
+            ('Absolute unit direction from the wrist along the open fingers '
+             'in the robot-base frame.'), 'palm_facing_direction_in_base',
+            ('Absolute unit normal pointing outward through the palm in the '
+             'robot-base frame. The inward-folded thumb lies approximately '
+             'along this normal.'), keypoint_position)
+        head_pose = absolute_pose(
+            'gaze_direction_in_base',
+            'Absolute unit gaze direction in the robot-base frame.',
+            'head_up_direction_in_base',
+            'Absolute unit direction through the top of the head.',
+            keypoint_position)
+        foot_pose = absolute_pose(
+            'toe_direction_in_base',
+            'Absolute unit direction from the heel toward the toes.',
+            'foot_top_normal_in_base',
+            'Absolute unit normal pointing upward through the top of the '
+            'foot.', keypoint_position)
+        base_pose = absolute_pose(
+            'forward_direction_in_world',
+            'Absolute unit direction of the base forward axis in world.',
+            'up_direction_in_world',
+            'Absolute unit direction of the base up axis in world.',
+            base_position)
+        return [{
+            'type':
+            'function',
+            'name':
+            'control_oli',
+            'description':
+            ('Set absolute robot-base-frame keypoint poses, an absolute '
+             'world-frame base pose, and native hand channels. Motion is '
+             'bounded internally; omitted fields hold current values.'),
+            'parameters': {
+                'type': 'object',
+                'properties': {
+                    'targets': {
+                        'type': 'object',
+                        'properties': {
+                            'left_wrist': wrist_pose,
+                            'right_wrist': wrist_pose,
+                            'left_foot': foot_pose,
+                            'right_foot': foot_pose,
+                            'head': head_pose,
+                            'base': base_pose,
+                            'left_hand': hand,
+                            'right_hand': hand,
+                        },
+                        'additionalProperties': False,
+                    },
+                    'note': {
+                        'type': 'string'
+                    },
+                },
+                'required': ['targets', 'note'],
+                'additionalProperties': False,
+            },
+            'strict':
+            False,
+        }]
+
+    @classmethod
+    def _normalize_keypoint_state(cls, poses: Dict[str, Any], base_pose: Any,
+                                  hands: Any):
+        state = {
+            name: np.asarray(poses[name], dtype=np.float64).reshape(9)
+            for name in cls.KEYPOINT_NAMES
+        }
+        state['base'] = np.asarray(base_pose, dtype=np.float64).reshape(9)
+        hands = np.asarray(hands, dtype=np.float64).reshape(12)
+        state['left_hand'] = hands[0::2]
+        state['right_hand'] = hands[1::2]
+        return state
+
+    def _oli_observation_message(self, images, image_names, task_description,
+                                 current_state):
+        lines = [
+            'Current OLI observation.',
+            f'Instruction: {task_description}',
+            f'Action call: {self._llm_calls + 1}/{self.max_llm_calls}.',
+            ('Per-call translation limits (m): '
+             f'wrist={self.max_wrist_delta:.3f}, '
+             f'head={self.max_head_delta:.3f}, '
+             f'foot={self.max_foot_delta:.3f}, '
+             f'base_xy={self.max_base_xy_delta:.3f}, '
+             f'base_z={self.max_base_height_delta:.3f}.'),
+            (f'Rotation limit={self.max_rotation_delta_deg:.1f} degrees; '
+             f'absolute base tilt limit={self.max_base_tilt_deg:.1f} degrees.'
+             ),
+            'Wrist/head workspace xyz bounds: ' + np.array2string(
+                np.asarray(self.workspace_bounds), precision=3,
+                separator=', '),
+        ]
+        for name in self.KEYPOINT_NAMES:
+            pose = current_state[name]
+            directions = self._rotation_to_semantic_directions(
+                name, self._rotation_from_rot6d(pose[3:]))
+            lines.append(
+                f'{name}: xyz_m=' +
+                np.array2string(pose[:3], precision=5, separator=', ') + ', ' +
+                ', '.join(key + '=' +
+                          np.array2string(value, precision=4, separator=', ')
+                          for key, value in directions.items()))
+        base_pose = current_state['base']
+        base_directions = self._rotation_to_semantic_directions(
+            'base', self._rotation_from_rot6d(base_pose[3:]))
+        lines.append(
+            'base: xyz_m=' +
+            np.array2string(base_pose[:3], precision=5, separator=', ') +
+            ', ' +
+            ', '.join(key + '=' +
+                      np.array2string(value, precision=4, separator=', ')
+                      for key, value in base_directions.items()))
+        lines.append(
+            'left_hand [thumb_flex, thumb_splay, index, middle, ring, '
+            'little]: ' + np.array2string(
+                current_state['left_hand'], precision=1, separator=', '))
+        lines.append(
+            'right_hand [thumb_flex, thumb_splay, index, middle, ring, '
+            'little]: ' + np.array2string(
+                current_state['right_hand'], precision=1, separator=', '))
+        content = [{
+            'type': 'input_text',
+            'text': '\n'.join(lines),
+        }]
+        content.extend(self._image_content(images, image_names))
+        return {'role': 'user', 'content': content}
+
+    @classmethod
+    def _rotation_to_semantic_directions(cls, name, rotation):
+        """Return physical directions expressed in the robot-base frame."""
+        x_axis, y_axis, z_axis = rotation.as_matrix().T
+        first_name, second_name = cls.DIRECTION_FIELDS[name]
+        if name in {'left_wrist', 'right_wrist'}:
+            palm = -y_axis if name == 'left_wrist' else y_axis
+            return {first_name: -z_axis, second_name: palm}
+        return {first_name: x_axis, second_name: z_axis}
+
+    def _semantic_directions_to_rotation(self, name, requested):
+        first_name, second_name = self.DIRECTION_FIELDS[name]
+        supplied = first_name in requested, second_name in requested
+        if not any(supplied):
+            return None
+        if not all(supplied):
+            raise RuntimeError(
+                f'{name} orientation requires both {first_name} and '
+                f'{second_name}')
+
+        first = self._state_vector(requested[first_name], 3,
+                                   f'{name}.{first_name}')
+        second = self._state_vector(requested[second_name], 3,
+                                    f'{name}.{second_name}')
+        first_norm = np.linalg.norm(first)
+        if first_norm < 1e-6:
+            raise RuntimeError(f'{name}.{first_name} must be non-zero')
+        first /= first_norm
+        second -= np.dot(first, second) * first
+        second_norm = np.linalg.norm(second)
+        if second_norm < 1e-6:
+            raise RuntimeError(
+                f'{name} direction vectors must not be parallel')
+        second /= second_norm
+
+        if name in {'left_wrist', 'right_wrist'}:
+            z_axis = -first
+            y_axis = -second if name == 'left_wrist' else second
+            x_axis = np.cross(y_axis, z_axis)
+        else:
+            x_axis = first
+            z_axis = second
+            y_axis = np.cross(z_axis, x_axis)
+        return Rotation.from_matrix(np.column_stack((x_axis, y_axis, z_axis)))
+
+    def _bounded_target_rotation(self, current_rotation, desired_rotation):
+        delta = current_rotation.inv() * desired_rotation
+        angle = np.degrees(delta.magnitude())
+        if angle > self.max_rotation_delta_deg:
+            delta = Rotation.from_rotvec(delta.as_rotvec() *
+                                         self.max_rotation_delta_deg / angle)
+        return current_rotation * delta
+
+    def _bound_targets(self, current_state, targets):
+        """Return bounded targets without applying the 66D wire layout."""
+        if not isinstance(targets, dict):
+            raise RuntimeError('control_oli.targets must be an object')
+        bounded_target = {
+            name: value.copy()
+            for name, value in current_state.items() if name != 'base'
+        }
+
+        # Bound absolute keypoint positions and orientations.
+        keypoint_limits = {
+            'left_wrist': self.max_wrist_delta,
+            'right_wrist': self.max_wrist_delta,
+            'left_foot': self.max_foot_delta,
+            'right_foot': self.max_foot_delta,
+            'head': self.max_head_delta,
+        }
+        for name, max_delta in keypoint_limits.items():
+            current_pose = current_state[name]
+            target_pose = bounded_target[name]
+            requested = targets.get(name)
+            if requested is None:
+                continue
+            current_position = current_pose[:3]
+            target_position = self._state_vector(
+                requested.get('xyz_m', current_position), 3, f'{name}.xyz_m')
+            delta = target_position - current_position
+            norm = float(np.linalg.norm(delta))
+            if norm > max_delta:
+                target_position = current_position + delta * max_delta / norm
+            if 'wrist' in name or name == 'head':
+                target_position = np.clip(
+                    target_position,
+                    [bounds[0] for bounds in self.workspace_bounds],
+                    [bounds[1] for bounds in self.workspace_bounds])
+            target_pose[:3] = target_position
+            desired_rotation = self._semantic_directions_to_rotation(
+                name, requested)
+            if desired_rotation is not None:
+                current_rotation = self._rotation_from_rot6d(current_pose[3:])
+                target_pose[3:] = self._rotation_to_rot6d(
+                    self._bounded_target_rotation(current_rotation,
+                                                  desired_rotation))
+        # Keep the bounded base target in GPT's absolute world-frame terms.
+        base_pose = current_state['base']
+        base_target = {
+            'xyz_m': base_pose[:3].copy(),
+            'rotation': None,
+        }
+        bounded_target['base'] = base_target
+        requested = targets.get('base')
+        if requested is not None:
+            desired_position = self._state_vector(
+                requested.get('xyz_m', base_pose[:3]), 3, 'base.xyz_m')
+            delta_world = desired_position[:2] - base_pose[:2]
+            norm = float(np.linalg.norm(delta_world))
+            if norm > self.max_base_xy_delta:
+                delta_world *= self.max_base_xy_delta / norm
+            base_target['xyz_m'][:2] = base_pose[:2] + delta_world
+            base_target['xyz_m'][2] = np.clip(
+                base_pose[2] + np.clip(desired_position[2] - base_pose[2],
+                                       -self.max_base_height_delta,
+                                       self.max_base_height_delta),
+                self.workspace_bounds[2][0], self.workspace_bounds[2][1])
+
+            current_rotation = self._rotation_from_rot6d(base_pose[3:])
+            desired_rotation = self._semantic_directions_to_rotation(
+                'base', requested)
+            if desired_rotation is not None:
+                desired_ypr = desired_rotation.as_euler('ZYX', degrees=True)
+                desired_rotation = Rotation.from_euler(
+                    'ZYX', [
+                        desired_ypr[0],
+                        np.clip(desired_ypr[1], -self.max_base_tilt_deg,
+                                self.max_base_tilt_deg),
+                        np.clip(desired_ypr[2], -self.max_base_tilt_deg,
+                                self.max_base_tilt_deg)
+                    ],
+                    degrees=True)
+                final_rotation = self._bounded_target_rotation(
+                    current_rotation, desired_rotation)
+                base_target['rotation'] = final_rotation
+        # Hand targets already use the downstream controller's native units.
+        for key in ('left_hand', 'right_hand'):
+            command = targets.get(key)
+            if command is None:
+                continue
+            bounded_target[key] = np.asarray(
+                command, dtype=np.float64).reshape(6)
+        return bounded_target
+
+    @staticmethod
+    def _rotation_from_rot6d(rot6d):
+        """Decode the dataset's two-row Zhou rot6d representation."""
+        a1, a2 = np.asarray(rot6d, dtype=np.float64).reshape(2, 3)
+        b1 = a1 / np.linalg.norm(a1)
+        b2 = a2 - np.dot(b1, a2) * b1
+        b2 /= np.linalg.norm(b2)
+        return Rotation.from_matrix(np.stack((b1, b2, np.cross(b1, b2))))
+
+    @staticmethod
+    def _rotation_to_rot6d(rotation):
+        """Encode a rotation as the dataset's first two matrix rows."""
+        return rotation.as_matrix()[:2].reshape(6)
+
+    def _interpolate_action_chunk(self, current_state, target):
+        """Convert semantic targets into an interpolated 66D action chunk."""
+        blend = np.arange(1, self.action_horizon + 1) / self.action_horizon
+        actions = np.empty((self.action_horizon, 66), dtype=np.float64)
+
+        # Interpolate absolute keypoint poses directly into their wire slots.
+        for name in self.KEYPOINT_NAMES:
+            start, _ = self.ACTION_SEGMENTS[name]
+            current_pose = current_state[name]
+            target_pose = target[name]
+            actions[:, start:start + 3] = (
+                current_pose[:3] + blend[:, None] *
+                (target_pose[:3] - current_pose[:3]))
+            current_rotation = self._rotation_from_rot6d(current_pose[3:])
+            target_rotation = self._rotation_from_rot6d(target_pose[3:])
+            rotation_delta = (current_rotation.inv() *
+                              target_rotation).as_rotvec()
+            rotations = current_rotation * Rotation.from_rotvec(
+                blend[:, None] * rotation_delta)
+            actions[:, start + 3:start + 9] = (
+                rotations.as_matrix()[:, :2].reshape(-1, 6))
+
+        # Interpolate hands directly into their interleaved wire slots.
+        hand_start, hand_end = self.ACTION_SEGMENTS['hands']
+        for index, name in enumerate(('left_hand', 'right_hand')):
+            hand_slice = slice(hand_start + index, hand_end, 2)
+            current_hand = current_state[name]
+            actions[:, hand_slice] = (
+                current_hand + blend[:, None] * (target[name] - current_hand))
+
+        # Build the absolute world-frame base trajectory.
+        base_start, _ = self.ACTION_SEGMENTS['base']
+        base_pose = current_state['base']
+        base_target = target['base']
+        positions = base_pose[:3] + blend[:, None] * (
+            base_target['xyz_m'] - base_pose[:3])
+        previous_positions = np.vstack((base_pose[:3], positions[:-1]))
+        world_steps = positions - previous_positions
+
+        current_ypr = self._rotation_from_rot6d(base_pose[3:]).as_euler(
+            'ZYX', degrees=True)
+        ypr = np.repeat(current_ypr[None], self.action_horizon, axis=0)
+        rotation_requested = base_target['rotation'] is not None
+        if rotation_requested:
+            target_ypr = base_target['rotation'].as_euler('ZYX', degrees=True)
+            yaw_delta = (
+                (target_ypr[0] - current_ypr[0] + 180.0) % 360.0) - 180.0
+            ypr[:, 0] += blend * yaw_delta
+            ypr[:, 1:] += blend[:, None] * (target_ypr[1:] - current_ypr[1:])
+
+        # Encode each absolute base state relative to the preceding state.
+        previous_yaw = np.deg2rad(np.r_[current_ypr[0], ypr[:-1, 0]])
+        cos_yaw, sin_yaw = np.cos(previous_yaw), np.sin(previous_yaw)
+        actions[:, base_start] = (
+            cos_yaw * world_steps[:, 0] + sin_yaw * world_steps[:, 1])
+        actions[:, base_start + 1] = (-sin_yaw * world_steps[:, 0] +
+                                      cos_yaw * world_steps[:, 1])
+        actions[:, base_start + 2] = positions[:, 2]
+        actions[:, base_start + 3:base_start + 9] = 0.0
+        if rotation_requested:
+            previous_ypr = np.vstack((current_ypr, ypr[:-1]))
+            rotation_actions = ypr.copy()
+            rotation_actions[:, 0] -= previous_ypr[:, 0]
+            actions[:, base_start + 3:base_start + 9] = (
+                Rotation.from_euler('ZYX', rotation_actions,
+                                    degrees=True).as_matrix()[:, :2].reshape(
+                                        -1, 6))
+        return torch.from_numpy(actions.astype(np.float32))
+
+    @torch.inference_mode()
+    def predict_action(self,
+                       images: Sequence[Any],
+                       task_description: str,
+                       poses: Dict[str, Any],
+                       base_pose: Any,
+                       hands: Any,
+                       image_names: Sequence[str] = None,
+                       **kwargs) -> torch.Tensor:
+        del kwargs
+
+        # 1. Turn the live robot state into one GPT observation.
+        task_description = self._unbatch_text(task_description)
+        if self._task_description != task_description:
+            self._reset_episode(task_description)
+        image_names = image_names or [
+            f'camera_{index}' for index in range(len(images))
+        ]
+        if self._llm_calls >= self.max_llm_calls:
+            raise RuntimeError(
+                f'OpenAI call budget ({self.max_llm_calls}) exhausted')
+        current_state = self._normalize_keypoint_state(poses, base_pose, hands)
+        observation = self._oli_observation_message(images, image_names,
+                                                    task_description,
+                                                    current_state)
+        self._history.append(observation)
+
+        # 2. Ask GPT for one absolute whole-body target.
+        request, response, call, arguments = self._request_tool_call(
+            'control_oli')
+        self.last_note = str(arguments.get('note', ''))
+
+        # 3. Bound the target, then interpolate it into the 66D action chunk.
+        target = self._bound_targets(current_state, arguments.get('targets'))
+        actions = self._interpolate_action_chunk(current_state, target)
+
+        # 4. Preserve this turn for GPT context and the human-readable trace.
+        self._record_tool_call('control_oli', call, len(actions))
+        if self.trace_writer is not None:
+            self.trace_writer.append(
+                request=request,
+                response=response,
+                arguments=arguments,
+                metadata=self.last_response_metadata,
+                actions=actions.detach().cpu().numpy())
         return actions
 
 
@@ -711,7 +1309,7 @@ class OpenAIResponsesRobocasaVLA(OpenAIResponsesVLA):
                  image_format: str = 'JPEG',
                  jpeg_quality: int = 95,
                  image_horizon: int = 2,
-                 max_llm_calls: int = 90,
+                 max_llm_calls: int = 150,
                  action_horizon: int = 8,
                  max_arm_joint_delta: float = 0.12,
                  max_waist_joint_delta: float = 0.05,
@@ -897,36 +1495,8 @@ class OpenAIResponsesRobocasaVLA(OpenAIResponsesVLA):
             'type': 'input_text',
             'text': '\n'.join(state_lines),
         }]
-        for name, image in zip(image_names, images):
-            content.append({
-                'type': 'input_text',
-                'text': f"camera '{name}':",
-            })
-            image_item = {
-                'type': 'input_image',
-                'image_url': self._image_data_url(image),
-            }
-            if self.image_detail:
-                image_item['detail'] = self.image_detail
-            content.append(image_item)
+        content.extend(self._image_content(images, image_names))
         return {'role': 'user', 'content': content}
-
-    @staticmethod
-    def _robocasa_function_call(response: Dict[str, Any]) -> Dict[str, Any]:
-        calls = [
-            item for item in response.get('output', [])
-            if item.get('type') == 'function_call'
-            and item.get('name') == 'control_gr1'
-        ]
-        if len(calls) != 1:
-            output_types = [
-                item.get('type') for item in response.get('output', [])
-            ]
-            raise RuntimeError(
-                'Expected exactly one control_gr1 tool call from the OpenAI '
-                f'Responses API, got {len(calls)}; output types={output_types}'
-            )
-        return calls[0]
 
     def _robocasa_actions(self, command: Dict[str, Any], left_arm: Any,
                           right_arm: Any, waist: Any) -> torch.Tensor:
@@ -1000,27 +1570,8 @@ class OpenAIResponsesRobocasaVLA(OpenAIResponsesVLA):
                                                task_description, left_arm,
                                                left_hand, right_arm,
                                                right_hand, waist))
-        start = time.monotonic()
-        response = self._post_json(self._request_body())
-        latency = time.monotonic() - start
-        self._llm_calls += 1
-        call = self._robocasa_function_call(response)
-        try:
-            command = json.loads(call.get('arguments', '{}'))
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f'Invalid control_gr1 arguments: '
-                               f'{call.get("arguments")!r}') from exc
-        if not isinstance(command, dict):
-            raise RuntimeError('control_gr1 arguments must be an object')
+        _, _, call, command = self._request_tool_call('control_gr1')
         self.last_note = str(command.get('note', ''))
-        usage = response.get('usage') or {}
-        self.last_response_metadata = {
-            'id': response.get('id'),
-            'model': response.get('model', self.model),
-            'latency_seconds': latency,
-            'input_tokens': usage.get('input_tokens'),
-            'output_tokens': usage.get('output_tokens'),
-        }
         logged_command = {
             key: value
             for key, value in command.items() if key != 'note'
@@ -1029,20 +1580,6 @@ class OpenAIResponsesRobocasaVLA(OpenAIResponsesVLA):
             f'GPT RoboCasa action {self._llm_calls}/{self.max_llm_calls}: '
             f'{logged_command} | {self.last_note}')
 
-        call_id = call.get('call_id')
-        self._history.append({
-            'type': 'function_call',
-            'call_id': call_id,
-            'name': 'control_gr1',
-            'arguments': call.get('arguments', '{}'),
-        })
         actions = self._robocasa_actions(command, left_arm, right_arm, waist)
-        self._history.append({
-            'type':
-            'function_call_output',
-            'call_id':
-            call_id,
-            'output':
-            f'executing control_gr1 over {actions.shape[1]} steps',
-        })
+        self._record_tool_call('control_gr1', call, actions.shape[1])
         return actions
