@@ -51,15 +51,6 @@ def parse_args(argv=None):
         default=None,
         help='Address model workers connect to; defaults to the backend port '
         'on MASTER_ADDR.')
-    networking.add_argument(
-        '--advertise-endpoint',
-        default=None,
-        help='Public client endpoint; defaults to the frontend port on '
-        'MASTER_ADDR.')
-    networking.add_argument(
-        '--server-manifest',
-        default=None,
-        help='Optional shared JSON manifest written for client discovery.')
     reliability = parser.add_argument_group('advanced reliability')
     reliability.add_argument(
         '--max-pending-requests',
@@ -111,10 +102,6 @@ def main(argv=None) -> int:
     backend_bind = args.backend_bind
     backend_endpoint = (
         args.backend_endpoint or _connect_endpoint(backend_bind, master_addr))
-    advertised_endpoint = (
-        args.advertise_endpoint
-        or _connect_endpoint(frontend_bind, master_addr))
-    manifest_path = args.server_manifest
 
     launch_server_task(
         config_path=config_path,
@@ -123,8 +110,6 @@ def main(argv=None) -> int:
         frontend_bind=frontend_bind,
         backend_bind=backend_bind,
         backend_endpoint=backend_endpoint,
-        advertised_endpoint=advertised_endpoint,
-        manifest_path=manifest_path,
         max_pending_requests=args.max_pending_requests,
         request_timeout_s=args.request_timeout_s,
         startup_timeout_s=args.startup_timeout_s,

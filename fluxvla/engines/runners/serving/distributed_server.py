@@ -3,7 +3,6 @@
 from __future__ import annotations
 import copy
 import hashlib
-import json
 import multiprocessing
 import os
 import signal
@@ -62,8 +61,6 @@ class FluxVLAInferenceServer:
                  max_pending_requests: int = 128,
                  request_timeout_s: float = 120.0,
                  startup_timeout_s: float = 900.0,
-                 manifest_path: str | os.PathLike | None = None,
-                 advertised_endpoint: str | None = None,
                  deployment_id: str | None = None) -> None:
         self.frontend_bind = _endpoint(frontend_bind, 'frontend_bind')
         self.backend_bind = _endpoint(backend_bind, 'backend_bind')
@@ -76,9 +73,6 @@ class FluxVLAInferenceServer:
                                                  'request_timeout_s')
         self.startup_timeout_s = _positive_float(startup_timeout_s,
                                                  'startup_timeout_s')
-        self.manifest_path = (None if manifest_path is None else
-                              Path(manifest_path).expanduser().resolve())
-        self.advertised_endpoint = (advertised_endpoint or frontend_bind)
         self.deployment_id = deployment_id or uuid.uuid4().hex
 
         self._workers: dict[bytes, _ModelWorker] = {}
@@ -118,7 +112,6 @@ class FluxVLAInferenceServer:
         poller.register(self._frontend, zmq.POLLIN)
         poller.register(self._backend, zmq.POLLIN)
         self._install_signal_handlers()
-        self._write_manifest()
         startup_deadline = time.monotonic() + self.startup_timeout_s
         print(
             '[FluxVLA] inference server listening '
@@ -143,7 +136,6 @@ class FluxVLAInferenceServer:
                     break
         finally:
             self._begin_shutdown()
-            self._write_manifest()
             for current in (self._frontend, self._backend):
                 if current is not None:
                     current.close(linger=1000)
@@ -302,7 +294,6 @@ class FluxVLAInferenceServer:
             f'[FluxVLA] model worker ready id={worker.worker_id} '
             f'node={worker.node_id} device={worker.device}',
             flush=True)
-        self._write_manifest()
 
     def _finish_prediction(self, worker: _ModelWorker,
                            header: Mapping[str, Any], payload: bytes) -> None:
@@ -461,29 +452,6 @@ class FluxVLAInferenceServer:
         self._shutdown_started = True
         for worker in self._workers.values():
             self._send_worker('shutdown_worker', worker)
-
-    def _write_manifest(self) -> None:
-        if self.manifest_path is None:
-            return
-        workers_ready = self.ready_workers
-        value = {
-            'protocol_version': 1,
-            'deployment_id': self.deployment_id,
-            'endpoint': self.advertised_endpoint,
-            'workers_expected': self.expected_workers,
-            'workers_ready': workers_ready,
-            'server_mode': 'stateless',
-            'evaluation_reporting': self.evaluation_report_writer is not None,
-            'status': self.status,
-            'updated_at': time.time(),
-        }
-        self.manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        temporary = self.manifest_path.with_suffix(self.manifest_path.suffix +
-                                                   '.tmp')
-        temporary.write_text(
-            json.dumps(value, indent=2, ensure_ascii=False) + '\n',
-            encoding='utf-8')
-        os.replace(temporary, self.manifest_path)
 
     def _install_signal_handlers(self) -> None:
         if threading.current_thread() is not threading.main_thread():
@@ -654,8 +622,6 @@ def launch_server_task(*,
                        frontend_bind: str,
                        backend_bind: str,
                        backend_endpoint: str,
-                       advertised_endpoint: str,
-                       manifest_path: str | None,
                        max_pending_requests: int,
                        request_timeout_s: float,
                        startup_timeout_s: float,
@@ -695,8 +661,6 @@ def launch_server_task(*,
                 'cfg_options': dict(cfg_options or {}),
                 'frontend_bind': frontend_bind,
                 'backend_bind': backend_bind,
-                'advertised_endpoint': advertised_endpoint,
-                'manifest_path': manifest_path,
                 'expected_workers': world_size,
                 'max_pending_requests': max_pending_requests,
                 'request_timeout_s': request_timeout_s,
@@ -760,8 +724,7 @@ def _terminate_on_server_failure(process: multiprocessing.Process,
 
 def _server_process_main(*, config_path: str, ckpt_path: str,
                          cfg_options: Mapping[str, Any], frontend_bind: str,
-                         backend_bind: str, advertised_endpoint: str,
-                         manifest_path: str | None, expected_workers: int,
+                         backend_bind: str, expected_workers: int,
                          max_pending_requests: int, request_timeout_s: float,
                          startup_timeout_s: float, deployment_id: str,
                          parent_pid: int) -> None:
@@ -776,8 +739,6 @@ def _server_process_main(*, config_path: str, ckpt_path: str,
         evaluation_report_writer=report_writer,
         frontend_bind=frontend_bind,
         backend_bind=backend_bind,
-        advertised_endpoint=advertised_endpoint,
-        manifest_path=manifest_path,
         expected_workers=expected_workers,
         max_pending_requests=max_pending_requests,
         request_timeout_s=request_timeout_s,

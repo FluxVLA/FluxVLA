@@ -41,11 +41,10 @@ themis = dict(
 `themis.server.evaluation_reporting.enabled` enables the acknowledged lifecycle
 channel. Simulator workers receive an inference-only client configuration, so
 only the client coordinator sends lifecycle events.
-The model endpoint is a deployment setting: use `--server-endpoint` or
-`--server-manifest` when launching FluxThemis instead of storing it in the
-model config. GPU topology, internal sockets, queue limits, and process
-timeouts are launcher concerns for the same reason; no `themis.client` block is
-required.
+The model endpoint is a deployment setting: use `--server-endpoint` when
+launching FluxThemis instead of storing it in the model config. GPU topology,
+internal sockets, queue limits, and process timeouts are launcher concerns for
+the same reason; no `themis.client` block is required.
 `result_output_dir` defaults to the directory containing the checkpoint's
 `checkpoints/` directory. Relative overrides resolve from that same directory;
 absolute paths are also supported.
