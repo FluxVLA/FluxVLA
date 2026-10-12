@@ -131,7 +131,7 @@ class _TaskManifestEntry:
 
 @dataclass
 class _RunState:
-    session_id: str
+    run_session_id: str
     run_id: str
     run_dir: Path
     start: dict
@@ -450,7 +450,7 @@ class FluxVLAEvaluationReportWriter:
         if event_type == 'run_start':
             if self._active is not None:
                 raise EvaluationEventError(
-                    f'run {self._active.session_id!r} is already active')
+                    f'run {self._active.run_session_id!r} is already active')
             if sequence != 1:
                 raise EvaluationEventError(
                     f'run_start sequence must be 1, got {sequence}')
@@ -463,10 +463,10 @@ class FluxVLAEvaluationReportWriter:
             state = self._active
             if state is None:
                 raise EvaluationEventError('no evaluation run is active')
-            if run_session_id != state.session_id:
+            if run_session_id != state.run_session_id:
                 raise EvaluationEventError(
                     f'event session {run_session_id!r} does not match active '
-                    f'run {state.session_id!r}')
+                    f'run {state.run_session_id!r}')
             if sequence != state.next_sequence:
                 raise EvaluationEventError(
                     f'expected sequence {state.next_sequence}, got {sequence}')
@@ -493,7 +493,7 @@ class FluxVLAEvaluationReportWriter:
         response['accepted'] = True
         return response
 
-    def _start_run(self, session_id: str, payload: dict) -> _RunState:
+    def _start_run(self, run_session_id: str, payload: dict) -> _RunState:
         schema_version = payload.get('schema_version')
         if str(schema_version) not in {'1', '1.0'}:
             raise EvaluationEventError(
@@ -604,7 +604,7 @@ class FluxVLAEvaluationReportWriter:
             'successes': 0,
         })
         state = _RunState(
-            session_id=session_id,
+            run_session_id=run_session_id,
             run_id=run_id,
             run_dir=run_dir,
             start={
@@ -622,12 +622,12 @@ class FluxVLAEvaluationReportWriter:
             tasks_by_index=tasks_by_index,
         )
         self._append_log(
-            state, f'ZMQ evaluation session: {session_id}\n'
+            state, f'ZMQ evaluation session: {run_session_id}\n'
             f'task_suite: {self.task_suite_name}\n'
             f'model_family: {self.model_family}\n'
             f'config: {self.config_path}\n'
             f'ckpt: {self.ckpt_path}\n')
-        self._log(f'[zmq-eval] run_start session={session_id} '
+        self._log(f'[zmq-eval] run_start session={run_session_id} '
                   f'episodes={total_episodes} run_dir={run_dir}')
         return state
 
@@ -1745,7 +1745,7 @@ class FluxVLAEvaluationReportWriter:
             'event_version': version,
             'event_type': event_type,
             'request_id': request_id,
-            'run_session_id': state.session_id,
+            'run_session_id': state.run_session_id,
             'sequence': sequence,
             'recorded_at': datetime.now().astimezone().isoformat(),
             'payload': payload,

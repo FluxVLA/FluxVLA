@@ -337,7 +337,6 @@ themis = dict(
         unnorm_key='libero_10_no_noops',
     ),
     evaluation=dict(
-        type='EvaluationSession',
         environment=dict(
             type='LiberoEnvironment',
             task_suite_name='libero_10',

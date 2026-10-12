@@ -482,7 +482,6 @@ themis = dict(
         unnorm_key='robodojo_arx_x5',
     ),
     evaluation=dict(
-        type='EvaluationSession',
         environment=dict(
             type='RoboDojoEnvironment',
             task_name='all',

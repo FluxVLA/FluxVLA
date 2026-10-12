@@ -286,7 +286,6 @@ themis = dict(
         unnorm_key=_STAT,
     ),
     evaluation=dict(
-        type='EvaluationSession',
         environment=dict(
             type='RoboCasaEnvironment',
             task_list=eval['task_list'],
