@@ -304,6 +304,7 @@ themis = dict(
         stop_on_success=True,
     ),
     server=dict(
+        runner=dict(type='FluxVLAServingRunner'),
         evaluation_reporting=dict(enabled=True, report_kind='robocasa'),
         denormalize_per_action=True,
     ),

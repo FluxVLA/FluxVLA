@@ -294,6 +294,7 @@ themis = dict(
         stop_on_success=True,
     ),
     server=dict(
+        runner=dict(type='FluxVLAServingRunner'),
         evaluation_reporting=dict(enabled=True),
         denormalize_context=dict(task_suite_name='robodojo_arx_x5'),
     ),

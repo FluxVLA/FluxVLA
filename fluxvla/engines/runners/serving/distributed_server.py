@@ -10,6 +10,7 @@ import socket as network_socket
 import sys
 import threading
 import time
+import traceback
 import uuid
 from collections import deque
 from collections.abc import Mapping
@@ -19,9 +20,11 @@ from typing import Any
 
 import numpy as np
 
-from .policy import (build_policy_from_config, config_get, get_server_config,
-                     require_mapping, resolve_checkpoint_path,
-                     resolve_report_config_path, resolve_report_result_root)
+from .serving_runner import (build_serving_runner_from_config, config_get,
+                             get_server_config, require_mapping,
+                             resolve_checkpoint_path,
+                             resolve_report_config_path,
+                             resolve_report_result_root)
 from .zmq_protocol import (decode_frame, decode_header, empty_payload,
                            encode_frame, encode_header)
 
@@ -502,7 +505,8 @@ def run_model_worker(config_path: str,
     cfg = Config.fromfile(config_path)
     if cfg_options:
         cfg.merge_from_dict(dict(cfg_options))
-    policy = build_policy_from_config(cfg, ckpt_path=ckpt_path, device=device)
+    runner = build_serving_runner_from_config(
+        cfg, ckpt_path=ckpt_path, device=device)
     backend.send_multipart([
         encode_header('ready', **common),
         empty_payload(),
@@ -529,7 +533,7 @@ def run_model_worker(config_path: str,
             observation = decode_frame(payload)
             if not isinstance(observation, Mapping):
                 raise TypeError('prediction payload must be a mapping')
-            actions, inference_time_s = policy.predict_action(
+            actions, inference_time_s = runner.predict_action(
                 observation,
                 unnorm_key=str(header.get('unnorm_key', '')),
                 policy_seed=_required_int(header, 'policy_seed'),
@@ -545,6 +549,13 @@ def run_model_worker(config_path: str,
                 encode_frame({'actions': actions}),
             ])
         except Exception as exc:
+            print(
+                f'[FluxVLA][debug] model worker prediction failed '
+                f'worker={worker_id} request={request_id}: '
+                f'{type(exc).__name__}: {exc}',
+                flush=True,
+            )
+            traceback.print_exc()
             backend.send_multipart([
                 encode_header(
                     'predict_error',

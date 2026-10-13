@@ -21,7 +21,10 @@ def __getattr__(name):
         'encode_predict_response',
     }
     _server = {'PolicyServer', 'create_server', 'serialize_actions'}
-    _policy = {'FluxVLAPolicy', 'build_policy_from_config'}
+    _serving_runner = {
+        'FluxVLAServingRunner',
+        'build_serving_runner_from_config',
+    }
     _evaluation_report_writer = {
         'EvaluationEventError',
         'FluxVLAEvaluationReportWriter',
@@ -39,9 +42,9 @@ def __getattr__(name):
     if name in _server:
         from . import zmq_server
         return getattr(zmq_server, name)
-    if name in _policy:
-        from . import policy
-        return getattr(policy, name)
+    if name in _serving_runner:
+        from . import serving_runner
+        return getattr(serving_runner, name)
     if name in _evaluation_report_writer:
         from . import evaluation_report_writer
         return getattr(evaluation_report_writer, name)
@@ -55,7 +58,7 @@ __all__ = [
     'FORMAT_MSGPACK',
     'FORMAT_PROTOBUF',
     'EvaluationEventError',
-    'FluxVLAPolicy',
+    'FluxVLAServingRunner',
     'FluxVLAEvaluationReportWriter',
     'MsgSerializer',
     'ObsSerializer',
@@ -64,7 +67,7 @@ __all__ = [
     'create_server',
     'FluxVLAInferenceServer',
     'build_evaluation_report_writer_from_config',
-    'build_policy_from_config',
+    'build_serving_runner_from_config',
     'decode_predict_request',
     'decode_predict_response',
     'detect_format',

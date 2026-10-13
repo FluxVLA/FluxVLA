@@ -511,6 +511,10 @@ themis = dict(
         stop_on_success=True,
     ),
     server=dict(
+        runner=dict(type='FluxVLAServingRunner'),
+        enable_mixed_precision=True,
+        mixed_precision_dtype='bf16',
+        keep_params_fp32=True,
         evaluation_reporting=dict(enabled=True),
         denormalize_context=dict(task_suite_name='robodojo_arx_x5'),
     ),

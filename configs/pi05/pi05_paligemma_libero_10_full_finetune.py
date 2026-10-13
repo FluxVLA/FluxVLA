@@ -355,5 +355,8 @@ themis = dict(
         execute_horizon=10,
         stop_on_success=True,
     ),
-    server=dict(evaluation_reporting=dict(enabled=True)),
+    server=dict(
+        runner=dict(type='FluxVLAServingRunner'),
+        evaluation_reporting=dict(enabled=True),
+    ),
 )

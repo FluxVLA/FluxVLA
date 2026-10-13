@@ -1,4 +1,4 @@
-"""Transport-neutral FluxVLA inference policy and configuration helpers."""
+"""Transport-neutral FluxVLA serving runner and configuration helpers."""
 
 from __future__ import annotations
 import copy
@@ -14,10 +14,13 @@ from typing import Any
 import numpy as np
 import torch
 
+from ...utils.root import RUNNERS
+
 _MISSING = object()
 
 
-class FluxVLAPolicy:
+@RUNNERS.register_module()
+class FluxVLAServingRunner:
     """Own model preprocessing, inference, and action denormalization."""
 
     def __init__(self,
@@ -27,6 +30,7 @@ class FluxVLAPolicy:
                  device: str = 'cuda:0',
                  mixed_precision_dtype: torch.dtype = torch.bfloat16,
                  enable_mixed_precision: bool = True,
+                 keep_params_fp32: bool = False,
                  model_outputs_environment_actions: bool = False,
                  denormalize_context: Mapping[str, Any] | None = None,
                  denormalize_per_action: bool = False,
@@ -47,6 +51,8 @@ class FluxVLAPolicy:
                 'mixed_precision_dtype must be fp32, fp16, or bf16')
         if not isinstance(enable_mixed_precision, bool):
             raise TypeError('enable_mixed_precision must be a bool')
+        if not isinstance(keep_params_fp32, bool):
+            raise TypeError('keep_params_fp32 must be a bool')
         if not isinstance(model_outputs_environment_actions, bool):
             raise TypeError('model_outputs_environment_actions must be a bool')
         if not isinstance(denormalize_per_action, bool):
@@ -63,6 +69,7 @@ class FluxVLAPolicy:
         self.device = torch.device(device)
         self.mixed_precision_dtype = mixed_precision_dtype
         self.enable_mixed_precision = enable_mixed_precision
+        self.keep_params_fp32 = keep_params_fp32
         self.model_outputs_environment_actions = \
             model_outputs_environment_actions
         self.denormalize_context = dict(denormalize_context or {})
@@ -71,7 +78,10 @@ class FluxVLAPolicy:
         if self.device.type == 'cuda':
             torch.cuda.set_device(self.device)
         self.vla.eval()
-        self.vla.to(self.device)
+        if self.enable_mixed_precision and not self.keep_params_fp32:
+            self.vla.to(device=self.device, dtype=self.mixed_precision_dtype)
+        else:
+            self.vla.to(self.device)
 
     def predict_action(self, observation: Mapping[str, Any], unnorm_key: str,
                        policy_seed: int) -> tuple[np.ndarray, float]:
@@ -150,11 +160,21 @@ class FluxVLAPolicy:
             context.setdefault('norm_stats_key', unnorm_key)
             context.setdefault('task_suite_name', unnorm_key)
 
-        if self.denormalize_per_action:
-            normalized = self._canonicalize_actions(raw_array)
+        normalized = self._canonicalize_actions(raw_array)
+        stats_horizon_getter = getattr(self.denormalize_action,
+                                       'get_action_stats_horizon', None)
+        stats_horizon = (
+            stats_horizon_getter() if callable(stats_horizon_getter) else None)
+        if stats_horizon is not None:
+            normalized = normalized[:stats_horizon]
+
+        if self.denormalize_per_action or stats_horizon is not None:
             denormalized = []
-            for action in normalized:
-                value = self._call_denormalizer(action, context)
+            for index, action in enumerate(normalized):
+                action_context = context
+                if stats_horizon is not None:
+                    action_context = dict(context, action_horizon_index=index)
+                value = self._call_denormalizer(action, action_context)
                 value = np.asarray(value)
                 if value.ndim == 2 and value.shape[0] == 1:
                     value = value[0]
@@ -165,7 +185,7 @@ class FluxVLAPolicy:
                 denormalized.append(value)
             return self._canonicalize_actions(np.stack(denormalized))
 
-        value = self._call_denormalizer(raw_array, context)
+        value = self._call_denormalizer(normalized, context)
         return self._canonicalize_actions(value)
 
     def _call_denormalizer(self, actions: np.ndarray,
@@ -225,10 +245,11 @@ class FluxVLAPolicy:
         return actions
 
 
-def build_policy_from_config(cfg: Any,
-                             ckpt_path: str | None = None,
-                             device: str | None = None) -> FluxVLAPolicy:
-    """Build one complete policy replica from an authoritative config."""
+def build_serving_runner_from_config(
+        cfg: Any,
+        ckpt_path: str | None = None,
+        device: str | None = None) -> FluxVLAServingRunner:
+    """Build one complete serving runner from an authoritative config."""
     themis_cfg = require_mapping(
         config_get(cfg, 'themis', _MISSING), 'config.themis')
     transport = dict(
@@ -306,18 +327,29 @@ def build_policy_from_config(cfg: Any,
 
     resolved_device = device or server_cfg.get('device', 'cuda:0')
     dtype_name = server_cfg.get('mixed_precision_dtype', 'bf16')
-    return FluxVLAPolicy(
-        vla=vla,
-        dataset=dataset,
-        denormalize_action=denormalize_action,
-        device=resolved_device,
-        mixed_precision_dtype=str_to_dtype(str(dtype_name)),
-        enable_mixed_precision=server_cfg.get('enable_mixed_precision', True),
-        model_outputs_environment_actions=model_outputs_environment_actions,
-        denormalize_context=denormalize_context,
-        denormalize_per_action=server_cfg.get('denormalize_per_action', False),
-        expected_unnorm_key=str(transport.get('unnorm_key', '')),
-    )
+    from fluxvla.engines import build_runner_from_cfg
+
+    runner_cfg = copy.deepcopy(
+        require_mapping(
+            server_cfg.get('runner', _MISSING), 'themis.server.runner'))
+    return build_runner_from_cfg(
+        runner_cfg,
+        default_args=dict(
+            vla=vla,
+            dataset=dataset,
+            denormalize_action=denormalize_action,
+            device=resolved_device,
+            mixed_precision_dtype=str_to_dtype(str(dtype_name)),
+            enable_mixed_precision=server_cfg.get('enable_mixed_precision',
+                                                  True),
+            keep_params_fp32=server_cfg.get('keep_params_fp32', False),
+            model_outputs_environment_actions=(
+                model_outputs_environment_actions),
+            denormalize_context=denormalize_context,
+            denormalize_per_action=server_cfg.get('denormalize_per_action',
+                                                  False),
+            expected_unnorm_key=str(transport.get('unnorm_key', '')),
+        ))
 
 
 def get_server_config(themis_cfg: Mapping[str, Any]) -> dict[str, Any]:
@@ -540,8 +572,8 @@ def require_mapping(value: Any, name: str) -> Mapping[str, Any]:
 
 
 __all__ = [
-    'FluxVLAPolicy',
-    'build_policy_from_config',
+    'FluxVLAServingRunner',
+    'build_serving_runner_from_config',
     'config_get',
     'get_server_config',
     'require_mapping',

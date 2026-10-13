@@ -77,7 +77,7 @@ def main(argv=None) -> int:
 
     from fluxvla.engines.runners.serving.distributed_server import \
         launch_server_task
-    from fluxvla.engines.runners.serving.policy import (
+    from fluxvla.engines.runners.serving.serving_runner import (
         config_get, get_server_config, require_mapping,
         resolve_checkpoint_path)
 
@@ -96,7 +96,8 @@ def main(argv=None) -> int:
         args.ckpt_path or server_cfg.get('ckpt_path')
         or section_cfg.get('ckpt_path'))
     print(
-        f'[FluxVLA] rank={rank} starting model worker on cuda:{local_rank}',
+        '[FluxVLA] rank={} starting model worker on cuda:{}'.format(
+            rank, local_rank),
         flush=True)
     frontend_bind = args.frontend_bind
     backend_bind = args.backend_bind
@@ -106,7 +107,7 @@ def main(argv=None) -> int:
     launch_server_task(
         config_path=config_path,
         ckpt_path=str(checkpoint),
-        device=f'cuda:{local_rank}',
+        device='cuda:{}'.format(local_rank),
         frontend_bind=frontend_bind,
         backend_bind=backend_bind,
         backend_endpoint=backend_endpoint,

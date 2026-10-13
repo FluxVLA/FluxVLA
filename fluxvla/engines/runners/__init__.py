@@ -25,6 +25,7 @@ from .fluxbisim_aloha_inference_runner import \
 from .fluxbisim_base_inference_runner import \
     BaseInferenceRunnerSim  # noqa: F401, F403
 from .franka_inference_runner import FrankaInferenceRunner  # noqa: F401, F403
+from .serving.serving_runner import FluxVLAServingRunner  # noqa: F401, F403
 
 try:
     from .fsdp_train_runner import FSDPTrainRunner  # noqa: F401, F403
