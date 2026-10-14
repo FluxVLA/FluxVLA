@@ -2,11 +2,53 @@
 # SPDX-License-Identifier: Apache-2.0
 """Chunk-relative actions and temporally consistent video preprocessing."""
 
+from collections import deque
+
 import numpy as np
 import torch
 import torchvision.transforms.v2 as T
 
 from fluxvla.engines import TRANSFORMS
+
+
+@TRANSFORMS.register_module()
+class BufferVideoFrames:
+    """Keep recent policy observations for causal video inference.
+
+    The first request of an episode returns its latest frame for cache
+    prefill. Later requests return ``num_frames`` observations, padding an
+    incomplete history with its earliest frame. Place after PrepareVideo.
+    """
+
+    def __init__(self, num_frames=4, key='pixel_values'):
+        if num_frames < 2:
+            raise ValueError('Video history requires at least two frames')
+        self.num_frames = int(num_frames)
+        self.key = key
+        self.frames = deque(maxlen=self.num_frames)
+
+    def __call__(self, data):
+        video = data[self.key]
+        if video.ndim != 4 or video.shape[0] != 3 or video.shape[1] < 1:
+            raise ValueError('Video history requires nonempty CTHW input')
+        reset = bool(data.get('is_new_episode', False)) or not self.frames
+        if reset:
+            self.frames.clear()
+        for i in range(video.shape[1]):
+            frame = video[:, i:i + 1]
+            self.frames.append(frame.clone(
+            ) if isinstance(frame, torch.Tensor) else frame.copy())
+        frames = list(self.frames)
+        if reset:
+            frames = frames[-1:]
+        else:
+            frames = [frames[0]] * (self.num_frames - len(frames)) + frames
+        data[self.key] = (
+            torch.cat(frames, dim=1) if isinstance(video, torch.Tensor) else
+            np.concatenate(frames, axis=1))
+        data['img_masks'] = np.ones(len(frames), dtype=bool)
+        data['reset_history'] = reset
+        return data
 
 
 @TRANSFORMS.register_module()

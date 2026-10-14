@@ -4,7 +4,7 @@
 # Origin: Source
 # Upstream-URL: https://github.com/dreamzero0/dreamzero/blob/main/groot/vla/model/dreamzero/modules/wan_video_dit_action_casual_chunk.py
 # Upstream-Ref: main
-# Notes: Legacy/current diffusers checkpoint APIs and custom callbacks supported.
+# Notes: Compatible checkpoint APIs; cached state attention matches training.
 
 import math
 import os
@@ -1255,11 +1255,23 @@ class CausalWanSelfAttention(nn.Module):
             new_v = new_v[:, -self.max_attention_size:]
 
             if action_register_length is not None:
-                x = self.attn(
-                    torch.cat([roped_query, roped_action_query], dim=1),
+                # Training keeps state tokens independent of video/action
+                # tokens. Preserve that mask during cached inference: mixing
+                # them changes the state representation at every DiT layer.
+                num_state = self.num_state_per_block
+                x_joint = self.attn(
+                    torch.cat([
+                        roped_query, roped_action_query[:, :-num_state]
+                    ], dim=1),
                     torch.cat([new_k, roped_action_key], dim=1),
                     torch.cat([new_v, action_v], dim=1),
                 )
+                x_state = self.attn(
+                    roped_action_query[:, -num_state:],
+                    roped_action_key[:, -num_state:],
+                    action_v[:, -num_state:],
+                )
+                x = torch.cat([x_joint, x_state], dim=1)
             else:
                 x = self.attn(
                     roped_query,

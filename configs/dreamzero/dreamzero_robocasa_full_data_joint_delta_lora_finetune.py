@@ -471,6 +471,9 @@ eval = dict(
                 num_views=_NUM_VIEWS,
                 frame_window_size=1,
             ),
+            # Match upstream's 8-action execution / 4-observation history.
+            # A single frame on every request would reset the causal cache.
+            dict(type='BufferVideoFrames', num_frames=4),
         ],
     ),
     denormalize_action=dict(

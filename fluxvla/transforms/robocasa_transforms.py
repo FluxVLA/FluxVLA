@@ -294,6 +294,7 @@ class ProcessRobocasaEvalInputs:
 
         # Task description.
         result['task_description'] = data.get('task_description', '')
+        result['is_new_episode'] = bool(data.get('is_new_episode', False))
 
         if self.embodiment_id is not None:
             result['embodiment_ids'] = np.array(
@@ -592,5 +593,8 @@ class RobocasaEvalDataset:
             value = torch.as_tensor(data[key], device=dev)
             batch[key] = (
                 value.view(1) if value.ndim == 0 else value.unsqueeze(0))
+
+        if 'reset_history' in data:
+            batch['reset_history'] = bool(data['reset_history'])
 
         return batch, replay_img
