@@ -669,11 +669,20 @@ class FluxVLAEvaluationReportWriter:
         key = (task.task_index, episode_index)
         if key in state.completed_keys:
             raise EvaluationEventError(f'episode {key} already completed')
-        if key in state.active_episodes:
-            raise EvaluationEventError(f'episode {key} is already active')
         episode_id = payload.get('episode_id')
         if episode_id is not None:
             episode_id = _require_string(episode_id, 'payload.episode_id')
+        active = state.active_episodes.get(key)
+        if active is not None:
+            if episode_id is None or active.get('episode_id') != episode_id:
+                raise EvaluationEventError(f'episode {key} is already active')
+            for name, value in (
+                ('policy_seed', policy_seed),
+                ('environment_seed', environment_seed),
+            ):
+                if active[name] != value:
+                    raise EvaluationEventError(f'episode retry changed {name}')
+        elif episode_id is not None:
             if any(
                     active.get('episode_id') == episode_id
                     for active in state.active_episodes.values()):
