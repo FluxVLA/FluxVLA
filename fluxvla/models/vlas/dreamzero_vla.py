@@ -260,6 +260,73 @@ class DreamZeroVLA(BaseVLA):
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
+    @torch.no_grad()
+    def _predict_from_observed_video(self, video, lang_tokens, lang_masks,
+                                     states, embodiment_ids):
+        """Rebuild causal context from complete, correctly sampled past blocks.
+
+        A replan can execute fewer actions than a generated block. In that
+        case advancing a persistent cache by a full block changes its time
+        coordinates. Encoding the actual past at the training stride avoids
+        both that shift and fabricated frames during warmup.
+        """
+        head = self.vla_head
+        frames_per_block = 4 * head.num_frame_per_block
+        frames = video.shape[2]
+        if (frames < 1 or (frames - 1) % frames_per_block
+                or frames + frames_per_block > self.frame_window_size):
+            raise ValueError('Observed video must contain complete past '
+                             'blocks and leave room for one future block')
+        head.reset_inference_state()
+        backbone = self.vlm_backbone
+        backbone.set_frozen_modules_to_eval_mode()
+        prompts = self._encode_wan_prompts(lang_tokens, lang_masks)
+        clip, condition, first_latent = backbone.encode_image(
+            video[:, :, :1].transpose(1, 2), self.frame_window_size,
+            video.shape[-2], video.shape[-1])
+        latents = (
+            first_latent if frames == 1 else backbone.encode_video(video))
+        batch_size = video.shape[0]
+        device, dtype = latents.device, latents.dtype
+        states = self._prepare_states(states, 1)
+        states = torch.nn.functional.pad(
+            states, (0, head.max_state_dim - states.shape[-1]))
+        if embodiment_ids is None:
+            embodiment_ids = torch.zeros(
+                batch_size, dtype=torch.long, device=device)
+        kv, kv_neg = head._create_cache_pair(batch_size, dtype, device, 0)
+        cross, cross_neg = head._create_cache_pair(batch_size, dtype, device,
+                                                   512)
+        start = 0
+        while start < latents.shape[2]:
+            end = start + (1 if start == 0 else head.num_frame_per_block)
+            head._single_flowmatching_step(
+                prompt_embs=prompts,
+                reference_latents=latents[:, :, start:end],
+                clip_feas=clip,
+                ys=condition[:, :, start:end],
+                start_frame=start,
+                kv_caches=[kv, kv_neg],
+                crossattn_caches=[cross, cross_neg])
+            start = end
+        return head._sample_action_block(
+            prompt_embs=prompts,
+            clip_feas=clip,
+            ys=condition,
+            states=states,
+            embodiment_ids=embodiment_ids,
+            kv_cache=kv,
+            kv_cache_neg=kv_neg,
+            crossattn_cache=cross,
+            crossattn_cache_neg=cross_neg,
+            current_start_frame=start,
+            denoise_frames=head.num_frame_per_block,
+            latents_dtype=dtype,
+            latents_shape=(latents.shape[1], latents.shape[3],
+                           latents.shape[4],
+                           latents.shape[3] * latents.shape[4] // 4),
+            num_inference_steps=head.num_inference_steps).float()
+
     def predict_action(
         self,
         images: torch.Tensor,
@@ -268,8 +335,13 @@ class DreamZeroVLA(BaseVLA):
         states: torch.Tensor,
         embodiment_ids: Optional[torch.Tensor] = None,
         reset_history: bool = False,
+        observed_video_history: bool = False,
         **kwargs,
     ) -> torch.Tensor:
+        if observed_video_history:
+            return self._predict_from_observed_video(images, lang_tokens,
+                                                     lang_masks, states,
+                                                     embodiment_ids)
         device = images.device
         # images: [B, C, T, H, W] (prepared by PrepareVideo)
         video = images

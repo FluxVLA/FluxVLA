@@ -424,12 +424,18 @@ eval = dict(
         type='RobocasaEvalDataset',
         unnorm_key=_ROBOCASA_STATISTIC_NAME,
         transforms=[
+            # Record all control steps: eight executed actions are only a
+            # third of a training block. Rebuild history at video stride 3
+            # instead of advancing a 24-action cache block on every replan.
             dict(
-                type='ProcessRobocasaEvalInputs',
+                type='ProcessRobocasaVideoHistoryInputs',
                 img_key='video.ego_view_bg_crop_pad_res256_freq20',
                 resize_size=_IMAGE_SIZE,
                 normalize=False,
                 embodiment_id=0,
+                frame_stride=_FRAME_SAMPLE_STRIDE,
+                frames_per_block=8,
+                max_history_blocks=_NUM_BLOCKS - 1,
             ),
             dict(
                 type='ConsistentVideoTransform',
@@ -471,9 +477,6 @@ eval = dict(
                 num_views=_NUM_VIEWS,
                 frame_window_size=1,
             ),
-            # Match upstream's 8-action execution / 4-observation history.
-            # A single frame on every request would reset the causal cache.
-            dict(type='BufferVideoFrames', num_frames=4),
         ],
     ),
     denormalize_action=dict(

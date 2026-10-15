@@ -15,6 +15,7 @@
 
 import copy
 import json
+from collections import deque
 from typing import Any, Dict, List, Optional
 
 import cv2
@@ -310,6 +311,66 @@ class ProcessRobocasaEvalInputs:
 
 
 @TRANSFORMS.register_module()
+class ProcessRobocasaVideoHistoryInputs(ProcessRobocasaEvalInputs):
+    """Collect real observations at control rate, then sample complete blocks.
+
+    ``record_observation`` must be called after every environment step, even
+    when an action chunk is still executing. Replanning frequency does not
+    change the video frame stride. Incomplete warmup uses the current image.
+    """
+
+    def __init__(self,
+                 frame_stride=3,
+                 frames_per_block=8,
+                 max_history_blocks=3,
+                 **kwargs):
+        super().__init__(**kwargs)
+        if self.normalize:
+            raise ValueError('Video history requires normalize=False')
+        if min(frame_stride, frames_per_block, max_history_blocks) < 1:
+            raise ValueError('Video history dimensions must be positive')
+        self.frame_stride = int(frame_stride)
+        self.frames_per_block = int(frames_per_block)
+        self.max_history_blocks = int(max_history_blocks)
+        self.block_steps = self.frame_stride * self.frames_per_block
+        self.history = deque(
+            maxlen=self.block_steps * self.max_history_blocks + 1)
+
+    def record_observation(self, inputs, episode_step):
+        step = int(episode_step)
+        if step == 0:
+            self.history.clear()
+        elif not self.history or step != self.history[-1][0] + 1:
+            raise ValueError('Video history requires every environment step '
+                             'in order, starting at episode_step=0')
+        self.history.append((step, np.asarray(inputs[self.img_key]).copy()))
+
+    def __call__(self, data):
+        if not self.history:
+            raise ValueError('Call record_observation before video inference')
+        result = super().__call__(data)
+        current = self.history[-1][0]
+        blocks = min((len(self.history) - 1) // self.block_steps,
+                     self.max_history_blocks)
+        indices = list(
+            range(current - blocks * self.block_steps, current + 1,
+                  self.frame_stride))
+        frames = dict(self.history)
+        images = []
+        for index in indices:
+            frame = self._center_crop(frames[index])
+            if frame.shape[:2] != (self.resize_size, self.resize_size):
+                frame = cv2.resize(frame, (self.resize_size, self.resize_size))
+            images.append(frame)
+        result['pixel_values'] = np.stack(images)
+        result['img_masks'] = np.ones(len(images), dtype=bool)
+        result['observed_video_history'] = True
+        result['reset_history'] = True
+        result['history_step_indices'] = indices
+        return result
+
+
+@TRANSFORMS.register_module()
 class DenormalizeRobocasaAction:
     """Denormalize RoboCasa actions.
 
@@ -490,6 +551,13 @@ class RobocasaEvalDataset:
         """
         self._active_stats_blob = blob
 
+    def record_observation(self, inputs: Dict, episode_step: int) -> None:
+        """Forward each control observation to video history transforms."""
+        for transform in self.transforms:
+            record = getattr(transform, 'record_observation', None)
+            if record is not None:
+                record(inputs, episode_step)
+
     def __call__(self, inputs: Dict) -> tuple:
         """Convert a RoboCasa observation into model inputs.
 
@@ -518,6 +586,7 @@ class RobocasaEvalDataset:
             'task_description': data.get('task_description', ''),
             'prompt': data.get('prompt', ''),
             'text': data.get('text', ''),
+            'history_step_indices': data.get('history_step_indices'),
         }
 
         # Assemble a batch compatible with LiberoParquetEvalDataset.
@@ -596,5 +665,8 @@ class RobocasaEvalDataset:
 
         if 'reset_history' in data:
             batch['reset_history'] = bool(data['reset_history'])
+        if 'observed_video_history' in data:
+            batch['observed_video_history'] = bool(
+                data['observed_video_history'])
 
         return batch, replay_img
