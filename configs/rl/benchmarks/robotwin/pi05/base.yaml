@@ -1,0 +1,111 @@
+# @package _global_
+
+defaults:
+  - /env@env.train: robotwin_adjust_bottle
+  - /env@env.eval: robotwin_adjust_bottle
+  - /base/ppo
+  - /models@actor.model: pi05
+  - /backends/fsdp@actor.fsdp_config: pi05
+  - _self_
+
+experiment:
+  root: ${oc.env:FLUX_ROBOTWIN_ROOT,${oc.env:FLUXVLA_ROOT}/work_dirs/robotwin}
+  split: validation
+  placement:
+    actor: 0-1
+    env,rollout: 2-3
+
+cluster:
+  component_placement: ${experiment.placement}
+
+runner:
+  max_epochs: 200
+  max_steps: 200
+  val_check_interval: 10
+  save_interval: 10
+  logger:
+    log_path: ${experiment.root}/results
+    project_name: fluxvla-rl-robotwin
+    experiment_name: adjust_bottle_pi05_seed1234
+    logger_backends: [wandb, tensorboard]
+
+algorithm:
+  update_epoch: 5
+
+actor:
+  micro_batch_size: 2
+  global_batch_size: 64
+  seed: 1234
+  enable_offload: false
+  model:
+    model_path: ${experiment.root}/weights/RLinf-Pi05-RoboTwin-SFT-adjust_bottle
+    num_action_chunks: 50
+    action_dim: 14
+    num_steps: 5
+    fluxvla:
+      observation_adapter: robotwin
+      config_path: ${oc.env:FLUXVLA_ROOT}/configs/rl/models/pi05/robotwin.py
+      action_horizon: 50
+      image_size: 224
+      max_token_len: 200
+      norm_stats_path: ${actor.model.model_path}/physical-intelligence/robotwin/norm_stats.json
+      tokenizer_path: ${actor.model.model_path}/paligemma_tokenizer.model
+      noise_level: 0.3
+      # Preserve actor/rollout BF16 reduction shapes; env parallelism stays 32.
+      rollout_micro_batch_size: ${actor.micro_batch_size}
+  optim:
+    lr: 5.0e-6
+    value_lr: 1.0e-4
+
+rollout:
+  enable_offload: false
+
+env:
+  enable_offload: false
+  train:
+    rollout_epoch: 1
+    total_num_envs: 32
+    seed: 1234
+    auto_reset: false
+    ignore_terminations: true
+    max_episode_steps: 200
+    max_steps_per_rollout_epoch: 200
+    center_crop: false
+    assets_path: ${experiment.root}
+    seeds_path: ${experiment.root}/protocol/train_seeds.json
+    episode_log_dir: ${runner.logger.log_path}/${runner.logger.experiment_name}/episodes/train
+    video_cfg:
+      save_video: false
+    task_config:
+      embodiment: [aloha-agilex]
+      planner_backend: mplib
+      step_lim: 200
+      save_path: ${experiment.root}/simulator_data
+      eval_video_log: false
+      camera:
+        collect_wrist_camera: true
+      domain_randomization:
+        random_background: false
+        cluttered_table: false
+        clean_background_rate: 1
+        random_head_camera_dis: 0
+        random_table_height: 0
+        random_light: false
+        crazy_random_light_rate: 0
+  eval:
+    rollout_epoch: 4
+    total_num_envs: 8
+    seed: 1234
+    auto_reset: true
+    ignore_terminations: true
+    is_eval: true
+    use_fixed_reset_state_ids: false
+    max_episode_steps: 200
+    max_steps_per_rollout_epoch: 200
+    center_crop: false
+    assets_path: ${experiment.root}
+    seeds_path: ${experiment.root}/protocol/${experiment.split}_seeds.json
+    episode_log_dir: ${runner.logger.log_path}/${runner.logger.experiment_name}/episodes/${experiment.split}
+    video_cfg:
+      save_video: false
+    task_config: ${env.train.task_config}
