@@ -146,7 +146,7 @@ def _run_eval(cfg, args, suite_name=None):
                     report_kind = 'libero'
                 elif is_robocasa_eval:
                     report_kind = 'robocasa'
-                else:
+                elif is_robotwin_eval:
                     report_kind = 'robotwin'
                 return report_kind, summary_path
     finally:

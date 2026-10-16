@@ -321,6 +321,7 @@ model = dict(
 # Eval builds the VAE without the external Wan2.2 file; the fine-tuned
 # checkpoint already carries the frozen VAE weights.
 inference_model = deepcopy(model)
+inference_model['pretrained_name_or_path'] = None
 inference_model['vision_vae']['pretrained_name_or_path'] = None
 
 _ACTION_PROMPT_METADATA = dict(

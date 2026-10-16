@@ -222,7 +222,7 @@ model = dict(
     ori_action_dim=14,
 )
 
-inference_model = model.copy()
+inference_model = dict(model, pretrained_name_or_path=None)
 
 train_dataloader = dict(
     per_device_batch_size=8,

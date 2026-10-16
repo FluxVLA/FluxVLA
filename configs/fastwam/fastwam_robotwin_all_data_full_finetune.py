@@ -183,7 +183,8 @@ model = dict(
 
 # Training and evaluation encode unseen prompts online, then reuse a
 # per-process CPU-memory LRU cache without reading or writing cache files.
-inference_model = model.copy()
+inference_model = dict(
+    model, pretrained_name_or_path=None, pretrained_skip_prefixes=[])
 
 train_dataloader = dict(
     # Upstream RoboTwin recipe trains with global batch 16; on 4x72GB GPUs

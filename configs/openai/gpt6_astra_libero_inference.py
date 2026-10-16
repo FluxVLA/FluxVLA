@@ -97,7 +97,7 @@ eval = dict(
     # Fifty ten-step GPT action chunks plus settling/reset headroom.
     max_steps=550,
     seed=7,
-    norm_stats_path=None,
+    dataset_stats_path=None,
     requires_dataset_stats=False,
     dataset=dict(
         type='OpenAILiberoEvalDataset',

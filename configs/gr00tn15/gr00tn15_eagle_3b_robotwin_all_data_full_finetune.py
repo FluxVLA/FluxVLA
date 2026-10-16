@@ -116,7 +116,7 @@ model = dict(
 
 inference_model = dict(
     type='LlavaVLA',
-    pretrained_name_or_path='./checkpoints/GR00T-N1.5-3B',
+    pretrained_name_or_path=None,
     vlm_backbone=dict(
         type='EagleInferenceBackbone',
         vlm_path='fluxvla/models/third_party_models/eagle2_hg_model',
