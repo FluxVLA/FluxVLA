@@ -32,7 +32,6 @@ from typing import Any, Dict, Iterable, List, Optional, Union
 import numpy as np
 import torch
 import torch.distributed as dist
-import yaml
 from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
@@ -145,7 +144,11 @@ def _inject_checkpoint_tokenizer(dataset: Dict, ckpt_path: str) -> None:
 
 
 class LocalFluxVLAPolicy:
-    """FluxVLA model, preprocessing and denormalization in one process.
+    """Adapt a config-built FluxVLA model to the RoboTwin policy hooks.
+
+    The model architecture comes from ``cfg.inference_model`` (or
+    ``cfg.model``). This adapter only handles checkpoint loading, observation
+    transforms, action denormalization and per-episode model lifecycle.
 
     Args:
         cfg (Dict): Full config object containing the model section.
@@ -624,8 +627,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
                     and payload['eval_chunk_size'] == self.eval_chunk_size and
                     payload.get('task_list', self.task_list) == self.task_list)
                 unfinished = (
-                    payload['overall']['completed_tasks'] <
-                    payload['overall']['total_tasks'])
+                    payload['overall']['completed_tasks']
+                    < payload['overall']['total_tasks'])
                 if same_config and unfinished:
                     return str(candidate)
         timestamp = time.strftime('%Y_%m_%d-%H_%M_%S')
@@ -819,6 +822,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
     @contextmanager
     def _effective_task_config_file(self):
         """Yield the ``task_config`` name upstream should load for one task."""
+        import yaml
+
         config_dir = self.robotwin_root / 'task_config'
         source = config_dir / f'{self._upstream_task_config}.yml'
         if not source.is_file():
