@@ -77,14 +77,22 @@ FluxVLA Engine は、具現知能（Embodied Intelligence）の実運用を見�
 
 RoboDojo の完全評価は 42 個のベンチマークタスクで構成されます。30 個の独立タスクは各 50 試行、12 個の汎化タスクは標準レイアウト 25 試行とランダムレイアウト 25 試行で評価し、モデルごとに計 2,100 episode となります。指標の表記は進捗スコア / 成功率（%）です。モデルは平均進捗スコアの昇順で並べています。
 
-| モデル              |          平均 | 標準汎化（Gen-Std） | ランダム汎化（Gen-Rand） |           精度 | 長期ホライゾン |         記憶 | オープンタスク |
-| ------------------- | ------------: | ------------------: | -----------------------: | -------------: | -------------: | -----------: | -------------: |
-| FluxVLA(SmolVLA)    |  5.29 / 2.98% |        8.15 / 5.33% |             0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% | 3.97 / 2.33% |   0.67 / 0.67% |
-| FluxVLA(GR00T N1.5) |  5.50 / 3.17% |        6.48 / 3.33% |             1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% | 5.48 / 4.33% |   0.25 / 0.25% |
-| FluxVLA(PI0)        |  5.96 / 3.37% |       13.05 / 9.67% |             0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% |   0.00 / 0.00% |
-| FluxVLA(PI0.5)      | 13.61 / 8.83% |      22.65 / 16.00% |             6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% |   2.20 / 2.00% |
+| モデル                |                                                                                                                                     平均 | 標準汎化（Gen-Std） | ランダム汎化（Gen-Rand） |           精度 | 長期ホライゾン |         記憶 | オープンタスク |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------: | ------------------: | -----------------------: | -------------: | -------------: | -----------: | -------------: |
+| FluxVLA(Cosmos3-Nano) |                   [3.03 / 0.93%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robodojo_full_finetune_bs2048) |        3.95 / 1.33% |             1.20 / 0.67% |   2.29 / 0.00% |   8.74 / 2.75% | 1.23 / 0.67% |   0.30 / 0.25% |
+| FluxVLA(GR00T N1.7)   | [3.08 / 1.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robodojo_full_finetune_freeze_vlm_bs256) |        6.52 / 4.33% |             0.85 / 0.33% |   2.11 / 0.50% |   6.19 / 1.50% | 3.13 / 2.67% |   0.30 / 0.25% |
+| FluxVLA(DiT4DiT)      |                         [4.84 / 2.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robodojo_full_finetune_bs128) |        5.67 / 3.33% |             0.83 / 0.00% |   4.49 / 0.00% |  12.17 / 6.50% | 2.45 / 2.33% |   1.83 / 1.75% |
+| FluxVLA(SmolVLA)      |                         [5.29 / 2.98%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robodojo_full_finetune_bs512) |        8.15 / 5.33% |             0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% | 3.97 / 2.33% |   0.67 / 0.67% |
+| FluxVLA(FastWAM)      |                          [5.29 / 2.97%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robodojo_full_finetune_bs32) |        7.07 / 3.67% |             0.52 / 0.33% |   3.96 / 0.25% |  14.99 / 9.50% | 2.95 / 2.33% |   0.78 / 0.75% |
+| FluxVLA(GR00T N1.5)   |                  [5.50 / 3.17%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robodojo_full_finetune_bs640) |        6.48 / 3.33% |             1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% | 5.48 / 4.33% |   0.25 / 0.25% |
+| FluxVLA(PI0)          |                   [5.96 / 3.37%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robodojo_full_finetune_bs256) |       13.05 / 9.67% |             0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% |   0.00 / 0.00% |
+| FluxVLA(PI0.5)        |                 [13.61 / 8.83%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robodojo_full_finetune_bs256) |      22.65 / 16.00% |             6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% |   2.20 / 2.00% |
 
 ## 📢 最新情報
+
+**\[2026/10/15\]** 🔥 [FluxThemis](https://github.com/FluxVLA/FluxThemis) を介した RoboDojo 評価に対応しました。
+
+**\[2026/09/16\]** 🔥 FluxVLA Engine の[技術レポート](https://arxiv.org/abs/2609.17210)を arXiv で公開しました。
 
 **\[2026/09/09\]** 🔥 FluxVLA は OpenAI Responses API を介した GPT-6 Astra のチェックポイント不要な LIBERO 評価に対応しました。マルチビュー観測、LIBERO ネイティブのアクション制御、環境変数による認証情報設定、整理されたロールアウト成果物を含みます。
 

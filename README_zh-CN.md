@@ -77,14 +77,22 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 次试验；12 个泛化任务各包含 25 次标准布局和 25 次随机布局试验。因此，每个模型共评测 2,100 个 episode。指标格式为：进度分数 / 成功率（%）。模型按平均进度分数升序排列。
 
-| 模型                |          平均 | 标准泛化（Gen-Std） | 随机泛化（Gen-Rand） |           精度 |         长时程 |         记忆 |     开放任务 |
-| ------------------- | ------------: | ------------------: | -------------------: | -------------: | -------------: | -----------: | -----------: |
-| FluxVLA(SmolVLA)    |  5.29 / 2.98% |        8.15 / 5.33% |         0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% | 3.97 / 2.33% | 0.67 / 0.67% |
-| FluxVLA(GR00T N1.5) |  5.50 / 3.17% |        6.48 / 3.33% |         1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% | 5.48 / 4.33% | 0.25 / 0.25% |
-| FluxVLA(PI0)        |  5.96 / 3.37% |       13.05 / 9.67% |         0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% | 0.00 / 0.00% |
-| FluxVLA(PI0.5)      | 13.61 / 8.83% |      22.65 / 16.00% |         6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% | 2.20 / 2.00% |
+| 模型                  |                                                                                                                                     平均 | 标准泛化（Gen-Std） | 随机泛化（Gen-Rand） |           精度 |         长时程 |         记忆 |     开放任务 |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------: | ------------------: | -------------------: | -------------: | -------------: | -----------: | -----------: |
+| FluxVLA(Cosmos3-Nano) |                   [3.03 / 0.93%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robodojo_full_finetune_bs2048) |        3.95 / 1.33% |         1.20 / 0.67% |   2.29 / 0.00% |   8.74 / 2.75% | 1.23 / 0.67% | 0.30 / 0.25% |
+| FluxVLA(GR00T N1.7)   | [3.08 / 1.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robodojo_full_finetune_freeze_vlm_bs256) |        6.52 / 4.33% |         0.85 / 0.33% |   2.11 / 0.50% |   6.19 / 1.50% | 3.13 / 2.67% | 0.30 / 0.25% |
+| FluxVLA(DiT4DiT)      |                         [4.84 / 2.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robodojo_full_finetune_bs128) |        5.67 / 3.33% |         0.83 / 0.00% |   4.49 / 0.00% |  12.17 / 6.50% | 2.45 / 2.33% | 1.83 / 1.75% |
+| FluxVLA(SmolVLA)      |                         [5.29 / 2.98%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robodojo_full_finetune_bs512) |        8.15 / 5.33% |         0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% | 3.97 / 2.33% | 0.67 / 0.67% |
+| FluxVLA(FastWAM)      |                          [5.29 / 2.97%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robodojo_full_finetune_bs32) |        7.07 / 3.67% |         0.52 / 0.33% |   3.96 / 0.25% |  14.99 / 9.50% | 2.95 / 2.33% | 0.78 / 0.75% |
+| FluxVLA(GR00T N1.5)   |                  [5.50 / 3.17%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robodojo_full_finetune_bs640) |        6.48 / 3.33% |         1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% | 5.48 / 4.33% | 0.25 / 0.25% |
+| FluxVLA(PI0)          |                   [5.96 / 3.37%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robodojo_full_finetune_bs256) |       13.05 / 9.67% |         0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% | 0.00 / 0.00% |
+| FluxVLA(PI0.5)        |                 [13.61 / 8.83%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robodojo_full_finetune_bs256) |      22.65 / 16.00% |         6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% | 2.20 / 2.00% |
 
 ## 📢 最新动态
+
+**\[2026/10/15\]** 🔥 现已支持通过 [FluxThemis](https://github.com/FluxVLA/FluxThemis) 进行 RoboDojo 评测。
+
+**\[2026/09/16\]** 🔥 FluxVLA Engine [技术报告](https://arxiv.org/abs/2609.17210) 已在 arXiv 发布。
 
 **\[2026/09/09\]** 🔥 FluxVLA 现已支持通过 OpenAI Responses API 使用 GPT-6 Astra 进行无需 checkpoint 的 LIBERO 评测，包括多视角观测、原生 LIBERO 动作控制、环境变量凭据配置和结构化 rollout 产物。
 

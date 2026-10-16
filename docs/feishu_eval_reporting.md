@@ -14,23 +14,21 @@ This feature works with:
 - `tools/summarize_robotwin_eval_results.py`
 - `tools/summarize_robocasa_eval_results.py`
 - `tools/summarize_libero_eval_results.py`
-- `scripts/ros_inference_server.sh` with FluxThemis `ReportEvaluation`
+- `scripts/distributed_zmq_server.py` with FluxThemis lifecycle reporting
 
-## FluxThemis ROS Evaluation Reporting
+## FluxThemis ZMQ Evaluation Reporting
 
-An integrated ROS evaluation can make FluxVLA the authoritative result owner
-without changing the usual two-terminal launch commands. Configure the shared
-target model file as follows:
+An integrated ZMQ evaluation makes FluxVLA the authoritative result owner.
+Configure the shared target model file as follows:
 
 ```python
 themis = dict(
     transport=dict(
-        service_name='/fluxvla/predict_action',
-        report_service_name='/fluxvla/report_evaluation',
-        # observation and transport fields ...
+        # observation fields ...
     ),
-    ros_server=dict(
+    server=dict(
         evaluation_reporting=dict(
+            enabled=True,
             # Optional; defaults to the directory containing checkpoints/.
             result_output_dir=None,
             # Optional direct overrides; otherwise use the environment below.
@@ -42,8 +40,13 @@ themis = dict(
 )
 ```
 
-`report_service_name` enables the acknowledged lifecycle channel. Omitting it
-keeps the PredictAction-only server compatible with older/local clients.
+`themis.server.evaluation_reporting.enabled` enables the acknowledged lifecycle
+channel. Simulator workers receive an inference-only client configuration, so
+only the client coordinator sends lifecycle events.
+The model endpoint is a deployment setting: use `--server-endpoint` when
+launching FluxThemis instead of storing it in the model config. GPU topology,
+internal sockets, queue limits, and process timeouts are launcher concerns for
+the same reason; no `themis.client` block is required.
 `result_output_dir` defaults to the directory containing the checkpoint's
 `checkpoints/` directory. Relative overrides resolve from that same directory;
 absolute paths are also supported.
@@ -60,16 +63,16 @@ The directory contains `events.jsonl`, `rank0.txt`, and
 suite's `<suite>/task<task_index>_results.json` and
 `task_status/<suite>_task<task_index>.status` files plus `failed_tasks.txt`,
 `summary.txt`, `summary.csv`, `summary.json`, and `task_success_rates.csv`.
-`[ros-eval]` and `[eval-progress]` messages, the final directory, and Feishu
+`[zmq-eval]` and `[eval-progress]` messages, the final directory, and Feishu
 report/skip reasons appear in the FluxVLA server terminal.
 
 The `evaluation_reporting.feishu` mapping accepts `sheet_url`, `app_id`,
 `app_secret`, and `timeout`. Missing values use `FEISHU_SHEET_URL`,
 `FEISHU_APP_ID`, and `FEISHU_APP_SECRET` from the server process. `timeout`
-defaults to 10 seconds for this ROS path. Prefer the environment variables for
+defaults to 10 seconds for this ZMQ path. Prefer the environment variables for
 credentials so secrets stay out of configuration snapshots and event journals.
 
-ROS-triggered upload is intentionally full-suite-only. The terminal `run_end`
+ZMQ-triggered upload is intentionally full-suite-only. The terminal `run_end`
 must be `finished`, no task filter may be present, the numeric task set must
 match the authoritative suite manifest, and every task must have exactly the
 configured number of completed trials. Smoke, filtered, partial, interrupted,

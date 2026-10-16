@@ -21,24 +21,19 @@ def __getattr__(name):
         'encode_predict_response',
     }
     _server = {'PolicyServer', 'create_server', 'serialize_actions'}
-    _ros_server = {
-        'FluxVLAROSPolicy',
-        'FluxVLAROSServer',
-        'build_ros_policy_from_config',
-        'build_ros_server_from_config',
+    _serving_runner = {
+        'FluxVLAServingRunner',
+        'build_serving_runner_from_config',
     }
-    _ros2_server = {'FluxVLAROS2Server'}
-    _ros_worker_pool = {
-        'EpisodeAffinityPolicyPool',
-        'spawn_ros_policy_pool',
-    }
-    _evaluation_reporter = {
+    _evaluation_report_writer = {
         'EvaluationEventError',
-        'FluxVLAROSEvaluationReporter',
+        'FluxVLAEvaluationReportWriter',
     }
-    _zmq_eval_server = {
-        'FluxVLAZMQEvalServer',
-        'build_zmq_eval_server_from_config',
+    _distributed_server = {
+        'FluxVLAInferenceServer',
+        'build_evaluation_report_writer_from_config',
+        'launch_server_task',
+        'run_model_worker',
     }
 
     if name in _public:
@@ -47,21 +42,15 @@ def __getattr__(name):
     if name in _server:
         from . import zmq_server
         return getattr(zmq_server, name)
-    if name in _ros_server:
-        from . import ros_server
-        return getattr(ros_server, name)
-    if name in _ros2_server:
-        from . import ros2_server
-        return getattr(ros2_server, name)
-    if name in _ros_worker_pool:
-        from . import ros_worker_pool
-        return getattr(ros_worker_pool, name)
-    if name in _evaluation_reporter:
-        from . import evaluation_reporter
-        return getattr(evaluation_reporter, name)
-    if name in _zmq_eval_server:
-        from . import zmq_eval_server
-        return getattr(zmq_eval_server, name)
+    if name in _serving_runner:
+        from . import serving_runner
+        return getattr(serving_runner, name)
+    if name in _evaluation_report_writer:
+        from . import evaluation_report_writer
+        return getattr(evaluation_report_writer, name)
+    if name in _distributed_server:
+        from . import distributed_server
+        return getattr(distributed_server, name)
     raise AttributeError(f'module {__name__!r} has no attribute {name!r}')
 
 
@@ -69,25 +58,22 @@ __all__ = [
     'FORMAT_MSGPACK',
     'FORMAT_PROTOBUF',
     'EvaluationEventError',
-    'FluxVLAROSPolicy',
-    'FluxVLAROSEvaluationReporter',
-    'FluxVLAZMQEvalServer',
-    'build_zmq_eval_server_from_config',
-    'FluxVLAROS2Server',
-    'FluxVLAROSServer',
-    'EpisodeAffinityPolicyPool',
+    'FluxVLAServingRunner',
+    'FluxVLAEvaluationReportWriter',
     'MsgSerializer',
     'ObsSerializer',
     'ObsSerializerProto',
     'PolicyServer',
     'create_server',
-    'build_ros_policy_from_config',
-    'build_ros_server_from_config',
+    'FluxVLAInferenceServer',
+    'build_evaluation_report_writer_from_config',
+    'build_serving_runner_from_config',
     'decode_predict_request',
     'decode_predict_response',
     'detect_format',
     'encode_predict_request',
     'encode_predict_response',
     'serialize_actions',
-    'spawn_ros_policy_pool',
+    'launch_server_task',
+    'run_model_worker',
 ]

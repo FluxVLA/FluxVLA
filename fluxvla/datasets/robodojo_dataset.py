@@ -98,5 +98,7 @@ class RoboDojoEvalDataset:
         if 'embodiment_ids' in data:
             batch['embodiment_ids'] = torch.from_numpy(
                 np.asarray(data['embodiment_ids'])).int().cuda().unsqueeze(0)
+        if data.get('image_grid_thw') is not None:
+            batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
         batch['reset_history'] = bool(data.get('is_new_episode', False))
         return batch, None

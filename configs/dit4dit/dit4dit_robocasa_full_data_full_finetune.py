@@ -454,9 +454,6 @@ eval = dict(
 
 themis = dict(
     transport=dict(
-        service_name='/fluxvla/predict_action',
-        report_service_name='/fluxvla/report_evaluation',
-        timeout_s=30.0,
         image_keys=['video.ego_view_bg_crop_pad_res256_freq20'],
         state_keys=[
             'state.left_arm',
@@ -466,10 +463,8 @@ themis = dict(
             'state.waist',
         ],
         unnorm_key=_ROBOCASA_STATISTIC_NAME,
-        image_encoding='rgb8',
     ),
-    runner=dict(
-        type='EvalRunner',
+    evaluation=dict(
         environment=dict(
             type='RoboCasaEnvironment',
             task_list=eval['task_list'],
@@ -478,32 +473,18 @@ themis = dict(
             prompt_key='annotation.human.coarse_action',
             render_key='video.ego_view_pad_res256_freq20',
         ),
-        model_client=dict(type='FluxVLAROSModelClient'),
+        policy_client=dict(type='FluxVLAPolicyClient'),
+        reporter=dict(type='FluxVLAEvaluationReporter'),
         evaluator=dict(type='SuccessRateEvaluator'),
-        seed=eval['seed'],
+        base_seed=eval['seed'],
         episodes_per_task=eval['num_trials_per_task'],
         max_episode_steps=eval['max_episode_steps'],
         execute_horizon=eval['eval_chunk_size'],
         stop_on_success=True,
-        parallel_workers=1,
-        simulator_gpu_ids=None,
-        work_dir='work_dirs/fluxthemis',
     ),
-    ros_server=dict(
-        ros_version=1,
-        dataset_section='eval',
-        evaluation_reporting=dict(report_kind='robocasa', ),
-        device='cuda:0',
-        workers=dict(
-            startup_timeout_s=900.0,
-            request_timeout_s=120.0,
-            lease_timeout_s=900.0,
-        ),
-        mixed_precision_dtype='bf16',
-        enable_mixed_precision=True,
-        model_outputs_environment_actions=False,
-        forward_seed=False,
-        denormalize_context={},
+    server=dict(
+        runner=dict(type='FluxVLAServingRunner'),
+        evaluation_reporting=dict(enabled=True, report_kind='robocasa'),
         denormalize_per_action=True,
     ),
 )
