@@ -85,7 +85,7 @@ class LiberoEvalRunner(BaseEvalRunner):
         task_suite_name (str): Name of the task suite for evaluation.
         dataset (Dict): Configuration for the dataset to be used in evaluation.
         denormalize_action (Dict): Configuration for denormalizing actions.
-        dataset_stats_path (str): Optional explicit dataset statistics path.
+        norm_stats_path (str): Optional explicit dataset statistics path.
         requires_dataset_stats (bool): Whether missing dataset statistics
             should fail runner construction. Defaults to True.
         eval_chunk_size (int): Size of the chunks for evaluation.
@@ -417,7 +417,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  dataset: Dict,
                  denormalize_action: Dict,
                  norm_stats_key: str = None,
-                 dataset_stats_path: str = None,
+                 norm_stats_path: str = None,
                  requires_dataset_stats: bool = True,
                  eval_chunk_size: int = 1,
                  resize_size: int = 224,
@@ -495,12 +495,12 @@ class LiberoEvalRunner(BaseEvalRunner):
             self.load_eval_state_dict(state_dict, allowed_missing_key_prefixes)
             del state_dict
             gc.collect()
-        data_stat_path = dataset_stats_path
+        data_stat_path = norm_stats_path
         if data_stat_path is None and self.ckpt_path is not None:
             data_stat_path = self.default_stats_path(self.ckpt_path)
         if requires_dataset_stats:
             assert data_stat_path is not None, (
-                'dataset_stats_path or ckpt_path is required for this '
+                'norm_stats_path or ckpt_path is required for this '
                 'LIBERO evaluation config.')
         if data_stat_path is not None:
             assert os.path.exists(data_stat_path), \

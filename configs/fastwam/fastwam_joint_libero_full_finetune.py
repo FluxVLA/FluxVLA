@@ -221,6 +221,7 @@ runner = dict(
         meta_keys=['task_description', 'info', 'stats', 'timestamp'],
     ),
     sampler=None,
+    tokenizer=dict(type='PretrainedTokenizer', model_path=_tokenizer),
     metric=dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
