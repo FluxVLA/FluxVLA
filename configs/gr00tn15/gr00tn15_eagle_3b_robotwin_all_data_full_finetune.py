@@ -96,8 +96,7 @@ model = dict(
     pretrained_name_or_path='./checkpoints/GR00T-N1.5-3B',
     vlm_backbone=dict(
         type='EagleBackbone',
-        vlm_path='fluxvla/models/third_party_models/eagle2_hg_model',
-        vlm_config=dict(max_input_seq_len=900)),
+        vlm_path='fluxvla/models/third_party_models/eagle2_hg_model'),
     vla_head=dict(
         type='FlowMatchingHead',
         state_dim=64,

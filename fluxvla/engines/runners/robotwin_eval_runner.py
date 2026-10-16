@@ -160,6 +160,8 @@ class LocalFluxVLAPolicy:
         unnorm_key (str): Top-level key in the dataset statistics.
         device (str): Torch device the model runs on.
         mixed_precision_dtype (str): Mixed precision dtype name.
+        enable_model_dtype_cast (bool): Cast model parameters to
+            mixed_precision_dtype. Default is False; independent of autocast.
         enable_mixed_precision_training (bool): Whether to run inference
             under mixed precision autocast. Default is True.
         norm_stats_path (str): Optional explicit dataset statistics path.
@@ -178,7 +180,8 @@ class LocalFluxVLAPolicy:
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True,
                  norm_stats_path: Optional[str] = None,
-                 max_episode_steps: Optional[int] = None) -> None:
+                 max_episode_steps: Optional[int] = None,
+                 enable_model_dtype_cast: bool = False) -> None:
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
@@ -202,6 +205,7 @@ class LocalFluxVLAPolicy:
         self.device = torch.device(device)
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
         self.enable_mixed_precision_training = enable_mixed_precision_training
+        self.enable_model_dtype_cast = enable_model_dtype_cast
 
         dataset_cfg = copy.deepcopy(dataset)
         _inject_checkpoint_tokenizer(dataset_cfg, str(self.ckpt_path))
@@ -223,7 +227,11 @@ class LocalFluxVLAPolicy:
         # Attach norm_stats to the model for heads that consume them.
         with open(self.norm_stats_path, 'r', encoding='utf-8') as f:
             self.vla.norm_stats = json.load(f)
-        self.vla.to(self.device)
+        if self.enable_model_dtype_cast:
+            self.vla.to(
+                device=self.device, dtype=self.mixed_precision_dtype)
+        else:
+            self.vla.to(self.device)
 
     def predict(self, observation: Dict[str, Any],
                 instruction: str) -> np.ndarray:
@@ -317,6 +325,7 @@ def get_model(usr_args: Dict[str, Any]) -> LocalFluxVLAPolicy:
         usr_args.get('enable_mixed_precision_training', True),
         usr_args.get('norm_stats_path') or '',
         usr_args.get('max_episode_steps'),
+        usr_args.get('enable_model_dtype_cast', False),
     )
     if _ACTIVE_POLICY is not None and _ACTIVE_KEY != key:
         close_model()
@@ -333,6 +342,7 @@ def get_model(usr_args: Dict[str, Any]) -> LocalFluxVLAPolicy:
             enable_mixed_precision_training=key[5],
             norm_stats_path=usr_args.get('norm_stats_path'),
             max_episode_steps=key[7],
+            enable_model_dtype_cast=key[8],
         )
         _ACTIVE_KEY = key
     return _ACTIVE_POLICY
@@ -417,6 +427,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
             written under ``<result_output_dir>/eval_runs/<ckpt>/<run_id>``
             to match LIBERO.
         mixed_precision_dtype (str): Mixed precision dtype name.
+        enable_model_dtype_cast (bool): Cast model parameters to
+            mixed_precision_dtype. Default is False; independent of autocast.
         enable_mixed_precision_training (bool): Whether to run inference
             under mixed precision autocast. Default is True.
     """
@@ -470,6 +482,7 @@ class RobotwinEvalRunner(BaseEvalRunner):
                  result_output_dir: Optional[str] = None,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True,
+                 enable_model_dtype_cast: bool = False,
                  eval_shard_strategy: str = 'task',
                  max_episode_steps: Optional[int] = None,
                  **kwargs) -> None:
@@ -521,6 +534,7 @@ class RobotwinEvalRunner(BaseEvalRunner):
         self.unnorm_key = unnorm_key
         self.mixed_precision_dtype = mixed_precision_dtype
         self.enable_mixed_precision_training = enable_mixed_precision_training
+        self.enable_model_dtype_cast = enable_model_dtype_cast
         self.norm_stats_path = norm_stats_path
         self.vulkan_icd = vulkan_icd
         self.run_id_suffix = run_id_suffix
@@ -657,6 +671,7 @@ class RobotwinEvalRunner(BaseEvalRunner):
             'mixed_precision_dtype': self.mixed_precision_dtype,
             'enable_mixed_precision_training':
             self.enable_mixed_precision_training,
+            'enable_model_dtype_cast': self.enable_model_dtype_cast,
             'norm_stats_path': self.norm_stats_path,
         }
 

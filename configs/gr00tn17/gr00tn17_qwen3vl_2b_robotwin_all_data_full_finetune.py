@@ -88,7 +88,7 @@ _QWEN3_VL_CONFIG = dict(
     ),
 )
 
-_ACTIVE_TRACKERS = ('jsonl', )
+_ACTIVE_TRACKERS = ('jsonl', 'wandb')
 
 _TASK_NAMES = [
     'adjust_bottle',
@@ -201,7 +201,7 @@ model = dict(
     state_dropout_prob=0.2,
     load_metadata=True,
     qwen3_runtime='compat_457',
-    freeze_vlm_backbone=True,
+    freeze_vlm_backbone=False,
     vlm_backbone=dict(
         type='GrootN17Qwen3Backbone',
         model_config=_QWEN3_VL_CONFIG,
@@ -359,7 +359,7 @@ runner = dict(
     max_steps=None,
     max_epochs=5,
     optimizer=dict(
-        lr=1e-4,
+        lr=1e-5,
         type='AdamW',
         weight_decay=1e-5,
     ),
@@ -393,10 +393,10 @@ runner = dict(
         type='linear-warmup+cosine-decay',
         warmup_ratio=0.05,
     ),
-    enable_gradient_checkpointing=False,
+    enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
-    sharding_strategy='shard-grad-op',
+    sharding_strategy='full-shard',
     change_key_name=False,
 )
 

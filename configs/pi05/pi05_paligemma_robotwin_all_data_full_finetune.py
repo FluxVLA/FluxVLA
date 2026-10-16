@@ -213,9 +213,6 @@ model = dict(
     },
     params_to_change_dtype=[
         'llm_expert.llm.model.layers',
-        'vlm_backbone.vlm.model.language_model.layers',
-        'vlm_backbone.vlm.model.vision_tower',
-        'vlm_backbone.vlm.model.multi_modal_projector',
     ],
     ori_action_dim=14,
 )

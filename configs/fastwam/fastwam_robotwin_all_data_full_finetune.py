@@ -187,11 +187,9 @@ inference_model = dict(
     model, pretrained_name_or_path=None, pretrained_skip_prefixes=[])
 
 train_dataloader = dict(
-    # Upstream RoboTwin recipe trains with global batch 16; on 4x72GB GPUs
-    # this is 2 microbatch x 4 GPUs x 2 accumulation (microbatch 4 OOMs on
-    # the 384x320x9 video branch).
-    per_device_batch_size=2,
-    per_device_num_workers=8,
+    # Global batch = per-device batch * GPU count * accumulation steps.
+    per_device_batch_size=8,
+    per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
         reshuffle_each_epoch=True,
@@ -281,9 +279,6 @@ train_dataloader = dict(
     ),
 )
 
-val_dataloader = None
-eval_dataset = None
-
 runner = dict(
     type='FSDPTrainRunner',
     max_epochs=5,
@@ -334,7 +329,7 @@ runner = dict(
     # upstream pure-bf16 execution).
     reduce_in_full_precision=False,
     pre_fsdp_param_dtype='bf16',
-    grad_accumulation_steps=2,
+    grad_accumulation_steps=1,
     mixed_precision_dtype='bf16',
     dataset_sharding_strategy='blockwise',
     # full-shard: on 4x72GB GPUs the 12.4B model's AdamW states alone are
@@ -352,57 +347,55 @@ runner = dict(
 )
 
 eval = dict(
-    runner=dict(
-        type='RobotwinEvalRunner',
-        # Evaluate clean and random suites with unseen instructions,
-        # 100 episodes per task per suite, replanning every 24 of 32 actions.
-        task_suite_name=['clean', 'random'],
-        model_family='fastwam',
-        task_list=_ROBOTWIN_TASK_LIST,
-        instruction_type='unseen',
-        eval_chunk_size=24,
-        num_trials_per_task=100,
-        seed=42,
-        unnorm_key=_STATISTIC_NAME,
-        mixed_precision_dtype='bf16',
-        save_video=False,
-        dataset=dict(
-            type='PrivateInferenceDataset',
-            img_keys=['cam_high', 'cam_left_wrist', 'cam_right_wrist'],
-            transforms=[
-                dict(
-                    type='NormalizeStatesAndActions',
-                    action_dim=_ACTION_DIM,
-                    state_dim=_STATE_DIM,
-                    state_key='proprio',
-                    action_key='action',
-                    norm_type=_ACTION_NORM_TYPE,
-                ),
-                dict(
-                    type='LiberoPromptFromInputs',
-                    tokenizer=dict(
-                        type='PretrainedTokenizer',
-                        model_path=_FASTWAM_TOKENIZER),
-                    max_len=128,
-                    use_conversation=False,
-                    prompt_template=_TEXT_PROMPT_TEMPLATE,
-                ),
-                dict(type='ResizeImages', height=256, width=320),
-                dict(type='SimpleNormalizeImages'),
-                dict(
-                    type='PrepareVideo',
-                    num_views=3,
-                    frame_window_size=1,
-                    tile_direction='top_bottom_pair',
-                    top_view=0,
-                    bottom_views=(1, 2),
-                    bottom_height_ratio=0.5,
-                ),
-            ],
-        ),
-        denormalize_action=dict(
-            type='DenormalizePrivateAction',
-            norm_type=_ACTION_NORM_TYPE,
-            action_dim=_ACTION_DIM,
-        ),
-    ), )
+    type='RobotwinEvalRunner',
+    # Evaluate clean and random suites with unseen instructions,
+    # 100 episodes per task per suite, replanning every 24 of 32 actions.
+    task_suite_name=['clean', 'random'],
+    model_family='fastwam',
+    task_list=_ROBOTWIN_TASK_LIST,
+    instruction_type='unseen',
+    eval_chunk_size=24,
+    num_trials_per_task=100,
+    seed=42,
+    unnorm_key=_STATISTIC_NAME,
+    mixed_precision_dtype='bf16',
+    save_video=False,
+    dataset=dict(
+        type='PrivateInferenceDataset',
+        img_keys=['cam_high', 'cam_left_wrist', 'cam_right_wrist'],
+        transforms=[
+            dict(
+                type='NormalizeStatesAndActions',
+                action_dim=_ACTION_DIM,
+                state_dim=_STATE_DIM,
+                state_key='proprio',
+                action_key='action',
+                norm_type=_ACTION_NORM_TYPE,
+            ),
+            dict(
+                type='LiberoPromptFromInputs',
+                tokenizer=dict(
+                    type='PretrainedTokenizer', model_path=_FASTWAM_TOKENIZER),
+                max_len=128,
+                use_conversation=False,
+                prompt_template=_TEXT_PROMPT_TEMPLATE,
+            ),
+            dict(type='ResizeImages', height=256, width=320),
+            dict(type='SimpleNormalizeImages'),
+            dict(
+                type='PrepareVideo',
+                num_views=3,
+                frame_window_size=1,
+                tile_direction='top_bottom_pair',
+                top_view=0,
+                bottom_views=(1, 2),
+                bottom_height_ratio=0.5,
+            ),
+        ],
+    ),
+    denormalize_action=dict(
+        type='DenormalizePrivateAction',
+        norm_type=_ACTION_NORM_TYPE,
+        action_dim=_ACTION_DIM,
+    ),
+)
