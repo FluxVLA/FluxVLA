@@ -76,6 +76,30 @@ class OpenAILiberoEvalDataset:
 
 
 @DATASETS.register_module()
+class OpenAIOliInferenceDataset:
+    """Adapt an Oli keypoint observation to the OpenAI policy interface."""
+
+    _KEYPOINT_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
+                       'right_wrist')
+
+    def __init__(self, image_names: List[str] = None) -> None:
+        self.image_names = image_names or ['head', 'left_wrist', 'right_wrist']
+
+    def __call__(self, inputs: Dict[str, Any]):
+        return {
+            'images': [inputs[name] for name in self.image_names],
+            'image_names': list(self.image_names),
+            'task_description': inputs['task_description'],
+            'poses': {
+                name: np.asarray(inputs[f'{name}_pose']).copy()
+                for name in self._KEYPOINT_NAMES
+            },
+            'base_pose': np.asarray(inputs['base_pose']).copy(),
+            'hands': np.asarray(inputs['hands']).copy(),
+        }
+
+
+@DATASETS.register_module()
 class OpenAIRobocasaEvalDataset:
     """Prepare native RoboCasa observations for an API-hosted policy.
 
