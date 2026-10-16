@@ -228,8 +228,7 @@ class LocalFluxVLAPolicy:
         with open(self.norm_stats_path, 'r', encoding='utf-8') as f:
             self.vla.norm_stats = json.load(f)
         if self.enable_model_dtype_cast:
-            self.vla.to(
-                device=self.device, dtype=self.mixed_precision_dtype)
+            self.vla.to(device=self.device, dtype=self.mixed_precision_dtype)
         else:
             self.vla.to(self.device)
 
@@ -641,8 +640,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
                     and payload['eval_chunk_size'] == self.eval_chunk_size and
                     payload.get('task_list', self.task_list) == self.task_list)
                 unfinished = (
-                    payload['overall']['completed_tasks']
-                    < payload['overall']['total_tasks'])
+                    payload['overall']['completed_tasks'] <
+                    payload['overall']['total_tasks'])
                 if same_config and unfinished:
                     return str(candidate)
         timestamp = time.strftime('%Y_%m_%d-%H_%M_%S')
