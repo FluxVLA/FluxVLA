@@ -1,0 +1,19 @@
+Third-Party Attribution for X-VLA
+
+Source project:
+- X-VLA
+  Repository: https://github.com/2toINF/X-VLA
+  Copyright: 2toINF
+  License: Apache-2.0
+  Vendored components: Florence-2 configuration/modeling helpers and the
+  X-VLA action-space, flow-matching, and transformer implementation.
+
+FluxVLA adaptations:
+- Registry and FSDP integration with FluxVLA.
+- Configuration and model wrappers under ``fluxvla/models``.
+- LIBERO data and evaluation adapters under ``fluxvla/transforms`` and
+  ``fluxvla/engines``.
+
+The upstream license headers and notices in the vendored source files are
+retained. See the upstream repository and its LICENSE file for the complete
+license terms.

@@ -1116,7 +1116,8 @@ class LiberoProprioFromInputs:
                  prefix: str = 'global',
                  linear_mode: str = 'min/max',
                  clamp: float = 5.0,
-                 modality_keys: Optional[List[str]] = None) -> None:
+                 modality_keys: Optional[List[str]] = None,
+                 rotation_representation: str = 'axisangle') -> None:
         if norm_type not in (None, 'none', 'linear', 'mean_std', 'quantile',
                              'min_max'):
             raise ValueError(f'Unsupported norm_type: {norm_type!r}')
@@ -1127,6 +1128,9 @@ class LiberoProprioFromInputs:
         if modality_keys is not None and state_dim is not None:
             raise ValueError(
                 'state_dim padding is not supported with modality_keys.')
+        if rotation_representation not in ('axisangle', 'rot6d'):
+            raise ValueError(
+                "rotation_representation must be 'axisangle' or 'rot6d'.")
         self.norm_type = norm_type
         self.state_dim = state_dim
         self.pos_key = pos_key
@@ -1140,6 +1144,7 @@ class LiberoProprioFromInputs:
         self.linear_mode = linear_mode
         self.clamp = float(clamp)
         self.modality_keys = tuple(modality_keys or ())
+        self.rotation_representation = rotation_representation
 
     def __call__(self, data: Dict) -> Dict:
         assert self.pos_key in data and self.quat_key in \
@@ -1158,11 +1163,18 @@ class LiberoProprioFromInputs:
             data[self.quat_key], dtype=input_dtype).reshape(-1)
         robot0_gripper_qpos = np.asarray(
             data[self.gripper_key], dtype=input_dtype).reshape(-1)
-        rotation = np.asarray(
-            quat2axisangle(robot0_eef_quat), dtype=input_dtype).reshape(-1)
-        if robot0_eef_pos.size != 3 or rotation.size != 3:
+        if self.rotation_representation == 'axisangle':
+            rotation = np.asarray(
+                quat2axisangle(robot0_eef_quat), dtype=input_dtype).reshape(-1)
+        else:
+            from scipy.spatial.transform import Rotation
+            rotation = Rotation.from_quat(robot0_eef_quat.reshape(
+                1, 4)).as_matrix()[0]
+            rotation = rotation[:, :2].T.reshape(-1).astype(input_dtype)
+        if robot0_eef_pos.size != 3 or rotation.size not in (3, 6):
             raise ValueError(
-                'LIBERO proprio expects 3D position and axis-angle rotation.')
+                'LIBERO proprio expects 3D position and 3D axis-angle or '
+                '6D rotation.')
 
         state = np.concatenate((
             robot0_eef_pos,
@@ -1191,6 +1203,10 @@ class LiberoProprioFromInputs:
 
         out = dict(data)
         if self.modality_keys:
+            if self.rotation_representation != 'axisangle':
+                raise ValueError(
+                    'modality_keys require axis-angle rotation representation.'
+                )
             split_points = [1, 2, 3, 4, 5, 6]
             values = np.split(state, split_points)
             out[self.out_key] = {
@@ -1198,6 +1214,10 @@ class LiberoProprioFromInputs:
                 for key, value in zip(self.modality_keys, values)
             }
         elif self.state_dim is not None:
+            if self.state_dim < state.shape[0]:
+                raise ValueError(
+                    f'state_dim={self.state_dim} is smaller than the '
+                    f'constructed state width {state.shape[0]}.')
             out[self.out_key] = np.zeros((self.state_dim), dtype=state.dtype)
             out[self.out_key][:state.shape[0]] = state
         else:
