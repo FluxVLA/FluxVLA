@@ -247,7 +247,7 @@ def _robocasa_task_env(task_name):
 
 
 train_dataloader = dict(
-    # DreamZeroCollator pads variable 1..4-block windows within each batch.
+    # VideoActionBlockCollator pads variable 1..4-block windows per batch.
     per_device_batch_size=2,
     per_device_num_workers=0,
     dataset=dict(
@@ -358,7 +358,7 @@ runner = dict(
     save_iter_interval=5000,
     max_keep_ckpts=8,
     collator=dict(
-        type='DreamZeroCollator',
+        type='VideoActionBlockCollator',
         video_frames_per_block=8,
         actions_per_block=_ACTION_HORIZON,
         states_per_block=1,

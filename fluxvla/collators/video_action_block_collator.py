@@ -1,5 +1,5 @@
 # Copyright 2026 Limx Dynamics
-"""Batch complete DreamZero video/action blocks without truncating samples."""
+"""Batch complete video/action blocks without truncating samples."""
 
 import torch
 
@@ -8,13 +8,13 @@ from .dict_collator import DictCollator
 
 
 @COLLATORS.register_module()
-class DreamZeroCollator(DictCollator):
+class VideoActionBlockCollator(DictCollator):
     """Right-pad temporal fields and retain each sample's valid block count.
 
-    Inputs use PrepareVideo's CTHW layout. Padding adds only whole future
-    blocks, which DreamZero's causal attention cannot expose to valid queries.
-    ``num_valid_blocks`` lets the head exclude padding from both losses while
-    preserving the per-sample weighting of unpadded training.
+    Inputs use PrepareVideo's CTHW layout with one conditioning frame.
+    Padding adds only whole future blocks for block-causal models.
+    ``num_valid_blocks`` lets consumers exclude padding from temporal losses
+    while preserving the per-sample weighting of unpadded training.
     """
 
     def __init__(self,
@@ -31,7 +31,7 @@ class DreamZeroCollator(DictCollator):
                      states_per_block):
             if not isinstance(size, int) or size <= 0:
                 raise ValueError(
-                    'DreamZero block sizes must be positive ints.')
+                    'Video/action block sizes must be positive ints.')
 
     @staticmethod
     def _pad(value, length, axis=0, repeat_last=False):
@@ -50,12 +50,13 @@ class DreamZeroCollator(DictCollator):
 
     def __call__(self, batch):
         if not batch:
-            raise ValueError('DreamZeroCollator requires a non-empty batch.')
+            raise ValueError(
+                'VideoActionBlockCollator requires a non-empty batch.')
         block_counts = []
         for index, sample in enumerate(batch):
             images = sample['images']
             if images.ndim != 4:
-                raise ValueError('DreamZero images must use [C, T, H, W].')
+                raise ValueError('Images must use [C, T, H, W].')
             frames = images.shape[1]
             blocks, remainder = divmod(frames - 1, self.video_frames_per_block)
             if blocks < 1 or remainder:

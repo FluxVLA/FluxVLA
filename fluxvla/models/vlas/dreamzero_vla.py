@@ -48,7 +48,7 @@ class DreamZeroVLA(BaseVLA):
       ``[B, action_horizon, action_dim]`` boolean.
     * ``embodiment_ids`` – ``[B]`` integer (optional, defaults to 0).
     * ``num_valid_blocks`` – ``[B]`` integer counts before temporal padding
-      (optional, supplied by DreamZeroCollator).
+      (optional, supplied by VideoActionBlockCollator).
 
     Encoding (T5, CLIP, VAE) is done by ``Wan21Backbone`` (vlm_backbone),
     then encoded tensors are passed to ``DreamZeroHead`` (vla_head).

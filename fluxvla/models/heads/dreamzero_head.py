@@ -289,7 +289,7 @@ class DreamZeroHead(nn.Module):
             action_masks: ``[B, action_horizon, action_dim]`` boolean.
             embodiment_ids: ``[B]`` integer embodiment category.
             num_valid_blocks: ``[B]`` unpadded block counts, if the batch was
-                padded by DreamZeroCollator. Padding must be at the end.
+                padded by VideoActionBlockCollator. Padding must be at the end.
 
         Returns:
             dict with ``loss``, ``dynamics_loss``, ``action_loss``.
