@@ -6,7 +6,7 @@
 # Upstream-URL: https://github.com/dreamzero0/dreamzero/blob/main/groot/vla/model/dreamzero/modules/flow_unipc_multistep_scheduler.py
 # Upstream-Ref: main
 # SPDX-License-Identifier: Apache-2.0
-# Notes: Attribution normalized; no functional change.
+# Notes: Initialize schedules on CPU; set_timesteps selects the inference device.
 
 import math
 from typing import List, Optional, Tuple, Union
@@ -109,8 +109,9 @@ class FlowUniPCMultistepScheduler(SchedulerMixin, ConfigMixin):
         alphas = np.linspace(1, 1 / num_train_timesteps,
                              num_train_timesteps)[::-1].copy()
         sigmas = 1.0 - alphas
-        sigmas = torch.from_numpy(sigmas).to(
-            dtype=torch.float32, device='cuda')
+        # Do not initialize CUDA before the caller selects the sample device
+        # through set_timesteps. Schedule construction also works on CPU.
+        sigmas = torch.from_numpy(sigmas).to(dtype=torch.float32)
 
         if not use_dynamic_shifting:
             # when use_dynamic_shifting is True, we apply the timestep shifting on the fly based on the image resolution
