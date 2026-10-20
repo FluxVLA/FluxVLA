@@ -30,11 +30,13 @@ RLinf environment -> registered Flux adapter -> registered Flux RL policy
   -> RLinf PPO/FSDP2 update -> weight sync -> rollout policy
 ```
 
-`FluxPI05RLPolicy` trains the action expert, action/time projections and value
-head while keeping the vision/language prefix frozen. Training samples one
-Gaussian flow-SDE transition and stores its FP32 latent chain; the actor
-recomputes that same transition without resampling. Evaluation uses the normal
-PI0.5 ODE path.
+`FluxPI05RLPolicy` and `FluxSmolVLARLPolicy` train their action expert,
+action/time projections and value head while keeping the vision/language
+prefix frozen. Training samples one Gaussian flow-SDE transition and stores
+its FP32 latent chain; the actor recomputes that same transition without
+resampling. Evaluation uses each model's normal ODE path. PI0.5 supports
+LIBERO-10 and RoboTwin `adjust_bottle`; SmolVLA currently supports LIBERO-10
+only.
 
 OpenPI precision behavior lives in the PI0.5, SigLIP and Gemma implementations,
 not in an RL-only monkey patch. Actor and rollout retain FP32 master weights,
@@ -47,6 +49,7 @@ RL configuration is composed from one model and one simulator:
 ```text
 configs/rl/default.yaml
 configs/rl/model/pi05.yaml
+configs/rl/model/smolvla.yaml
 configs/rl/simulator/libero10.yaml
 configs/rl/simulator/robotwin_adjust_bottle.yaml
 ```
@@ -55,6 +58,10 @@ configs/rl/simulator/robotwin_adjust_bottle.yaml
 # Resolve configuration without starting Ray.
 python scripts/rl_train.py model=pi05 simulator=libero10 \
   actor.model.model_path=/path/to/sft --cfg job --resolve
+
+# SmolVLA uses the same runner and LIBERO adapter.
+python scripts/rl_train.py model=smolvla simulator=libero10 \
+  actor.model.model_path=/path/to/smolvla_sft
 
 # Integration gate: real rollout, PPO update, sync and checkpoint restore.
 python scripts/rl_train.py --preflight model=pi05 \
@@ -71,6 +78,10 @@ Hydra overrides. To add a model, add one registered RL-capable VLA builder and
 one model config. To add a simulator, add registered observation/action
 processor classes and one simulator config; do not create product configs for
 every model/simulator/train/eval combination.
+
+SmolVLA + RoboTwin is rejected during configuration validation. Its LeRobot
+normalization, tokenizer, absolute-action and image preprocessing contract must
+be implemented and tested before that combination is enabled.
 
 ## Checkpoints and audit rules
 

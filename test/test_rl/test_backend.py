@@ -50,6 +50,32 @@ def test_config_composes_and_backend_validation(tiny_assets, monkeypatch):
     assert validated.runner.weight_sync_interval == 1
 
 
+def test_smolvla_libero_config_and_robotwin_guard(tiny_assets):
+    RLinfTrainRunner.prepare_environment()
+    with initialize_config_dir(
+            version_base='1.3', config_dir=str(ROOT / 'configs/rl')):
+        cfg = compose(
+            config_name='default',
+            overrides=[
+                'model=smolvla', 'simulator=libero10',
+                f'actor.model.model_path={tiny_assets[2]}'
+            ])
+        robotwin = compose(
+            config_name='default',
+            overrides=[
+                'model=smolvla', 'simulator=robotwin_adjust_bottle',
+                f'actor.model.model_path={tiny_assets[2]}'
+            ])
+    OmegaConf.resolve(cfg)
+    RLinfTrainRunner.validate_frontend_cfg(cfg)
+    assert cfg.actor.model.model_type == 'fluxvla_smolvla'
+    assert cfg.actor.fsdp_config.wrap_policy.transformer_layer_cls_to_wrap == [
+        'SmolVLMEncoderLayer'
+    ]
+    with pytest.raises(ValueError, match='LIBERO-10 only'):
+        RLinfTrainRunner.validate_frontend_cfg(robotwin)
+
+
 def test_driver_and_fresh_worker_extension_registration(model_cfg):
     register()
     from rlinf.models import get_model
@@ -57,6 +83,8 @@ def test_driver_and_fresh_worker_extension_registration(model_cfg):
     from fluxvla.engines import VLAS
 
     assert VLAS.get('FluxPI05RLPolicy') is not None
+    from fluxvla.models.vlas.smolvla_rl_policy import FluxSmolVLARLPolicy
+    assert VLAS.get('FluxSmolVLARLPolicy') is FluxSmolVLARLPolicy
     policy = get_model(model_cfg)
     assert type(policy).__name__ == 'FluxPI05RLPolicy'
     code = '''
@@ -65,7 +93,9 @@ load_user_extension_module()
 from rlinf.models import _MODEL_REGISTRY
 from rlinf.config import SupportedModel, EMBODIED_MODEL
 assert "fluxvla_pi05" in _MODEL_REGISTRY
+assert "fluxvla_smolvla" in _MODEL_REGISTRY
 assert SupportedModel("fluxvla_pi05") in EMBODIED_MODEL
+assert SupportedModel("fluxvla_smolvla") in EMBODIED_MODEL
 '''
     env = dict(
         os.environ, RLINF_EXT_MODULE='fluxvla.engines.runners.rlinf.registry')

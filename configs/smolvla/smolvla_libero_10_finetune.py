@@ -12,6 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# PI0.5 and SmolVLA use the exact same libero_10_no_noops dataset. Keep one
+# audited copy of its terminal-padding-excluded normalization statistics.
+from configs.pi05.pi05_paligemma_libero_10_full_finetune import \
+    _PI05_LIBERO_10_STATS as _LIBERO_10_STATS
+
 model = dict(
     type='SmolVLAFlowMatching',
     vlm_backbone=dict(
@@ -88,6 +93,7 @@ train_dataloader = dict(
     per_device_num_workers=4,
     dataset=dict(
         type='DistributedRepeatingDataset',
+        dataset_statistics=_LIBERO_10_STATS,
         name_mappings={
             'observation.state': ['proprio'],
             'action': ['action']

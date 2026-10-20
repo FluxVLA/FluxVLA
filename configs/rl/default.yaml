@@ -123,8 +123,8 @@ actor:
     use_orig_params: true
     gradient_checkpointing: false
     wrap_policy:
-      transformer_layer_cls_to_wrap: [GemmaDecoderLayer, SiglipEncoderLayer]
-      module_classes_to_wrap: [LinearProjector, ValueHead]
+      transformer_layer_cls_to_wrap: ${actor.model.fsdp_wrap_policy.transformer_layer_cls_to_wrap}
+      module_classes_to_wrap: ${actor.model.fsdp_wrap_policy.module_classes_to_wrap}
     mixed_precision:
       # Autocast inside the policy supplies BF16 matmul/conv compute. Keep
       # gathered parameters FP32 too, matching rollout's embeddings/norms.

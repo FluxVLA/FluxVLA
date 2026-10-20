@@ -22,7 +22,7 @@ simulator:
 
 runner:
   logger:
-    experiment_name: libero_10_ppo_fluxvla_pi05
+    experiment_name: libero_10_ppo_${actor.model.experiment_tag}
 
 env:
   train:

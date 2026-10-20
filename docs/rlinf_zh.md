@@ -30,10 +30,11 @@ RLinf 环境 -> 已注册的 Flux adapter -> 已注册的 Flux RL policy
   -> RLinf PPO/FSDP2 更新 -> 权重同步 -> rollout policy
 ```
 
-`FluxPI05RLPolicy` 训练 action expert、动作/时间投影层和 value head，同时冻结
-视觉/语言 prefix。训练时采样一次高斯 flow-SDE transition，并保存对应的 FP32
-隐变量链；actor 会重算同一个 transition，而不会重新采样。评测时使用普通的
-PI0.5 ODE 路径。
+`FluxPI05RLPolicy` 和 `FluxSmolVLARLPolicy` 都只训练各自的 action expert、
+动作/时间投影层和 value head，同时冻结视觉/语言 prefix。训练时采样一次高斯
+flow-SDE transition，并保存对应的 FP32 隐变量链；actor 会重算同一个
+transition，而不会重新采样。评测时使用各模型原生的 ODE 路径。PI0.5 支持
+LIBERO-10 和 RoboTwin `adjust_bottle`；SmolVLA 目前仅支持 LIBERO-10。
 
 OpenPI 的精度行为直接实现在 PI0.5、SigLIP 和 Gemma 中，不使用仅供 RL 使用
 的 monkey patch。Actor 和 rollout 保留 FP32 master weights，网络计算可以使用
@@ -46,6 +47,7 @@ RL 配置由一个模型配置和一个仿真器配置组合而成：
 ```text
 configs/rl/default.yaml
 configs/rl/model/pi05.yaml
+configs/rl/model/smolvla.yaml
 configs/rl/simulator/libero10.yaml
 configs/rl/simulator/robotwin_adjust_bottle.yaml
 ```
@@ -54,6 +56,10 @@ configs/rl/simulator/robotwin_adjust_bottle.yaml
 # 解析配置但不启动 Ray。
 python scripts/rl_train.py model=pi05 simulator=libero10 \
   actor.model.model_path=/path/to/sft --cfg job --resolve
+
+# SmolVLA 复用同一个 runner 和 LIBERO adapter。
+python scripts/rl_train.py model=smolvla simulator=libero10 \
+  actor.model.model_path=/path/to/smolvla_sft
 
 # 集成检查：执行真实 rollout、PPO 更新、权重同步和 checkpoint 恢复。
 python scripts/rl_train.py --preflight model=pi05 \
@@ -69,6 +75,10 @@ GPU placement、batch size、checkpoint 路径和实验名称均使用普通 Hyd
 设置。增加新模型时，只需新增一个已注册且支持 RL 的 VLA builder 和一个模型
 配置。增加新仿真器时，只需新增已注册的 observation/action processor 和一个
 仿真器配置；不要为每种模型、仿真器及 train/eval 组合创建乘积配置。
+
+配置校验会明确拒绝 SmolVLA + RoboTwin。在启用该组合前，需要单独实现并验证
+它的 LeRobot 归一化、tokenizer、绝对动作以及图像预处理约定，不能直接复用
+PI0.5 的 RoboTwin adapter。
 
 ## Checkpoint 与审计规则
 
