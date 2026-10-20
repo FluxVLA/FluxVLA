@@ -1,0 +1,5 @@
+# Expert/text layers are called through submodules rather than decoder
+# forward; keep their weights in the root FSDP2 shard.
+wrap_policy:
+  transformer_layer_cls_to_wrap: [SmolVLMEncoderLayer]
+  module_classes_to_wrap: [LinearProjector, ValueHead]

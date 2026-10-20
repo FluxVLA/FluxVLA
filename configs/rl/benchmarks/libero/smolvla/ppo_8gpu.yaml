@@ -1,0 +1,55 @@
+# @package _global_
+
+defaults:
+  - /benchmarks/libero/smolvla/base
+  - _self_
+
+hydra:
+  searchpath:
+    - file://${oc.env:RLINF_CONFIG_DIR}
+
+experiment:
+  audit_actor: true
+  probability_tolerance: 0.0001
+  paired_eval_seed: 20260920
+  placement:
+    actor: 0-3
+    rollout: 4-5
+    env: 6-7
+
+cluster:
+  component_placement: ${experiment.placement}
+
+runner:
+  max_epochs: 200
+  max_steps: 200
+  save_interval: 10
+  val_check_interval: 10
+  resume_dir: null
+  logger:
+    experiment_name: smolvla_libero10_8gpu_200
+    project_name: fluxvla-rl-smolvla
+    logger_backends: [wandb]
+
+algorithm:
+  update_epoch: 2
+
+actor:
+  seed: 1234
+  micro_batch_size: 2
+  global_batch_size: 128
+  fsdp_config:
+    enable_gradient_accumulation: false
+
+env:
+  train:
+    seed: 1234
+    total_num_envs: 32
+    rollout_epoch: 1
+  eval:
+    seed: 20260920
+    total_num_envs: 10
+    rollout_epoch: 10
+    auto_reset: true
+    ignore_terminations: true
+    use_ordered_reset_state_ids: true

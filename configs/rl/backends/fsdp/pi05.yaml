@@ -1,0 +1,4 @@
+# Model-specific wrapping; common FSDP settings live in base/ppo.yaml.
+wrap_policy:
+  transformer_layer_cls_to_wrap: [GemmaDecoderLayer, SiglipEncoderLayer]
+  module_classes_to_wrap: [LinearProjector, ValueHead]
