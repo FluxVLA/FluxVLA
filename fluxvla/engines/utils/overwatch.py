@@ -333,5 +333,8 @@ def initialize_overwatch(
         Union[DistributedOverwatch, PureOverwatch]: An appropriate logger based
         on `WORLD_SIZE` env.
     """
+    # RLinf owns process-group initialization for its external workers.
+    if os.environ.get('FLUX_RL_EXTERNAL_DISTRIBUTED') == '1':
+        return PureOverwatch(name)
     return DistributedOverwatch(name) if int(os.environ.get(
         'WORLD_SIZE', -1)) != -1 else PureOverwatch(name)
