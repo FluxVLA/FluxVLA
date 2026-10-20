@@ -62,8 +62,11 @@ class RLinfTrainRunner:
         if cfg.runner.get('only_eval', False) != evaluation:
             expected = 'true' if evaluation else 'false'
             raise ValueError(f'runner.only_eval must be {expected}')
-        if cfg.actor.model.model_type != 'fluxvla_pi05':
-            raise ValueError('Expected actor.model.model_type=fluxvla_pi05')
+        model_type = cfg.actor.model.model_type
+        supported_models = {'fluxvla_pi05', 'fluxvla_smolvla'}
+        if model_type not in supported_models:
+            raise ValueError(
+                f'Unsupported actor.model.model_type={model_type}')
         if (cfg.actor.model.precision != 'fp32'
                 or cfg.rollout.model.precision != 'fp32'):
             raise ValueError('Actor and rollout master weights must stay FP32')
@@ -86,6 +89,11 @@ class RLinfTrainRunner:
         for phase in ('train', 'eval'):
             env = cfg.env[phase]
             if env.env_type == 'robotwin':
+                if model_type == 'fluxvla_smolvla':
+                    raise ValueError(
+                        'SmolVLA RL currently supports LIBERO-10 only; its '
+                        'RoboTwin preprocessing/action contract is not yet '
+                        'implemented')
                 if (cfg.actor.model.fluxvla.rollout_micro_batch_size !=
                         cfg.actor.micro_batch_size):
                     raise ValueError(

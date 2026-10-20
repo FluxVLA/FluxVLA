@@ -40,7 +40,7 @@ class LiberoRLAdapter:
             transforms['LiberoProprioFromInputs'])
         if self.state_transform.norm_type != 'mean_std':
             raise ValueError(
-                'PI0.5 LIBERO v1 requires mean_std proprio normalization')
+                'FluxVLA LIBERO RL requires mean_std proprio normalization')
         self.state_stats = self.stats[self.stats_key][
             self.state_transform.stat_key]
         self.state_dim = self.state_transform.state_dim
