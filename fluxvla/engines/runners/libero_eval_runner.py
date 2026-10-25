@@ -19,7 +19,7 @@ import math
 import os
 import time
 from pathlib import Path
-from typing import Dict
+from typing import Dict, Optional
 
 import torch
 import torch.distributed as dist
@@ -441,7 +441,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                  result_output_dir: str = None,
                  result_gpu_id: int = None,
                  mixed_precision_dtype: str = 'bf16',
-                 enable_mixed_precision_training: bool = True):
+                 enable_mixed_precision_training: bool = True,
+                 controller_use_delta: Optional[bool] = None):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
@@ -550,6 +551,7 @@ class LiberoEvalRunner(BaseEvalRunner):
             if result_output_dir is not None else None)
         self.result_gpu_id = (
             self.device_id if result_gpu_id is None else int(result_gpu_id))
+        self.controller_use_delta = controller_use_delta
 
         if data_stat_path is not None and os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
@@ -761,6 +763,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_start_times[task_id] = min(task_start_times[task_id],
                                                 episode_start)
                 done = False
+                controller_delta_applied = False
                 while t < max_steps + self.num_steps_wait:
                     # IMPORTANT: Do nothing for the first
                     # few timesteps
@@ -782,6 +785,17 @@ class LiberoEvalRunner(BaseEvalRunner):
                     else:
                         batch = next_batch
                         next_batch = None
+                    if not controller_delta_applied:
+                        configure_eval_env = getattr(self.vla,
+                                                     'configure_eval_env',
+                                                     None)
+                        if callable(configure_eval_env):
+                            configure_eval_env(env, self.controller_use_delta)
+                        elif self.controller_use_delta is not None:
+                            raise RuntimeError(
+                                'controller_use_delta requires the VLA to '
+                                'implement configure_eval_env().')
+                        controller_delta_applied = True
                     is_new_episode = False
                     batch['unnorm_key'] = unnorm_key
                     predict_kwargs = dict(batch)
@@ -790,6 +804,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                             self.num_inference_steps
                     if self.inference_seed is not None:
                         predict_kwargs['seed'] = self.inference_seed
+                    build_eval_kwargs = getattr(
+                        self.vla, 'build_eval_predict_action_kwargs', None)
+                    if callable(build_eval_kwargs):
+                        predict_kwargs.update(
+                            build_eval_kwargs(batch, env=env))
                     with torch.autocast(
                             'cuda',
                             dtype=self.mixed_precision_dtype,
@@ -812,6 +831,11 @@ class LiberoEvalRunner(BaseEvalRunner):
                         action_denormed = self.denormalize_action(inputs)
                         obs, reward, done, info = env.step(
                             action_denormed.tolist())
+                        after_eval_env_step = getattr(self.vla,
+                                                      'after_eval_env_step',
+                                                      None)
+                        if callable(after_eval_env_step):
+                            after_eval_env_step(action)
                         if done:
                             total_successes += 1
                             rank_success_count += 1
