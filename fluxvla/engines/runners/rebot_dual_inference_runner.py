@@ -13,11 +13,13 @@
 # limitations under the License.
 """Inference runner for a dual-arm reBot."""
 
+import time
 from typing import Dict
 
 import numpy as np
 
 from fluxvla.engines.utils.root import RUNNERS
+from fluxvla.engines.utils.trajectory_utils import resample_remaining
 from .base_inference_runner import BaseInferenceRunner
 
 
@@ -25,7 +27,14 @@ from .base_inference_runner import BaseInferenceRunner
 class RebotDualInferenceRunner(BaseInferenceRunner):
     """Run the reBot 14-D observation and joint-command loop."""
 
-    def __init__(self, prepare_pose=None, *args, **kwargs):
+    def __init__(self,
+                 prepare_pose=None,
+                 async_execution=False,
+                 execute_horizon=None,
+                 *args,
+                 **kwargs):
+        self.async_execution = async_execution
+        self.execute_horizon = execute_horizon
         if 'camera_names' not in kwargs or kwargs['camera_names'] is None:
             kwargs['camera_names'] = [
                 'cam_front', 'cam_wrist_left', 'cam_wrist_right'
@@ -107,8 +116,12 @@ class RebotDualInferenceRunner(BaseInferenceRunner):
             self.ros_operator.gohome(self.prepare_pose)
             self.observation_window = None
 
+    def _predict_action(self, inputs):
+        self._action_ctx.inference_start = time.time()
+        return super()._predict_action(inputs)
+
     def _execute_actions(self, actions, rate):
-        """Execute a 14-D action chunk as two seven-joint trajectories."""
+        """Execute a 14-D action chunk synchronously or asynchronously."""
         del rate
         if self.disable_puppet_arm:
             return
@@ -117,12 +130,27 @@ class RebotDualInferenceRunner(BaseInferenceRunner):
             raise ValueError(
                 f'reBot actions must have shape [T, >=14], got {actions.shape}'
             )
+
+        ctx = self._action_ctx
+        if self.async_execution and self._prev_ctx is not None:
+            ctx.action_timestamp = ctx.inference_start
+            offset = (time.time() - ctx.action_timestamp) / self.dt
+            actions = resample_remaining(actions, offset)
+        else:
+            ctx.action_timestamp = time.time()
+            if self.execute_horizon is not None:
+                actions = actions[:self.execute_horizon]
+
         self.ros_operator.execute_trajectory(
             arm_trajectories={
                 'left': actions[:, :7],
                 'right': actions[:, 7:14],
             },
-            dt=self.dt)
+            dt=self.dt,
+            async_exec=self.async_execution)
+
+        if self.async_execution and self.execute_horizon is not None:
+            time.sleep(self.execute_horizon * self.dt)
 
     def cleanup(self):
         """Stop an active trajectory before base runner cleanup."""

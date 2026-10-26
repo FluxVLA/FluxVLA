@@ -46,11 +46,15 @@ def _write_dataset(dataset_root):
     pq.write_table(table, dataset_root / 'data' / 'episode.parquet')
 
 
-def test_compute_transformed_statistics_from_dataset_config(tmp_path):
+@pytest.mark.parametrize('dataset_type',
+                         ('ParquetDataset', 'ParquetDatasetV3'))
+def test_compute_transformed_statistics_from_dataset_config(
+        tmp_path, dataset_type):
     dataset_root = tmp_path / 'dataset'
     _write_dataset(dataset_root)
 
     config = _wrapper_config(dataset_root)
+    config.datasets.type = dataset_type
     stats, metadata = compute_statistics_from_dataset_config(
         config, config.auto_compute_statistics, default_temp_dir=tmp_path)
 

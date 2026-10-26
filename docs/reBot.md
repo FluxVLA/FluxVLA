@@ -24,7 +24,7 @@ ______________________________________________________________________
 
 - Ubuntu 20.04
 - ROS1 Noetic
-- Conda environment: `~/miniconda3/envs/lerobot_bimanual`
+- Conda environment: `lerobot_bimanual`
 - Two reBot 102 leader arms
 - Two reBot B601-DM follower arms
 - Intel RealSense D455 front camera and two D405 wrist cameras
@@ -35,9 +35,26 @@ Parquet collection and a separate conversion pass are not required.
 
 ## 2. Workspace Setup
 
+Create the environment from the FluxVLA checkout:
+
+```bash
+cd ~/FluxVLA
+conda create -n lerobot_bimanual python=3.10 -y
+conda activate lerobot_bimanual
+bash scripts/install_env.sh real-only
+```
+
+The public reBot hardware and control source is
+[Seeed-Projects/reBot-DevArm](https://github.com/Seeed-Projects/reBot-DevArm).
+The `rebot_bimanual_ros` ROS1 integration used below is deployment-specific;
+it is not included in FluxVLA or the upstream reBot repository. Obtain that
+package from the deployment maintainer and place it at
+`~/reBot/rebot_ros1_ws/src/rebot_bimanual_ros` before building the workspace.
+
 ```bash
 cd ~/reBot/rebot_ros1_ws
 source /opt/ros/noetic/setup.bash
+conda activate lerobot_bimanual
 catkin_make
 source devel/setup.bash
 ```
@@ -46,6 +63,7 @@ Each new terminal must source ROS and the workspace:
 
 ```bash
 source /opt/ros/noetic/setup.bash
+conda activate lerobot_bimanual
 source ~/reBot/rebot_ros1_ws/devel/setup.bash
 ```
 
@@ -219,9 +237,12 @@ images: cam_front, cam_wrist_left, cam_wrist_right
 state/action dimension: 14 (padded internally to the model maximum)
 ```
 
-The standalone inference config is
-`configs/pi05/pi05_rebot_dual_inference.py`. It does not inherit another
-robot config. Before launch, provide:
+The reBot config is `configs/pi05/pi05_rebot_dual_inference.py`. It contains
+both the LeRobot v3 fine-tuning recipe and real-robot inference settings, and
+does not inherit another robot config. Replace the placeholder training path
+`./datasets/RealRobot_reBot_lerobot_v3/rebot_example` with the local dataset
+path, then start training with the standard `scripts/train.py` command. Before
+inference, provide:
 
 ```text
 checkpoints/pi05_base/                    tokenizer assets
