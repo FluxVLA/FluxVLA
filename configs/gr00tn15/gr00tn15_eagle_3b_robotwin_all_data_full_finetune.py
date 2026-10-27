@@ -155,8 +155,8 @@ train_dataloader = dict(
             dict(
                 type='ParquetDataset',
                 data_root_path=[
-                    'datasets/robotwin_clean_lerobotv2.1',
-                    'datasets/robotwin_randomized_lerobotv2.1',
+                    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+                    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
                 ],
                 transforms=[
                     dict(

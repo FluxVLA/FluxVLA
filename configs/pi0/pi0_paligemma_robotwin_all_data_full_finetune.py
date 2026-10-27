@@ -40,8 +40,8 @@ Evaluation defaults to all 50 tasks in both clean and random suites.
 _PI0_CHECKPOINT = './checkpoints/pi0_base/model.safetensors'
 _PI0_TOKENIZER = 'checkpoints/pi0_base'
 _ROBOTWIN_DATA_ROOTS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 
 # Joint dims are deltas w.r.t. the current state; grippers stay absolute.

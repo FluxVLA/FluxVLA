@@ -23,8 +23,8 @@ Evaluation defaults to all 50 tasks in both clean and random suites.
 """
 
 _ROBOTWIN_DATA_ROOTS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 
 # All 50 RoboTwin tasks, matching the upstream RoboTwin benchmark.

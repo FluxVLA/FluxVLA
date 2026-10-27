@@ -143,8 +143,8 @@ _TASK_NAMES = [
     'turn_switch',
 ]
 _DATA_PATHS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 
 _N17_MODALITY_CONFIGS = dict(

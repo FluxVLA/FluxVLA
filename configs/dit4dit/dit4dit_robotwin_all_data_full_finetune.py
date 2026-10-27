@@ -11,8 +11,8 @@ Evaluate clean and random scenes sequentially by default.
 """
 
 _DATA_ROOTS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 _TOKENIZER_PATH = './checkpoints/Cosmos-Predict2.5-2B/tokenizer'
 

@@ -52,8 +52,8 @@ _ACTION_NORM_TYPE = 'mean_std'
 
 # Train jointly on the merged clean + randomized RoboTwin LeRobot sets.
 _ROBOTWIN_DATA_ROOTS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 _STATISTIC_NAME = 'robotwin_all'
 _TEXT_PROMPT_TEMPLATE = (
