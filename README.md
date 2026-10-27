@@ -108,16 +108,16 @@ the same evaluation seed (`0`), rather than averages over multiple seeds.
 The supplied configs use `unseen` instructions. Scores are success rates (%);
 `Average` is the mean of Clean and Random, with links to model checkpoints.
 
-| Model | Clean | Random | Average |
-| ----- | ----: | -----: | ------: |
-| FluxVLA(PI0) | 68.26 | 67.76 | [68.01](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robotwin_all_data_full_finetune_bs128) |
-| FluxVLA(Cosmos3) | 82.40 | 77.96 | [80.18](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robotwin_all_data_full_finetune_bs1024) |
-| FluxVLA(PI0.5) | 81.04 | 83.56 | [82.30](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_all_data_full_finetune_bs128) |
-| FluxVLA(SmolVLA) | 87.02 | 85.88 | [86.45](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robotwin_all_data_full_finetune_bs512) |
-| FluxVLA(GR00T N1.5) | 89.34 | 88.34 | [88.84](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128) |
-| FluxVLA(GR00T N1.7) | 88.70 | 89.14 | [88.92](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robotwin_all_data_full_finetune_bs256) |
-| FluxVLA(DiT4DiT) | 90.78 | 89.54 | [90.16](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robotwin_all_data_full_finetune_bs256) |
-| FluxVLA(FastWAM) | **90.86** | **89.96** | [**90.41**](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robotwin_all_data_full_finetune_bs256) |
+| Model               |     Clean |    Random |                                                                                                                         Average |
+| ------------------- | --------: | --------: | ------------------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(PI0)        |     68.26 |     67.76 |        [68.01](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(Cosmos3)    |     82.40 |     77.96 |        [80.18](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robotwin_all_data_full_finetune_bs1024) |
+| FluxVLA(PI0.5)      |     81.04 |     83.56 |       [82.30](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(SmolVLA)    |     87.02 |     85.88 |              [86.45](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robotwin_all_data_full_finetune_bs512) |
+| FluxVLA(GR00T N1.5) |     89.34 |     88.34 |       [88.84](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(GR00T N1.7) |     88.70 |     89.14 | [88.92](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(DiT4DiT)    |     90.78 |     89.54 |              [90.16](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(FastWAM)    | **90.86** | **89.96** |          [**90.41**](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robotwin_all_data_full_finetune_bs256) |
 
 ## 📢 Latest News
 
@@ -611,21 +611,21 @@ Note: event files are saved to `{work_dir}/tensorboard/{run_id}/` per run, enabl
 
 Download the required datasets and place them under `./datasets`. Download only the datasets you need according to your configuration.
 
-| Dataset                 | Download link                                                                                                                                                                |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)         |
-| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1)       |
-| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)                 |
-| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)             |
-| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                 |
-| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                   |
-| RoboTwin Clean | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1) |
-| RoboTwin Random | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1) |
-| RoboDojo                | [RoboDojo-Benchmark/RoboDojo (LeRobot v2.1)](https://huggingface.co/datasets/RoboDojo-Benchmark/RoboDojo/tree/main/data/RoboDojo_lerobot_v21_video)                          |
-| ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0) |
-| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)           |
-| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                   |
-| RealRobot_Franka_dual   | [limxdynamics/FluxVLAData/RealRobot_Franka_dual_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_Franka_dual_lerobot_v2)             |
+| Dataset                 | Download link                                                                                                                                                                                            |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)                                     |
+| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1)                                   |
+| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)                                             |
+| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)                                         |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                                             |
+| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                                               |
+| RoboTwin Clean          | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1)           |
+| RoboTwin Random         | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1) |
+| RoboDojo                | [RoboDojo-Benchmark/RoboDojo (LeRobot v2.1)](https://huggingface.co/datasets/RoboDojo-Benchmark/RoboDojo/tree/main/data/RoboDojo_lerobot_v21_video)                                                      |
+| ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0)                             |
+| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)                                       |
+| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                                               |
+| RealRobot_Franka_dual   | [limxdynamics/FluxVLAData/RealRobot_Franka_dual_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_Franka_dual_lerobot_v2)                                         |
 
 For example, download the `libero-10` dataset:
 
