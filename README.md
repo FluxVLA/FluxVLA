@@ -38,6 +38,8 @@ FluxVLA Engine is a full-stack, end-to-end engineering platform for deploying em
 
 ## Performance
 
+#### LIBERO
+
 | Codebase                         |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                      Libero-Long                                                      |                                                Libero-Average                                                |
 | -------------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------: |
 | FluxVLA(SmolVLA)                 |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |       [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)        |                                                     84.7                                                     |
@@ -90,7 +92,38 @@ The full RoboDojo evaluation covers 42 benchmark tasks. Each of the 30 standalon
 | FluxVLA(PI0)          |                   [5.96 / 3.37%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robodojo_full_finetune_bs256) |  13.05 / 9.67% | 0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% | 0.00 / 0.00% |
 | FluxVLA(PI0.5)        |                 [13.61 / 8.83%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robodojo_full_finetune_bs256) | 22.65 / 16.00% | 6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% | 2.20 / 2.00% |
 
+#### RoboTwin
+
+We use a multi-task training setting also adopted by
+[Motus](https://arxiv.org/html/2512.13030v1#S5.SS2),
+[LingBot-VA](https://arxiv.org/html/2601.21998v2#S4.SS3.SSS2), and
+[StarVLA](https://arxiv.org/html/2604.05014v1#S5.SS4): one policy is trained
+across all 50 tasks using 50 clean and 500 randomized demonstrations per task.
+This differs from the original RoboTwin benchmark's single-task training with
+50 clean demonstrations per task.
+
+We evaluate with the official RoboTwin scripts using 100 episodes per task in
+each of the Clean (Easy) and Random (Hard) settings. All reported results use
+the same evaluation seed (`0`), rather than averages over multiple seeds.
+The supplied configs use `unseen` instructions. Scores are success rates (%);
+`Average` is the mean of Clean and Random, with links to model checkpoints.
+
+| Model | Clean | Random | Average |
+| ----- | ----: | -----: | ------: |
+| FluxVLA(PI0) | 68.26 | 67.76 | [68.01](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(Cosmos3) | 82.40 | 77.96 | [80.18](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robotwin_all_data_full_finetune_bs1024) |
+| FluxVLA(PI0.5) | 81.04 | 83.56 | [82.30](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(SmolVLA) | 87.02 | 85.88 | [86.45](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robotwin_all_data_full_finetune_bs512) |
+| FluxVLA(GR00T N1.5) | 89.34 | 88.34 | [88.84](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(GR00T N1.7) | 88.70 | 89.14 | [88.92](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(DiT4DiT) | 90.78 | 89.54 | [90.16](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(FastWAM) | **90.86** | **89.96** | [**90.41**](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robotwin_all_data_full_finetune_bs256) |
+
 ## 📢 Latest News
+
+**\[2026/10/27\]** 🔥 RoboTwin evaluation is now supported.
+
+**\[2026/10/24\]** 🔥 FluxVLA now supports MiniMax M3.1 Flash evaluation on LIBERO and RoboCasa GR1 through Anthropic-compatible Messages and OpenAI-compatible Chat Completions and Responses APIs.
 
 **\[2026/10/15\]** 🔥 RoboDojo evaluation is now supported through [FluxThemis](https://github.com/FluxVLA/FluxThemis).
 
@@ -160,15 +193,27 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>If the installer has issues: check modes and CUDA profile selection</b></summary>
 
-`sim-only` installs simulation / LIBERO / RoboCasa runtime dependencies plus
-the pinned RoboCasa source checkouts under `./src`, `real-only` installs
-real-robot and remote-inference dependencies, and `full` installs both. Pass
-`--skip-robocasa` if you do not need the RoboCasa checkouts.
-RoboCasa simulator assets are downloaded by default whenever the installer
-installs the RoboCasa source checkouts (`sim-only`, `full`, or `real-only --with-robocasa`). The installer calls `scripts/download_robocasa_assets.py`
-and uses `FLUXVLA_ROBOCASA_ASSET_ENDPOINT` (default: `HF_ENDPOINT`, then
-`https://hf-mirror.com`). Use `--skip-robocasa-assets` to skip only the assets,
-or `--skip-robocasa` to skip both the source checkouts and the assets.
+`sim-only` installs simulation runtime dependencies for LIBERO, RoboCasa,
+and RoboTwin; `real-only` installs real-robot and remote-inference dependencies;
+`full` installs both. Additional simulator setup is handled as follows:
+
+- **RoboCasa:** The pinned source checkouts under `./src` and simulator assets
+  are installed by default in `sim-only` and `full`, or with
+  `real-only --with-robocasa`. Assets are downloaded by
+  `scripts/download_robocasa_assets.py` using `FLUXVLA_ROBOCASA_ASSET_ENDPOINT`
+  (default: `HF_ENDPOINT`, then `https://hf-mirror.com`). Use
+  `--skip-robocasa-assets` to skip only the assets, or `--skip-robocasa` to skip
+  both the source checkouts and assets.
+- **RoboTwin:** `sim-only` and `full` install Python dependencies by default.
+  In the default `auto` mode, an existing cuRobo source directory triggers
+  its build (compatible PyTorch required) and asset/path setup for an existing
+  RoboTwin checkout. Add `--with-robotwin --profile cu128` to also fetch missing
+  pinned sources, prepare missing assets and embodiment paths, and build cuRobo
+  for PyTorch 2.8 (requires `nvcc`). Use `--skip-robotwin` to skip these setup
+  steps while retaining Python dependency installation.
+  The default checkout is `src/RoboTwin`. For a custom location, set
+  `FLUXVLA_ROBOTWIN_ROOT` during installation and `ROBOTWIN_ROOT` to the same
+  path during evaluation.
 
 The installer selects a CUDA PyTorch profile automatically from the current
 CUDA toolkit / `nvcc` version first: CUDA >= 12.8 selects `cu128`, otherwise it
@@ -574,6 +619,8 @@ Download the required datasets and place them under `./datasets`. Download only 
 | libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)             |
 | RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                 |
 | RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                   |
+| RoboTwin Clean | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1) |
+| RoboTwin Random | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1) |
 | RoboDojo                | [RoboDojo-Benchmark/RoboDojo (LeRobot v2.1)](https://huggingface.co/datasets/RoboDojo-Benchmark/RoboDojo/tree/main/data/RoboDojo_lerobot_v21_video)                          |
 | ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0) |
 | RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)           |
@@ -601,6 +648,22 @@ huggingface-cli download limxdynamics/FluxVLAData \
 
 For full-data RoboCasa GR1 training, replace the include pattern with
 `robocasa_lerobot_V2.1/*`.
+
+For RoboTwin training, download both Clean and Randomized datasets under
+`./datasets`:
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "robotwin_lerobotv2.1/*" \
+  --local-dir ./datasets
+```
+
+The supplied configs read both datasets directly from
+`./datasets/robotwin_lerobotv2.1/`.
+The datasets are derived from
+[StarVLA/RoboTwin-Randomized](https://huggingface.co/datasets/StarVLA/RoboTwin-Randomized/tree/main)
+and merged separately by domain in LeRobot v2.1 format.
 
 </details>
 
@@ -964,9 +1027,17 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 </details>
 
 <details>
-<summary><b>Supports different VLA models</b></summary>
+<summary><b>Supports different VLA and WAM models</b></summary>
 
-- Supports OpenVLA, LlavaVLA, Gr00t, Pi0, Pi0.5, FastWAM, and DiT4DiT.
+- **VLA models:** OpenVLA, LlavaVLA, SmolVLA, X-VLA, GR00T N1.5, GR00T N1.7, Pi0, and Pi0.5.
+- **WAM models:** DreamZero, FastWAM (including IDM and Joint variants), Cosmos3 (Nano, Super, and Edge), and DiT4DiT.
+
+</details>
+
+<details>
+<summary><b>Supports API-based model inference</b></summary>
+
+- Supports GPT-6 Astra and MiniMax M3.1 Flash inference via APIs and tool-calling policies, without local model checkpoints.
 
 </details>
 
@@ -1089,6 +1160,27 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 sampling seeds during evaluation. `PYTHONHASHSEED` is independent and must be
 set before Python starts; using the same value is recommended when reproducing
 reported RoboCasa results.
+
+RoboTwin GR00T N1.5 evaluation example (all 50 tasks, Clean and Random):
+
+```bash
+WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py \
+  --ckpt-path checkpoints/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128/checkpoints/step-142386-epoch-03-loss=0.0027.safetensors \
+  --cfg-options \
+    eval.norm_stats_path=checkpoints/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128/dataset_statistics.json \
+    eval.result_output_dir=work_dirs/gr00t_robotwin_eval \
+    "eval.task_suite_name=['clean','random']" \
+    eval.num_trials_per_task=100 \
+    eval.instruction_type=unseen \
+    eval.seed=0
+```
+
+`eval.seed` sets the starting candidate episode seed to `100000 * (1 + seed)`.
+RoboTwin increments this seed and skips scenes that fail expert validation
+until the requested number of valid episodes is evaluated. It also influences
+scene randomization, instruction selection, and stochastic policy sampling.
 
 </details>
 
