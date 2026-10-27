@@ -129,7 +129,7 @@ def test_robotwin_probability_recompute(robotwin_policy, robotwin_obs, dtype):
 
     model = robotwin_policy
     model.compute_dtype = dtype
-    actions, rollout = model.predict_action_batch(robotwin_obs, mode='train')
+    actions, rollout = model.predict_action(robotwin_obs, mode='train')
     assert actions.shape == (3, 2, 14)
     snapshot = rollout['forward_inputs']['chains'].clone()
     actor = model(
@@ -176,7 +176,7 @@ def test_openpi_precision_branch_recompute(robotwin_policy, robotwin_obs,
         action_dim=14,
         noise_level=.3,
         compute_dtype=dtype)
-    _, rollout = model.predict_action_batch(robotwin_obs, mode='train')
+    _, rollout = model.predict_action(robotwin_obs, mode='train')
     output = model(forward_inputs=rollout['forward_inputs'])
     torch.testing.assert_close(output['logprobs'], rollout['prev_logprobs'])
     assert all(p.dtype == torch.float32 for p in model.parameters())
@@ -188,7 +188,7 @@ def test_training_rollout_microbatch_preserves_alignment(
     model.rollout_micro_batch_size = 2
     # RLinf EnvOutput includes optional observation channels with None values.
     robotwin_obs = dict(robotwin_obs, extra_view=None)
-    actions, result = model.predict_action_batch(robotwin_obs, mode='train')
+    actions, result = model.predict_action(robotwin_obs, mode='train')
     assert len(actions) == 3
     for start in (0, 2):
         inputs = {
@@ -212,8 +212,7 @@ def test_robotwin_ode_same_flux_model(robotwin_policy, robotwin_obs):
     noise = torch.randn(3, 3, 32)
     expected = PI05FlowMatching.predict_action(
         model, **obs, noise=noise.clone())
-    _, result = model.predict_action_batch(
-        robotwin_obs, mode='eval', noise=noise)
+    _, result = model.predict_action(robotwin_obs, mode='eval', noise=noise)
     torch.testing.assert_close(result['forward_inputs']['model_action'],
                                expected.reshape(3, -1))
 

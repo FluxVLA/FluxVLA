@@ -45,11 +45,11 @@ BF16，隐变量和概率计算保持 FP32。
 RL 配置由一个模型配置和一个仿真器配置组合而成：
 
 ```text
-configs/rl/default.yaml
-configs/rl/model/pi05.yaml
-configs/rl/model/smolvla.yaml
-configs/rl/simulator/libero10.yaml
-configs/rl/simulator/robotwin_adjust_bottle.yaml
+configs/rl/default.py
+configs/rl/model/pi05.py
+configs/rl/model/smolvla.py
+configs/rl/simulator/libero10.py
+configs/rl/simulator/robotwin_adjust_bottle.py
 ```
 
 ```bash

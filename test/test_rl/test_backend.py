@@ -241,7 +241,7 @@ def test_worker_explicit_mode_and_bootstrap(policy, env_obs):
 
 
 def test_policy_output_split_merge_and_trajectory_alignment(policy, env_obs):
-    actions, result = policy.predict_action_batch(env_obs, mode='train')
+    actions, result = policy.predict_action(env_obs, mode='train')
     output = PolicyOutput(actions=actions, **result)
     split = MultiStepRolloutWorker._split_policy_output(None, output, [1, 2])
     merged = PolicyOutput.merge(split)

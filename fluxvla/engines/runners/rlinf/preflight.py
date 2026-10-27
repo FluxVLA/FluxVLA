@@ -1,5 +1,6 @@
 """Real-worker integration gate; never a scored training run."""
 
+import copy
 import hashlib
 import json
 import math
@@ -238,22 +239,13 @@ class ProbeRollout(FluxRolloutWorker):
             for k, v in obs.items()
         }
         self.hf_model.eval()
-        _, sample = self.hf_model.predict_action_batch(obs, mode='train')
+        _, sample = self.hf_model.predict_action(obs, mode='train')
         sample = {
             k: {n: t.cpu()
                 for n, t in v.items()} if isinstance(v, dict) else v.cpu()
             for k, v in sample.items()
         }
         torch.save(sample, gate_dir(self.cfg) / f'ray_sample_{self._rank}.pt')
-
-
-class ProbeRunner(EmbodiedRunner):
-
-    def _maybe_eval_and_checkpoint(self, step):
-        # No validation/test seeds are consumed by the integration gate.
-        self._save_checkpoint()
-        self.env_memory_after_rollout = self.env.memory_report().wait()
-        return {}
 
 
 def run_gate(cfg):
@@ -264,6 +256,16 @@ def run_gate(cfg):
     from ..rlinf_train_runner import RLinfTrainRunner
     from .env_worker import FluxEnvWorker
     from .registry import register
+
+    cfg = copy.deepcopy(cfg)
+    if cfg.runner.get('resume_dir'):
+        raise ValueError(
+            'Preflight requires a fresh run, not runner.resume_dir')
+    # Run exactly one PPO round and save it without consuming evaluation seeds.
+    cfg.runner.max_epochs = 1
+    cfg.runner.max_steps = 1
+    cfg.runner.val_check_interval = -1
+    cfg.runner.save_interval = 1
 
     dest = gate_dir(cfg)
     dest.mkdir(parents=True, exist_ok=True)
@@ -282,7 +284,7 @@ def run_gate(cfg):
         for name, worker in (('actor', ProbeActor), ('rollout', ProbeRollout),
                              ('env', FluxEnvWorker))
     }
-    runner = ProbeRunner(cfg, **groups)
+    runner = EmbodiedRunner(cfg, **groups)
     started = time.monotonic()
     runner.init_workers()
     memory_before = groups['env'].memory_report().wait()
@@ -294,9 +296,10 @@ def run_gate(cfg):
     groups['rollout'].audit_sample().wait()
     drift = groups['actor'].audit_sample().wait()
     runner.run()
+    memory_after_rollout = groups['env'].memory_report().wait()
     if cfg.env.train.get('enable_offload', False):
         assert all(row['train_live_subenvs'] == 0
-                   for row in runner.env_memory_after_rollout
+                   for row in memory_after_rollout
                    ), 'Environment offload did not release SubEnv objects'
     after = groups['actor'].audit_state().wait()[0]
     changed = [
@@ -334,7 +337,7 @@ def run_gate(cfg):
         'actor_checkpoint_restored': True,
         'real_environment_ppo_rounds': 1,
         'env_memory_before': memory_before,
-        'env_memory_after_rollout': runner.env_memory_after_rollout,
+        'env_memory_after_rollout': memory_after_rollout,
         'actor_world_size': placement.get_world_size('actor'),
         'rollout_world_size': placement.get_world_size('rollout'),
         'checkpoint': str(checkpoint)

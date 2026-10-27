@@ -128,7 +128,7 @@ def test_smol_eval_and_prefix_match_native(smol_policy, smol_assets, env_obs):
     noise = torch.randn(3, 3, 32)
     saved = noise.clone()
     expected = original.predict_action(**obs, noise=noise.clone())
-    actions, result = smol_policy.predict_action_batch(env_obs, noise=noise)
+    actions, result = smol_policy.predict_action(env_obs, noise=noise)
     torch.testing.assert_close(noise, saved, rtol=0, atol=0)
     torch.testing.assert_close(
         result['forward_inputs']['model_action'].reshape_as(expected),
@@ -143,7 +143,7 @@ def test_smol_replay_and_real_ppo(smol_policy, env_obs):
     from test.test_rl.test_policy import \
         test_real_rlinf_ppo_updates_expert_and_critic
 
-    _, old = smol_policy.predict_action_batch(
+    _, old = smol_policy.predict_action(
         env_obs, mode='train', rng=torch.Generator().manual_seed(20))
     smol_policy.train()
     output = smol_policy(
