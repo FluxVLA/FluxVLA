@@ -72,7 +72,7 @@ _ACTION_LR = _BASE_LR * 5.0
 _PER_DEVICE_BATCH_SIZE = 16
 _GRAD_ACCUMULATION_STEPS = 1
 _MAX_STEPS = None
-_MAX_EPOCHS = 5
+_MAX_EPOCHS = 8
 _SAVE_ITER_INTERVAL = 500
 _SAVE_EPOCH_INTERVAL = 1
 
@@ -508,7 +508,7 @@ eval = dict(
     instruction_type='unseen',
     eval_chunk_size=24,
     num_trials_per_task=100,
-    seed=7,
+    seed=0,
     mixed_precision_dtype='bf16',
     enable_model_dtype_cast=True,
     save_video=False,

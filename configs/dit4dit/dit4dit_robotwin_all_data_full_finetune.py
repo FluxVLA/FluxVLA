@@ -2,10 +2,11 @@
 """DiT4DiT on all 50 RoboTwin tasks, clean/randomized mixed 1:1.
 
 Initialize Cosmos from the local base model; train a new 14D joint action
-head (padded to 16), with 16-step predictions and 10 executed actions.
+head (padded to 16), with 32-step predictions and 24 executed actions.
 The 14D state uses interleaved sin/cos padded to 32. All three cameras
 are tiled into a 336x224 video; train and eval share [-1, 1] image inputs.
-Two balanced epochs are an initial budget, not a source RoboTwin result.
+Training uses 9 frames at stride 4, spanning 32 control intervals.
+Three balanced epochs are an initial budget, not a source RoboTwin result.
 Evaluate clean and random scenes sequentially by default.
 """
 
@@ -75,7 +76,7 @@ model = dict(
     vla_head=dict(
         type='DiT4DiTActionHead',
         action_dim=16,
-        action_horizon=16,
+        action_horizon=32,
         action_model_type='DiT-B',
         add_pos_embed=True,
         diffusion_model_cfg=dict(
@@ -88,7 +89,7 @@ model = dict(
             output_dim=2560,
             positional_embeddings=None,
         ),
-        future_action_window_size=15,
+        future_action_window_size=31,
         hidden_size=2560,
         max_seq_len=1024,
         noise_beta_alpha=1.5,
@@ -134,9 +135,9 @@ train_dataloader = dict(
         datasets=dict(
             type='ParquetDataset',
             action_key='action',
-            action_window_size=16,
+            action_window_size=32,
             data_root_path=_DATA_ROOTS,
-            frame_sample_stride=2,
+            frame_sample_stride=4,
             frame_window_size=9,
             statistic_name='robotwin_all',
             supervise_terminal_padding=True,
@@ -219,7 +220,7 @@ train_dataloader = dict(
                 dict(
                     type='PrepareStateActionTargets',
                     state_history_length=1,
-                    action_horizon=16,
+                    action_horizon=32,
                     valid_action_dim=14,
                 ),
             ],
@@ -238,7 +239,7 @@ train_dataloader = dict(
         statistic_keys=['observation.state', 'timestamp', 'action'],
         statistic_name='robotwin_all',
     ),
-    per_device_batch_size=2,
+    per_device_batch_size=8,
     per_device_num_workers=4,
 )
 
@@ -262,20 +263,20 @@ runner = dict(
     ),
     enable_gradient_checkpointing=False,
     enable_mixed_precision_training=True,
-    grad_accumulation_steps=4,
+    grad_accumulation_steps=1,
     lr_scheduler=dict(
         type='linear-warmup+cosine-decay',
         min_lr=5e-07,
         warmup_ratio=0.05,
     ),
-    max_epochs=2,
+    max_epochs=3,
     max_grad_norm=1.0,
     max_keep_ckpts=3,
     max_steps=None,
     metric=dict(
         type='VLAMetric',
         active_trackers=('jsonl', 'wandb'),
-        grad_accumulation_steps=4,
+        grad_accumulation_steps=1,
         run_dir='work_dirs',
         window_size=100,
     ),
@@ -368,7 +369,7 @@ eval = dict(
             dict(
                 type='PrepareStateActionTargets',
                 state_history_length=1,
-                action_horizon=16,
+                action_horizon=32,
                 valid_action_dim=14,
             ),
         ],
@@ -379,12 +380,12 @@ eval = dict(
         norm_type='min_max',
         statistic_name='robotwin_all',
     ),
-    eval_chunk_size=10,
+    eval_chunk_size=24,
     instruction_type='unseen',
     mixed_precision_dtype='bf16',
     model_family='dit4dit',
     num_trials_per_task=100,
-    seed=7,
+    seed=0,
     task_list=_TASK_LIST,
     task_suite_name=['clean', 'random'],
     unnorm_key='robotwin_all',
