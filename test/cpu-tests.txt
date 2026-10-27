@@ -16,3 +16,4 @@ test/test_models/test_tool_calling_vla.py
 test/test_models/test_pi0_time_sampling.py
 test/test_runners/test_libero_openai_rotation_compatibility.py
 test/test_runners/test_robocasa_eval_output_paths.py
+test/test_runners/test_robotwin_eval_output_paths.py
