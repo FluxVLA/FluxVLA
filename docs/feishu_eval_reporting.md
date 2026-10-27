@@ -229,7 +229,7 @@ To report a completed manager run without rerunning simulation, use the
 directory that contains both `clean/` and `random/`:
 
 ```bash
-export CONFIG='configs/dit4dit/dit4dit_robotwin_all_full_finetune.py'
+export CONFIG='configs/dit4dit/dit4dit_robotwin_all_data_full_finetune.py'
 RUN_DIR='/path/to/existing/robotwin_manager_run'
 python tools/summarize_robotwin_eval_results.py \
   --run-dir "$RUN_DIR" \

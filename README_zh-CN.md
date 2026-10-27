@@ -104,7 +104,7 @@ RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 
 
 **\[2026/08/13\]** 🔥 现已支持世界动作模型 FastWAM。
 
-**\[2026/08/10\]** 🔥 FluxVLA 现已支持在 NVIDIA Jetson Orin 上部署，GR00T-N1.5 端侧加速推理可达到 7.4 Hz。Orin 初始刷机流程见 [docs/orin_flashing_zh-CN.md](docs/orin_flashing_zh-CN.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
+**\[2026/08/10\]** 🔥 FluxVLA 现已支持在 NVIDIA Jetson Orin 上部署，GR00T-N1.5 端侧加速推理可达到 7.4 Hz。Orin 初始刷机流程见 [docs/orin_flashing.md](docs/orin_flashing.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md)。
 
 **\[2026/06/30\]** 🔥 现已支持 Franka 单臂与双臂真机推理，包括 joint/eepose 控制配置与部署指南。详见 [docs/franka.md](docs/franka.md)。
 
@@ -339,7 +339,7 @@ pip install --no-build-isolation -e .
 <details>
 <summary><b>Jetson Orin Docker 配置</b></summary>
 
-Jetson Orin 从刷机到 JetPack 初始化见 [docs/orin_flashing_zh-CN.md](docs/orin_flashing_zh-CN.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
+Jetson Orin 从刷机到 JetPack 初始化见 [docs/orin_flashing.md](docs/orin_flashing.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md)。
 
 当前验证过的 Orin 运行环境已发布为 Docker 镜像：
 
@@ -348,7 +348,7 @@ docker pull fluxvla/fluxvla:fluxvla-orin-1.0.0
 scripts/run_docker.sh
 ```
 
-`scripts/run_docker.sh` 默认使用该镜像，并把当前仓库挂载到容器内 `/workspace/FluxVLA`。详细运行方式见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
+`scripts/run_docker.sh` 默认使用该镜像，并把当前仓库挂载到容器内 `/workspace/FluxVLA`。详细运行方式见 [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md)。
 
 </details>
 
@@ -1143,7 +1143,7 @@ pip install numpy==1.26.4
 
 ## 支持
 
-如果你在使用本仓库时遇到问题，欢迎联系我们。你可以直接联系 [mason@limxdynamics.com](mason@limxdynamics.com) 和 [wayne@limxdynamics.com](wayne@limxdynamics.com)，或在 Github 提交 issue 获取帮助。
+如果你在使用本仓库时遇到问题，欢迎联系我们。你可以直接联系 [mason@limxdynamics.com](mailto:mason@limxdynamics.com) 和 [wayne@limxdynamics.com](mailto:wayne@limxdynamics.com)，或在 Github 提交 issue 获取帮助。
 
 ## 🙏 引用与致谢
 

@@ -1148,7 +1148,7 @@ pip install numpy==1.26.4
 
 ## サポート
 
-本リポジトリを利用中に問題が発生した場合は、お気軽にご連絡ください。[mason@limxdynamics.com](mason@limxdynamics.com) と [wayne@limxdynamics.com](wayne@limxdynamics.com) まで直接お問い合わせいただくか、GitHub の issue からヘルプを依頼できます。
+本リポジトリを利用中に問題が発生した場合は、お気軽にご連絡ください。[mason@limxdynamics.com](mailto:mason@limxdynamics.com) と [wayne@limxdynamics.com](mailto:wayne@limxdynamics.com) まで直接お問い合わせいただくか、GitHub の issue からヘルプを依頼できます。
 
 ## 🙏 引用・謝辞
 

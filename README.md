@@ -1231,7 +1231,7 @@ Quick conventions:
 
 ## Support
 
-If you encounter any issues while using this repository, feel free to contact us. You can reach us directly at [mason@limxdynamics.com](mason@limxdynamics.com) and [wayne@limxdynamics.com](wayne@limxdynamics.com), or open a GitHub issue for help.
+If you encounter any issues while using this repository, feel free to contact us. You can reach us directly at [mason@limxdynamics.com](mailto:mason@limxdynamics.com) and [wayne@limxdynamics.com](mailto:wayne@limxdynamics.com), or open a GitHub issue for help.
 
 ## 🙏 Citation & Acknowledgements
 
