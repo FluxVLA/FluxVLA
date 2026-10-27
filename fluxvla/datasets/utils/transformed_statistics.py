@@ -553,10 +553,9 @@ def compute_statistics_from_dataset_config(
     dataset_paths = []
     for source_config in source_configs:
         source_type = _config_value(source_config, 'type')
-        if source_type != 'ParquetDataset':
+        if source_type not in {'ParquetDataset', 'ParquetDatasetV3'}:
             raise ValueError('Automatic transformed statistics only supports '
-                             'ParquetDataset '
-                             f'sources, got {source_type!r}.')
+                             f'ParquetDataset sources, got {source_type!r}.')
         roots = _config_value(source_config, 'data_root_path')
         if isinstance(roots, (str, Path)):
             roots = [roots]
