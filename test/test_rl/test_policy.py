@@ -30,8 +30,7 @@ def test_eval_matches_flux_and_preserves_noise(policy, env_obs, tiny_assets):
     obs = policy._prepare_obs(env_obs)
     with torch.no_grad(), torch.autocast('cpu', dtype=torch.bfloat16):
         expected = original.predict_action(**obs, noise=noise.clone())
-    actions, result = policy.predict_action_batch(
-        env_obs, mode='eval', noise=noise)
+    actions, result = policy.predict_action(env_obs, mode='eval', noise=noise)
     torch.testing.assert_close(noise, before, rtol=0, atol=0)
     torch.testing.assert_close(
         result['forward_inputs']['model_action'].reshape_as(expected),
@@ -48,12 +47,12 @@ def test_eval_matches_flux_and_preserves_noise(policy, env_obs, tiny_assets):
 def test_logprobs_recompute_and_rng_replay(policy, env_obs, dtype):
     policy.compute_dtype = dtype
     noise = torch.randn(3, 3, 32)
-    _, first = policy.predict_action_batch(
+    _, first = policy.predict_action(
         env_obs,
         mode='train',
         noise=noise,
         rng=torch.Generator().manual_seed(19))
-    _, second = policy.predict_action_batch(
+    _, second = policy.predict_action(
         env_obs,
         mode='train',
         noise=noise,
@@ -84,7 +83,7 @@ def test_real_rlinf_ppo_updates_expert_and_critic(policy, env_obs, dtype):
     from rlinf.algorithms.registry import policy_loss
 
     policy.compute_dtype = dtype
-    _, collected = policy.predict_action_batch(env_obs, mode='train')
+    _, collected = policy.predict_action(env_obs, mode='train')
     before = {
         name: value.detach().clone()
         for name, value in policy.named_parameters()
@@ -194,8 +193,8 @@ def test_policy_state_restore_and_weight_copy(policy, model_cfg, env_obs,
     noise = torch.randn(3, 3, 32)
     for model in (policy, rollout):
         model.eval()
-    left = policy.predict_action_batch(env_obs, mode='eval', noise=noise)[1]
-    right = rollout.predict_action_batch(env_obs, mode='eval', noise=noise)[1]
+    left = policy.predict_action(env_obs, mode='eval', noise=noise)[1]
+    right = rollout.predict_action(env_obs, mode='eval', noise=noise)[1]
     torch.testing.assert_close(left['forward_inputs']['model_action'],
                                right['forward_inputs']['model_action'])
     torch.testing.assert_close(left['prev_values'], right['prev_values'])
@@ -240,7 +239,7 @@ def test_transition_matches_rlinf_reference():
 
 
 def test_downcast_chain_is_rejected(policy, env_obs):
-    _, result = policy.predict_action_batch(env_obs, mode='train')
+    _, result = policy.predict_action(env_obs, mode='train')
     inputs = copy.copy(result['forward_inputs'])
     inputs['chains'] = inputs['chains'].bfloat16()
     with pytest.raises(ValueError, match='FP32'):
@@ -255,7 +254,7 @@ def test_value_uses_only_valid_prefix_tokens(policy, env_obs):
     hidden[:, -2:] = 10000
     torch.testing.assert_close(
         policy._value(hidden, mask), reference, rtol=0, atol=0)
-    _, collected = policy.predict_action_batch(env_obs, mode='train')
+    _, collected = policy.predict_action(env_obs, mode='train')
     torch.testing.assert_close(
         policy.get_values(env_obs), collected['prev_values'])
 
@@ -310,7 +309,7 @@ def test_real_bucket_sync_on_cpu(policy, model_cfg, env_obs):
     for name, value in policy.state_dict().items():
         torch.testing.assert_close(
             rollout.state_dict()[name], value, rtol=0, atol=0)
-    _, collected = policy.predict_action_batch(env_obs, mode='train')
+    _, collected = policy.predict_action(env_obs, mode='train')
     output = rollout(forward_inputs=collected['forward_inputs'])
     torch.testing.assert_close(output['logprobs'], collected['prev_logprobs'])
     torch.testing.assert_close(output['values'], collected['prev_values'][:,

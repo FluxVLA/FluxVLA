@@ -111,20 +111,24 @@ class FlowRLPolicyMixin:
         hidden, mask, _ = self._prefix(self._prepare_obs(env_obs))
         return self._value(hidden, mask)[:, None]
 
+    def predict_action_batch(self, env_obs, **kwargs):
+        """Adapt RLinf's batch-policy interface to FluxVLA's predict_action."""
+        return self.predict_action(env_obs, **kwargs)
+
     @torch.no_grad()
-    def predict_action_batch(self,
-                             env_obs,
-                             mode='eval',
-                             *,
-                             noise=None,
-                             rng=None,
-                             **kwargs):
+    def predict_action(self,
+                       env_obs,
+                       mode='eval',
+                       *,
+                       noise=None,
+                       rng=None,
+                       **kwargs):
         if mode not in ('train', 'eval'):
             raise ValueError(f'Unknown rollout mode: {mode}')
         micro = self.rollout_micro_batch_size
         if mode == 'train' and micro and len(env_obs['states']) > micro:
             parts = [
-                self.predict_action_batch(
+                self.predict_action(
                     {
                         key:
                         None if value is None else value[start:start + micro]

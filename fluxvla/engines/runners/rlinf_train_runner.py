@@ -43,6 +43,28 @@ class RLinfTrainRunner:
                 f'{extension}')
         os.environ['RLINF_EXT_MODULE'] = extension
         os.environ['FLUX_RL_EXTERNAL_DISTRIBUTED'] = '1'
+        # Hydra discovers YAML files automatically; register Python defaults
+        # before either entry point composes the configuration.
+        from hydra.core.config_store import ConfigStore
+        from mmengine import Config
+
+        config_root = flux_root / 'configs/rl'
+        store = ConfigStore.instance()
+        store.store(
+            name='default',
+            node=Config.fromfile(str(config_root / 'default.py')).to_dict())
+        for path in sorted((config_root / 'model').glob('*.py')):
+            store.store(
+                group='model',
+                name=path.stem,
+                package='actor.model',
+                node=Config.fromfile(str(path)).model.to_dict())
+        for path in sorted((config_root / 'simulator').glob('*.py')):
+            store.store(
+                group='simulator',
+                name=path.stem,
+                package='_global_',
+                node=Config.fromfile(str(path)).to_dict())
         return flux_root
 
     @staticmethod
