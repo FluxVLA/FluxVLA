@@ -1,6 +1,4 @@
-"""Train or preflight a registered FluxVLA policy with RLinf."""
-
-import sys
+"""Train a registered FluxVLA policy with RLinf."""
 
 import torch.multiprocessing as mp
 
@@ -9,9 +7,6 @@ from fluxvla.engines.runners.rlinf_train_runner import RLinfTrainRunner
 
 
 def main():
-    preflight = '--preflight' in sys.argv
-    if preflight:
-        sys.argv.remove('--preflight')
     root = RLinfTrainRunner.prepare_environment()
     import hydra
 
@@ -23,8 +18,7 @@ def main():
         runner = build_runner_from_cfg({
             'type': 'RLinfTrainRunner',
             'cfg': cfg,
-            'mode': 'train',
-            'preflight': preflight
+            'mode': 'train'
         })
         runner.run()
 

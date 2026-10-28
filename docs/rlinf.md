@@ -50,6 +50,11 @@ only.
 OpenPI precision behavior lives in the PI0.5, SigLIP and Gemma implementations,
 not in an RL-only monkey patch. Actor and rollout retain FP32 master weights,
 network computation may use BF16, and latent/probability arithmetic stays FP32.
+`openpi_stem_fp32` enables FP32 patch/position embeddings and installs
+OpenPI-compatible LayerNorms in the vision encoder and output stage. These
+LayerNorms compute in the autocast dtype (BF16 during RL) while retaining FP32
+master parameters and checkpoint keys; FP32 stem computation alone does not
+provide this normalization behavior.
 
 ## Configuration and commands
 
@@ -71,10 +76,6 @@ python scripts/rl_train.py model=pi05 simulator=libero10 \
 # SmolVLA uses the same runner and LIBERO adapter.
 python scripts/rl_train.py model=smolvla simulator=libero10 \
   actor.model.model_path=/path/to/smolvla_sft
-
-# Integration gate: real rollout, PPO update, sync and checkpoint restore.
-python scripts/rl_train.py --preflight model=pi05 \
-  simulator=robotwin_adjust_bottle
 
 # Training and standalone held-out evaluation.
 python scripts/rl_train.py model=pi05 simulator=robotwin_adjust_bottle

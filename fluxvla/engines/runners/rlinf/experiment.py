@@ -51,5 +51,4 @@ def check_phase_deadline():
     if path:
         budget = json.loads(Path(path).read_text())
         if time.time() >= budget['training_deadline']:
-            raise TimeoutError(
-                'Six-hour preflight/baseline/training allocation exhausted')
+            raise TimeoutError('Configured training deadline exhausted')

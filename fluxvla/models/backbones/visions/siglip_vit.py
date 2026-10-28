@@ -34,6 +34,10 @@ class SigLIPViTBackbone(VisionBackbone):
     Args:
         vision_backbone_id (str): Identifier string for the backbone.
         pretrained_cfg (Dict): Configuration for loading the pretrained model.
+        openpi_stem_fp32 (bool): Use FP32 patch/position embeddings and
+            install OpenPI-compatible LayerNorms throughout the vision model.
+            These norms compute in the autocast dtype (e.g. BF16) while
+            retaining the original parameters and checkpoint keys.
         preserve_fp32_residuals (bool): Preserve FP32 encoder inputs with FP32
             parameters. Defaults to False for legacy recipe parity.
     """
@@ -157,7 +161,11 @@ class SigLIPViTBackbone(VisionBackbone):
 
 
 class OpenPILayerNorm(torch.nn.LayerNorm):
-    """LayerNorm with native OpenPI BF16 autocast behavior."""
+    """OpenPI encoder/output normalization, separate from FP32 stem math.
+
+    Autocast controls computation dtype; master parameters remain unchanged.
+    The FP32 embedding path alone does not supply this LayerNorm behavior.
+    """
 
     def forward(self, inputs):
         dtype = torch.get_autocast_dtype(
