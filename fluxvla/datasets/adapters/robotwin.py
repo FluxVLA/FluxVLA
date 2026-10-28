@@ -9,9 +9,10 @@ import numpy as np
 import torch
 
 from fluxvla.engines.utils import PROCESSORS
-from fluxvla.tokenizers.paligemma_tokenizer import PaligemmaTokenizer
+from fluxvla.transforms.normalize import NormalizeStatesAndActions
 from fluxvla.transforms.prompters import PreparePromptWithState
 from fluxvla.transforms.transform_images import _resize_chw_with_pad_pil
+from fluxvla.transforms.transform_prompts import ProcessPrompts
 from .libero import LiberoRLAdapter
 
 JOINT_FLIP = np.array([1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1])
@@ -66,29 +67,33 @@ class RoboTwinRLAdapter:
             lower = np.asarray(self.stats[field]['q01'])
             if np.any(upper < lower):
                 raise ValueError(f'Invalid quantile order for {field}')
-        self.tokenizer = PaligemmaTokenizer(model_path=tokenizer_path)
+        self.normalize = NormalizeStatesAndActions(
+            state_key='state',
+            action_key=None,
+            norm_type='quantile',
+            clip_norm=False,
+            normalization_epsilon=1e-6,
+            input_dtype='float64')
+        self.process_prompt = ProcessPrompts(
+            tokenizer=dict(
+                type='PaligemmaTokenizer',
+                model_path=tokenizer_path,
+                preserve_prompt_format=True),
+            max_len=int(max_token_len))
         self.prompt = PreparePromptWithState(lowercase_task_description=False)
         self.image_size = int(image_size)
         self.max_token_len = int(max_token_len)
 
     def normalize_state(self, state):
-        low, high = (
-            np.asarray(self.stats['state'][key]) for key in ('q01', 'q99'))
-        return (decode_state(state) - low) / (high - low + 1e-6) * 2 - 1
+        return self.normalize(
+            dict(states=decode_state(state), stats=self.stats))['states']
 
     def tokenize(self, prompt, normalized_state):
-        text = self.prompt({
-            'task_description': prompt,
-            'states': normalized_state
-        })['prompt']
-        # Preserve the structured newline and trailing Action prefix. Flux's
-        # ordinary text-only tokenizer intentionally cleans these characters.
-        encoded = self.tokenizer._tokenizer.encode(text, add_bos=True)
-        tokens = np.zeros(self.max_token_len, dtype=np.int64)
-        mask = np.zeros(self.max_token_len, dtype=bool)
-        count = min(len(encoded), self.max_token_len)
-        tokens[:count], mask[:count] = encoded[:count], True
-        return tokens, mask
+        sample = self.prompt(
+            dict(task_description=prompt, states=normalized_state))
+        sample = self.process_prompt(sample)
+        return (sample['lang_tokens'].astype(np.int64, copy=False),
+                sample['lang_masks'].astype(bool, copy=False))
 
     def __call__(self, env_obs):
         state = self._numpy(env_obs['states'])
