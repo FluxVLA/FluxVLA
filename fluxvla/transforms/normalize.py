@@ -539,6 +539,8 @@ class NormalizeStatesAndActions:
             to preserve existing normalization behavior.
         preserve_input_dtype (bool): Keep normalization arithmetic in the
             input array dtype even when ``output_dtype`` is configured.
+        input_dtype (str | None): Explicit dtype for input arithmetic. None
+            preserves legacy FP32 conversion or preserve_input_dtype behavior.
         output_dtype (str | None): Optional NumPy dtype used for normalization
             arithmetic and outputs. ``None`` preserves the legacy NumPy dtype
             promotion behavior. Defaults to None.
@@ -579,10 +581,13 @@ class NormalizeStatesAndActions:
                  action_pad_mask_key: str = 'action_masks',
                  valid_action_dim: int = None,
                  mark_all_action_steps_valid: bool = False,
+                 input_dtype: Optional[str] = None,
                  output_dtype: Optional[str] = None,
                  statistics_key: str = 'stats',
                  *args,
                  **kwargs):
+        self.input_dtype = (
+            np.dtype(input_dtype) if input_dtype is not None else None)
         self.state_key = state_key
         self.action_key = action_key
         self.norm_type = norm_type
@@ -638,14 +643,13 @@ class NormalizeStatesAndActions:
             self.delta_action_dim_mask = None
 
     def __call__(self, data: Dict) -> Dict:
-        states = (
-            np.asarray(data['states']) if self.preserve_input_dtype else
-            np.asarray(data['states'], dtype=np.float32))
+        input_dtype = self.input_dtype
+        if input_dtype is None and not self.preserve_input_dtype:
+            input_dtype = np.float32
+        states = np.asarray(data['states'], dtype=input_dtype)
         actions = None
         if self.action_key is not None and 'actions' in data:
-            actions = (
-                np.asarray(data['actions']) if self.preserve_input_dtype else
-                np.asarray(data['actions'], dtype=np.float32))
+            actions = np.asarray(data['actions'], dtype=input_dtype)
             if (self.action_norm_mask is not None
                     and len(self.action_norm_mask) != actions.shape[-1]):
                 raise ValueError(
