@@ -1,10 +1,16 @@
 # FluxVLA × RLinf
 
-[中文版](rlinf_zh.md)
-
 FluxVLA integrates RLinf as a synchronous PPO/GAE backend. Policies and
 simulator adapters remain native FluxVLA registry components; RLinf provides
 Ray placement, trajectories, PPO losses, FSDP2, checkpoints and weight sync.
+
+## RLinf compatibility
+
+The integration targets [RLinf](https://github.com/RLinf/RLinf) commit
+`88988ad5999619953b18d10b15bea1d3a6e1cfce`. Use this exact revision rather
+than an unpinned `main` checkout. Configuration composition has been checked
+against this revision; distributed PPO and simulator execution require the
+full runtime and are not claimed as validated by that check.
 
 ## Environments
 
@@ -12,7 +18,10 @@ Create a Python 3.10 conda environment, point `RLINF_ROOT` at an RLinf source
 checkout, and select one install profile:
 
 ```bash
+git clone https://github.com/RLinf/RLinf.git /path/to/RLinf
 export RLINF_ROOT=/path/to/RLinf
+git -C "$RLINF_ROOT" checkout --detach 88988ad5999619953b18d10b15bea1d3a6e1cfce
+python -m pip install --no-deps -e "$RLINF_ROOT"
 bash scripts/install_env.sh fluxvla-all
 # or, for backend development and unit tests without simulators:
 bash scripts/install_env.sh rlinf-only
