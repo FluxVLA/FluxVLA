@@ -1,4 +1,4 @@
-"""FluxVLA-native entry point for RLinf train, evaluation and preflight."""
+"""FluxVLA-native entry point for RLinf training and evaluation."""
 
 import copy
 import importlib.util
@@ -12,12 +12,11 @@ from ..utils.root import RUNNERS
 class RLinfTrainRunner:
     """Build and run RLinf workers through the native runner registry."""
 
-    def __init__(self, cfg, mode='train', preflight=False):
+    def __init__(self, cfg, mode='train'):
         if mode not in ('train', 'eval'):
             raise ValueError(f'Unsupported RLinf mode: {mode}')
         self.cfg = cfg
         self.mode = mode
-        self.preflight = bool(preflight)
 
     @staticmethod
     def prepare_environment():
@@ -153,11 +152,6 @@ class RLinfTrainRunner:
             self.cfg.env.eval.total_num_envs = 10
             self.cfg.env.eval.rollout_epoch = 15
         self.validate_frontend_cfg(self.cfg, evaluation=evaluation)
-        if self.preflight:
-            if evaluation:
-                raise ValueError('Preflight is a training-only mode')
-            from .rlinf.preflight import run_gate
-            return run_gate(self.cfg)
         if evaluation and self.cfg.runner.resume_dir:
             raise ValueError(
                 'Evaluation uses runner.ckpt_path, not resume_dir')
@@ -181,9 +175,6 @@ class RLinfTrainRunner:
             from rlinf.workers.actor.embodied_fsdp_actor_worker import \
                 EmbodiedFSDPActor
             actor = EmbodiedFSDPActor
-            if cfg.env.train.env_type == 'robotwin':
-                from .rlinf.actor_worker import AuditedEmbodiedActor
-                actor = AuditedEmbodiedActor
             workers.insert(0, ('actor', actor))
         groups = {
             name: worker.create_group(cfg).launch(

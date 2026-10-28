@@ -125,7 +125,5 @@ experiment = dict(
     root=('${oc.env:FLUX_RL_ROOT,${oc.env:FLUXVLA_R'
           'OOT}/work_dirs/rlinf}'),
     split='validation',
-    gate_name='preflight',
-    probability_tolerance=0.0001,
     memory_audit=False,
     budget_reserve_seconds=300)
