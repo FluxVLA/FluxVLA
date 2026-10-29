@@ -38,6 +38,8 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 ## 性能
 
+#### LIBERO
+
 | Codebase                         |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                      Libero-Long                                                      |                                                Libero-Average                                                |
 | -------------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------: |
 | FluxVLA(SmolVLA)                 |      [86.2](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_spatial_full_finetune_bs64)      |      [92.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_object_full_finetune_bs64)       |      [91.4](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_goal_full_finetune_bs64)       |       [68.8](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_libero_10_full_finetune_bs64)        |                                                     84.7                                                     |
@@ -88,7 +90,28 @@ RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 
 | FluxVLA(PI0)          |                   [5.96 / 3.37%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robodojo_full_finetune_bs256) |       13.05 / 9.67% |         0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% | 0.00 / 0.00% |
 | FluxVLA(PI0.5)        |                 [13.61 / 8.83%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robodojo_full_finetune_bs256) |      22.65 / 16.00% |         6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% | 2.20 / 2.00% |
 
+#### RoboTwin
+
+我们采用多任务训练设置，该设置也被 [Motus](https://arxiv.org/html/2512.13030v1#S5.SS2)、[LingBot-VA](https://arxiv.org/html/2601.21998v2#S4.SS3.SSS2) 和 [StarVLA](https://arxiv.org/html/2604.05014v1#S5.SS4) 使用：使用每个任务的 50 条 clean 和 500 条 randomized 示范，在全部 50 个任务上联合训练一个策略。这与原始 RoboTwin 基准使用每个任务 50 条 clean 示范进行单任务训练的设置不同。
+
+我们使用 RoboTwin 官方脚本评测，在 Clean（Easy）和 Random（Hard）两种设置下，每个任务各评测 100 个 episode。所有报告结果均使用相同的评测 seed（`0`），而非多个 seed 的平均值。提供的配置使用 `unseen` 指令。分数为成功率（%）；`Average` 是 Clean 和 Random 的均值，并链接至模型 checkpoint。
+
+| Model               |     Clean |    Random |                                                                                                                         Average |
+| ------------------- | --------: | --------: | ------------------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(PI0)        |     68.26 |     67.76 |        [68.01](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(Cosmos3)    |     82.40 |     77.96 |        [80.18](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robotwin_all_data_full_finetune_bs1024) |
+| FluxVLA(PI0.5)      |     81.04 |     83.56 |       [82.30](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(SmolVLA)    |     87.02 |     85.88 |              [86.45](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robotwin_all_data_full_finetune_bs512) |
+| FluxVLA(GR00T N1.5) |     89.34 |     88.34 |       [88.84](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(GR00T N1.7) |     88.70 |     89.14 | [88.92](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(DiT4DiT)    |     90.78 |     89.54 |              [90.16](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(FastWAM)    | **90.86** | **89.96** |          [**90.41**](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robotwin_all_data_full_finetune_bs256) |
+
 ## 📢 最新动态
+
+**\[2026/10/27\]** 🔥 现已支持 RoboTwin 评测。
+
+**\[2026/10/24\]** 🔥 FluxVLA 现已支持通过兼容 Anthropic 的 Messages API，以及兼容 OpenAI 的 Chat Completions 和 Responses API，在 LIBERO 和 RoboCasa GR1 上评测 MiniMax M3.1 Flash。
 
 **\[2026/10/15\]** 🔥 现已支持通过 [FluxThemis](https://github.com/FluxVLA/FluxThemis) 进行 RoboDojo 评测。
 
@@ -155,9 +178,10 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>如果安装脚本遇到问题：检查安装模式和 CUDA profile 选择</b></summary>
 
-`sim-only` 会安装仿真 / LIBERO / RoboCasa 运行时依赖，并把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 会安装真机和远程推理依赖；`full` 会同时安装两类依赖。如果不需要 RoboCasa checkout，可传入 `--skip-robocasa`。
+`sim-only` 会安装 LIBERO、RoboCasa 和 RoboTwin 的仿真运行时依赖；`real-only` 会安装真机和远程推理依赖；`full` 会同时安装两类依赖。额外的仿真器准备如下：
 
-只要安装器安装 RoboCasa 源码 checkout（`sim-only`、`full` 或 `real-only --with-robocasa`），默认也会下载 RoboCasa 仿真资产。安装器会调用 `scripts/download_robocasa_assets.py`，并使用 `FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（默认依次取 `HF_ENDPOINT`、`https://hf-mirror.com`）。如只想跳过资产下载，可使用 `--skip-robocasa-assets`；如需同时跳过源码 checkout 和资产，可使用 `--skip-robocasa`。
+- **RoboCasa：** `sim-only` 和 `full` 默认安装 `./src` 下固定版本的源码 checkout 及仿真资产，也可通过 `real-only --with-robocasa` 安装。资产由 `scripts/download_robocasa_assets.py` 下载，使用 `FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（默认依次取 `HF_ENDPOINT`、`https://hf-mirror.com`）。使用 `--skip-robocasa-assets` 仅跳过资产，或使用 `--skip-robocasa` 同时跳过源码 checkout 和资产。
+- **RoboTwin：** `sim-only` 和 `full` 默认安装 Python 依赖。在默认的 `auto` 模式下，已有的 cuRobo 源码目录会触发其构建（需要兼容的 PyTorch），以及已有 RoboTwin checkout 的资产和路径准备。添加 `--with-robotwin --profile cu128` 还会获取缺失的固定版本源码、准备缺失的资产和 embodiment 路径，并为 PyTorch 2.8 构建 cuRobo（需要 `nvcc`）。使用 `--skip-robotwin` 可跳过这些准备步骤，但仍安装 Python 依赖。默认 checkout 为 `src/RoboTwin`。如需自定义位置，在安装时设置 `FLUXVLA_ROBOTWIN_ROOT`，并在评测时将 `ROBOTWIN_ROOT` 设为同一路径。
 
 安装器会优先根据当前 CUDA toolkit / `nvcc` 版本自动选择 PyTorch CUDA profile：CUDA >= 12.8 选择 `cu128`，否则选择 `cu124`。如果没有检测到 toolkit，则回退到驱动报告的 CUDA 版本和 GPU 代际。也可以通过 `--profile cu128` 或 `--profile cu124` 手动覆盖。
 
@@ -512,18 +536,20 @@ tensorboard --logdir work_dirs/tensorboard
 
 下载所需数据集并放到 `./datasets` 目录。请根据配置仅下载你需要的数据集。
 
-| 数据集                  | 下载链接                                                                                                                                                                     |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)         |
-| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1)       |
-| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)                 |
-| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)             |
-| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                 |
-| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                   |
-| RoboDojo                | [RoboDojo-Benchmark/RoboDojo（LeRobot v2.1）](https://huggingface.co/datasets/RoboDojo-Benchmark/RoboDojo/tree/main/data/RoboDojo_lerobot_v21_video)                         |
-| ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0) |
-| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)           |
-| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                   |
+| 数据集                  | 下载链接                                                                                                                                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)                                     |
+| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1)                                   |
+| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)                                             |
+| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)                                         |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                                             |
+| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                                               |
+| RoboTwin Clean          | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1)           |
+| RoboTwin Random         | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1) |
+| RoboDojo                | [RoboDojo-Benchmark/RoboDojo（LeRobot v2.1）](https://huggingface.co/datasets/RoboDojo-Benchmark/RoboDojo/tree/main/data/RoboDojo_lerobot_v21_video)                                                     |
+| ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0)                             |
+| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)                                       |
+| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                                               |
 
 例如，下载 libero-10 数据集：
 
@@ -543,6 +569,17 @@ huggingface-cli download limxdynamics/FluxVLAData \
 ```
 
 如需使用全量 RoboCasa GR1 数据训练，将 include 模式替换为 `robocasa_lerobot_V2.1/*`。
+
+进行 RoboTwin 训练时，将 Clean 和 Randomized 两个数据集下载到 `./datasets`：
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "robotwin_lerobotv2.1/*" \
+  --local-dir ./datasets
+```
+
+提供的配置直接从 `./datasets/robotwin_lerobotv2.1/` 读取两个数据集。数据源自 [StarVLA/RoboTwin-Randomized](https://huggingface.co/datasets/StarVLA/RoboTwin-Randomized/tree/main)，并按域分别合并为 LeRobot v2.1 格式。
 
 </details>
 
@@ -879,9 +916,17 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 </details>
 
 <details>
-<summary><b>支持不同 VLA 模型</b></summary>
+<summary><b>支持不同 VLA 和 WAM 模型</b></summary>
 
-- 支持 OpenVLA、LlavaVLA、Gr00t、Pi0、Pi0.5、FastWAM 与 DiT4DiT。
+- **VLA 模型：** OpenVLA、LlavaVLA、SmolVLA、X-VLA、GR00T N1.5、GR00T N1.7、Pi0 和 Pi0.5。
+- **WAM 模型：** DreamZero、FastWAM（含 IDM 和 Joint 变体）、Cosmos3（Nano、Super 和 Edge）以及 DiT4DiT。
+
+</details>
+
+<details>
+<summary><b>支持基于 API 的模型推理</b></summary>
+
+- 支持通过 API 和 tool-calling 策略进行 GPT-6 Astra 和 MiniMax M3.1 Flash 推理，无需本地模型 checkpoint。
 
 </details>
 
@@ -1001,6 +1046,24 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 ```
 
 `eval.seed` 控制 RoboCasa episode seeds 以及评估过程中 GR00T 随机 action sampling seeds。`PYTHONHASHSEED` 与其相互独立，必须在 Python 启动前设置；复现已报告的 RoboCasa 结果时，建议使用相同数值。
+
+RoboTwin GR00T N1.5 评测示例（全部 50 个任务，Clean 和 Random）：
+
+```bash
+WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py \
+  --ckpt-path checkpoints/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128/checkpoints/step-142386-epoch-03-loss=0.0027.safetensors \
+  --cfg-options \
+    eval.norm_stats_path=checkpoints/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128/dataset_statistics.json \
+    eval.result_output_dir=work_dirs/gr00t_robotwin_eval \
+    "eval.task_suite_name=['clean','random']" \
+    eval.num_trials_per_task=100 \
+    eval.instruction_type=unseen \
+    eval.seed=0
+```
+
+`eval.seed` 将初始候选 episode seed 设为 `100000 * (1 + seed)`。RoboTwin 会递增该 seed，并跳过未通过专家验证的场景，直到完成指定数量的有效 episode 评测。它还会影响场景随机化、指令选择和随机策略采样。
 
 </details>
 
