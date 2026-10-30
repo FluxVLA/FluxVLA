@@ -44,7 +44,7 @@ action/time projections and value head while keeping the vision/language
 prefix frozen. Training samples one Gaussian flow-SDE transition and stores
 its FP32 latent chain; the actor recomputes that same transition without
 resampling. Evaluation uses each model's normal ODE path. PI0.5 supports
-LIBERO-10 and RoboTwin `adjust_bottle`; SmolVLA currently supports LIBERO-10
+LIBERO-10 and RoboTwin through a shared task configuration; SmolVLA supports LIBERO-10
 only.
 
 OpenPI precision behavior lives in the PI0.5, SigLIP and Gemma implementations,
@@ -65,7 +65,7 @@ configs/rl/default.py
 configs/rl/model/pi05.py
 configs/rl/model/smolvla.py
 configs/rl/simulator/libero10.py
-configs/rl/simulator/robotwin_adjust_bottle.py
+configs/rl/simulator/robotwin.py
 ```
 
 ```bash
@@ -77,11 +77,24 @@ python scripts/rl_train.py model=pi05 simulator=libero10 \
 python scripts/rl_train.py model=smolvla simulator=libero10 \
   actor.model.model_path=/path/to/smolvla_sft
 
-# Training and standalone held-out evaluation.
-python scripts/rl_train.py model=pi05 simulator=robotwin_adjust_bottle
-python scripts/rl_eval.py model=pi05 simulator=robotwin_adjust_bottle \
+# Select the RoboTwin task and matching SFT checkpoint explicitly.
+python scripts/rl_train.py model=pi05 simulator=robotwin \
+  actor.model.model_path=/path/to/robotwin_sft \
+  env.train.task_config.task_name=beat_block_hammer \
+  env.train.task_config.step_lim=400
+python scripts/rl_eval.py model=pi05 simulator=robotwin \
+  actor.model.model_path=/path/to/robotwin_sft \
+  env.train.task_config.task_name=beat_block_hammer \
+  env.train.task_config.step_lim=400 \
   runner.ckpt_path=/path/to/global_step_N
 ```
+
+The shared RoboTwin config reuses RLinf's existing `robotwin_adjust_bottle`
+environment template as a default. Override `env.train.task_config.task_name`
+to select another installed task; evaluation inherits that task configuration.
+Both training and evaluation step limits follow `env.train.task_config.step_lim`.
+Provide matching checkpoint, normalization statistics and seed files for the
+chosen task; no separate FluxVLA config is needed per task.
 
 GPU placement, batch sizes, checkpoint paths and experiment names are ordinary
 Hydra overrides. To add a model, add one registered RL-capable VLA builder and

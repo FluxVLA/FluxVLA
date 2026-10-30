@@ -125,13 +125,9 @@ class RLinfTrainRunner:
                         cfg.actor.micro_batch_size):
                     raise ValueError(
                         'RoboTwin rollout and actor microbatches must match')
-                if env.task_config.task_name != 'adjust_bottle':
-                    raise ValueError(
-                        'Only RoboTwin adjust_bottle is supported')
             elif (env.env_type != 'libero'
                   or env.task_suite_name != 'libero_10'):
-                raise ValueError(
-                    'Expected LIBERO-10 or RoboTwin adjust_bottle')
+                raise ValueError('Expected LIBERO-10 or RoboTwin')
         if not Path(cfg.actor.model.model_path).expanduser().exists():
             raise FileNotFoundError('Initial SFT checkpoint does not exist')
         if cfg.runner.resume_dir and not Path(
@@ -153,7 +149,7 @@ class RLinfTrainRunner:
         self.cfg.runner.only_eval = evaluation
         if evaluation:
             self.cfg.rollout.model = copy.deepcopy(self.cfg.actor.model)
-        if evaluation and self.cfg.simulator.name == 'robotwin_adjust_bottle':
+        if evaluation and self.cfg.env.eval.env_type == 'robotwin':
             self.cfg.experiment.split = 'test'
             self.cfg.env.eval.total_num_envs = 10
             self.cfg.env.eval.rollout_epoch = 15
