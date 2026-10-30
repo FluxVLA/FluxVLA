@@ -201,6 +201,17 @@ class PI0FlowMatching(BaseVLA):
         self.time_beta_beta = float(time_beta_beta)
         self.openpi_fp32_flow = bool(openpi_fp32_flow)
         self.preserve_fp32_residuals = bool(preserve_fp32_residuals)
+        if self.openpi_fp32_flow:
+            for gemma in (self.llm_backbone, self.llm_expert):
+                with torch.no_grad():
+                    rotary = gemma.rotary_emb
+                    for name in ('inv_freq', 'original_inv_freq'):
+                        buffer = getattr(rotary, name, None)
+                        if buffer is not None:
+                            buffer.copy_(buffer.bfloat16().to(buffer.dtype))
+                for module in gemma.modules():
+                    if hasattr(module, 'adarms_fp32'):
+                        module.adarms_fp32 = True
         self.rtc_training_config = rtc_training_config
 
     @staticmethod
