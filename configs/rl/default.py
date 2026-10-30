@@ -121,9 +121,3 @@ actor = dict(
         amp_autocast=dict(enabled=False)))
 reward = dict(use_reward_model=False)
 critic = dict(use_critic_model=False)
-experiment = dict(
-    root=('${oc.env:FLUX_RL_ROOT,${oc.env:FLUXVLA_R'
-          'OOT}/work_dirs/rlinf}'),
-    split='validation',
-    memory_audit=False,
-    budget_reserve_seconds=300)

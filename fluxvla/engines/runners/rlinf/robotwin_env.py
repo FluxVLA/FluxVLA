@@ -1,4 +1,4 @@
-"""RoboTwin seed coverage and episode audit, without editing RLinf sources."""
+"""RoboTwin runtime compatibility and complete worker seed partitions."""
 
 import json
 from pathlib import Path
@@ -6,49 +6,30 @@ from pathlib import Path
 import torch
 from rlinf.envs.robotwin.robotwin_env import RoboTwinEnv
 
-from .experiment import partition_seeds
 
-
-class AuditedRoboTwinEnv(RoboTwinEnv):
+class FluxRoboTwinEnv(RoboTwinEnv):
 
     def _init_reset_state_ids(self):
-        path = Path(self.cfg.seeds_path)
-        seeds = json.loads(path.read_text())[self.task_name]['success_seeds']
-        self.success_seeds = partition_seeds(
-            seeds,
-            seed=self.base_seed,
-            rank=self.seed_offset,
-            world_size=self.total_num_processes)
+        seeds = json.loads(Path(
+            self.cfg.seeds_path).read_text())[self.task_name]['success_seeds']
+        values = torch.as_tensor(seeds, dtype=torch.long)
+        if values.numel() != torch.unique(values).numel():
+            raise ValueError('Duplicate seeds are not allowed')
+        indices = torch.randperm(
+            len(values),
+            generator=torch.Generator().manual_seed(self.base_seed))
+        # Keep all seeds, including a remainder smaller than a worker batch.
+        partitions = torch.tensor_split(values[indices],
+                                        self.total_num_processes)
+        if not 0 <= self.seed_offset < len(partitions) or not len(
+                partitions[self.seed_offset]):
+            raise ValueError('Empty/invalid seed partition')
+        self.success_seeds = partitions[self.seed_offset]
         self._current_seed_index = 0
         self._generator = torch.Generator().manual_seed(self.seed)
-        self.experiment_step = 0
         self.update_reset_state_ids()
 
     def _init_env(self):
         from .robotwin_runtime import install_strict_seed_runtime
         install_strict_seed_runtime()
-        if self.cfg.get('full_video_dir'):
-            raise ValueError(
-                'full_video_dir is no longer supported; use RLinf video_cfg')
         super()._init_env()
-
-    def _record_metrics(self, step_reward, infos):
-        infos = super()._record_metrics(step_reward, infos)
-        finished = self._elapsed_steps >= self.cfg.max_episode_steps
-        if finished.any() and self.cfg.get('episode_log_dir'):
-            folder = Path(self.cfg.episode_log_dir)
-            folder.mkdir(parents=True, exist_ok=True)
-            with (folder /
-                  f'worker_{self.seed_offset}.jsonl').open('a') as stream:
-                for index in finished.nonzero().flatten().tolist():
-                    stream.write(
-                        json.dumps({
-                            'worker': self.seed_offset,
-                            'slot': index,
-                            'seed': int(self.reset_state_ids[index]),
-                            'checkpoint_step': self.experiment_step,
-                            'success': bool(self.success_once[index]),
-                            'steps': int(self._elapsed_steps[index]),
-                            'episode_return': float(self.returns[index])
-                        }) + '\n')
-        return infos

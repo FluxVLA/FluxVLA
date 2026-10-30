@@ -33,6 +33,7 @@ class RLinfTrainRunner:
             raise FileNotFoundError(
                 f'RLinf configs missing: {config_dir}. Set RLINF_CONFIG_DIR')
         os.environ['FLUXVLA_ROOT'] = str(flux_root)
+        os.environ['RLINF_ROOT'] = str(rlinf_root)
         os.environ['RLINF_CONFIG_DIR'] = str(config_dir.resolve())
         extension = 'fluxvla.engines.runners.rlinf.registry'
         existing = os.environ.get('RLINF_EXT_MODULE')
@@ -149,10 +150,6 @@ class RLinfTrainRunner:
         self.cfg.runner.only_eval = evaluation
         if evaluation:
             self.cfg.rollout.model = copy.deepcopy(self.cfg.actor.model)
-        if evaluation and self.cfg.env.eval.env_type == 'robotwin':
-            self.cfg.experiment.split = 'test'
-            self.cfg.env.eval.total_num_envs = 10
-            self.cfg.env.eval.rollout_epoch = 15
         self.validate_frontend_cfg(self.cfg, evaluation=evaluation)
         if evaluation and self.cfg.runner.resume_dir:
             raise ValueError(
@@ -164,9 +161,6 @@ class RLinfTrainRunner:
             if not path.is_file():
                 raise FileNotFoundError(f'RLinf weights missing: {path}')
             self.cfg.runner.ckpt_path = str(path)
-        if 'wandb' in self.cfg.runner.logger.logger_backends:
-            from .rlinf.experiment import require_wandb
-            require_wandb()
         cfg = validate_cfg(self.cfg)
         cluster = Cluster(
             cluster_cfg=cfg.cluster,
@@ -188,9 +182,6 @@ class RLinfTrainRunner:
         if evaluation:
             from rlinf.runners.embodied_eval_runner import EmbodiedEvalRunner
             runner = EmbodiedEvalRunner(cfg=cfg, **groups)
-        elif cfg.env.train.env_type == 'robotwin':
-            from .rlinf.pilot_runner import RoboTwinPilotRunner
-            runner = RoboTwinPilotRunner(cfg=cfg, **groups)
         else:
             from rlinf.runners.embodied_runner import EmbodiedRunner
             runner = EmbodiedRunner(cfg=cfg, **groups)

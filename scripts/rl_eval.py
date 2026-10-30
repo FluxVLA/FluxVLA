@@ -15,7 +15,6 @@ def main():
         config_path=str(root / 'configs/rl'),
         config_name='default')
     def launch(cfg):
-        cfg.experiment.split = 'test'
         runner = build_runner_from_cfg({
             'type': 'RLinfTrainRunner',
             'cfg': cfg,

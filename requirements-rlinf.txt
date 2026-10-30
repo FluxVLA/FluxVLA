@@ -8,7 +8,6 @@ mmengine==0.10.7
 hydra-core==1.3.2
 omegaconf==2.3.0
 ray[default]>=2.47.0,<3
-pytest>=8,<9
 gymnasium
 gym
 imageio[ffmpeg]

@@ -99,7 +99,7 @@ Usage:
 Environment modes:
   fluxvla-all  Install FluxVLA, RLinf, simulation and real-robot dependencies.
                This is the only end-to-end RL training environment. Default.
-  rlinf-only   Install FluxVLA model basics, RLinf, Ray and RL test tooling;
+  rlinf-only   Install FluxVLA model basics, RLinf and Ray;
                exclude heavyweight simulators and assets.
 
 Options:
@@ -107,6 +107,7 @@ Options:
                               toolkit / nvcc version: CUDA >= 12.8 selects
                               cu128, otherwise cu124. Driver CUDA and GPU
                               generation are fallback signals only.
+                              RL profiles require cu128 (PyTorch 2.8).
   --dry-run                   Print commands without executing them.
   --skip-av                   Skip av installation.
   --skip-flash-attn           Skip FlashAttention wheel installation.
@@ -2440,6 +2441,14 @@ main() {
 
   local selected names caps cuda_versions
   selected="$(resolve_profile)"
+  if [[ "${selected}" != "cu128" ]]; then
+    echo "Error: RL profiles require --profile cu128 (PyTorch 2.8); cu124 is unsupported." >&2
+    return 1
+  fi
+  if [[ -z "${RLINF_ROOT:-}" || ! -d "${RLINF_ROOT}/rlinf" ]]; then
+    echo "Error: set RLINF_ROOT to an RLinf source checkout before installing." >&2
+    return 1
+  fi
   names="$(detect_gpu_names)"
   caps="$(detect_compute_caps)"
   cuda_versions="$(detect_cuda_versions | sort -Vu | tr '\n' ' ')"
