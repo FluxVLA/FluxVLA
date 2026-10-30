@@ -254,12 +254,21 @@ class DDPTrainRunner(BaseTrainRunner):
             # LIBERO results: create adapters and bind optimizer before the
             # mixed-precision device move, then move the full PEFT-wrapped
             # model together.
-            self._setup_optimizer_and_scheduler(n_train_examples)
+            prepare_backend = getattr(self, '_prepare_backend_model', None)
+            if prepare_backend is None:
+                self._setup_optimizer_and_scheduler(n_train_examples)
             self._move_vla_to_device(target_device)
+            if prepare_backend is not None:
+                prepare_backend()
+                self._setup_optimizer_and_scheduler(n_train_examples)
         else:
             self._move_vla_to_device(target_device)
             if use_lora:
                 self._apply_lora()
+
+            prepare_backend = getattr(self, '_prepare_backend_model', None)
+            if prepare_backend is not None:
+                prepare_backend()
 
             # Setup optimizer and scheduler using base class method.
             self._setup_optimizer_and_scheduler(n_train_examples)
@@ -321,6 +330,7 @@ class DDPTrainRunner(BaseTrainRunner):
         self.vla = DDP(
             self.vla,
             device_ids=[device_id],
+            process_group=getattr(self, 'ddp_process_group', None),
             find_unused_parameters=True,
             gradient_as_bucket_view=True,
             static_graph=self.static_graph)
