@@ -1,4 +1,4 @@
-"""Fail-closed seed handling in the fresh RLinf_support runtime only."""
+"""Deterministic resets and worker-local rendering for RoboTwin."""
 
 
 def install_strict_seed_runtime():
@@ -54,7 +54,7 @@ def install_strict_seed_runtime():
                     now_ep_num=self.env_seed, seed=self.env_seed, **self.args)
                 self.episode_info_list = [self.task.get_info()]
                 # Upstream np.random.choice is global/thread dependent. Pick
-                # deterministically for paired evaluations and record the seed.
+                # deterministically from the episode seed.
                 descriptions = runtime.generate_episode_descriptions(
                     self.task_name, self.episode_info_list, 1, self.env_seed)
                 choices = descriptions[0][self.instruction_type]
@@ -62,8 +62,6 @@ def install_strict_seed_runtime():
                     runtime.np.random.default_rng(
                         self.env_seed).choice(choices))
                 self.args['instruction'] = self.instruction
-                # Unlike upstream, an unstable seed stops the experiment. It
-                # must never silently become seed+1 in a held-out comparison.
                 self.task.set_instruction(self.instruction)
                 self.task.step_lim = self.args['step_lim']
                 self.task.run_steps = 0

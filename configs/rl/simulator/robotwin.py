@@ -23,22 +23,16 @@ simulator = dict(
         attention_implementation='eager',
         openpi_fp32_flow=True,
         vision_backbone=dict(openpi_stem_fp32=True)))
-experiment = dict(
-    root=('${oc.env:FLUX_ROBOTWIN_ROOT,${oc.env:FLU'
-          'X_RL_ROOT,${oc.env:FLUXVLA_ROOT}/work_di'
-          'rs/rlinf}}'),
-    split='validation')
 runner = dict(
     max_epochs=200,
     max_steps=200,
     val_check_interval=10,
     save_interval=10,
     logger=dict(
-        log_path='${experiment.root}/results',
         experiment_name=('${env.train.task_config.task_name}_'
                          '${actor.model.experiment_tag}_seed${actor.seed}'),
         project_name='fluxvla-rl-robotwin',
-        logger_backends=['wandb', 'tensorboard']))
+        logger_backends=['tensorboard']))
 algorithm = dict(update_epoch=5)
 actor = dict(
     micro_batch_size=2,
@@ -62,16 +56,16 @@ env = dict(
         max_episode_steps='${env.train.task_config.step_lim}',
         max_steps_per_rollout_epoch='${env.train.task_config.step_lim}',
         center_crop=False,
-        assets_path='${experiment.root}',
-        seeds_path='${experiment.root}/protocol/train_seeds.json',
-        episode_log_dir=('${runner.logger.log_path}/${runner.logge'
-                         'r.experiment_name}/episodes/train'),
+        assets_path='???',
+        seeds_path=('${oc.env:RLINF_ROOT}/rlinf/envs/robotwin/'
+                    'seeds/train_seeds.json'),
         video_cfg=dict(save_video=False),
         task_config=dict(
             embodiment=['aloha-agilex'],
             planner_backend='mplib',
             step_lim=200,
-            save_path='${experiment.root}/simulator_data',
+            save_path=('${runner.logger.log_path}/${runner.logger.'
+                       'experiment_name}/simulator_data'),
             eval_video_log=False,
             camera=dict(collect_wrist_camera=True),
             domain_randomization=dict(
@@ -93,11 +87,8 @@ env = dict(
         max_episode_steps='${env.train.task_config.step_lim}',
         max_steps_per_rollout_epoch='${env.train.task_config.step_lim}',
         center_crop=False,
-        assets_path='${experiment.root}',
-        seeds_path=('${experiment.root}/protocol/${experiment'
-                    '.split}_seeds.json'),
-        episode_log_dir=('${runner.logger.log_path}/${runner.logge'
-                         'r.experiment_name}/episodes/${experiment'
-                         '.split}'),
+        assets_path='${env.train.assets_path}',
+        seeds_path=('${oc.env:RLINF_ROOT}/rlinf/envs/robotwin/'
+                    'seeds/eval_seeds.json'),
         video_cfg=dict(save_video=False),
         task_config='${env.train.task_config}'))
