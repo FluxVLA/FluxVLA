@@ -87,20 +87,25 @@ def apply_tensor_parallel(module: nn.Module, group: Optional[dist.ProcessGroup],
 
 
 class ShardedOptimizer:
-    """ZeRO-1 style optimizer wrapper sharding optimizer state over a DP group.
+    """Bucketized ZeRO-1 optimizer compatible with Megatron DP groups.
 
     Gradients are synchronized by DDP first.  Each rank updates only its stable
-    parameter subset, then broadcasts updated parameters to the DP group.  The
-    wrapper exposes the standard optimizer API used by FluxVLA schedulers and
-    checkpoint code.
+    parameter subset, then packs each owner's updated parameters into bounded
+    flat buffers and broadcasts one buffer per bucket.  This mirrors the
+    bucket-level synchronization contract of Megatron's distributed optimizer
+    without modifying the read-only Megatron-LM checkout.
     """
 
     def __init__(self, optimizer: torch.optim.Optimizer,
-                 group: Optional[dist.ProcessGroup]):
+                 group: Optional[dist.ProcessGroup],
+                 bucket_cap_mb: float = 25.0):
         self.optimizer = optimizer
         self.group = group
         self.rank = dist.get_rank(group) if group is not None else 0
         self.world_size = dist.get_world_size(group) if group is not None else 1
+        if bucket_cap_mb <= 0:
+            raise ValueError('bucket_cap_mb must be positive')
+        self.bucket_cap_bytes = int(bucket_cap_mb * 1024 * 1024)
         self._all_params = [p for g in optimizer.param_groups for p in g['params']]
         owned = [p for i, p in enumerate(self._all_params)
                  if i % self.world_size == self.rank]
@@ -109,6 +114,32 @@ class ShardedOptimizer:
         for group_cfg in optimizer.param_groups:
             group_cfg['params'] = [p for p in group_cfg['params'] if id(p) in owned_ids]
         self.param_groups = optimizer.param_groups
+        self._buckets = self._build_buckets()
+
+    def _build_buckets(self):
+        """Build deterministic owner buckets grouped by dtype and device."""
+        buckets = []
+        grouped = {}
+        for index, parameter in enumerate(self._all_params):
+            owner = index % self.world_size
+            key = (owner, parameter.device, parameter.dtype)
+            grouped.setdefault(key, []).append(parameter)
+        # Keep owner/key order deterministic, while avoiding one bucket per
+        # parameter when the original parameter list interleaves DP owners.
+        for key, parameters in grouped.items():
+            current = None
+            current_bytes = 0
+            for parameter in parameters:
+                parameter_bytes = parameter.numel() * parameter.element_size()
+                if (current is None
+                        or current_bytes + parameter_bytes > self.bucket_cap_bytes):
+                    current = {'key': key, 'params': [], 'numel': 0}
+                    buckets.append(current)
+                    current_bytes = 0
+                current['params'].append(parameter)
+                current['numel'] += parameter.numel()
+                current_bytes += parameter_bytes
+        return buckets
 
     def zero_grad(self, set_to_none: bool = True):
         for p in self._all_params:
@@ -122,10 +153,32 @@ class ShardedOptimizer:
     def step(self, closure=None):
         result = self.optimizer.step(closure=closure)
         if self.group is not None and self.world_size > 1:
-            for index, parameter in enumerate(self._all_params):
-                owner = index % self.world_size
-                dist.broadcast(parameter.data, src=owner, group=self.group)
+            for bucket in self._buckets:
+                owner, device, dtype = bucket['key']
+                flat = torch.empty(bucket['numel'], device=device, dtype=dtype)
+                offset = 0
+                for parameter in bucket['params']:
+                    size = parameter.numel()
+                    if owner == self.rank:
+                        flat[offset:offset + size].copy_(parameter.data.view(-1))
+                    offset += size
+                # ``owner`` is a rank local to the DP group.  TP/DP topologies
+                # commonly create non-contiguous global ranks (for example
+                # groups [0, 2] and [1, 3]); passing the local rank as ``src``
+                # therefore targets a rank outside the process group.
+                group_src = (dist.get_global_rank(self.group, owner)
+                             if hasattr(dist, 'get_global_rank') else owner)
+                dist.broadcast(flat, src=group_src, group=self.group)
+                offset = 0
+                for parameter in bucket['params']:
+                    size = parameter.numel()
+                    parameter.data.view(-1).copy_(flat[offset:offset + size])
+                    offset += size
         return result
+
+    @property
+    def bucket_count(self) -> int:
+        return len(self._buckets)
 
     def state_dict(self):
         return self.optimizer.state_dict()

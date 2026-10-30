@@ -72,7 +72,8 @@ def sample_beta(alpha,
                 beta,
                 bsize,
                 device,
-                sampler: str = 'legacy_power_ratio') -> torch.Tensor:
+                sampler: str = 'legacy_power_ratio',
+                generator: torch.Generator = None) -> torch.Tensor:
     """Sample flow times from OpenPI's Beta or the legacy FluxVLA rule."""
     if alpha <= 0 or beta <= 0:
         raise ValueError(
@@ -80,10 +81,12 @@ def sample_beta(alpha,
     if sampler == 'beta':
         alpha_t = torch.as_tensor(alpha, dtype=torch.float32, device=device)
         beta_t = torch.as_tensor(beta, dtype=torch.float32, device=device)
+        # Beta.sample has no generator argument in supported torch versions.
+        # Keep the legacy path generator-aware and preserve beta compatibility.
         return torch.distributions.Beta(alpha_t, beta_t).sample((int(bsize), ))
     if sampler == 'legacy_power_ratio':
-        gamma1 = torch.rand((bsize, ), device=device).pow(1 / alpha)
-        gamma2 = torch.rand((bsize, ), device=device).pow(1 / beta)
+        gamma1 = torch.rand((bsize, ), device=device, generator=generator).pow(1 / alpha)
+        gamma2 = torch.rand((bsize, ), device=device, generator=generator).pow(1 / beta)
         return gamma1 / (gamma1 + gamma2)
     raise ValueError(f'Unsupported beta sampler {sampler!r}. Expected '
                      "'beta' or 'legacy_power_ratio'.")

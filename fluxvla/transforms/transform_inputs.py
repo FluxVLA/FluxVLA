@@ -16,7 +16,6 @@ import os
 import random
 from typing import Any, Dict, List, Optional
 
-import av
 import numpy as np
 import torch
 from PIL import Image
@@ -199,6 +198,13 @@ class ProcessParquetInputs():
         inputs['images'] = images
         inputs['img_masks'] = np.array(img_masks)
         inputs['task_description'] = data.get('task_description', '')
+        # Keep raw row identities available to opt-in replay diagnostics.
+        # Normal training configs do not expose these fields.
+        if (os.environ.get('FLUXVLA_BATCH_TRACE') == '1'
+                or os.environ.get('FLUXVLA_SAMPLE_RNG_BY_INDEX') == '1'):
+            for identity_key in ('index',):
+                if identity_key in data:
+                    inputs[identity_key] = data[identity_key]
         if self.dataset_name is not None:
             inputs['dataset_name'] = self.dataset_name
         if self.embodiment_id is not None:
@@ -212,6 +218,8 @@ class ProcessParquetInputs():
         return inputs
 
     def read_video_frame(self, video_path: str, frame_idx: int):
+        import av
+
         container = av.open(video_path)
         for i, frame in enumerate(container.decode(video=0)):
             if i == frame_idx:

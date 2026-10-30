@@ -1,4 +1,4 @@
-"""Native MCore PI0.5 provider recipe, first phase (DP/TP/SP)."""
+"""Native MCore PI0.5 provider recipe for validated DP and experimental TP."""
 
 _base_ = ["./pi05_paligemma_libero_10_full_finetune.py"]
 
@@ -9,5 +9,6 @@ runner = dict(
     context_parallel_size=1,
     expert_model_parallel_size=1,
     sequence_parallel=False,
-    distributed_optimizer=True,
+    tensor_parallel_strategy="gemma_mlp",
+    distributed_optimizer=False,
 )

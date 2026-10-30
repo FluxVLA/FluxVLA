@@ -212,6 +212,7 @@ train_dataloader = dict(
                         'observation.state', 'timestamp', 'actions', 'info',
                         'stats', 'action_masks'
                     ],
+                    video_backend='torchcodec',
                     video_keys=[
                         'observation.images.image',
                         'observation.images.wrist_image',
@@ -240,7 +241,8 @@ train_dataloader = dict(
                     state_dim=32,
                     state_key='proprio',
                     action_key='action',
-                    norm_type='mean_std')
+                    norm_type='mean_std',
+                    output_dtype='float32')
             ],
             action_window_size=10,
             action_key='action',
@@ -277,6 +279,11 @@ runner = dict(
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
+    # Keep the FP32 parameter master consistent with the native MCore PI0.5
+    # provider.  Without this, FSDP casts the vision tower/projector to BF16
+    # before the first forward and the numerical comparison is not apples to
+    # apples, even when compute dtype is BF16 on both backends.
+    keep_params_fp32=True,
     change_key_name=False)
 
 eval = dict(

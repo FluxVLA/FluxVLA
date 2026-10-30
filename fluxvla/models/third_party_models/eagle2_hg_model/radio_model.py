@@ -43,12 +43,30 @@ from transformers.utils import ModelOutput
 try:  # v1
     from flash_attn.flash_attn_interface import \
         flash_attn_unpadded_qkvpacked_func
-except (ImportError, OSError):  # v2 / prebuilt wheel ABI fallback
-    from flash_attn.flash_attn_interface import (
-        flash_attn_varlen_qkvpacked_func as flash_attn_unpadded_qkvpacked_func,
-    )
+    from flash_attn.bert_padding import pad_input, unpad_input
+except (ImportError, OSError):  # Keep model importable without the optional CUDA extension.
+    def flash_attn_unpadded_qkvpacked_func(qkv, cu_seqlens, max_s, dropout_p,
+                                           softmax_scale=None, causal=False):
+        outputs = []
+        scale = softmax_scale
+        for start, end in zip(cu_seqlens[:-1].tolist(), cu_seqlens[1:].tolist()):
+            chunk = qkv[start:end].permute(1, 2, 0, 3)
+            out = F.scaled_dot_product_attention(
+                chunk[0], chunk[1], chunk[2], dropout_p=dropout_p,
+                is_causal=causal, scale=scale)
+            outputs.append(out.permute(1, 2, 0))
+        return torch.cat(outputs, dim=0)
 
-from flash_attn.bert_padding import pad_input, unpad_input
+    def unpad_input(x, mask):
+        indices = mask.reshape(-1).nonzero(as_tuple=False).flatten()
+        lengths = mask.sum(dim=1, dtype=torch.int32)
+        cu = F.pad(torch.cumsum(lengths, dim=0), (1, 0))
+        return x.reshape(-1, x.shape[-1])[indices], indices, cu, int(lengths.max())
+
+    def pad_input(x, indices, batch_size, seqlen):
+        out = x.new_zeros((batch_size * seqlen, x.shape[-1]))
+        out[indices] = x
+        return out.reshape(batch_size, seqlen, x.shape[-1])
 
 
 class FlashAttention(nn.Module):

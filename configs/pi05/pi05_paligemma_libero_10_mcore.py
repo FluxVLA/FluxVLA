@@ -3,7 +3,7 @@
 _base_ = ['./pi05_paligemma_libero_10_full_finetune.py']
 
 runner = dict(
-    type='MegatronTrainRunner',
+    type='MegatronNativeTrainRunner',
     tensor_model_parallel_size=1,
     pipeline_model_parallel_size=1,
     context_parallel_size=1,
