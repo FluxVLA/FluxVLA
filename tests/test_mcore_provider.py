@@ -6,7 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_single_native_mcore_layout():
     assert (ROOT / "fluxvla/mcore/pi05/model.py").exists()
-    assert (ROOT / "fluxvla/mcore/pi05/layers.py").exists()
+    assert (ROOT / "fluxvla/mcore/pi05/tensor_parallel.py").exists()
     assert (ROOT / "fluxvla/mcore/pi05/checkpoint.py").exists()
     assert (ROOT / "fluxvla/mcore/pi05/forward_step.py").exists()
     assert not (ROOT / "fluxvla/mcore/checkpoint.py").exists()

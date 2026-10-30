@@ -70,7 +70,11 @@ from transformers.modeling_outputs import (
 
 
 if is_flash_attn_2_available():
-    from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
+    try:
+        from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
+    except (ImportError, OSError):
+        # A stale optional CUDA wheel must not prevent unrelated VLM imports.
+        pass
 
 logger = logging.get_logger(__name__)
 

@@ -1,18 +1,13 @@
 """LingBot-VLA-v2 DP4 FULL_SHARD training on an offline teacher cache."""
 
 _ROOT = "/ceph/teamGolden/andyzeng/VLA"
-_SHARED = "/ceph/teamGolden/sjkang/rl/rlinf_adapt"
 _CACHE = f"{_ROOT}/FluxVLA/work_dirs/lingbot_backend_alignment_20260930"
 
 model = dict(
     type="LingBotVLAV2",
-    source_root=f"{_ROOT}/lingbot-vla-v2",
-    tokenizer_path=f"{_SHARED}/weights/Qwen3-VL-4B-Instruct",
-    pretrained_name_or_path=(
-        f"{_SHARED}/weights/lingbot-vla-v2-6b-robotwin/"
-        "checkpoints/global_step_50000/hf_ckpt"
-    ),
-    native_config_path=f"{_ROOT}/lingbot-vla-v2/golden_artifacts/robotwin_reduced.yaml",
+    tokenizer_path=f"{_ROOT}/models/Qwen3-VL-4B-Instruct",
+    pretrained_name_or_path=f"{_ROOT}/models/lingbot-vla-v2-6b",
+    native_config_path=f"{_ROOT}/FluxVLA/work_dirs/robotwin_reduced_v2.yaml",
     # Native train.enable_fp32 -> model.action_fp32 contract.
     action_fp32=True,
 )
@@ -38,6 +33,10 @@ runner = dict(
         betas=(0.9, 0.95),
         eps=1e-8,
         weight_decay=0.0,
+        # Match LingBot's build_optimizer(..., fused=False), which explicitly
+        # selects the CUDA foreach AdamW implementation.
+        foreach=True,
+        fused=False,
         # Native use_moe_expert_lr scales routed experts by sqrt(32 / 4).
         paramwise_learning_rate_regex={
             r"(?:^|\.)layers\.\d+\.mlp\.experts\.": 2.8284271247461903e-4,

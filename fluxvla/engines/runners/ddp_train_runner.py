@@ -467,6 +467,7 @@ class DDPTrainRunner(BaseTrainRunner):
                 'model': model_state_dict,
                 'global_step': global_step,
                 'epoch': epoch,
+                'data_state': self._data_state_dict(),
             }
             if train_model_state_dict is not None:
                 checkpoint_dict['train_model'] = train_model_state_dict

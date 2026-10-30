@@ -14,7 +14,7 @@ def test_native_entry_uses_megatron_pretrain_contract():
 
 def test_native_model_is_megatron_module_with_tp_layers():
     model = (ROOT / "fluxvla/mcore/pi05/model.py").read_text()
-    layers = (ROOT / "fluxvla/mcore/pi05/layers.py").read_text()
+    layers = (ROOT / "fluxvla/mcore/pi05/tensor_parallel.py").read_text()
     assert "class PI0Model(MegatronModule)" in model
     assert "ColumnParallelLinear" in layers
     assert "RowParallelLinear" in layers
@@ -138,7 +138,7 @@ def test_native_fsdp_reduce_contract_uses_bf16_bucket_collectives():
 
 
 def test_native_pi05_sequence_parallel_restores_batch_first_layout():
-    layers = (ROOT / "fluxvla/mcore/pi05/layers.py").read_text()
+    layers = (ROOT / "fluxvla/mcore/pi05/tensor_parallel.py").read_text()
     provider = (ROOT / "fluxvla/mcore/pi05/provider.py").read_text()
 
     assert "gather_from_sequence_parallel_region" in layers
@@ -155,6 +155,12 @@ def test_native_pi05_sequence_parallel_restores_batch_first_layout():
     assert "PI05_MCORE_TP_ACCURACY_CONTRACT requires" in provider
     assert "and config.sequence_parallel" not in provider
     assert 'config.attention_implementation != "eager"' in provider
+
+
+def test_online_pi05_dataset_honors_legacy_v21_opt_in():
+    source = (ROOT / "fluxvla/mcore/pi05/dataset.py").read_text()
+    assert source.count('os.environ.get("PI05_ALLOW_LEGACY_V21") == "1"') >= 2
+    assert "_metadata.check_version_compatibility = lambda" in source
 
 
 def test_native_grad_norm_reproduces_fsdp_no_shard_foreach_path():
@@ -199,6 +205,20 @@ def test_optimizer_trace_continues_from_checkpoint_iteration():
         'state["step"] = int(getattr(get_args(), "iteration", 0))'
         in optimizer_trace
     )
+    assert 'FLUXVLA_PARAM_TRACE_STEP' in optimizer_trace
+    assert 'state["step"] != target_step' in optimizer_trace
+    assert "_optimizer_state_for_master(" in optimizer_trace
+    assert "**optimizer_state" in optimizer_trace
+
+
+def test_lingbot_alignment_harness_matches_mcore_adam_betas():
+    harness = (ROOT / "tools/lingbot_backend_alignment.py").read_text()
+
+    assert 'parser.add_argument("--adam-beta1", type=float, default=0.9)' in harness
+    assert 'parser.add_argument("--adam-beta2", type=float, default=0.95)' in harness
+    assert "betas=(args.adam_beta1, args.adam_beta2)" in harness
+    assert '"adam_beta1": args.adam_beta1' in harness
+    assert '"adam_beta2": args.adam_beta2' in harness
 
 
 def test_grad_norm_input_trace_captures_real_backend_orders():
@@ -408,7 +428,7 @@ def test_native_adarms_matches_fluxvla_forward_and_backward():
 
 
 def test_native_post_attention_residual_matches_fluxvla_clone_contract():
-    source = (ROOT / "fluxvla/mcore/pi05/layers.py").read_text()
+    source = (ROOT / "fluxvla/mcore/pi05/tensor_parallel.py").read_text()
     layer_forward = source.split("class PI0ModelLayerTP", 1)[1].split(
         "return vlm_hs, exp_hs", 1
     )[0]

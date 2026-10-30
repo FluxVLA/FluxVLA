@@ -145,7 +145,16 @@ def _write_post_reduce_gradient_trace(step: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as stream:
         for name, parameter in _REGISTERED_MODEL_NAMED_PARAMETERS:
-            grad = getattr(parameter, "main_grad", parameter.grad)
+            # DistributedOptimizer may retain a ``main_grad`` attribute while
+            # clearing it between accumulation windows.  ``getattr`` alone
+            # does not fall back when that attribute is present but None.
+            # The wrapped model parameter's ``.grad`` is the accumulated
+            # (pre-DistOpt-normalization) gradient.  ``main_grad`` is the
+            # optimizer-owned buffer and may already be divided by the
+            # micro-batch/data-parallel factors on later iterations.
+            grad = parameter.grad
+            if grad is None:
+                grad = getattr(parameter, "main_grad", None)
             if grad is None:
                 row = {
                     "step": step,
@@ -344,7 +353,8 @@ def install_fsdp_grad_reduce_contract() -> None:
 
 def install_fsdp_grad_norm_contract() -> None:
     """Optionally match PyTorch ``clip_grad_norm_`` reduction and scaling."""
-    if os.environ.get("PI05_FSDP_GRAD_NORM_CONTRACT") != "1":
+    if (os.environ.get("PI05_FSDP_GRAD_NORM_CONTRACT") != "1"
+            and os.environ.get("FLUXVLA_FSDP_GRAD_NORM_CONTRACT") != "1"):
         return
 
     import megatron.core.optimizer.optimizer as optimizer_module
@@ -441,7 +451,10 @@ def register_alignment_parameters(
 ) -> None:
     """Register selected model parameters before MCore wraps the model."""
     trace_parameters = os.environ.get("FLUXVLA_PARAM_TRACE") == "1"
-    match_fsdp_norm = os.environ.get("PI05_FSDP_GRAD_NORM_CONTRACT") == "1"
+    match_fsdp_norm = (
+        os.environ.get("PI05_FSDP_GRAD_NORM_CONTRACT") == "1"
+        or os.environ.get("FLUXVLA_FSDP_GRAD_NORM_CONTRACT") == "1"
+    )
     match_fsdp_reduce = os.environ.get("PI05_FSDP_GRAD_REDUCE_CONTRACT") == "1"
     trace_post_reduce = bool(os.environ.get("FLUXVLA_POST_REDUCE_GRAD_TRACE_DIR"))
     if (
@@ -490,7 +503,7 @@ def register_alignment_parameters(
     pattern = re.compile(
         os.environ.get(
             "FLUXVLA_PARAM_TRACE_PATTERN",
-            r"^(action_out_proj\.weight|suffix_embedder\.action_in_proj\.weight|"
+            r"(?:^|\.)(action_out_proj\.weight|suffix_embedder\.action_in_proj\.weight|"
             r"layers\.0\.attn\.(vlm_q|exp_q)\.weight)$",
         )
     )
@@ -512,12 +525,47 @@ def _optimizer_tensors(
         if model_map is not None and model_parameter in model_map:
             if group_map is not None and model_parameter not in group_map:
                 continue
-            tensors = child._get_main_param_and_optimizer_states(model_parameter)
+            # Megatron's precision-aware optimizer stores the low-precision
+            # main parameter plus BF16 Adam states and, depending on TE/config,
+            # may not allocate a ``master_param`` state at all.  Its generic
+            # accessor unconditionally pops that key, so use the owning
+            # optimizer parameter directly for diagnostics in that case.
+            try:
+                tensors = child._get_main_param_and_optimizer_states(model_parameter)
+            except KeyError as error:
+                if error.args != ("master_param",):
+                    raise
+                group_index, group_order = group_map[model_parameter]
+                base_optimizer = getattr(child, "optimizer", None)
+                if base_optimizer is None:
+                    continue
+                sharded_parameter = base_optimizer.param_groups[group_index]["params"][
+                    group_order
+                ]
+                state = base_optimizer.state.get(sharded_parameter, {})
+                tensors = {"param": sharded_parameter}
+                for state_name in ("exp_avg", "exp_avg_sq"):
+                    if state_name not in state:
+                        continue
+                    getter = getattr(base_optimizer, "get_unscaled_state", None)
+                    tensors[state_name] = (
+                        getter(sharded_parameter, state_name)
+                        if getter is not None
+                        else state[state_name]
+                    )
             model_grad = getattr(model_parameter, "main_grad", model_parameter.grad)
             if model_grad is not None and group_map is not None:
                 param_range = child._get_model_param_range_map(model_parameter)["param"]
                 model_grad = model_grad.view(-1)[param_range.start : param_range.end]
-            return {**tensors, "model_grad": model_grad}
+            else:
+                param_range = None
+            return {
+                **tensors,
+                "model_grad": model_grad,
+                "model_range": None
+                if param_range is None
+                else (param_range.start, param_range.end),
+            }
 
         main_parameter = getattr(model_parameter, "main_param", model_parameter)
         base_optimizer = getattr(child, "optimizer", None)
@@ -549,6 +597,20 @@ def _parameter_lr(optimizer: Any, master_parameter: torch.Tensor) -> float | Non
     return None
 
 
+def _optimizer_state_for_master(
+    optimizer: Any, master_parameter: torch.Tensor
+) -> dict[str, Any] | None:
+    """Find DistOpt state after the first step by master-parameter identity."""
+    for child in getattr(optimizer, "chained_optimizers", (optimizer,)):
+        for owner in (child, getattr(child, "optimizer", None)):
+            if owner is None:
+                continue
+            state = getattr(owner, "state", None)
+            if state is not None and master_parameter in state:
+                return state[master_parameter]
+    return None
+
+
 def _norm(value: Any) -> float | None:
     if not isinstance(value, torch.Tensor):
         return None
@@ -563,6 +625,7 @@ def _cpu_tensor(value: Any) -> torch.Tensor | None:
 
 def _write_optimizer_tensor_trace(
     *,
+    phase: str,
     step: int,
     rank: int,
     snapshots: list[dict[str, Any]],
@@ -574,15 +637,26 @@ def _write_optimizer_tensor_trace(
 
     parameters = []
     for snapshot in snapshots:
-        tensors = _optimizer_tensors(optimizer, snapshot["model_parameter"])
+        tensors = snapshot.get("optimizer_tensors")
         if tensors is None:
-            continue
-        master_parameter = tensors["param"]
+            tensors = _optimizer_tensors(optimizer, snapshot["model_parameter"])
+        master_parameter = (
+            snapshot["model_parameter"] if tensors is None else tensors["param"]
+        )
+        optimizer_state = _optimizer_state_for_master(
+            optimizer, master_parameter
+        )
+        if optimizer_state is not None:
+            tensors = {
+                **({} if tensors is None else tensors),
+                **optimizer_state,
+            }
         parameters.append(
             {
                 "name": snapshot["name"],
                 "model_shape": list(snapshot["model_parameter"].shape),
                 "master_shape": list(master_parameter.shape),
+                "model_range": None if tensors is None else tensors.get("model_range"),
                 "parameter_before": snapshot["before_cpu"],
                 "raw_grad": snapshot["raw_grad_cpu"],
                 "post_clip_grad": _cpu_tensor(master_parameter.grad),
@@ -595,7 +669,13 @@ def _write_optimizer_tensor_trace(
     root = Path(root_value)
     root.mkdir(parents=True, exist_ok=True)
     torch.save(
-        {"backend": "mcore", "step": step, "rank": rank, "parameters": parameters},
+        {
+            "backend": "mcore",
+            "phase": phase,
+            "step": step,
+            "rank": rank,
+            "parameters": parameters,
+        },
         root / f"mcore_step_{step:06d}_rank_{rank:02d}.pt",
     )
 
@@ -620,37 +700,119 @@ def install_optimizer_alignment_trace() -> None:
 
             state["step"] = int(getattr(get_args(), "iteration", 0))
         state["step"] += 1
+        target_step = int(os.environ.get("FLUXVLA_PARAM_TRACE_STEP", "0"))
+        if target_step and state["step"] != target_step:
+            return original_step(optimizer)
+        summary_only = os.environ.get("FLUXVLA_PARAM_SUMMARY_ONLY") == "1"
+        tensor_trace = bool(os.environ.get("FLUXVLA_OPTIMIZER_TENSOR_TRACE_DIR"))
         snapshots = []
         for name, model_parameter in _REGISTERED_PARAMETERS:
             tensors = _optimizer_tensors(optimizer, model_parameter)
-            if tensors is None:
+            if tensors is None and model_parameter.grad is None:
                 continue
-            master_parameter = tensors["param"]
-            model_grad = tensors["model_grad"]
+            master_parameter = model_parameter if tensors is None else tensors["param"]
+            model_grad = model_parameter.grad if tensors is None else tensors["model_grad"]
             snapshots.append(
                 {
                     "name": name,
                     "model_parameter": model_parameter,
-                    "before": master_parameter.detach().float().clone(),
-                    "before_cpu": _cpu_tensor(master_parameter),
-                    "raw_grad_cpu": _cpu_tensor(model_grad),
+                    "before": (
+                        None
+                        if summary_only
+                        else master_parameter.detach().float().clone()
+                    ),
+                    "before_cpu": (
+                        _cpu_tensor(master_parameter) if tensor_trace else None
+                    ),
+                    "raw_grad_cpu": _cpu_tensor(model_grad) if tensor_trace else None,
                     "raw_grad_norm": _norm(model_grad),
+                    "raw_grad_sum": (
+                        None
+                        if model_grad is None
+                        else float(model_grad.detach().float().sum().item())
+                    ),
+                    "raw_grad_abs_max": (
+                        None
+                        if model_grad is None
+                        else float(model_grad.detach().float().abs().max().item())
+                    ),
                     "lr": _parameter_lr(optimizer, master_parameter),
+                    # DistOpt may replace/gather its model-parameter mapping
+                    # during ``step``. Keep the pre-step lookup alive so the
+                    # tensor trace remains useful after the optimizer update.
+                    "optimizer_tensors": tensors,
+                    "master_parameter": master_parameter,
                 }
             )
 
+        rank = int(os.environ.get("RANK", "0"))
+        if tensor_trace:
+            # Persist the optimizer boundary before AdamW lazily allocates its
+            # state. Besides making OOMs diagnosable, this provides a bounded
+            # correctness gate for environments that cannot fit first-step
+            # optimizer state. A successful update overwrites this file with
+            # the complete post-update trace below.
+            _write_optimizer_tensor_trace(
+                phase="pre_update",
+                step=state["step"],
+                rank=rank,
+                snapshots=snapshots,
+                optimizer=optimizer,
+            )
+        if os.environ.get("FLUXVLA_PARITY_STOP_BEFORE_OPTIMIZER") == "1":
+            raise SystemExit(0)
+
         result = original_step(optimizer)
         success, grad_norm, _ = result
+        if os.environ.get("FLUXVLA_MODEL_REPLICA_TRACE") == "1":
+            replica_root = Path(
+                os.environ.get(
+                    "FLUXVLA_MODEL_REPLICA_TRACE_DIR", "work_dirs/model_replica_trace"
+                )
+            )
+            replica_root.mkdir(parents=True, exist_ok=True)
+            replica_path = replica_root / f"rank{rank}.jsonl"
+            replica_pattern = os.environ.get("FLUXVLA_PARAM_TRACE_PATTERN")
+            replica_regex = re.compile(replica_pattern) if replica_pattern else None
+            with replica_path.open("a", encoding="utf-8") as stream:
+                for name, parameter in _REGISTERED_PARAMETERS:
+                    if replica_regex is not None and not replica_regex.search(name):
+                        continue
+                    value = parameter.detach().float()
+                    stream.write(
+                        json.dumps(
+                            {
+                                "step": state["step"],
+                                "name": name,
+                                "shape": list(parameter.shape),
+                                "sum": float(value.sum().item()),
+                                "norm": float(value.norm().item()),
+                                "abs_max": float(value.abs().max().item()),
+                            }
+                        )
+                        + "\n"
+                    )
         grad_norm_value = None if grad_norm is None else float(grad_norm)
         clip_grad = float(optimizer.config.clip_grad)
-        clip_coefficient = (
-            None
-            if grad_norm_value is None
-            else min(1.0, clip_grad / (grad_norm_value + 1e-6))
-        )
-        rank = int(os.environ.get("RANK", "0"))
+        clip_coefficient = None
+        if grad_norm_value is not None:
+            clip_coefficient = min(1.0, clip_grad / (grad_norm_value + 1e-6))
+            try:
+                from .lingbot_vla_v2 import optimizer as lingbot_optimizer
+
+                actual_coefficient = (
+                    lingbot_optimizer._LAST_FSDP2_CLIP_COEFFICIENT
+                )
+                if actual_coefficient is not None:
+                    clip_coefficient = float(actual_coefficient.item())
+            except ImportError:
+                pass
         _write_optimizer_tensor_trace(
-            step=state["step"], rank=rank, snapshots=snapshots, optimizer=optimizer
+            phase="post_update",
+            step=state["step"],
+            rank=rank,
+            snapshots=snapshots,
+            optimizer=optimizer,
         )
         root = Path(os.environ.get("FLUXVLA_PARAM_TRACE_DIR", "work_dirs/param_trace"))
         path = root / f"native_rank{rank}.jsonl"
@@ -659,9 +821,33 @@ def install_optimizer_alignment_trace() -> None:
         with path.open("a", encoding="utf-8") as stream:
             for snapshot in snapshots:
                 tensors = _optimizer_tensors(optimizer, snapshot["model_parameter"])
-                if tensors is None:
-                    continue
-                master_parameter = tensors["param"]
+                master_parameter = (
+                    snapshot["model_parameter"] if tensors is None else tensors["param"]
+                )
+                optimizer_state = (
+                    None
+                    if tensors is None
+                    else _optimizer_state_for_master(optimizer, master_parameter)
+                )
+                if optimizer_state is not None:
+                    tensors = {**tensors, **optimizer_state}
+                elif tensors is None:
+                    tensors = {}
+                # Native FSDP2 retains FP32 parameter storage but casts managed
+                # weights to BF16 for compute. DistOpt similarly copies each
+                # FP32 master shard into a BF16 model parameter. Project the
+                # master value to expose updates that cross a BF16 boundary,
+                # rather than harmless FP32 ULP differences.
+                parameter_bf16 = master_parameter.detach().to(
+                    dtype=torch.bfloat16
+                ).float()
+                parameter_bf16_bits = (
+                    parameter_bf16.to(torch.bfloat16)
+                    .contiguous()
+                    .view(torch.int16)
+                    .to(torch.int64)
+                    .bitwise_and(0xFFFF)
+                )
                 row = {
                     "step": state["step"],
                     "name": snapshot["name"],
@@ -671,17 +857,47 @@ def install_optimizer_alignment_trace() -> None:
                     "lr": snapshot["lr"],
                     "grad_norm": grad_norm_value,
                     "raw_grad_norm": snapshot["raw_grad_norm"],
+                    "raw_grad_sum": snapshot["raw_grad_sum"],
+                    "raw_grad_abs_max": snapshot["raw_grad_abs_max"],
                     "post_clip_grad_norm": _norm(master_parameter.grad),
                     "clip_coefficient": clip_coefficient,
                     "parameter_norm": _norm(master_parameter),
-                    "parameter_delta_norm": float(
-                        (master_parameter.detach().float() - snapshot["before"])
-                        .norm()
-                        .item()
+                    "parameter_sum": float(master_parameter.detach().float().sum().item()),
+                    "parameter_abs_max": float(
+                        master_parameter.detach().float().abs().max().item()
+                    ),
+                    "parameter_bf16_norm": float(parameter_bf16.norm().item()),
+                    "parameter_bf16_sum": float(parameter_bf16.sum().item()),
+                    "parameter_bf16_abs_max": float(
+                        parameter_bf16.abs().max().item()
+                    ),
+                    "parameter_bf16_bits_sum": int(
+                        parameter_bf16_bits.sum().item()
+                    ),
+                    "parameter_delta_norm": (
+                        None
+                        if snapshot["before"] is None
+                        else float(
+                            (master_parameter.detach().float() - snapshot["before"])
+                            .norm()
+                            .item()
+                        )
                     ),
                     "exp_avg_norm": _norm(tensors.get("exp_avg")),
                     "exp_avg_sq_norm": _norm(tensors.get("exp_avg_sq")),
                 }
+                for state_name in ("exp_avg", "exp_avg_sq"):
+                    value = tensors.get(state_name)
+                    row[f"{state_name}_sum"] = (
+                        None
+                        if not isinstance(value, torch.Tensor)
+                        else float(value.detach().float().sum().item())
+                    )
+                    row[f"{state_name}_abs_max"] = (
+                        None
+                        if not isinstance(value, torch.Tensor)
+                        else float(value.detach().float().abs().max().item())
+                    )
                 stream.write(json.dumps(row, sort_keys=True) + "\n")
         return result
 

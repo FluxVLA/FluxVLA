@@ -55,7 +55,7 @@ from megatron.core.transformer.module import MegatronModule
 from megatron.core import parallel_state
 
 from .transformer_config import PI0TransformerConfig
-from .layers import PI0ModelLayerTP, GatedRMSNorm, AdaRMSNorm
+from .tensor_parallel import PI0ModelLayerTP, GatedRMSNorm, AdaRMSNorm
 from .embedders import (
     PI0PrefixEmbedder,
     PI0SuffixEmbedder,

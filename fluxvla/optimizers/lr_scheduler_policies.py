@@ -144,6 +144,9 @@ class BaseLRSchedulerPolicy:
         return optimizer_kwargs
 
     def build_optimizer(self, runner, weight_decay=None):
+        if str(runner.optimizer_cfg.get('type', '')).lower() == 'muon':
+            from .muon import build_muon_optimizer
+            return build_muon_optimizer(runner.vla, runner.optimizer_cfg)
         groups = self.build_param_groups(runner, weight_decay)
         return build_optimizer_from_cfg(
             self._optimizer_build_cfg(runner), default_args={'params': groups})
