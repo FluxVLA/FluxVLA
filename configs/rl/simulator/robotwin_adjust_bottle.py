@@ -44,6 +44,10 @@ actor = dict(
     global_batch_size=64,
     seed=1234,
     enable_offload=False,
+    # Torch 2.8 FSDP2 deferred sync corrupts later PI05 prefix forwards.
+    # Sync each microbatch; RLinf still accumulates gradients until the
+    # configured global batch is complete.
+    fsdp_config=dict(enable_gradient_accumulation=False),
     model=dict(
         model_path=('${experiment.root}/weights/RLinf-Pi05-Ro'
                     'boTwin-SFT-adjust_bottle')),

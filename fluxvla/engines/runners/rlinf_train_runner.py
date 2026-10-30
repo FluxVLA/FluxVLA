@@ -115,6 +115,12 @@ class RLinfTrainRunner:
                         'SmolVLA RL currently supports LIBERO-10 only; its '
                         'RoboTwin preprocessing/action contract is not yet '
                         'implemented')
+                if (not evaluation and fsdp.strategy == 'fsdp2'
+                        and fsdp.get('enable_gradient_accumulation', True)):
+                    raise ValueError(
+                        'PI05 RoboTwin requires '
+                        'actor.fsdp_config.enable_gradient_accumulation=false '
+                        'to preserve rollout/actor probability consistency')
                 if (cfg.actor.model.fluxvla.rollout_micro_batch_size !=
                         cfg.actor.micro_batch_size):
                     raise ValueError(
