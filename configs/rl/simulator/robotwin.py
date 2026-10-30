@@ -1,10 +1,10 @@
-"""Python RL defaults registered with Hydra by RLinfTrainRunner."""
+"""Shared RoboTwin settings; select a task with env.train.task_config."""
 defaults = [
     dict(**{'/env@env.train': 'robotwin_adjust_bottle'}),
     dict(**{'/env@env.eval': 'robotwin_adjust_bottle'}), '_self_'
 ]
 simulator = dict(
-    name='robotwin_adjust_bottle',
+    name='robotwin',
     placement=dict(actor='0-1', **{'env,rollout': '2-3'}),
     action_chunk=50,
     action_dim=14,
@@ -35,7 +35,8 @@ runner = dict(
     save_interval=10,
     logger=dict(
         log_path='${experiment.root}/results',
-        experiment_name='adjust_bottle_pi05_seed1234',
+        experiment_name=('${env.train.task_config.task_name}_'
+                         '${actor.model.experiment_tag}_seed${actor.seed}'),
         project_name='fluxvla-rl-robotwin',
         logger_backends=['wandb', 'tensorboard']))
 algorithm = dict(update_epoch=5)
@@ -48,9 +49,6 @@ actor = dict(
     # Sync each microbatch; RLinf still accumulates gradients until the
     # configured global batch is complete.
     fsdp_config=dict(enable_gradient_accumulation=False),
-    model=dict(
-        model_path=('${experiment.root}/weights/RLinf-Pi05-Ro'
-                    'boTwin-SFT-adjust_bottle')),
     optim=dict(lr=5e-06, value_lr=0.0001))
 rollout = dict(enable_offload=False)
 env = dict(
@@ -61,8 +59,8 @@ env = dict(
         seed=1234,
         auto_reset=False,
         ignore_terminations=True,
-        max_episode_steps=200,
-        max_steps_per_rollout_epoch=200,
+        max_episode_steps='${env.train.task_config.step_lim}',
+        max_steps_per_rollout_epoch='${env.train.task_config.step_lim}',
         center_crop=False,
         assets_path='${experiment.root}',
         seeds_path='${experiment.root}/protocol/train_seeds.json',
@@ -92,8 +90,8 @@ env = dict(
         ignore_terminations=True,
         is_eval=True,
         use_fixed_reset_state_ids=False,
-        max_episode_steps=200,
-        max_steps_per_rollout_epoch=200,
+        max_episode_steps='${env.train.task_config.step_lim}',
+        max_steps_per_rollout_epoch='${env.train.task_config.step_lim}',
         center_crop=False,
         assets_path='${experiment.root}',
         seeds_path=('${experiment.root}/protocol/${experiment'
