@@ -2175,9 +2175,8 @@ class QWen2VLImageTransform:
         return np.stack(resized_images, axis=0)
 
     def __call__(self, inputs):
-        images = inputs[self.img_key].reshape(-1, 3,
-                                              inputs[self.img_key].shape[-2],
-                                              inputs[self.img_key].shape[-1])
+        image_array = np.asarray(inputs[self.img_key])
+        images = image_array.reshape(-1, 3, image_array.shape[-2], image_array.shape[-1])
         images = self._exact_resize(images)
         ret_dict = self.img_transform(images)
         if self.to_tensor:

@@ -95,9 +95,11 @@ class FSDPTrainRunner(BaseTrainRunner):
                  lr_scheduler: Optional[Dict] = None,
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
+                 enable_forward_autocast: Optional[bool] = None,
                  reduce_in_full_precision: bool = True,
                  mixed_precision_dtype: str = 'bf16',
                  keep_params_fp32: bool = False,
+                 report_dp_mean_metrics: bool = False,
                  grad_accumulation_steps: int = 1,
                  deterministic_algorithms: bool = False,
                  ema_decay: Optional[float] = None,
@@ -105,6 +107,7 @@ class FSDPTrainRunner(BaseTrainRunner):
                  evaluator: Optional[Dict] = None,
                  sharding_strategy: str = 'hybrid-shard',
                  fsdp_wrap_policy: str = 'model',
+                 fsdp_api_version: int = 1,
                  pre_fsdp_param_dtype: Optional[str] = None,
                  change_key_name: bool = False,
                  tokenizer: Optional[Dict] = None,
@@ -132,6 +135,7 @@ class FSDPTrainRunner(BaseTrainRunner):
             lr_scheduler=lr_scheduler,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
             enable_mixed_precision_training=enable_mixed_precision_training,
+            enable_forward_autocast=enable_forward_autocast,
             reduce_in_full_precision=reduce_in_full_precision,
             mixed_precision_dtype=mixed_precision_dtype,
             keep_params_fp32=keep_params_fp32,
@@ -145,6 +149,11 @@ class FSDPTrainRunner(BaseTrainRunner):
         self.cfg = cfg
         self.args = args
         self.max_grad_norm = max_grad_norm
+        self.report_dp_mean_metrics = bool(report_dp_mean_metrics)
+        if fsdp_api_version not in (1, 2):
+            raise ValueError('fsdp_api_version must be 1 or 2, got '
+                             f'{fsdp_api_version!r}.')
+        self.fsdp_api_version = int(fsdp_api_version)
         self.sharding_strategy = sharding_strategy
         self.pre_fsdp_param_dtype = (
             str_to_dtype(pre_fsdp_param_dtype)
@@ -284,6 +293,10 @@ class FSDPTrainRunner(BaseTrainRunner):
             train_loss (Optional[float], optional): Training loss.
                 Defaults to None.
         """
+        if self.fsdp_api_version == 2:
+            raise NotImplementedError(
+                'FSDP2 checkpoint save is not implemented; set '
+                'save_iter_interval above the validation run length.')
         assert isinstance(self.vla, FSDP), \
             'FSDPStrategy.save_checkpoint assumes VLA is \
                 already wrapped in FSDP!'
@@ -512,12 +525,28 @@ class FSDPTrainRunner(BaseTrainRunner):
             parameter.register_hook(_save)
 
     def run_setup(self, n_train_examples: int) -> None:
-        self.vla.from_pretrained()
         torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
+        initialize_runtime = getattr(
+            self.vla, 'initialize_distributed_runtime', None)
+        if callable(initialize_runtime):
+            initialize_runtime()
+            overwatch.info(
+                'Initialized model-owned distributed runtime.',
+                ctx_level=1)
+
+        self.vla.from_pretrained()
         torch.cuda.empty_cache()
 
         self.vla.freeze_backbones()
         fsdp_ignored_modules = self._resolve_fsdp_ignored_modules()
+
+        model_checkpointing = getattr(
+            self.vla, 'gradient_checkpointing_enable', None)
+        if self.enable_gradient_checkpointing and callable(model_checkpointing):
+            model_checkpointing()
+            overwatch.info(
+                'Enabled model-owned gradient checkpointing before FSDP wrapping.',
+                ctx_level=1)
 
         is_no_shard = (
             self.fsdp_sharding_strategy == ShardingStrategy.NO_SHARD)
@@ -617,27 +646,89 @@ class FSDPTrainRunner(BaseTrainRunner):
                     checkpoint_layer_classes.add(
                         self.vla.llm_expert.transformer_layer_cls)
 
-        self.vla = FSDP(
-            self.vla,
-            auto_wrap_policy=vla_fsdp_wrapping_policy,
-            mixed_precision=fsdp_precision_policy,
-            sharding_strategy=self.fsdp_sharding_strategy,
-            ignored_modules=(fsdp_ignored_modules or None),
-            device_id=torch.cuda.current_device(),
-            limit_all_gathers=True,
-            use_orig_params=True,
-        )
-        # FSDP materializes its original-parameter views while wrapping. Hooks
-        # installed on the pre-wrap Parameter objects are not retained.
-        # Regular tensor hooks installed here still run before FSDP's
-        # post-accumulate reduction hook.
-        self._install_alignment_autograd_tensor_trace()
-        fsdp_unit_count = sum(
-            isinstance(module, FSDP) for module in self.vla.modules())
+        if self.fsdp_api_version == 2:
+            if fsdp_ignored_modules:
+                raise ValueError('FSDP2 validation does not support ignored modules.')
+            from torch.distributed.fsdp import (MixedPrecisionPolicy,
+                                                fully_shard)
+
+            if self.fsdp_wrap_policy == 'root':
+                fsdp2_modules = []
+            elif self.fsdp_wrap_policy == 'model':
+                module_getter = getattr(
+                    self.vla, 'get_fsdp2_wrapping_modules', None)
+                if not callable(module_getter):
+                    raise ValueError(
+                        f'{type(self.vla).__name__} does not provide '
+                        'get_fsdp2_wrapping_modules().')
+                fsdp2_modules = list(module_getter())
+            else:
+                raise ValueError(
+                    'FSDP2 currently supports model or root wrapping only.')
+            child_mp_policy = MixedPrecisionPolicy(
+                param_dtype=fsdp_precision_policy.param_dtype,
+                reduce_dtype=fsdp_precision_policy.reduce_dtype,
+                output_dtype=fsdp_precision_policy.param_dtype,
+            )
+            root_mp_policy = MixedPrecisionPolicy(
+                param_dtype=fsdp_precision_policy.param_dtype,
+                reduce_dtype=fsdp_precision_policy.reduce_dtype,
+                # Preserve policy-internal FP32 scalar losses for parity
+                # reporting. The cast's backward is the identity, so this does
+                # not change the native BF16-parameter training computation.
+                output_dtype=torch.float32,
+            )
+            fp32_mp_policy = MixedPrecisionPolicy(
+                param_dtype=torch.float32,
+                reduce_dtype=torch.float32,
+                output_dtype=torch.float32,
+            )
+            reshard_after_forward = (
+                self.fsdp_sharding_strategy == ShardingStrategy.FULL_SHARD)
+            self.vla.to(device=current_device)
+            fp32_module_getter = getattr(
+                self.vla, 'get_fsdp2_full_precision_modules', None)
+            fp32_modules = (
+                list(fp32_module_getter())
+                if callable(fp32_module_getter) else [])
+            for module in fp32_modules:
+                fully_shard(
+                    module,
+                    reshard_after_forward=reshard_after_forward,
+                    mp_policy=fp32_mp_policy,
+                )
+            for module in fsdp2_modules:
+                fully_shard(
+                    module,
+                    reshard_after_forward=reshard_after_forward,
+                    mp_policy=child_mp_policy,
+                )
+            self.vla = fully_shard(
+                self.vla,
+                reshard_after_forward=reshard_after_forward,
+                mp_policy=root_mp_policy,
+            )
+            fsdp_unit_count = len(fp32_modules) + len(fsdp2_modules) + 1
+        else:
+            self.vla = FSDP(
+                self.vla,
+                auto_wrap_policy=vla_fsdp_wrapping_policy,
+                mixed_precision=fsdp_precision_policy,
+                sharding_strategy=self.fsdp_sharding_strategy,
+                ignored_modules=(fsdp_ignored_modules or None),
+                device_id=torch.cuda.current_device(),
+                limit_all_gathers=True,
+                use_orig_params=True,
+            )
+            # FSDP materializes its original-parameter views while wrapping.
+            # Install diagnostics on the post-wrap parameter objects.
+            self._install_alignment_autograd_tensor_trace()
+            fsdp_unit_count = sum(
+                isinstance(module, FSDP) for module in self.vla.modules())
         ignored_numel = sum(param.numel() for module in fsdp_ignored_modules
                             for param in module.parameters())
         overwatch.info(
-            f'FSDP wrapping created {fsdp_unit_count} units '
+            f'FSDP{self.fsdp_api_version} wrapping created {fsdp_unit_count} units '
             f'(policy={self.fsdp_wrap_policy}); kept '
             f'{ignored_numel / 1e9:.2f}B frozen parameters replicated.',
             ctx_level=1)
@@ -725,16 +816,36 @@ class FSDPTrainRunner(BaseTrainRunner):
     def clip_grad_norm(self) -> None:
         # Note =>> FSDP uses a custom `clip_grad_norm_` function; requires *uniform grad dtype*  # noqa: E501
         self._write_grad_norm_input_trace()
+        if self.fsdp_api_version == 2:
+            return torch.nn.utils.clip_grad_norm_(
+                self.vla.parameters(),
+                max_norm=self.max_grad_norm,
+                foreach=True,
+            )
         return self.vla.clip_grad_norm_(max_norm=self.max_grad_norm)
 
     def _reduce_training_loss_for_metrics(self, loss: torch.Tensor) -> torch.Tensor:
         """Optionally report the DP mean used by multi-backend alignment."""
-        if os.environ.get("FLUXVLA_REPORT_DP_MEAN_LOSS") != "1":
+        if (not self.report_dp_mean_metrics
+                and os.environ.get("FLUXVLA_REPORT_DP_MEAN_LOSS") != "1"):
             return loss
         reduced = loss.detach().float().clone()
         dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
         reduced /= dist.get_world_size()
         return reduced
+
+    def _reduce_training_metrics_for_metrics(self, metrics):
+        """Report DP-mean components alongside the optional DP-mean loss."""
+        if (not self.report_dp_mean_metrics
+                and os.environ.get("FLUXVLA_REPORT_DP_MEAN_LOSS") != "1"):
+            return metrics
+        reduced_metrics = {}
+        for key, value in metrics.items():
+            reduced = value.detach().float().clone()
+            dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+            reduced /= dist.get_world_size()
+            reduced_metrics[key] = reduced
+        return reduced_metrics
 
     def _write_grad_norm_input_trace(self) -> None:
         """Record the parameter order used internally by FSDP gradient clipping."""

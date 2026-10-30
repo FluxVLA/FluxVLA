@@ -65,6 +65,9 @@ class BaseTrainRunner(ABC):
             checkpointing. Defaults to True.
         enable_mixed_precision_training (bool, optional): Enable mixed
             precision training. Defaults to True.
+        enable_forward_autocast (bool, optional): Control forward autocast
+            independently from distributed mixed-precision policies. When
+            omitted it follows ``enable_mixed_precision_training``.
         reduce_in_full_precision (bool, optional): Reduce in full precision.
             Defaults to True.
         mixed_precision_dtype (str, optional): Data type for mixed
@@ -96,6 +99,7 @@ class BaseTrainRunner(ABC):
                  lr_scheduler: Dict = None,
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
+                 enable_forward_autocast: Optional[bool] = None,
                  reduce_in_full_precision: bool = True,
                  mixed_precision_dtype: str = 'bf16',
                  keep_params_fp32: bool = False,
@@ -157,6 +161,9 @@ class BaseTrainRunner(ABC):
         self.lr_scheduler_cfg = lr_scheduler
         self.enable_gradient_checkpointing = enable_gradient_checkpointing
         self.enable_mixed_precision_training = enable_mixed_precision_training
+        self.enable_forward_autocast = (
+            bool(enable_mixed_precision_training)
+            if enable_forward_autocast is None else bool(enable_forward_autocast))
         self.reduce_in_full_precision = reduce_in_full_precision
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
         self.keep_params_fp32 = bool(keep_params_fp32)
@@ -280,6 +287,8 @@ class BaseTrainRunner(ABC):
                 normalized_cfg['weight_decay'])
         normalized_cfg['paramwise_learning_rate'] = dict(
             normalized_cfg.get('paramwise_learning_rate', {}) or {})
+        normalized_cfg['paramwise_learning_rate_regex'] = dict(
+            normalized_cfg.get('paramwise_learning_rate_regex', {}) or {})
         return normalized_cfg
 
     def _prepare_batch(self,
@@ -348,6 +357,12 @@ class BaseTrainRunner(ABC):
     def _convert_batch_to_dtype(self, batch: Dict, dtype: torch.dtype) -> Dict:
         """Convert floating point tensors in batch to specified dtype."""
         return self._prepare_batch(batch, self.device_id, dtype)
+
+    def _prepare_model_training_batch(self, batch: Dict) -> Dict:
+        """Apply an optional model-owned input contract after device casting."""
+        module = self.vla.module if hasattr(self.vla, 'module') else self.vla
+        prepare = getattr(module, 'prepare_training_batch', None)
+        return prepare(batch) if callable(prepare) else batch
 
     @staticmethod
     def _shutdown_dataloader(dataloader: Optional[DataLoader]) -> None:
@@ -1038,6 +1053,11 @@ class BaseTrainRunner(ABC):
                 metrics[metric_key] = value
         return metrics
 
+    def _reduce_training_metrics_for_metrics(
+            self, metrics: Dict[str, torch.Tensor]) -> Dict[str, torch.Tensor]:
+        """Return scalar output metrics in the backend's reporting scope."""
+        return metrics
+
     def _training_step(self, batch, should_step: bool = True) -> torch.Tensor:
         """Execute single training step: forward, backward, optimize."""
         memory_metrics = os.environ.get("FLUXVLA_MEMORY_METRICS") == "1"
@@ -1052,6 +1072,7 @@ class BaseTrainRunner(ABC):
             self.mixed_precision_dtype if self.enable_mixed_precision_training
             and not self.keep_params_fp32 else torch.float32)
         batch = self._prepare_batch(batch, self.device_id, batch_dtype)
+        batch = self._prepare_model_training_batch(batch)
         if ('sample_weight' in batch
                 and not self._vla_accepts_kwarg('sample_weight')):
             batch = dict(batch)
@@ -1060,12 +1081,13 @@ class BaseTrainRunner(ABC):
         with torch.autocast(
                 'cuda',
                 dtype=self.mixed_precision_dtype,
-                enabled=self.enable_mixed_precision_training):
+                enabled=self.enable_forward_autocast):
             output: CausalLMOutputWithPast = self.vla(**batch)
             loss = output['loss']
             loss_metrics = self._collect_output_loss_metrics(output)
 
         metric_loss = self._reduce_training_loss_for_metrics(loss)
+        loss_metrics = self._reduce_training_metrics_for_metrics(loss_metrics)
         self.metric.commit(loss=metric_loss, **loss_metrics)
         (loss / self.grad_accumulation_steps).backward()
 
