@@ -7,8 +7,7 @@ from rlinf.workers.rollout.hf.huggingface_worker import MultiStepRolloutWorker
 class FluxRolloutWorker(MultiStepRolloutWorker):
 
     async def evaluate(self, input_channel, output_channel):
-        if self.model_cfg.fluxvla.get('observation_adapter',
-                                      'libero') != 'robotwin':
+        if self.cfg.env.eval.env_type != 'robotwin':
             return await super().evaluate(input_channel, output_channel)
         # Pair SFT/best/last and repeated validation under identical noise;
         # do not let evaluation advance the training RNG stream.
