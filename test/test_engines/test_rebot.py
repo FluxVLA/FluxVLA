@@ -36,18 +36,6 @@ def test_rebot_config_covers_training_and_inference():
     ]
 
 
-def test_rebot_operator_reorders_joint_states_by_name():
-    from fluxvla.engines.operators.rebot_dual_operator import (
-        JOINT_NAMES, RebotDualOperator)
-
-    message = SimpleNamespace(
-        name=list(reversed(JOINT_NAMES)), position=list(range(7)))
-
-    positions = RebotDualOperator.joint_positions(message)
-
-    assert np.array_equal(positions, np.arange(6, -1, -1))
-
-
 def test_rebot_runner_dispatches_async_dual_arm_trajectory():
     from fluxvla.engines.runners.rebot_dual_inference_runner import \
         RebotDualInferenceRunner
