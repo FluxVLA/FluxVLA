@@ -12,11 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
+
 import torch
 import torch.nn.functional as F
 
 from fluxvla.engines import VLAS
-from fluxvla.engines.utils.model_utils import create_sinusoidal_pos_embedding
+from fluxvla.engines.losses.causal_lm import causal_lm_loss
+from fluxvla.engines.utils.model_utils import (create_sinusoidal_pos_embedding,
+                                               make_att_2d_masks)
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 from .pi0_flowmatching import PI0FlowMatching
 
@@ -64,6 +68,180 @@ class PI05FlowMatching(PI0FlowMatching):
         assert kwargs.get('state_proj') is None, (
             'PI05FlowMatching does not use state_proj.')
         super().__init__(**kwargs)
+
+    def validate_training_task(self, task):
+        if task == 'vla':
+            return
+        if task not in ('vlm', 'mixed'):
+            raise ValueError(f'Unknown training task: {task}')
+        if (self.vlm_backbone is not None or self.llm_backbone is None
+                or not hasattr(self.llm_backbone, 'embed_tokens')):
+            raise ValueError('Pi05 VLM training requires the separate Gemma '
+                             'backbone with its pretrained token embeddings.')
+        if getattr(self.llm_backbone.norm, 'cond_dim', None) is not None:
+            raise ValueError(
+                'The Pi05 language backbone must be unconditional '
+                'for VLM training.')
+
+    def prepare_training_task(self, task):
+        self.validate_training_task(task)
+        self._training_task = task
+        if task == 'mixed':
+            # The expert consumes projected actions and never embeds tokens.
+            self.llm_expert.embed_tokens.requires_grad_(False)
+        if task == 'vlm':
+            active = {
+                id(parameter)
+                for module in (self.vision_backbone, self.projector,
+                               self.llm_backbone) if module is not None
+                for parameter in module.parameters()
+            }
+            # Preserve configured freezes, including after LoRA injection.
+            for parameter in self.parameters():
+                if id(parameter) not in active:
+                    parameter.requires_grad_(False)
+
+    def inactive_training_parameters(self, task):
+        """Parameters skipped by a task, including FSDP's zero grad slices."""
+        if task == 'vlm':
+            active = {
+                id(p)
+                for module in (self.vision_backbone, self.projector,
+                               self.llm_backbone) if module is not None
+                for p in module.parameters()
+            }
+            return [p for p in self.parameters() if id(p) not in active]
+        return list(self.llm_expert.embed_tokens.parameters())
+
+    def get_vlm_fsdp_wrapping_policy(self):
+        self.validate_training_task('vlm')
+        language_layers = set(self.llm_backbone.layers)
+
+        def wrap_policy(module, recurse, nonwrapped_numel):
+            # Keep the tied embedding/output weight, conditional vision and
+            # unused action expert in the root unit. Only active language
+            # decoder layers have independent forward/all-gather boundaries.
+            return recurse or module in language_layers
+
+        return wrap_policy
+
+    def get_mixed_fsdp_wrapping_policy(self):
+        """Shard MLP calls shared by joint attention and causal decoding.
+
+        Keep vision in the root: ranks can have text-only/image VLM batches
+        in the same step. The expert MLPs run on every rank's VLA steps and
+        are skipped on every rank's VLM steps. Gemma attention weights and
+        the tied vocabulary head stay in the root for direct weight access.
+        """
+        self.validate_training_task('mixed')
+        mlps = {
+            layer.mlp
+            for backbone in (self.llm_backbone, self.llm_expert)
+            for layer in backbone.layers
+        }
+
+        def wrap_policy(module, recurse, nonwrapped_numel):
+            return recurse or module in mlps
+
+        return wrap_policy
+
+    def get_fsdp_execution_block_wrapping_policy(self):
+        if getattr(self, '_training_task', 'vla') == 'vlm':
+            return self.get_vlm_fsdp_wrapping_policy()
+        return super().get_fsdp_execution_block_wrapping_policy()
+
+    def forward(self, *args, task='vla', **batch):
+        if task == 'mixed':
+            raise ValueError('Mixed training dispatches one vla or vlm '
+                             'task per forward call.')
+        self.validate_training_task(task)
+        if task == 'vlm':
+            return self.forward_vlm(*args, **batch)
+        return self.forward_vla(*args, **batch)
+
+    def forward_vla(self, *args, **batch):
+        return super().forward(*args, **batch)
+
+    def forward_vlm(self,
+                    *,
+                    labels,
+                    input_ids=None,
+                    attention_mask=None,
+                    images=None,
+                    img_masks=None,
+                    lang_tokens=None,
+                    lang_masks=None):
+        """Train the shared SigLIP/Gemma with a causal text objective.
+
+        Images form a bidirectional prefix; every text token can attend only
+        to that prefix and preceding text. In particular, vision tokens never
+        see answer tokens. Labels cover text only and are shifted once by
+        causal_lm_loss. PaliGemma ties its output head to the token embedding,
+        so no new parameters or checkpoint keys are required.
+        """
+        self.validate_training_task('vlm')
+        if input_ids is not None and lang_tokens is not None:
+            raise ValueError('Pass input_ids or lang_tokens, not both.')
+        if attention_mask is not None and lang_masks is not None:
+            raise ValueError('Pass attention_mask or lang_masks, not both.')
+        tokens = input_ids if input_ids is not None else lang_tokens
+        mask = attention_mask if attention_mask is not None else lang_masks
+        if tokens is None or tokens.ndim != 2 or tokens.dtype != torch.long:
+            raise ValueError(
+                'Pi05 VLM input_ids must be int64 with shape (B,L).')
+        if labels.shape != tokens.shape:
+            raise ValueError('VLM labels must match input_ids.')
+        if mask is None:
+            mask = torch.ones_like(tokens, dtype=torch.bool)
+        if mask.shape != tokens.shape:
+            raise ValueError('VLM attention_mask must match input_ids.')
+        mask = mask.bool()
+        labels = labels.masked_fill(~mask, self.ignore_index)
+        embeddings, padding, ar_mask = self._embed_vlm_prefix(
+            tokens, mask, images, img_masks)
+        attention = self._prepare_attention_masks_4d(
+            make_att_2d_masks(padding, ar_mask))
+        positions = (padding.long().cumsum(-1) - 1).clamp_min(0)
+        output = self.llm_backbone(
+            inputs_embeds=self._cast_gemma_input(embeddings),
+            attention_mask=attention,
+            position_ids=positions,
+            use_cache=False,
+            output_hidden_states=False,
+            return_dict=True)
+        hidden = output.last_hidden_state[:, -tokens.shape[1]:]
+        logits = F.linear(hidden, self.llm_backbone.embed_tokens.weight)
+        return causal_lm_loss(logits, labels, self.ignore_index)
+
+    def _embed_vlm_prefix(self, tokens, mask, images, img_masks):
+        """Build image-prefix and causal-text embeddings for SFT."""
+        if images is None:
+            if img_masks is not None:
+                raise ValueError('img_masks requires images.')
+            embeddings = self.llm_backbone.embed_tokens(tokens)
+            embeddings = embeddings * math.sqrt(embeddings.shape[-1])
+            padding = mask
+            ar_mask = torch.ones_like(mask)
+        else:
+            if (images.ndim != 4 or images.shape[0] != tokens.shape[0]
+                    or images.shape[1] == 0 or images.shape[1] % 3):
+                raise ValueError(
+                    'Pi05 VLM images must have shape (B,3*N,H,W).')
+            if self.vision_backbone is None or self.projector is None:
+                raise ValueError('Image SFT requires vision and projector.')
+            if img_masks is None:
+                img_masks = torch.ones(
+                    tokens.shape[0],
+                    images.shape[1] // 3,
+                    dtype=torch.bool,
+                    device=images.device)
+            if img_masks.shape != (tokens.shape[0], images.shape[1] // 3):
+                raise ValueError('img_masks must have shape (B,N).')
+            embeddings, padding, ar_mask = self.embed_prefix(
+                images, tokens, img_masks.bool(), mask)
+            ar_mask = ar_mask.clone()
+            ar_mask[:, -tokens.shape[1]:] = True
+        return embeddings, padding, ar_mask
 
     def embed_suffix(self, states, noisy_actions, timestep):
         """Embed the suffix tokens for the Pi0 head.
