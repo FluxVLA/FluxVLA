@@ -100,5 +100,8 @@ class RoboDojoEvalDataset:
                 np.asarray(data['embodiment_ids'])).int().cuda().unsqueeze(0)
         if data.get('image_grid_thw') is not None:
             batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
+        # History-enabled clients number replans for seed derivation.
+        if 'replan_index' in data:
+            batch['replan_index'] = data['replan_index']
         batch['reset_history'] = bool(data.get('is_new_episode', False))
         return batch, None

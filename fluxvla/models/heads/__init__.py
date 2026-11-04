@@ -27,6 +27,7 @@ import_heterogeneous_runtime_symbols(
         'groot_n17_action_head': ['GrootN17ActionHead'],
         'xvla_head': ['XVLAFlowMatchingHead'],
         'dreamzero_head': ['DreamZeroHead'],
+        'vpp2_head': ['VPP2Head'],
         'fastwam_head': ['FastWAMHead', 'FastWAMJointHead', 'FastWAMIDMHead'],
     },
 )
