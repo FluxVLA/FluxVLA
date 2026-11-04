@@ -30,6 +30,7 @@ import_heterogeneous_runtime_symbols(
         'smolvlm': ['SmolVLMBackbone'],
         'qwen3_vl': ['Qwen3VL'],
         'wan_backbone': ['WanBaseBackbone'],
+        'vpp2_wan21_backbone': ['VPP2Wan21Backbone'],
         'wan21_backbone': ['Wan21Backbone'],
         'wan22_backbone': ['Wan22Backbone'],
         'cosmos3': ['Cosmos3MoTBackbone'],

@@ -11,14 +11,10 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""RoboDojo evaluation dataset.
+"""Adapt online RoboDojo observations to model-specific inference batches.
 
-Converts an online RoboDojo observation dict into the model input batch
-format. Mirrors :class:`RobocasaEvalDataset`: run the configured transform
-chain, then assemble a batch compatible with the FluxVLA model. Unlike the
-LIBERO eval pipeline this dataset is single-frame and has no image buffer,
-padding, or frame splitting; statistics are injected under ``norm_stats``
-(the key :class:`StateFromInputs` reads).
+Run the configured transform chain with normalization statistics under
+``norm_stats``. Camera history, when required, is supplied by the client.
 """
 
 import json
@@ -101,4 +97,44 @@ class RoboDojoEvalDataset:
         if data.get('image_grid_thw') is not None:
             batch['image_grid_thw'] = data['image_grid_thw'].unsqueeze(0)
         batch['reset_history'] = bool(data.get('is_new_episode', False))
+        return batch, None
+
+
+@DATASETS.register_module()
+class VPP2RoboDojoEvalDataset:
+    """Convert client-supplied camera history and EE16 state to VPP2 inputs."""
+
+    def __init__(self,
+                 norm_stats,
+                 transforms,
+                 unnorm_key='robodojo_ee16',
+                 device='cuda'):
+        from pathlib import Path
+
+        from fluxvla.engines import build_transform_from_cfg
+
+        self.statistics = json.loads(
+            Path(norm_stats).read_text()) if isinstance(
+                norm_stats, (str, Path)) else norm_stats
+        self.unnorm_key = unnorm_key
+        self.device = device
+        self.transforms = [build_transform_from_cfg(t) for t in transforms]
+
+    def __call__(self, inputs):
+        if 'replan_index' not in inputs:
+            raise ValueError(
+                'VPP2 requires FluxVLAPolicyClient with history enabled')
+        data = dict(inputs, norm_stats=self.statistics[self.unnorm_key])
+        for transform in self.transforms:
+            data = transform(data)
+        batch = {
+            key: torch.as_tensor(data[key], device=self.device,
+                                 dtype=dtype).unsqueeze(0)
+            for key, dtype in [(
+                'condition_video', torch.float32), (
+                    'states',
+                    torch.float32), ('lang_tokens',
+                                     torch.long), ('lang_masks', torch.bool)]
+        }
+        batch['replan_index'] = data['replan_index']
         return batch, None

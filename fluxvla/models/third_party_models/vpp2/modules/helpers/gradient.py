@@ -1,0 +1,28 @@
+# Vendored from VPP2, revision 3365872910244f14df83003062f7c563f14c6d9e.
+# See ../../THIRD_PARTY_NOTICES.md for licenses and source notices.
+import torch
+
+
+def create_custom_forward(module):
+    def custom_forward(*inputs, **kwargs):
+        return module(*inputs, **kwargs)
+
+    return custom_forward
+
+
+def gradient_checkpoint_forward(
+    model,
+    use_gradient_checkpointing,
+    *args,
+    **kwargs,
+):
+    if use_gradient_checkpointing:
+        model_output = torch.utils.checkpoint.checkpoint(
+            create_custom_forward(model),
+            *args,
+            **kwargs,
+            use_reentrant=False,
+        )
+    else:
+        model_output = model(*args, **kwargs)
+    return model_output
