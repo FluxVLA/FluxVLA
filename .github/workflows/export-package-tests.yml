@@ -1,0 +1,78 @@
+name: Export Package Contracts
+
+on:
+  pull_request:
+    branches: [master, main]
+    paths:
+      - 'packages/fluxvla-export/**'
+      - '.github/workflows/export-package-tests.yml'
+  push:
+    branches: [master, main, feature/fluxvla-export-foundation]
+    paths:
+      - 'packages/fluxvla-export/**'
+      - '.github/workflows/export-package-tests.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  contracts:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.10', '3.12']
+    env:
+      CUDA_VISIBLE_DEVICES: ''
+      PYTHONNOUSERSITE: '1'
+      PIP_DISABLE_PIP_VERSION_CHECK: '1'
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Build standalone distributions
+        run: |
+          python -m pip install build
+          python -m build --outdir "$RUNNER_TEMP/export-dist" packages/fluxvla-export
+      - name: Install and verify dependency-free wheel
+        run: |
+          python -m venv "$RUNNER_TEMP/export-runtime"
+          runtime="$RUNNER_TEMP/export-runtime/bin/python"
+          wheels=("$RUNNER_TEMP"/export-dist/*.whl)
+          test "${#wheels[@]}" -eq 1
+          "$runtime" -m pip install "${wheels[0]}"
+          "$runtime" -m pip check
+          "$runtime" -I - <<'PY'
+          import importlib.metadata
+          import importlib.resources
+          import importlib.util
+          import fluxvla_export
+          assert 'site-packages' in fluxvla_export.__file__
+          dist = importlib.metadata.distribution('fluxvla-export')
+          assert not dist.requires
+          assert any(str(path).endswith('/LICENSE') for path in dist.files)
+          assert importlib.resources.files('fluxvla_export').joinpath('py.typed').is_file()
+          for name in ('torch', 'transformers', 'safetensors', 'fluxvla', 'fluxhermes', 'onnx', 'tensorrt'):
+              assert importlib.util.find_spec(name) is None, name
+          assert not hasattr(fluxvla_export, 'prepare_tensorrt')
+          PY
+          cp -R packages/fluxvla-export/tests "$RUNNER_TEMP/export-tests"
+          "$runtime" -I -m unittest discover -s "$RUNNER_TEMP/export-tests" -v
+      - name: Check real CPU PyTorch handoff
+        if: matrix.python == '3.12'
+        run: |
+          runtime="$RUNNER_TEMP/export-runtime/bin/python"
+          "$runtime" -m pip install numpy==1.26.4
+          "$runtime" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+          "$runtime" -m pip check
+          cp -R packages/fluxvla-export/tests_torch "$RUNNER_TEMP/export-tests-torch"
+          "$runtime" -I -m unittest discover -s "$RUNNER_TEMP/export-tests-torch" -v
