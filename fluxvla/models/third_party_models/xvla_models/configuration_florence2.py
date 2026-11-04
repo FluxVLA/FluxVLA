@@ -270,6 +270,9 @@ class Florence2LanguageConfig(PretrainedConfig):
             **kwargs,
         )
 
+        # Transformers 5 no longer supplies generation defaults on configs.
+        self.forced_bos_token_id = kwargs.get('forced_bos_token_id', None)
+
         # ensure backward compatibility for BART CNN models
         if self.forced_bos_token_id is None and kwargs.get('force_bos_token_to_be_generated', False):
             self.forced_bos_token_id = self.bos_token_id

@@ -46,6 +46,7 @@ def _make_dataset(boundary='episode', **settings):
     dataset.require_full_window = False
     dataset.frame_window_size = 3
     dataset.frame_sample_stride = 2
+    dataset.image_frame_offset = 0
     dataset.window_start_idx = 0
     dataset.action_window_size = 3
     for name, value in settings.items():
@@ -76,6 +77,36 @@ def test_strided_frames_cover_complete_window():
     np.testing.assert_array_equal(sample['frame_masks'], [1, 1, 1])
     np.testing.assert_array_equal(sample['actions'], [[0], [1], [2], [3], [4]])
     np.testing.assert_array_equal(sample['action_masks'], [1, 1, 1, 1, 1])
+
+
+def test_image_frame_offset_aligns_single_frame_with_next_action():
+    dataset = _make_dataset(image_frame_offset=1, frame_window_size=1)
+    sample = dataset.__getitem__(0, {'test': {}})
+    assert sample['frame_timestamps'] == [1]
+    assert 'frame_masks' not in sample
+
+
+def test_image_frame_offset_respects_episode_and_dataset_boundaries():
+    for boundary in ('episode', 'dataset'):
+        dataset = _make_dataset(
+            boundary,
+            image_frame_offset=1,
+            frame_window_size=1,
+            window_start_idx=0)
+        assert not dataset._invalid_start_index(3, 0, dataset.dataset[3])
+        assert dataset._invalid_start_index(4, 0, dataset.dataset[4])
+
+
+def test_full_frame_window_includes_image_offset_and_stride():
+    dataset = _make_dataset(
+        require_full_window=True,
+        image_frame_offset=1,
+        frame_window_size=3,
+        frame_sample_stride=1,
+        window_start_idx=0,
+        action_window_size=1)
+    assert not dataset._invalid_start_index(1, 0, dataset.dataset[1])
+    assert dataset._invalid_start_index(2, 0, dataset.dataset[2])
 
 
 @pytest.mark.parametrize('boundary', ['episode', 'dataset'])

@@ -9,8 +9,8 @@ from torch.optim.lr_scheduler import CosineAnnealingLR, LinearLR, SequentialLR
 
 from fluxvla.engines import build_lr_scheduler_from_cfg
 from fluxvla.optimizers.lr_scheduler_policies import (
-    BaseLRSchedulerPolicy, LinearWarmupCosineDecayLRScheduler,
-    LinearWarmupCosineDecayMinLRScheduler)
+    BaseLRSchedulerPolicy, GroupwiseFreezeWarmupCosineLRScheduler,
+    LinearWarmupCosineDecayLRScheduler, LinearWarmupCosineDecayMinLRScheduler)
 
 
 class _NoSchedulerPolicy(BaseLRSchedulerPolicy):
@@ -171,3 +171,133 @@ def test_fastwam_cosine_keeps_optimizer_groups_and_lr_curve():
         assert policy.get_last_lr() == pytest.approx(
             [reference_scheduler.get_last_lr()[0]] *
             len(optimizer.param_groups))
+
+
+def _groupwise_vla():
+    backbone = nn.Parameter(torch.ones(()))
+    head = nn.Parameter(torch.ones(()))
+
+    def get_lr_param_group_strategy(**kwargs):
+        return [{
+            'name': 'backbone',
+            'params': [backbone],
+            'lr': 0.0,
+            'lr_scale': 1.0,
+            'freeze': True,
+        }, {
+            'name': 'head',
+            'params': [head],
+            'lr': kwargs['learning_rate'] * 2.0,
+            'lr_scale': 2.0,
+            'freeze': False,
+        }]
+
+    return SimpleNamespace(
+        get_lr_param_group_strategy=get_lr_param_group_strategy,
+        get_lr_groupwise_scale=lambda **kwargs: 0.5)
+
+
+def test_groupwise_scheduler_preserves_generic_group_metadata():
+    runner = _runner(vla=_groupwise_vla(), lr=1e-3)
+    runner.metric = SimpleNamespace(global_step=0)
+    runner.num_training_steps = 10
+    runner.max_steps = 10
+    policy = GroupwiseFreezeWarmupCosineLRScheduler(freeze_steps=2)
+
+    groups = policy.build_param_groups(runner)
+
+    assert [group['name'] for group in groups] == ['backbone', 'head']
+    assert all('lr_scale' not in group and 'freeze' not in group
+               for group in groups)
+    assert policy._groupwise_group_metadata == {
+        'backbone': {
+            'base_lr': pytest.approx(1e-3),
+            'freeze': True,
+        },
+        'head': {
+            'base_lr': pytest.approx(2e-3),
+            'freeze': False,
+        },
+    }
+
+
+def test_groupwise_scheduler_applies_private_scale_and_checks_group_count():
+    runner = _runner(vla=_groupwise_vla(), lr=1e-3)
+    runner.metric = SimpleNamespace(global_step=0)
+    runner.num_training_steps = 10
+    runner.max_steps = 10
+    policy = GroupwiseFreezeWarmupCosineLRScheduler(freeze_steps=2)
+    optimizer, _ = policy.build(runner)
+
+    assert policy.get_last_lr() == pytest.approx([0.0, 2e-3])
+    policy.prepare_step(runner)
+    assert [group['lr'] for group in optimizer.param_groups] == [0.0, 2e-3]
+    assert policy.get_last_lr() == pytest.approx([0.0, 2e-3])
+
+    runner.metric.global_step = 2
+    policy.prepare_step(runner)
+    assert [group['lr'] for group in optimizer.param_groups] == [0.5e-3, 1e-3]
+    assert policy.get_last_lr() == pytest.approx([0.5e-3, 1e-3])
+
+    optimizer.param_groups.reverse()
+    policy.prepare_step(runner)
+    assert [(group['name'], group['lr'])
+            for group in optimizer.param_groups] == [('head', 1e-3),
+                                                     ('backbone', 0.5e-3)]
+
+    optimizer.param_groups.append(dict(optimizer.param_groups[0]))
+    with pytest.raises(RuntimeError, match='parameter groups changed'):
+        policy.prepare_step(runner)
+
+
+def test_groupwise_scheduler_keeps_trainable_groups_active_during_freeze():
+    runner = _runner(vla=_groupwise_vla(), lr=1e-3)
+    runner.metric = SimpleNamespace(global_step=0)
+    runner.num_training_steps = 10
+    runner.max_steps = 10
+    del runner.vla.get_lr_groupwise_scale
+    policy = GroupwiseFreezeWarmupCosineLRScheduler(
+        freeze_steps=2, warmup_steps=2, use_cosine_decay=True)
+    optimizer, _ = policy.build(runner)
+
+    assert [group['lr'] for group in optimizer.param_groups] == [0.0, 2e-3]
+
+    runner.metric.global_step = 2
+    policy.prepare_step(runner)
+    assert [group['lr'] for group in optimizer.param_groups] == [0.0, 0.0]
+
+    runner.metric.global_step = 3
+    policy.prepare_step(runner)
+    assert [group['lr'] for group in optimizer.param_groups] == [0.5e-3, 1e-3]
+
+
+@pytest.mark.parametrize('invalid_groups, message', [
+    ([{
+        'params': [nn.Parameter(torch.ones(()))],
+        'lr': 1e-3,
+        'freeze': False,
+    }], 'require a name'),
+    ([{
+        'name': 'head',
+        'params': [nn.Parameter(torch.ones(()))],
+        'freeze': False,
+    }, {
+        'name': 'head',
+        'params': [nn.Parameter(torch.ones(()))],
+        'freeze': False,
+    }], 'Duplicate groupwise'),
+    ([{
+        'name': 'head',
+        'params': [nn.Parameter(torch.ones(()))],
+        'lr': 1e-3,
+    }], 'must declare a boolean `freeze`'),
+])
+def test_groupwise_scheduler_requires_named_groups_and_explicit_freeze(
+        invalid_groups, message):
+    vla = SimpleNamespace(
+        get_lr_param_group_strategy=lambda **kwargs: invalid_groups)
+    runner = _runner(vla=vla, lr=1e-3)
+    policy = GroupwiseFreezeWarmupCosineLRScheduler()
+
+    with pytest.raises(ValueError, match=message):
+        policy.build_param_groups(runner)

@@ -57,6 +57,7 @@ class ParquetDataset(Dataset):
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
                  frame_sample_stride: int = 1,
+                 image_frame_offset: int = 0,
                  require_full_window: bool = False,
                  train_episode_fraction: float = 1.0,
                  repeat_to_full_length: bool = False,
@@ -97,6 +98,8 @@ class ParquetDataset(Dataset):
                 Increase this when the sampled frames should span a longer
                 temporal window:
                 ``(frame_window_size - 1) * frame_sample_stride`` rows.
+            image_frame_offset (int): Row offset for the first decoded frame.
+                Defaults to 0 to use the current observation frame.
             train_episode_fraction (float): Fraction of episodes to sample
                 from each data root, preserving original episode order.
                 Defaults to 1.0.
@@ -126,6 +129,8 @@ class ParquetDataset(Dataset):
         super().__init__()
         if not 0 < train_episode_fraction <= 1:
             raise ValueError('train_episode_fraction must be in (0, 1].')
+        if image_frame_offset < 0:
+            raise ValueError('image_frame_offset must be non-negative.')
         self.action_window_size = action_window_size
         self.action_dtype = (None if action_dtype is None else
                              np.dtype(action_dtype))
@@ -203,6 +208,7 @@ class ParquetDataset(Dataset):
         self.window_start_idx = window_start_idx
         self.frame_window_size = frame_window_size
         self.frame_sample_stride = frame_sample_stride
+        self.image_frame_offset = image_frame_offset
         self.require_full_window = require_full_window
         self.expose_index = expose_index
         self.supervise_terminal_padding = supervise_terminal_padding
@@ -338,10 +344,19 @@ class ParquetDataset(Dataset):
             return True
 
         if self.require_full_window:
-            window_size = max(self.frame_window_size,
+            image_window_size = (
+                self.image_frame_offset +
+                (self.frame_window_size - 1) * self.frame_sample_stride + 1)
+            window_size = max(image_window_size,
                               self.window_start_idx + self.action_window_size)
             if not self._same_episode_and_dataset(index + window_size - 1,
                                                   dataset_idx, data):
+                return True
+
+        if self.image_frame_offset > 0:
+            image_index = index + self.image_frame_offset
+            if not self._same_episode_and_dataset(image_index, dataset_idx,
+                                                  data):
                 return True
 
         first_action_index = index + self.window_start_idx
@@ -408,24 +423,29 @@ class ParquetDataset(Dataset):
                 action_masks.append(
                     1 if self.supervise_terminal_padding else 0)
             window_idx += 1
-        # Collect forward-looking frame timestamps for video models
-        if self.frame_window_size > 1:
-            frame_timestamps = [data['timestamp']]
+        # Collect offset-aware frame timestamps for video models.
+        if self.image_frame_offset > 0 or self.frame_window_size > 1:
+            first_image_index = index + self.image_frame_offset
+            last_timestamp = self.dataset[first_image_index]['timestamp']
+            frame_timestamps = [last_timestamp]
             frame_masks = [1]
             for fi in range(1, self.frame_window_size):
-                future_idx = index + fi * self.frame_sample_stride
+                future_idx = (
+                    index + self.image_frame_offset +
+                    fi * self.frame_sample_stride)
                 if (future_idx < len(self.dataset)
                         and self.dataset[future_idx]['episode_index']
                         == data['episode_index'] and
                         self._get_dataset_index(future_idx) == dataset_idx):
-                    frame_timestamps.append(
-                        self.dataset[future_idx]['timestamp'])
+                    last_timestamp = self.dataset[future_idx]['timestamp']
+                    frame_timestamps.append(last_timestamp)
                     frame_masks.append(1)
                 else:
-                    frame_timestamps.append(frame_timestamps[-1])
+                    frame_timestamps.append(last_timestamp)
                     frame_masks.append(0)
             data['frame_timestamps'] = frame_timestamps
-            data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
+            if self.frame_window_size > 1:
+                data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
 
         data['info'] = self.info[dataset_idx]
         data['stats'] = dataset_statistics[self.statistic_name]

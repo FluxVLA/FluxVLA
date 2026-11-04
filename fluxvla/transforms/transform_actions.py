@@ -149,9 +149,11 @@ def _libero_axisangle_action_to_rot6d(action: np.ndarray) -> np.ndarray:
 
 def _libero_rot6d_action_to_axisangle(action: np.ndarray) -> np.ndarray:
     action = np.asarray(action, dtype=np.float32)
-    if action.shape[-1] != 10:
-        raise ValueError('LIBERO rot6d action must have shape [..., 10], '
+    if action.shape[-1] not in (10, 20):
+        raise ValueError('LIBERO rot6d action must have shape [..., 10] or '
+                         '[..., 20], '
                          f'got {action.shape}.')
+    action = action[..., :10]
     rotation = _matrix_to_axisangle(_rot6d_to_matrix(action[..., 3:9]))
     return np.concatenate((action[..., :3], rotation, action[..., 9:10]),
                           axis=-1)
@@ -466,28 +468,64 @@ class OpenPIAlohaActionPostprocess:
 
 @TRANSFORMS.register_module()
 class LiberoFramewiseActionToRot6D:
-    """Convert LIBERO stored 7D frame-wise deltas to official 10D rot6d."""
+    """Convert LIBERO frame-wise actions to 10D or padded 20D rot6d."""
 
-    def __init__(self, action_key: str = 'actions') -> None:
+    def __init__(self,
+                 action_key: str = 'actions',
+                 state_key: str = None,
+                 target_dim: int = 10) -> None:
+        if target_dim not in (10, 20):
+            raise ValueError('target_dim must be 10 or 20.')
         self.action_key = action_key
+        self.state_key = state_key
+        self.target_dim = target_dim
+
+    def _convert(self, value: np.ndarray) -> np.ndarray:
+        value = np.asarray(value, dtype=np.float32)
+        if value.shape[-1] == 7:
+            value = _libero_axisangle_action_to_rot6d(value)
+        elif value.shape[-1] not in (10, 20):
+            raise ValueError('LIBERO action must have width 7, 10, or 20, got '
+                             f'{value.shape}.')
+        if value.shape[-1] == 20 and self.target_dim == 10:
+            raise ValueError(
+                'Cannot reduce a 20D dual-arm action to target_dim=10.')
+        if value.shape[-1] == self.target_dim:
+            return value
+        if self.target_dim == 20:
+            result = np.zeros(value.shape[:-1] + (20, ), dtype=value.dtype)
+            result[..., :10] = value
+            return result
+        return value
 
     def __call__(self, data: Dict) -> Dict:
         if self.action_key not in data:
-            return data
-        data[self.action_key] = _libero_axisangle_action_to_rot6d(
-            data[self.action_key])
+            if self.state_key is None or self.state_key not in data:
+                return data
+        if self.action_key in data:
+            data[self.action_key] = self._convert(data[self.action_key])
+        if self.state_key is not None and self.state_key in data:
+            data[self.state_key] = self._convert(data[self.state_key])
         return data
 
 
 @TRANSFORMS.register_module()
 class DenormalizeLiberoFramewiseRot6DAction:
-    """Denormalize official 10D rot6d LIBERO actions to 7D env commands."""
+    """Denormalize 10D or padded 20D LIBERO actions to 7D commands."""
 
-    def __init__(self, *args, norm_type: str = 'quantile', **kwargs) -> None:
+    def __init__(self,
+                 *args,
+                 norm_type: str = 'quantile',
+                 gripper_binarize: bool = False,
+                 **kwargs) -> None:
         if norm_type == 'quantile_rot':
             norm_type = 'quantile'
         self.denormalize = DenormalizeLiberoAction(
             *args, norm_type=norm_type, **kwargs)
+        self.gripper_binarize = gripper_binarize
 
     def __call__(self, data: Dict) -> np.ndarray:
-        return _libero_rot6d_action_to_axisangle(self.denormalize(data))
+        action = _libero_rot6d_action_to_axisangle(self.denormalize(data))
+        if self.gripper_binarize:
+            action[..., -1] = np.where(action[..., -1] > 0.5, 1.0, -1.0)
+        return action
