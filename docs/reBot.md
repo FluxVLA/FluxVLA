@@ -44,14 +44,14 @@ wrist_flex, wrist_yaw, wrist_roll, gripper
 
 The default operator topics are:
 
-| Role | ROS topic | Message type |
-| --- | --- | --- |
-| Front camera | `/camera_front/color/image_raw` | `sensor_msgs/Image` |
-| Left wrist camera | `/camera_left_wrist/color/image_raw` | `sensor_msgs/Image` |
-| Right wrist camera | `/camera_right_wrist/color/image_raw` | `sensor_msgs/Image` |
-| Left joint feedback | `/left_arm/joint_states` | `sensor_msgs/JointState` |
-| Right joint feedback | `/right_arm/joint_states` | `sensor_msgs/JointState` |
-| Left joint commands | `/left_arm/rebot_joint_controller/target_joint_state` | `sensor_msgs/JointState` |
+| Role                 | ROS topic                                              | Message type             |
+| -------------------- | ------------------------------------------------------ | ------------------------ |
+| Front camera         | `/camera_front/color/image_raw`                        | `sensor_msgs/Image`      |
+| Left wrist camera    | `/camera_left_wrist/color/image_raw`                   | `sensor_msgs/Image`      |
+| Right wrist camera   | `/camera_right_wrist/color/image_raw`                  | `sensor_msgs/Image`      |
+| Left joint feedback  | `/left_arm/joint_states`                               | `sensor_msgs/JointState` |
+| Right joint feedback | `/right_arm/joint_states`                              | `sensor_msgs/JointState` |
+| Left joint commands  | `/left_arm/rebot_joint_controller/target_joint_state`  | `sensor_msgs/JointState` |
 | Right joint commands | `/right_arm/rebot_joint_controller/target_joint_state` | `sensor_msgs/JointState` |
 
 ## Training Configuration
