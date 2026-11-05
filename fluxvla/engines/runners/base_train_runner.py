@@ -871,7 +871,7 @@ class BaseTrainRunner(ABC):
                 f'or "blockwise", got {strategy!r}.')
 
     def _next_batch(self, dataloader, dataloader_iter, sampler):
-        """Fetch a micro-batch, restarting the epoch if the iterator ends."""
+        """Fetch a micro-batch, restarting the iterator if it ends."""
         while True:
             if dataloader_iter is None:
                 self._set_dataloader_epoch(dataloader, sampler)
@@ -880,7 +880,12 @@ class BaseTrainRunner(ABC):
             try:
                 return next(dataloader_iter), dataloader_iter
             except StopIteration:
-                self.current_epoch += 1
+                # With a known step budget, the outer training loop owns
+                # the epoch counter. Filling the last accumulation window
+                # may restart a finite loader before that boundary; this
+                # must not count the same epoch twice.
+                if not self.steps_per_epoch:
+                    self.current_epoch += 1
                 dataloader_iter = None
 
     def _set_dataloader_epoch(self, dataloader, sampler) -> None:
