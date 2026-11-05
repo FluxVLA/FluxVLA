@@ -7,6 +7,7 @@ from pathlib import Path
 
 import torch
 from mmengine import Config
+from omegaconf import OmegaConf
 from safetensors.torch import load_file
 
 import fluxvla.datasets.adapters  # noqa: F401
@@ -176,14 +177,12 @@ def build_pi05_policy(cfg, torch_dtype=None):
             'RoboTwinRLAdapter'
             if adapter_cfg == 'robotwin' else 'LiberoRLAdapter'
         }
+    if OmegaConf.is_config(adapter_cfg):
+        adapter_cfg = OmegaConf.to_container(adapter_cfg, resolve=True)
     adapter_cfg = copy.deepcopy(dict(adapter_cfg))
     adapter_type = adapter_cfg.get('type')
     if adapter_type == 'RoboTwinRLAdapter':
         adapter_cfg.setdefault('norm_stats', stats)
-        adapter_cfg.setdefault('tokenizer_path', options.get('tokenizer_path'))
-        adapter_cfg.setdefault('image_size', options.get('image_size', 224))
-        adapter_cfg.setdefault('max_token_len',
-                               options.get('max_token_len', 200))
     elif adapter_type == 'LiberoRLAdapter':
         adapter_cfg.setdefault('flux_cfg', flux_cfg)
         adapter_cfg.setdefault('norm_stats', stats)

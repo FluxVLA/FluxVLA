@@ -16,7 +16,42 @@ simulator = dict(
     norm_stats_path=('${actor.model.model_path}/physical-intel'
                      'ligence/robotwin/norm_stats.json'),
     rollout_micro_batch_size='${actor.micro_batch_size}',
-    adapter=dict(type='RoboTwinRLAdapter', image_size=224, max_token_len=200),
+    adapter=dict(
+        type='RoboTwinRLAdapter',
+        transforms=[
+            dict(
+                type='JointSignTransform',
+                signs=[1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1],
+                action_key=None,
+                input_dtype='float64'),
+            dict(type='OpenPIAlohaGripperCoordinates', input_dtype='float64'),
+            dict(
+                type='NormalizeStatesAndActions',
+                state_key='state',
+                action_key=None,
+                norm_type='quantile',
+                clip_norm=False,
+                normalization_epsilon=1e-6,
+                input_dtype='float64'),
+            dict(
+                type='PreparePromptWithState',
+                lowercase_task_description=False),
+            dict(
+                type='ProcessPrompts',
+                tokenizer=dict(
+                    type='PaligemmaTokenizer',
+                    model_path='${actor.model.fluxvla.tokenizer_path}',
+                    preserve_prompt_format=True),
+                max_len=200),
+            # Build the prompt from 14-D state before padding to 32-D.
+            dict(type='PadStatesAndActions', model_action_dim=32),
+            dict(
+                type='ResizeImagesWithPad',
+                height=224,
+                width=224,
+                backend='pil'),
+            dict(type='SimpleNormalizeImages'),
+        ]),
     model_overrides=dict(
         n_action_steps=50,
         num_steps=5,
