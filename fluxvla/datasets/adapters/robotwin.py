@@ -8,11 +8,9 @@ is imported into the Flux/Transformers 5 environment.
 import numpy as np
 import torch
 
+from fluxvla.engines import build_transform_from_cfg
 from fluxvla.engines.utils import PROCESSORS
-from fluxvla.transforms.normalize import NormalizeStatesAndActions
-from fluxvla.transforms.prompters import PreparePromptWithState
 from fluxvla.transforms.transform_images import _resize_chw_with_pad_pil
-from fluxvla.transforms.transform_prompts import ProcessPrompts
 from .libero import LiberoRLAdapter
 
 JOINT_FLIP = np.array([1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1])
@@ -67,33 +65,31 @@ class RoboTwinRLAdapter:
             lower = np.asarray(self.stats[field]['q01'])
             if np.any(upper < lower):
                 raise ValueError(f'Invalid quantile order for {field}')
-        self.normalize = NormalizeStatesAndActions(
-            state_key='state',
-            action_key=None,
-            norm_type='quantile',
-            clip_norm=False,
-            normalization_epsilon=1e-6,
-            input_dtype='float64')
-        self.process_prompt = ProcessPrompts(
-            tokenizer=dict(
-                type='PaligemmaTokenizer',
-                model_path=tokenizer_path,
-                preserve_prompt_format=True),
-            max_len=int(max_token_len))
-        self.prompt = PreparePromptWithState(lowercase_task_description=False)
+        self.transforms = [
+            build_transform_from_cfg(cfg) for cfg in [
+                dict(
+                    type='NormalizeStatesAndActions',
+                    state_key='state',
+                    action_key=None,
+                    norm_type='quantile',
+                    clip_norm=False,
+                    normalization_epsilon=1e-6,
+                    input_dtype='float64'),
+                dict(
+                    type='PreparePromptWithState',
+                    lowercase_task_description=False),
+                dict(
+                    type='ProcessPrompts',
+                    tokenizer=dict(
+                        type='PaligemmaTokenizer',
+                        model_path=tokenizer_path,
+                        preserve_prompt_format=True),
+                    max_len=int(max_token_len)),
+                # Build the prompt from 14-D state before padding to 32-D.
+                dict(type='PadStatesAndActions', model_action_dim=32),
+            ]
+        ]
         self.image_size = int(image_size)
-        self.max_token_len = int(max_token_len)
-
-    def normalize_state(self, state):
-        return self.normalize(
-            dict(states=decode_state(state), stats=self.stats))['states']
-
-    def tokenize(self, prompt, normalized_state):
-        sample = self.prompt(
-            dict(task_description=prompt, states=normalized_state))
-        sample = self.process_prompt(sample)
-        return (sample['lang_tokens'].astype(np.int64, copy=False),
-                sample['lang_masks'].astype(bool, copy=False))
 
     def __call__(self, env_obs):
         state = self._numpy(env_obs['states'])
@@ -112,7 +108,7 @@ class RoboTwinRLAdapter:
                 or len(prompts) != batch):
             raise ValueError(
                 'Expected RGB uint8 main [B,H,W,3] and wrist [B,2,H,W,3]')
-        normalized = self.normalize_state(state)
+        state = decode_state(state)
         rows = []
         for index in range(batch):
             images = [
@@ -120,8 +116,12 @@ class RoboTwinRLAdapter:
                     view.transpose(2, 0, 1), self.image_size, self.image_size)
                 for view in (main[index], wrist[index, 0], wrist[index, 1])
             ]
-            tokens, mask = self.tokenize(prompts[index], normalized[index])
-            padded = np.pad(normalized[index], (0, 18)).astype(np.float32)
+            sample = dict(
+                states=state[index],
+                stats=self.stats,
+                task_description=prompts[index])
+            for transform in self.transforms:
+                sample = transform(sample)
             rows.append({
                 'images':
                 torch.from_numpy(
@@ -129,11 +129,14 @@ class RoboTwinRLAdapter:
                 'img_masks':
                 torch.ones(3, dtype=torch.bool),
                 'lang_tokens':
-                torch.from_numpy(tokens),
+                torch.from_numpy(sample['lang_tokens'].astype(
+                    np.int64, copy=False)),
                 'lang_masks':
-                torch.from_numpy(mask),
+                torch.from_numpy(sample['lang_masks'].astype(bool,
+                                                             copy=False)),
                 'states':
-                torch.from_numpy(padded)
+                torch.from_numpy(sample['states'].astype(
+                    np.float32, copy=False))
             })
         return {
             key: torch.stack([row[key] for row in rows])
