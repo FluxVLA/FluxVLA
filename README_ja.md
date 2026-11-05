@@ -1053,6 +1053,7 @@ VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM 
 <summary><b>API ベースのモデル推論に対応</b></summary>
 
 - API とツール呼び出しポリシーによる GPT-6 Astra および MiniMax M3.1 Flash の推論をサポートし、ローカルのモデルチェックポイントは不要です。
+- [階層型タスク実行](#hierarchical-inference)にも対応します。オンライン GPT が検証済みのサブタスクを選択して完了を確認し、既存の PI05 パイプラインが動作を実行します。API のみのポリシーとは異なり、ローカルの PI05 実行にはチェックポイントと正規化統計が必要です。
 
 </details>
 
@@ -1108,6 +1109,68 @@ VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM 
 </p>
 
 ## 使い方
+
+<a id="hierarchical-inference"></a>
+
+### オンライン GPT + PI05 の階層型推論
+
+[aloha_pi05_gpt6.py](configs/hierarchical/aloha_pi05_gpt6.py) を使用し、既存の
+`gpt-6-astra` オンラインサービスを Aloha PI05 実行器に接続します。
+
+- `OpenAISubtaskPlanner` が設定済みのスキル一覧からサブタスクを選びます。
+- `OpenAIPredicateMonitor` が現在のカメラ観測からサブタスクと全体タスクの完了を確認します。
+- 検証済みのサブタスク指示だけを、既存の Dataset → PI05 → 動作実行パイプラインに渡します。全体タスクの文章や Planner の JSON を直接 VLA に渡すことはありません。
+
+**リポジトリのルートからオンラインプレビューを開始します：**
+
+```bash
+export OPENAI_API_KEY='your-api-key'
+# 任意：既存の GPT 実行で使用するゲートウェイを再利用します。
+# export OPENAI_BASE_URL='https://your-gateway.example/v1'
+# 任意：プロバイダーの API キーを格納する環境変数名を指定します。
+# export OPENAI_API_KEY_ENV='MY_GPT_KEY'
+
+python scripts/inference.py \
+  --config configs/hierarchical/aloha_pi05_gpt6.py \
+  --task-description "Put the red cup into the tray." \
+  --goal-conditions '{"placed:cup:tray": true}'
+```
+
+実行前に Aloha の ROS トピックと生の RGB カメラ入力を設定してください。
+選択したサービスには、設定したモデル、Responses の画像入力、厳密な JSON Schema
+出力への対応が必要です。通常のチャット API だけでは使用できません。
+API キーを設定ファイルに書き込まないでください。
+
+**`dry_run=True` はオンラインプレビューであり、オフラインモードではありません。**
+カメラ画像は設定した GPT サービスに送信され、API 料金が発生する場合がありますが、
+PI05 の読み込みやロボットへの動作指令は行いません。スキル、チェックポイント、
+正規化統計、ハードウェアの停止機構を検証した後、上のコマンドに
+`--ckpt-path /absolute/path/to/checkpoint.safetensors` と
+`--cfg-options inference.dry_run=False` を追加すると実行を有効化できます。
+現在は、固定ベースのアームによる同期実行のみ対応し、RTC は使用できません。
+
+**タスクは Runner の必須初期化設定ではなく、実行時に渡します：**
+
+```python
+from mmengine import Config
+from fluxvla.engines import build_runner_from_cfg
+
+cfg = Config.fromfile('configs/hierarchical/aloha_pi05_gpt6.py')
+cfg.inference.cfg = cfg
+runner = build_runner_from_cfg(cfg.inference)
+result = runner.run(
+    task_description='Put the red cup into the tray.',
+    goal_conditions={'placed:cup:tray': True},
+)
+```
+
+同じ Runner でタスクを順番に実行でき、各回でタスク状態をリセットして実行器を再利用します。
+新しいタスクには明示的な `goal_conditions` が必要です。自然言語から完了条件を
+自動生成する機能はありません。この設定例が定義するのはカップをトレイに置くスキルであり、
+任意のロボット動作への対応を意味しません。構造化生成とローカル検証で不正な決定を拒否し、
+完了は Planner の宣言ではなく観測証拠に基づいて判断します。
+オフライン再生はテスト用です。スキル定義、完了判定、イベントログ、実行制限の詳細は
+[階層型推論ガイド](docs/hierarchical_inference.md)を参照してください。
 
 <details>
 <summary><b>ローカルデバッグ</b></summary>
@@ -1247,8 +1310,12 @@ bash scripts/eval.sh [CONFIG] [CKPT_PATH] --cfg-options [CFG_OPTIONS]
 実機ロボット上で推論を実行する際は、まずロボット側で環境をセットアップし、その上で次のコマンドを実行してください：
 
 ```
-python scripts/inference_real_robot.py --config [CONFIG] -- ckpt-path [CKPT_PATH]
+python scripts/inference_real_robot.py --config [CONFIG] --ckpt-path [CKPT_PATH]
 ```
+
+これは既存の直接 VLA 推論用エントリーポイントです。[オンライン GPT の階層型推論](#hierarchical-inference)
+には、上記の `scripts/inference.py` を使用し、`--task-description` と `--goal-conditions`
+を実行時に渡してください。`scripts/inference_real_robot.py` はこの 2 つの引数に対応していません。
 
 </details>
 

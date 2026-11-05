@@ -43,9 +43,11 @@ from .root import LR_SCHEDULERS  # noqa: F401, F403
 from .root import METRICS  # noqa: F401, F403
 from .root import OPERATORS  # noqa: F401, F403
 from .root import OPTIMIZERS  # noqa: F401, F403
+from .root import PLANNERS  # noqa: F401, F403
 from .root import PROCESSORS  # noqa: F401, F403
 from .root import PROJECTORS  # noqa: F401, F403
 from .root import RUNNERS  # noqa: F401, F403
+from .root import TASK_MONITORS  # noqa: F401, F403
 from .root import TOKENIZERS  # noqa: F401, F403
 from .root import TRANSFORMS  # noqa: F401, F403
 from .root import VISION_BACKBONES  # noqa: F401, F403

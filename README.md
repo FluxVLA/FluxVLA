@@ -1170,6 +1170,7 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 <summary><b>Supports API-based model inference</b></summary>
 
 - Supports GPT-6 Astra and MiniMax M3.1 Flash inference via APIs and tool-calling policies, without local model checkpoints.
+- Supports [hierarchical task execution](#hierarchical-inference): online GPT selects validated subtasks and checks completion, while the existing PI05 pipeline executes actions. Unlike a direct API-only policy, local PI05 execution requires its checkpoint and normalization statistics.
 
 </details>
 
@@ -1225,6 +1226,68 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 </p>
 
 ## Usage
+
+<a id="hierarchical-inference"></a>
+
+### Online GPT + PI05 hierarchical inference
+
+Use [aloha_pi05_gpt6.py](configs/hierarchical/aloha_pi05_gpt6.py) to connect the
+existing `gpt-6-astra` service to the Aloha PI05 executor:
+
+- `OpenAISubtaskPlanner` selects a subtask from the configured skill catalog.
+- `OpenAIPredicateMonitor` checks current camera evidence for subtask/task completion.
+- Only the validated subtask instruction enters the existing Dataset → PI05 → action pipeline. The total task and planner JSON are not passed directly to the VLA.
+
+**Start an online preview from the repository root:**
+
+```bash
+export OPENAI_API_KEY='your-api-key'
+# Optional: reuse the gateway from your existing GPT runs.
+# export OPENAI_BASE_URL='https://your-gateway.example/v1'
+# Optional: name the environment variable containing your provider key.
+# export OPENAI_API_KEY_ENV='MY_GPT_KEY'
+
+python scripts/inference.py \
+  --config configs/hierarchical/aloha_pi05_gpt6.py \
+  --task-description "Put the red cup into the tray." \
+  --goal-conditions '{"placed:cup:tray": true}'
+```
+
+Configure the Aloha ROS topics and raw RGB cameras first. The selected service
+must provide the configured model and support Responses images and strict
+JSON-schema output; a chat-only endpoint is insufficient. Keep credentials out
+of config files.
+
+**`dry_run=True` is an online preview, not an offline mode:** it sends camera
+images to the configured GPT service and can incur API charges, but does not
+load PI05 or publish robot actions. Validate the skills, checkpoint, normalization
+statistics and hardware stop before enabling execution. Then add
+`--ckpt-path /absolute/path/to/checkpoint.safetensors` and
+`--cfg-options inference.dry_run=False` to the command above. This runner currently
+supports only synchronous, non-RTC execution with a stationary robot base.
+
+**Supply each task at runtime, not as a required constructor setting:**
+
+```python
+from mmengine import Config
+from fluxvla.engines import build_runner_from_cfg
+
+cfg = Config.fromfile('configs/hierarchical/aloha_pi05_gpt6.py')
+cfg.inference.cfg = cfg
+runner = build_runner_from_cfg(cfg.inference)
+result = runner.run(
+    task_description='Put the red cup into the tray.',
+    goal_conditions={'placed:cup:tray': True},
+)
+```
+
+Sequential `run()` calls reset task state and reuse the executor. A new task
+requires explicit `goal_conditions`; they are not inferred from the task text.
+The example catalog only declares cup-to-tray placement, not arbitrary robot
+skills. JSON schema enforcement and local validation reject invalid decisions;
+completion still requires observed evidence, not the planner's assertion.
+Offline replay is a test fixture only. See the [full guide](docs/hierarchical_inference.md)
+for catalog definitions, completion checks, event logs and execution limits.
 
 <details>
 <summary><b>Local debugging</b></summary>
@@ -1370,8 +1433,13 @@ bash scripts/eval.sh [CONFIG] [CKPT_PATH] --cfg-options [CFG_OPTIONS]
 When running inference on a real robot, first install the environment on the robot side, and then run:
 
 ```
-python scripts/inference_real_robot.py --config [CONFIG] -- ckpt-path [CKPT_PATH]
+python scripts/inference_real_robot.py --config [CONFIG] --ckpt-path [CKPT_PATH]
 ```
+
+This is the existing direct-VLA entry point. For [online GPT hierarchical
+inference](#hierarchical-inference), use `scripts/inference.py` with
+`--task-description` and `--goal-conditions` as shown above; these flags are not
+supported by `scripts/inference_real_robot.py`.
 
 </details>
 

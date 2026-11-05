@@ -1045,6 +1045,7 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 <summary><b>支持基于 API 的模型推理</b></summary>
 
 - 支持通过 API 和 tool-calling 策略进行 GPT-6 Astra 和 MiniMax M3.1 Flash 推理，无需本地模型 checkpoint。
+- 支持[分层任务执行](#hierarchical-inference)：在线 GPT 选择经过校验的子任务并检查完成状态，现有 PI05 流水线负责执行动作。与纯 API 策略不同，本地 PI05 执行仍需要对应的 checkpoint 和归一化统计。
 
 </details>
 
@@ -1100,6 +1101,64 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 </p>
 
 ## 使用方式
+
+<a id="hierarchical-inference"></a>
+
+### 在线 GPT + PI05 分层推理
+
+使用 [aloha_pi05_gpt6.py](configs/hierarchical/aloha_pi05_gpt6.py)，将现有
+`gpt-6-astra` 在线服务接到 Aloha PI05 执行器：
+
+- `OpenAISubtaskPlanner` 从配置声明的技能目录中选择子任务。
+- `OpenAIPredicateMonitor` 根据当前相机观测检查子任务和总任务是否完成。
+- 只有校验后的子任务指令进入现有 Dataset → PI05 → 动作执行流水线，总任务文本和 Planner 的 JSON 不会直接交给 VLA。
+
+**在仓库根目录启动在线预览：**
+
+```bash
+export OPENAI_API_KEY='your-api-key'
+# 可选：沿用已有 GPT 运行时使用的网关。
+# export OPENAI_BASE_URL='https://your-gateway.example/v1'
+# 可选：指定存放服务商 API Key 的环境变量名。
+# export OPENAI_API_KEY_ENV='MY_GPT_KEY'
+
+python scripts/inference.py \
+  --config configs/hierarchical/aloha_pi05_gpt6.py \
+  --task-description "Put the red cup into the tray." \
+  --goal-conditions '{"placed:cup:tray": true}'
+```
+
+运行前需配置 Aloha ROS 话题和原始 RGB 相机输入。所选在线服务需要提供配置中的模型，
+并支持 Responses 图像输入和严格 JSON Schema 输出，只有普通聊天接口是不够的。
+不要把 API Key 写进配置文件。
+
+\*\*`dry_run=True` 是在线预览，不是离线模式：\*\*仍会把相机图像发送给配置的 GPT 服务，
+可能产生 API 费用，但不会加载 PI05 或下发机器人动作。先验证技能、checkpoint、
+归一化统计和硬件停止机制，再在上述命令中增加
+`--ckpt-path /absolute/path/to/checkpoint.safetensors` 和
+`--cfg-options inference.dry_run=False` 启用执行。当前仅支持同步、非 RTC、固定底盘的机械臂执行。
+
+**每次任务在运行时传入，不是 Runner 初始化的必填配置：**
+
+```python
+from mmengine import Config
+from fluxvla.engines import build_runner_from_cfg
+
+cfg = Config.fromfile('configs/hierarchical/aloha_pi05_gpt6.py')
+cfg.inference.cfg = cfg
+runner = build_runner_from_cfg(cfg.inference)
+result = runner.run(
+    task_description='Put the red cup into the tray.',
+    goal_conditions={'placed:cup:tray': True},
+)
+```
+
+同一个 Runner 可顺序运行多个任务，每次清空任务状态并复用执行器。
+新任务需要显式提供 `goal_conditions`，当前不会从自然语言自动生成完成条件。
+示例技能目录只声明了把杯子放入托盘的能力，并不代表支持任意机器人动作。
+结构化生成和本地校验负责拒绝非法决策；是否完成仍取决于观测证据，不能只信 Planner 的声明。
+离线回放仅是测试用例。技能定义、完成判断、事件日志与执行限制详见
+[分层推理使用指南](docs/hierarchical_inference.md)。
 
 <details>
 <summary><b>本地调试</b></summary>
@@ -1239,8 +1298,12 @@ bash scripts/eval.sh [CONFIG] [CKPT_PATH] --cfg-options [CFG_OPTIONS]
 在真实机器人上运行推理时，请先在机器人端安装好环境，然后执行以下命令：
 
 ```
-python scripts/inference_real_robot.py --config [CONFIG] -- ckpt-path [CKPT_PATH]
+python scripts/inference_real_robot.py --config [CONFIG] --ckpt-path [CKPT_PATH]
 ```
+
+这是已有的直接 VLA 推理入口。[在线 GPT 分层推理](#hierarchical-inference)应使用
+上文的 `scripts/inference.py`，在运行时传入 `--task-description` 和 `--goal-conditions`；
+`scripts/inference_real_robot.py` 不支持这两个参数。
 
 </details>
 
