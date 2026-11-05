@@ -428,6 +428,16 @@ class BaseInferenceRunner:
             dict: Model-ready inputs (local) or raw obs (remote).
         """
         obs = self.update_observation_window()
+        return self._preprocess_observation(instruction, obs)
+
+    def _preprocess_observation(self, instruction: str, observation: dict):
+        """Preprocess the same snapshot used by a high-level planner.
+
+        Keep observation capture separate so hierarchical inference cannot
+        silently re-observe after committing a decision for an older scene.
+        The instruction is already validated and rendered by the caller.
+        """
+        obs = dict(observation)
         if obs.get('qpos') is not None:
             self._action_ctx.state = np.asarray(obs['qpos']).copy()
         obs['task_description'] = instruction
