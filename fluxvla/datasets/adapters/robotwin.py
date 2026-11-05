@@ -10,7 +10,6 @@ import torch
 
 from fluxvla.engines import build_transform_from_cfg
 from fluxvla.engines.utils import PROCESSORS
-from fluxvla.transforms.transform_images import _resize_chw_with_pad_pil
 from .libero import LiberoRLAdapter
 
 JOINT_FLIP = np.array([1, -1, -1, 1, 1, 1, 1, 1, -1, -1, 1, 1, 1, 1])
@@ -41,55 +40,27 @@ def encode_actions(actions):
 
 @PROCESSORS.register_module()
 class RoboTwinRLAdapter:
-    """Adapt three RGB views and native 14-D state without cropping."""
+    """Bridge RoboTwin observations through a configured transform pipeline."""
 
     _numpy = staticmethod(LiberoRLAdapter._numpy)
 
-    def __init__(self,
-                 *,
-                 norm_stats,
-                 tokenizer_path,
-                 image_size=224,
-                 max_token_len=200):
-        if norm_stats is None or tokenizer_path is None:
-            raise ValueError(
-                'RoboTwin requires checkpoint statistics and a tokenizer')
+    def __init__(self, *, norm_stats, transforms):
+        if norm_stats is None:
+            raise ValueError('RoboTwin requires checkpoint statistics')
         self.stats = norm_stats.get('norm_stats', norm_stats)
-        for field in ('state', 'actions'):
-            for quantile in ('q01', 'q99'):
-                array = np.asarray(self.stats[field][quantile])
-                if array.shape != (14, ) or not np.isfinite(array).all():
-                    raise ValueError(
-                        f'Expected finite 14-D {field}/{quantile}')
-            upper = np.asarray(self.stats[field]['q99'])
-            lower = np.asarray(self.stats[field]['q01'])
-            if np.any(upper < lower):
-                raise ValueError(f'Invalid quantile order for {field}')
+        # Action restoration requires quantiles; observation statistics follow
+        # the configured normalization transform.
+        for quantile in ('q01', 'q99'):
+            array = np.asarray(self.stats['actions'][quantile])
+            if array.shape != (14, ) or not np.isfinite(array).all():
+                raise ValueError(f'Expected finite 14-D actions/{quantile}')
+        upper = np.asarray(self.stats['actions']['q99'])
+        lower = np.asarray(self.stats['actions']['q01'])
+        if np.any(upper < lower):
+            raise ValueError('Invalid quantile order for actions')
         self.transforms = [
-            build_transform_from_cfg(cfg) for cfg in [
-                dict(
-                    type='NormalizeStatesAndActions',
-                    state_key='state',
-                    action_key=None,
-                    norm_type='quantile',
-                    clip_norm=False,
-                    normalization_epsilon=1e-6,
-                    input_dtype='float64'),
-                dict(
-                    type='PreparePromptWithState',
-                    lowercase_task_description=False),
-                dict(
-                    type='ProcessPrompts',
-                    tokenizer=dict(
-                        type='PaligemmaTokenizer',
-                        model_path=tokenizer_path,
-                        preserve_prompt_format=True),
-                    max_len=int(max_token_len)),
-                # Build the prompt from 14-D state before padding to 32-D.
-                dict(type='PadStatesAndActions', model_action_dim=32),
-            ]
+            build_transform_from_cfg(transform) for transform in transforms
         ]
-        self.image_size = int(image_size)
 
     def __call__(self, env_obs):
         state = self._numpy(env_obs['states'])
@@ -108,35 +79,28 @@ class RoboTwinRLAdapter:
                 or len(prompts) != batch):
             raise ValueError(
                 'Expected RGB uint8 main [B,H,W,3] and wrist [B,2,H,W,3]')
-        state = decode_state(state)
         rows = []
         for index in range(batch):
             images = [
-                _resize_chw_with_pad_pil(
-                    view.transpose(2, 0, 1), self.image_size, self.image_size)
+                view.transpose(2, 0, 1)
                 for view in (main[index], wrist[index, 0], wrist[index, 1])
             ]
             sample = dict(
-                states=state[index],
+                images=images,
+                img_masks=np.ones(len(images), dtype=bool),
+                states=state[index].copy(),
                 stats=self.stats,
                 task_description=prompts[index])
             for transform in self.transforms:
                 sample = transform(sample)
             rows.append({
-                'images':
-                torch.from_numpy(
-                    np.concatenate(images).astype(np.float32) / 255.0 * 2 - 1),
-                'img_masks':
-                torch.ones(3, dtype=torch.bool),
-                'lang_tokens':
-                torch.from_numpy(sample['lang_tokens'].astype(
-                    np.int64, copy=False)),
-                'lang_masks':
-                torch.from_numpy(sample['lang_masks'].astype(bool,
-                                                             copy=False)),
-                'states':
-                torch.from_numpy(sample['states'].astype(
-                    np.float32, copy=False))
+                key: torch.as_tensor(sample[key], dtype=dtype)
+                for key, dtype in dict(
+                    images=torch.float32,
+                    img_masks=torch.bool,
+                    lang_tokens=torch.int64,
+                    lang_masks=torch.bool,
+                    states=torch.float32).items()
             })
         return {
             key: torch.stack([row[key] for row in rows])
