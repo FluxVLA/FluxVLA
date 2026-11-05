@@ -655,6 +655,14 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
   ./work_dirs/pi05_vlm_sft
 ```
 
+**TextVQA 生成式评测**：下载
+[`TextVQA_0.5.1_val.json`](https://dl.fbaipublicfiles.com/textvqa/data/TextVQA_0.5.1_val.json)
+到 `./datasets/textvqa/`，图片复用
+`./datasets/llava665k/textvqa/train_images/`。不要将该验证标注加入 SFT 训练源。
+在上面的训练命令后添加 `--eval-after-train`，即可通过
+`eval.type='TextVQAEvalRunner'` 对比训练 checkpoint 和 base 模型的答案准确率；
+不会额外切分 LLaVA 训练数据。
+
 输入输出、数据配比、任务调度与限制详见 [VLM 数据与训练](docs/vlm_data.md)。
 机器人动作数据仍使用现有 LeRobot pipeline。
 

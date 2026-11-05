@@ -53,9 +53,10 @@ dataset = dict(
 3. `ProcessPi05VLMSFTInputs` encodes Pi05 image/text inputs. For native Qwen VLMs,
    use `ProcessVLMSFTInputs` with the matching `processor_path` and
    `processor_type`, as in [the Qwen config](../configs/vlm/qwen3_vl_2b_sft.py).
-4. Each task has its own collator. Metadata and raw conversations are not passed
-   to the model. All assistant replies and their end tokens are supervised;
-   user/system tokens and padding have label `-100`.
+4. `VLMSFTCollator` batches both Pi05 and native Qwen VLM inputs. Mixed training
+   keeps a separate collator for the VLA stream. Metadata and raw conversations
+   are not passed to the model. All assistant replies and their end tokens are
+   supervised; user/system tokens and padding have label `-100`.
 
 For Pi05, a sample has `input_ids`, `attention_mask`, `labels` of shape `[L]`
 and `images` of shape `[3*N, H, W]`. The collated batch has:
@@ -72,6 +73,11 @@ and `images` of shape `[3*N, H, W]`. The collated batch has:
 There are **no states, actions or action masks** in VLM batches. Qwen instead
 uses the processor's packed `pixel_values` and `image_grid_thw` (and video
 equivalents); those shapes depend on the visual patch count, not Pi05's layout.
+Configure `VLMSFTCollator` with `image_layout='views'` for Pi05 image padding;
+the default `image_layout='patches'` concatenates native Qwen patches. The
+explicit layout avoids confusing raw `images` path metadata with encoded
+tensors. A VLM batch must use one visual layout: conflicting tensor fields
+or tensor images in patch mode are rejected rather than silently dropped.
 
 ## Indexing, multiple sources and errors
 
@@ -127,16 +133,92 @@ uses the same raw language pipeline with the existing RoboTwin robot dataset.
   two GPUs for either task. VLM gradients are normalized by supervised token
   count; mixed VLA gradients by valid action-element count. Loss weights and
   update ratios are separate from dataset-source repeat factors.
+- All five raw-data examples use **4 workers per rank per training stream**,
+  matching the existing robot configs. Mixed training on two GPUs therefore
+  uses up to 16 data-loader workers (2 ranks × 2 streams × 4). Reduce workers
+  for CPU/RAM-constrained machines, or set them to 0 when debugging transforms.
 - Pi05 is the supported mixed-training model. Models without this contract
   reject `train_task='mixed'` rather than silently ignoring the task.
 - Full mixed `.pt` checkpoints retain optimizer/scheduler state, task counters,
   data cursors and per-rank RNG state. Resume requires matching data, schedule,
-  batch sizes, trainable parameters and world size. `.safetensors` is weights
-  only, not a full resume checkpoint.
+  collator configs, worker counts, batch sizes, trainable parameters and world
+  size. When resuming an older run, preserve its worker counts and preprocessing
+  configuration; the new defaults are not an automatic checkpoint migration.
+  `.safetensors` is weights only, not a full resume checkpoint.
 - Optional held-out language validation uses `VLMEvaluator` and a separate
   dataset with `max_retry_times=0`. It reports teacher-forced loss and token
   accuracy, not benchmark generation scores. Mixed configs keep their existing
   robot evaluator; pure SFT does not require robot evaluation data.
+
+## TextVQA generation evaluation
+
+The pure [Pi05 LLaVA config](../configs/pi05/pi05_paligemma_llava665k_full_finetune.py)
+sets `eval.type='TextVQAEvalRunner'`, following the original VLM branch. This
+is a **generation benchmark**, not the optional training-time `VLMEvaluator`
+loss hook. All raw LLaVA training records remain in the SFT dataset: there is
+no extra train/validation split of the training annotations.
+
+Prepare the official TextVQA validation annotation separately:
+
+```bash
+mkdir -p ./datasets/textvqa
+curl -fL --retry 3 \
+  https://dl.fbaipublicfiles.com/textvqa/data/TextVQA_0.5.1_val.json \
+  -o ./datasets/textvqa/TextVQA_0.5.1_val.json
+```
+
+Images are reused from `./datasets/llava665k/textvqa/train_images/`, extracted
+from TextVQA's **train_val_images.zip** as described in the README. The JSON
+contains questions and ten human answers per question; do **not** add it to
+the SFT annotation sources. Missing annotations/images fail explicitly rather
+than being replaced by training samples.
+
+```bash
+# Train, save the checkpoint, then launch a fresh distributed TextVQA job.
+NPROC_PER_NODE=2 bash scripts/train.sh \
+  configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
+  ./work_dirs/pi05_vlm_sft --eval-after-train
+
+# Short connectivity check on the full model and original raw data.
+# Accumulation=1 reduces memory on shared GPUs; this is not the default batch.
+NPROC_PER_NODE=2 bash scripts/train.sh \
+  configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
+  ./work_dirs/pi05_textvqa_smoke --eval-after-train --cfg-options \
+  runner.max_steps=2 runner.save_iter_interval=2 \
+  runner.grad_accumulation_steps=1 train_dataloader.dataset.max_retry_times=0 \
+  eval.max_samples=32 eval.run_dir=./work_dirs/pi05_textvqa_smoke/textvqa
+
+# Independently evaluate a trained checkpoint (substitute its path).
+NPROC_PER_NODE=2 bash scripts/eval.sh \
+  configs/pi05/pi05_paligemma_textvqa_eval.py \
+  ./work_dirs/pi05_vlm_sft/checkpoints/latest-checkpoint.safetensors
+
+# Pretrained baseline only, without needing a training checkpoint.
+NPROC_PER_NODE=2 bash scripts/eval.sh \
+  configs/pi05/pi05_paligemma_textvqa_eval.py base
+```
+
+- Inputs are **image + question**, plus the configured short-answer suffix.
+  Reference answers never enter the model input. There are no external OCR
+  tokens. Greedy decoding uses a KV cache, with at most 32 new tokens.
+- Scoring uses the LLaVA/EvalAI answer normalizer and leave-one-annotator-out
+  TextVQA accuracy, not token accuracy, loss or perplexity. Scores of one to
+  four matching annotators are 0.3, 0.6, 0.9 and 1.0 respectively. This is not
+  the OCR-assisted LLaVA evaluation protocol.
+- By default `eval.compare_base=True` evaluates both the source Pi05 weights
+  and the trained checkpoint on the same questions. Set it to `False` to run
+  only the trained model. Trained weights load strictly with FluxVLA keys,
+  without reapplying the source OpenPI mapping. `.safetensors` and full `.pt`
+  exports are supported; merge LoRA adapters before using this runner.
+- Each GPU holds one model replica and a disjoint set of questions. No
+  duplicate padding questions are scored. `eval.max_samples` limits the
+  **global** number of questions; `None` evaluates all 5,000 validation
+  questions. A small subset is only a smoke test, not a benchmark result.
+- `eval.run_dir` receives `base_predictions.jsonl`,
+  `checkpoint_predictions.jsonl`, `summary.json`, `summary.md` and the config.
+  Reports include predictions, per-question scores, dataset/tokenizer hashes,
+  precision, decoding settings and the base/checkpoint accuracy difference.
+  Choose a new output directory to preserve an earlier evaluation report.
 
 ## Supported boundaries and tests
 
@@ -161,6 +243,7 @@ CUDA_VISIBLE_DEVICES='' python -m pytest --cpu-model-tests \
   test/test_datasets/test_vlm_annotations.py \
   test/test_transforms/test_vlm_transforms.py \
   test/test_models/test_vlm_training.py \
+  test/test_runners/test_textvqa_eval_runner.py \
   test/test_runners/test_mixed_training.py -q
 ```
 

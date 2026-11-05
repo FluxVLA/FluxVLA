@@ -1,4 +1,16 @@
 # Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Pi05 mixed RoboTwin action training and raw LLaVA-665K language SFT.
 
 Defaults target two 80-GB GPUs: three VLA updates followed by one VLM update.
@@ -24,13 +36,13 @@ inference_model = dict(
 # Reuse the robot pipeline and README's datasets/robotwin_lerobotv2.1 layout.
 train_dataloader = _base_.train_dataloader
 train_dataloader.per_device_batch_size = 1
-train_dataloader.per_device_num_workers = 0
+train_dataloader.per_device_num_workers = 4
 
 vlm_dataloader = dict(
     per_device_batch_size=1,
-    per_device_num_workers=0,
+    per_device_num_workers=4,
     grad_accumulation_steps=8,
-    collator=dict(type='Pi05VLMSFTCollator', pad_token_id=0),
+    collator=dict(type='VLMSFTCollator', pad_token_id=0, image_layout='views'),
     dataset=dict(
         type='LLaVAFormatDataset',
         anno_json_path=llava_root + '/llava_v1_5_mix665k.json',

@@ -743,6 +743,14 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
   ./work_dirs/pi05_vlm_sft
 ```
 
+**TextVQA generation evaluation:** download
+[`TextVQA_0.5.1_val.json`](https://dl.fbaipublicfiles.com/textvqa/data/TextVQA_0.5.1_val.json)
+to `./datasets/textvqa/`. Images are reused from
+`./datasets/llava665k/textvqa/train_images/`. Do not add these validation
+annotations to the SFT sources. Append `--eval-after-train` to the command
+above to compare the trained checkpoint and base model using
+`eval.type='TextVQAEvalRunner'`; no training-data holdout is created.
+
 See [VLM data and training](docs/vlm_data.md) for input/output contracts,
 source mixing, task scheduling and limitations. Robot-action inputs still
 use the existing LeRobot pipeline.

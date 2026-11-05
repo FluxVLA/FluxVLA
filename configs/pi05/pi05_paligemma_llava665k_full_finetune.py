@@ -1,8 +1,21 @@
 # Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """Pi05 VLM SFT on raw LLaVA-665K using the pretrained PaliGemma vocabulary.
 
 Reuses the Pi05 base checkpoint and keeps action parameters for later VLA use.
 Reads the original annotations and extracted images without preconversion.
+TextVQA validation is evaluated after training; all LLaVA SFT rows remain.
 """
 
 llava_root = './datasets/llava665k'
@@ -125,7 +138,7 @@ model = dict(
             torch_dtype='float32',
             vision_use_head=False)))
 runner = dict(
-    collator=dict(pad_token_id=0, type='Pi05VLMSFTCollator'),
+    collator=dict(pad_token_id=0, type='VLMSFTCollator', image_layout='views'),
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
     fsdp_wrap_policy='model',
@@ -165,4 +178,23 @@ train_dataloader = dict(
         ],
         type='LLaVAFormatDataset'),
     per_device_batch_size=1,
-    per_device_num_workers=0)
+    per_device_num_workers=4)
+
+# Standalone TextVQA generation evaluation, also used by --eval-after-train.
+eval = dict(
+    type='TextVQAEvalRunner',
+    checkpoint_dir='./work_dirs/pi05_vlm_sft/checkpoints',
+    annotation_path='./datasets/textvqa/TextVQA_0.5.1_val.json',
+    image_root=llava_root + '/textvqa/train_images',
+    preprocessing=dict(
+        tokenizer_path='./checkpoints/pi05_base',
+        image_size=224,
+        max_length=1024),
+    prompt_suffix='\nAnswer the question using a single word or phrase.',
+    compare_base=True,
+    max_samples=None,
+    max_new_tokens=32,
+    keep_params_fp32=True,
+    enable_mixed_precision_training=True,
+    mixed_precision_dtype='bf16',
+    run_dir='./work_dirs/pi05_textvqa_eval')

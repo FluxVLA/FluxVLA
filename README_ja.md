@@ -657,6 +657,14 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
   ./work_dirs/pi05_vlm_sft
 ```
 
+**TextVQA 生成評価**：
+[`TextVQA_0.5.1_val.json`](https://dl.fbaipublicfiles.com/textvqa/data/TextVQA_0.5.1_val.json)
+を `./datasets/textvqa/` に保存し、画像は
+`./datasets/llava665k/textvqa/train_images/` を再利用します。検証用アノテーションを
+SFT の学習データに追加しないでください。上記コマンドに `--eval-after-train` を
+追加すると、`eval.type='TextVQAEvalRunner'` が学習済みモデルと base モデルを比較します。
+LLaVA 学習データの追加分割は行いません。
+
 入出力、データ比率、タスク順序と制約は [VLM データと学習](docs/vlm_data.md)
 を参照してください。ロボット動作データは既存の LeRobot pipeline を使用します。
 

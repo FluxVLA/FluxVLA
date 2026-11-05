@@ -1,4 +1,16 @@
 # Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """PaliGemma text supervision and Pi05 image preprocessing for VLM SFT."""
 
 import json
@@ -115,6 +127,31 @@ class ProcessPi05VLMSFTInputs:
             labels=torch.tensor(labels, dtype=torch.long),
             attention_mask=torch.ones(len(tokens), dtype=torch.bool),
             images=self._load_images(image_paths))
+
+    def encode_prompt(self, question, image_paths=()):
+        """Encode inference input without accepting or returning answers."""
+        tokenizer = self._get_tokenizer()
+        tokens = ([tokenizer.bos_id()] + tokenizer.encode(question) +
+                  tokenizer.encode('\n'))
+        if len(tokens) > self.max_length:
+            raise ValueError('Pi05 generation prompt exceeds max_length.')
+        inputs = dict(
+            input_ids=torch.tensor(tokens, dtype=torch.long),
+            attention_mask=torch.ones(len(tokens), dtype=torch.bool))
+        if image_paths:
+            inputs['images'] = self._load_images(image_paths)
+        return inputs
+
+    def decode_answer(self, token_ids):
+        """Decode new tokens only, dropping EOS and following padding."""
+        tokenizer = self._get_tokenizer()
+        ids = list(token_ids)
+        if tokenizer.eos_id() in ids:
+            ids = ids[:ids.index(tokenizer.eos_id())]
+        ids = [
+            i for i in ids if i not in (tokenizer.pad_id(), tokenizer.bos_id())
+        ]
+        return tokenizer.decode(ids).strip()
 
     def _load_images(self, image_paths):
         images = []

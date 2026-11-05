@@ -15,7 +15,7 @@
 from __future__ import annotations
 import copy
 import os
-from abc import ABC
+from abc import ABC, abstractmethod
 from typing import Callable, Dict, List, Optional
 
 import torch
@@ -465,18 +465,22 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
         """Apply task-specific freezing before distributed/optimizer setup."""
         self.validate_training_task(task)
 
-    def forward(self, *args, task='vla', **batch):
-        """Dispatch inside DDP/FSDP, preserving the default VLA call."""
-        self.validate_training_task(task)
-        if task == 'vlm':
-            return self.forward_vlm(*args, **batch)
-        return self.forward_vla(*args, **batch)
-
-    def forward_vla(self, *args, **batch):
-        raise NotImplementedError('This model has no VLA training path.')
-
-    def forward_vlm(self, *args, **batch):
-        raise NotImplementedError('This model has no VLM training path.')
+    @abstractmethod
+    def forward(
+        self,
+        input_ids: Optional[torch.LongTensor] = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        pixel_values: Optional[torch.FloatTensor] = None,
+        labels: Optional[torch.LongTensor] = None,
+        inputs_embeds: Optional[torch.FloatTensor] = None,
+        past_key_values: Optional[List[torch.FloatTensor]] = None,
+        use_cache: Optional[bool] = None,
+        output_attentions: Optional[bool] = None,
+        output_hidden_states: Optional[bool] = None,
+        return_dict: Optional[bool] = None,
+        multimodal_indices: Optional[torch.LongTensor] = None,
+    ) -> CausalLMOutputWithPast:
+        ...
 
     # === GenerationMixin Expected Properties & Methods (DO NOT MODIFY) ===
     @staticmethod

@@ -69,6 +69,10 @@ class PI05FlowMatching(PI0FlowMatching):
             'PI05FlowMatching does not use state_proj.')
         super().__init__(**kwargs)
 
+    @property
+    def config(self):
+        return self.llm_backbone.config
+
     def validate_training_task(self, task):
         if task == 'vla':
             return
@@ -214,7 +218,7 @@ class PI05FlowMatching(PI0FlowMatching):
         return causal_lm_loss(logits, labels, self.ignore_index)
 
     def _embed_vlm_prefix(self, tokens, mask, images, img_masks):
-        """Build image-prefix and causal-text embeddings for SFT."""
+        """Share image/text embeddings and attention between SFT and decode."""
         if images is None:
             if img_masks is not None:
                 raise ValueError('img_masks requires images.')
@@ -242,6 +246,90 @@ class PI05FlowMatching(PI0FlowMatching):
             ar_mask = ar_mask.clone()
             ar_mask[:, -tokens.shape[1]:] = True
         return embeddings, padding, ar_mask
+
+    @torch.inference_mode()
+    def generate_text(self,
+                      input_ids,
+                      attention_mask=None,
+                      images=None,
+                      img_masks=None,
+                      max_new_tokens=32,
+                      eos_token_id=None,
+                      pad_token_id=None,
+                      do_sample=False):
+        """Greedy text decoding with a KV cache; return prompt + new token IDs.
+
+        Both left and right padded prompts are supported. Finished rows emit
+        padding after EOS. Image encoding runs once, using the same causal
+        text / bidirectional image-prefix attention as ``forward_vlm``.
+        """
+        self.validate_training_task('vlm')
+        if self.training:
+            raise ValueError('Call model.eval() before generate_text.')
+        if do_sample:
+            raise ValueError('Pi05 generate_text currently supports greedy '
+                             'decoding only (do_sample=False).')
+        if type(max_new_tokens) is not int or max_new_tokens < 1:
+            raise ValueError('max_new_tokens must be a positive integer.')
+        if (input_ids.ndim != 2 or input_ids.dtype != torch.long
+                or input_ids.shape[1] == 0):
+            raise ValueError('input_ids must be nonempty int64 (B,L).')
+        if attention_mask is None:
+            attention_mask = torch.ones_like(input_ids, dtype=torch.bool)
+        mask = attention_mask.bool()
+        if mask.shape != input_ids.shape or not mask.any(-1).all():
+            raise ValueError('Each prompt needs at least one unmasked token.')
+        eos = (
+            self.config.eos_token_id if eos_token_id is None else eos_token_id)
+        pad = (
+            self.config.pad_token_id if pad_token_id is None else pad_token_id)
+        pad = 0 if pad is None else pad
+        embeddings, padding, ar_mask = self._embed_vlm_prefix(
+            input_ids, mask, images, img_masks)
+        if (embeddings.shape[1] + max_new_tokens - 1 >
+                self.config.max_position_embeddings):
+            raise ValueError('Prompt plus generation exceeds context length.')
+        attention = self._prepare_attention_masks_4d(
+            make_att_2d_masks(padding, ar_mask))
+        positions = (padding.long().cumsum(-1) - 1).clamp_min(0)
+        output = self.llm_backbone(
+            inputs_embeds=self._cast_gemma_input(embeddings),
+            attention_mask=attention,
+            position_ids=positions,
+            use_cache=True,
+            return_dict=True)
+        indices = torch.arange(mask.shape[1], device=mask.device)
+        last = indices.expand_as(mask).masked_fill(~mask, -1).max(-1).values
+        last += embeddings.shape[1] - input_ids.shape[1]
+        hidden = output.last_hidden_state[
+            torch.arange(mask.shape[0], device=mask.device), last]
+        cache = output.past_key_values
+        finished = torch.zeros(
+            mask.shape[0], dtype=torch.bool, device=mask.device)
+        generated = []
+        for step in range(max_new_tokens):
+            logits = F.linear(hidden, self.llm_backbone.embed_tokens.weight)
+            token = logits.argmax(-1).masked_fill(finished, pad)
+            generated.append(token)
+            if eos is not None:
+                finished |= token == eos
+            if finished.all() or step + 1 == max_new_tokens:
+                break
+            positions = padding.long().sum(-1, keepdim=True)
+            padding = torch.cat([padding, (~finished)[:, None]], dim=1)
+            embeddings = self.llm_backbone.embed_tokens(token[:, None])
+            embeddings = embeddings * math.sqrt(embeddings.shape[-1])
+            output = self.llm_backbone(
+                inputs_embeds=self._cast_gemma_input(embeddings),
+                attention_mask=self._prepare_attention_masks_4d(
+                    padding[:, None, :]),
+                position_ids=positions,
+                past_key_values=cache,
+                use_cache=True,
+                return_dict=True)
+            hidden = output.last_hidden_state[:, -1]
+            cache = output.past_key_values
+        return torch.cat([input_ids, torch.stack(generated, dim=1)], dim=1)
 
     def embed_suffix(self, states, noisy_actions, timestep):
         """Embed the suffix tokens for the Pi0 head.
