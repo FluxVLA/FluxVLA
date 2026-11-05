@@ -108,3 +108,45 @@ continuous gripper joint angles. Do not run competing command publishers
 such as teleoperation during inference. Keep the swept workspace clear
 and the hardware stop accessible; interrupting inference is not a
 verified hardware hold.
+
+## Local RTC Inference
+
+`configs/pi05/pi05_rebot_dual_rtc_inference.py` adds local RTC inference
+through `RebotDualRTCInferenceRunner`, following the existing ALOHA RTC timing
+and model-input contract.
+
+- `guidance` (default) works with checkpoints trained without RTC prefix
+  conditioning.
+- `prefix` should be used with a checkpoint trained with
+  `model.rtc_training_config`; see [RTC](rtc.md).
+
+Run guidance with the same model assets and statistics as standard reBot
+inference:
+
+```bash
+python scripts/inference_real_robot.py \
+  --config configs/pi05/pi05_rebot_dual_rtc_inference.py \
+  --ckpt-path <run-directory>/checkpoints/<checkpoint>.safetensors
+```
+
+Use these overrides for the ordinary asynchronous baseline or prefix mode:
+
+```bash
+--cfg-options inference.rtc_config.enabled=False
+--cfg-options inference.rtc_config.method=prefix
+```
+
+The example predicts 50 actions, executes in intervals of 10, and estimates
+`prefix_len` from the previous inference latency. reBot arm actions are
+relative to the current observation, so the runner rebases the normalized
+prefix to preserve its absolute joint targets; absolute gripper angles and
+padding remain unchanged.
+
+Like `OliRTCInferenceRunner`, reBot RTC is currently local-only: the remote
+protocol does not carry `prev_actions`, `prefix_len`, or `rtc_config`. Empty
+prefixes fall back to ordinary prediction. Check for a positive logged prefix
+length after the first chunk to confirm conditioning is active.
+
+The real-robot check covered a short ordinary-async/guidance comparison only.
+It did not establish task success, uniformly smoother motion, prefix-mode
+hardware behavior, VJP behavior, or gripper correctness.
