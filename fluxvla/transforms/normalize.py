@@ -1000,6 +1000,8 @@ class StateFromInputs:
         norm_type (str): Normalization type (default 'min_max').
         clip_norm (bool): Whether to clip min-max/quantile normalized state to
             [-1, 1]. Defaults to False.
+        mean_std_clip (float | None): Optional symmetric z-score clamp.
+            None preserves the existing unclipped mean_std behavior.
         state_dim (int | None): Padded output dimension.
         out_key (str): Output key for the normalized state (default
             'states').
@@ -1011,13 +1013,18 @@ class StateFromInputs:
                  norm_type: str = 'min_max',
                  clip_norm: bool = False,
                  state_dim: int = None,
-                 out_key: str = 'states') -> None:
+                 out_key: str = 'states',
+                 mean_std_clip: Optional[float] = None) -> None:
         if norm_type not in {'mean_std', 'quantile', 'min_max'}:
             raise ValueError(f'Unsupported norm_type: {norm_type!r}')
         self.state_key = state_key
         self.stat_key = stat_key
         self.norm_type = norm_type
         self.clip_norm = bool(clip_norm)
+        self.mean_std_clip = mean_std_clip
+        if mean_std_clip is not None and (not np.isfinite(mean_std_clip)
+                                          or mean_std_clip <= 0):
+            raise ValueError('mean_std_clip must be finite and positive')
         self.state_dim = state_dim
         self.out_key = out_key
 
@@ -1072,7 +1079,11 @@ class StateFromInputs:
         mean = np.asarray(stats['mean'])
         std = np.asarray(stats['std'])
         self._validate_stats_width(state, mean)
-        return (state - mean) / (std + 1e-6)
+        normalized = (state - mean) / (std + 1e-6)
+        if self.mean_std_clip is not None:
+            normalized = np.clip(normalized, -self.mean_std_clip,
+                                 self.mean_std_clip)
+        return normalized
 
     def _validate_stats_width(self, state: np.ndarray,
                               values: np.ndarray) -> None:

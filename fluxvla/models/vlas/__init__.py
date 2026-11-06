@@ -32,6 +32,7 @@ import_heterogeneous_runtime_symbols(
         'smolvla_flowmatching': ['SmolVLAFlowMatching'],
         'x_vla': ['X_VLA'],
         'dreamzero_vla': ['DreamZeroVLA'],
+        'vpp2_vla': ['VPP2VLA'],
         'fastwam_vla': ['FastWAMVLA'],
         'cosmos3_flowmatching': ['Cosmos3FlowMatching'],
         'openai_vla': ['OpenAILiberoVLA', 'OpenAIRobocasaVLA'],
