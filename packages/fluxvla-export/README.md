@@ -29,3 +29,9 @@ python -m unittest discover -s packages/fluxvla-export/tests_torch -v
 
 Public imports remain dependency-light even when Torch and safetensors are
 installed. CI builds and tests the standalone wheel outside the source package.
+
+## Shared components
+
+Registry-free Gemma, SigLIP, linear projection, and tensor helpers are shared
+with the training adapters. Training installation must install this local package
+before the root project; the installer scripts and CI do so explicitly.
