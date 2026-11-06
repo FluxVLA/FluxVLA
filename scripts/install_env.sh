@@ -2415,6 +2415,7 @@ install_project() {
   if [[ "${SKIP_PROJECT}" == "1" ]]; then
     return
   fi
+  pip_install_direct -e "${PROJECT_ROOT}/packages/fluxvla-export"
   pip_install_direct --no-build-isolation -e "${PROJECT_ROOT}"
 }
 
