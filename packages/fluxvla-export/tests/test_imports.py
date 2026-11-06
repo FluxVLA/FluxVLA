@@ -36,14 +36,13 @@ class ImportTest(unittest.TestCase):
 
     def test_import_does_not_load_model_or_backend_libraries(self):
         root = str(Path(fluxvla_export.__file__).resolve().parent.parent)
-        code = (
-            'import sys\n'
-            f'sys.path.insert(0, {root!r})\n'
-            'from fluxvla_export import TensorSpec\n'
-            "assert TensorSpec('x', 'float32', (2, 3)).shape == (2, 3)\n"
-            "assert not any(name in sys.modules for name in "
-            "('torch', 'transformers', 'safetensors', 'fluxvla', "
-            "'fluxhermes', 'mmengine', 'onnx', 'tensorrt'))\n")
+        code = ('import sys\n'
+                f'sys.path.insert(0, {root!r})\n'
+                'from fluxvla_export import TensorSpec\n'
+                "assert TensorSpec('x', 'float32', (2, 3)).shape == (2, 3)\n"
+                'assert not any(name in sys.modules for name in '
+                "('torch', 'transformers', 'safetensors', 'fluxvla', "
+                "'fluxhermes', 'mmengine', 'onnx', 'tensorrt'))\n")
         result = subprocess.run([sys.executable, '-I', '-c', code],
                                 capture_output=True,
                                 text=True)

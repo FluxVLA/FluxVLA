@@ -5,11 +5,9 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-
 """Strict, non-mutating loading of native dense model state."""
 
 from __future__ import annotations
-
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING

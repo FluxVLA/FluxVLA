@@ -3,7 +3,6 @@
 import unittest
 
 import torch
-
 from fluxvla_export.components.tensor_utils import (
     apply_rope, apply_rotary_pos_emb, create_sinusoidal_pos_embedding,
     eager_attention_forward, gated_residual, make_att_2d_masks, repeat_kv,
@@ -19,7 +18,7 @@ class TensorHelpersTest(unittest.TestCase):
         return torch.randn(*shape, generator=self.generator)
 
     def test_sinusoidal_embedding_preserves_batch_and_timestep_axes(self):
-        for shape in ((2,), (2, 3)):
+        for shape in ((2, ), (2, 3)):
             time = torch.zeros(shape, requires_grad=True)
             result = create_sinusoidal_pos_embedding(time, 8, 0.004, 4.0)
             self.assertEqual(result.shape, (*shape, 8))
@@ -63,7 +62,8 @@ class TensorHelpersTest(unittest.TestCase):
         torch.testing.assert_close(y.grad, torch.full_like(y, 3.0))
         torch.testing.assert_close(gate.grad, torch.full_like(gate, 6.0))
 
-    def test_repeat_kv_matches_repeat_interleave_and_accumulates_gradient(self):
+    def test_repeat_kv_matches_repeat_interleave_and_accumulates_gradient(
+            self):
         value = self.random(2, 2, 3, 4).requires_grad_()
         self.assertIs(repeat_kv(value, 1), value)
         result = repeat_kv(value, 3)
@@ -104,8 +104,11 @@ class TensorHelpersTest(unittest.TestCase):
         return output.detach(), weights, [value.grad for value in values]
 
     def test_attention_backends_match_real_outputs_and_qkv_gradients(self):
-        inputs = [self.random(2, 4, 3, 4), self.random(2, 2, 5, 4),
-                  self.random(2, 2, 5, 4)]
+        inputs = [
+            self.random(2, 4, 3, 4),
+            self.random(2, 2, 5, 4),
+            self.random(2, 2, 5, 4)
+        ]
         # Distinct per-batch masks, including an interior hole.
         mask = torch.zeros(2, 1, 3, 7)
         mask[0, :, :, 1] = torch.finfo(torch.bfloat16).min
@@ -125,8 +128,11 @@ class TensorHelpersTest(unittest.TestCase):
                     self.assertTrue(torch.isfinite(value).all())
 
     def test_protected_attention_keeps_fp32_under_bfloat16_autocast(self):
-        inputs = [self.random(2, 4, 3, 4), self.random(2, 2, 5, 4),
-                  self.random(2, 2, 5, 4)]
+        inputs = [
+            self.random(2, 4, 3, 4),
+            self.random(2, 2, 5, 4),
+            self.random(2, 2, 5, 4)
+        ]
         expected, _, expected_grads = self.attention_case(
             sdpa_math_fp32_attention_forward, inputs, None)
         actual, _, actual_grads = self.attention_case(

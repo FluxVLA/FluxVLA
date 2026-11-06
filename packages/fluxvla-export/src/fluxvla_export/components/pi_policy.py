@@ -11,7 +11,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
 """Shared PI policy computation; training owns initialization and extensions.
 
 These mixins do not register modules or construct weights. Inference adapters
@@ -314,7 +313,11 @@ class PI0Computation:
         mask.masked_fill_(~att_2d_masks_4d, torch.finfo(torch.bfloat16).min)
         return mask
 
-    def prefill_prefix(self, images, lang_tokens, img_masks, lang_masks,
+    def prefill_prefix(self,
+                       images,
+                       lang_tokens,
+                       img_masks,
+                       lang_masks,
                        past_key_values=None):
         """Return prefix padding and the canonical image/language KV cache.
 
@@ -377,9 +380,10 @@ class PI0Computation:
             noise = self.sample_noise(actions_shape, device)
 
         if (prev_actions is not None and prefix_len > 0 and rtc_config
-                and not all(hasattr(self, name) for name in (
-                    '_predict_action_prefix_rtc',
-                    '_predict_action_guidance_rtc'))):
+                and not all(
+                    hasattr(self, name)
+                    for name in ('_predict_action_prefix_rtc',
+                                 '_predict_action_guidance_rtc'))):
             raise NotImplementedError(
                 'RTC inference requires the training adapter extensions '
                 '_predict_action_prefix_rtc and _predict_action_guidance_rtc; '
@@ -509,7 +513,9 @@ class PI05Computation(PI0Computation):
                 tokens, padding masks, attention masks, and adarms_cond.
         """
         return self.embed_suffix_with_metadata(
-            noisy_actions, timestep, state_dtype=states.dtype,
+            noisy_actions,
+            timestep,
+            state_dtype=states.dtype,
             state_device=states.device)
 
     def embed_suffix_with_metadata(self, noisy_actions, timestep, *,

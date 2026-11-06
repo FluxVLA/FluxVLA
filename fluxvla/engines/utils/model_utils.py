@@ -4,11 +4,9 @@
 # SPDX-License-Identifier: Apache-2.0
 # Notes: Attribution normalized and reused internal equivalents.
 
-
 import numpy as np
 import torch
 import torch.nn.functional as F
-
 from fluxvla_export.components.tensor_utils import (  # noqa: F401
     apply_rope, apply_rotary_pos_emb, create_sinusoidal_pos_embedding,
     eager_attention_forward, gated_residual, make_att_2d_masks, repeat_kv,

@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import unittest
 import uuid
 
@@ -32,8 +31,8 @@ class RegistryTest(unittest.TestCase):
                 raise AssertionError('not called')
 
         register_recipe(recipe_name)(Recipe)
-        with self.assertRaisesRegex(
-                DuplicateRecipeError, 'already registered'):
+        with self.assertRaisesRegex(DuplicateRecipeError,
+                                    'already registered'):
             register_recipe(recipe_name)(Recipe)
 
     def test_rejects_non_callable_prepare(self):

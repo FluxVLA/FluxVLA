@@ -8,16 +8,14 @@
 """Real tiny PI0.5 fixtures and hash-bound safetensors for package tests."""
 
 from __future__ import annotations
-
 import hashlib
 import json
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
-
 from fluxvla_export.config import load_config
 from fluxvla_export.recipes.pi05.model import build_pi05_model
+from safetensors.torch import save_file
 from test_config import config_document
 
 
