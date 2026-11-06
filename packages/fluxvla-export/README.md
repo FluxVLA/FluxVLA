@@ -12,8 +12,8 @@ keys, shapes, dtypes, and finite values before use. Checkpoints are never unpick
 renamed, or silently cast. The initial storage contract requires FP32 parameters.
 
 `prepare_tensorrt` requires a validated deployment configuration, checkpoint, input
-fixture, recipe name, and explicit device. This stage provides recipe dispatch but
-registers no built-in model; unknown recipes raise an error.
+fixture, recipe name, and explicit device. The `pi05-v1` recipe provides prefill and denoise graph boundaries; unknown
+recipes raise an error.
 
 `TensorSpec`, `PreparedGraph`, and `PreparedDeployment` preserve specification
 ordering and validate tensor/module boundaries. A valid handoff does not establish
@@ -42,4 +42,11 @@ before the root project; the installer scripts and CI do so explicitly.
 standalone model from a validated configuration, checkpoint, and fixture. Its
 policy mixins and FP32-time Euler loop are shared with ordinary PI0/PI0.5 training
 inference. Reference calls preserve caller fixtures by cloning the native mutable
-noise input. No built-in graph recipe is registered at this stage.
+noise input. The lazy `pi05-v1` recipe is registered without importing Torch.
+
+## Graphs and executor
+
+Prefill exposes the flat KV cache; denoise exposes one velocity step. The metadata
+executor runs the same Euler loop over engines implementing the handoff protocol.
+States values are unused by PI0.5 denoise, but their dtype/device metadata remains
+part of the executor contract. Native graph parity does not prove exportability.

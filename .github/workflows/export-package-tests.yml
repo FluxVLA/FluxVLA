@@ -67,7 +67,7 @@ jobs:
           import fluxvla_export
           from fluxvla_export.registry import available_recipes
           assert 'site-packages' in fluxvla_export.__file__
-          assert available_recipes() == ()
+          assert available_recipes() == ('pi05-v1',)
           assert not any(n in sys.modules for n in ('torch', 'transformers', 'safetensors'))
           dist = importlib.metadata.distribution('fluxvla-export')
           assert any(str(p).endswith('/LICENSE') for p in dist.files)

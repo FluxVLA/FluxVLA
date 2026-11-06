@@ -588,7 +588,7 @@ class PI05ReferenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ContractError, 'CUDA'):
             artifacts.prepare(device=invalid)
 
-    def test_reference_imports_remain_lazy(self):
+    def test_registered_recipe_keeps_reference_imports_lazy(self):
         code = '''
 import sys
 import fluxvla_export.recipes.pi05
@@ -596,7 +596,7 @@ import fluxvla_export.recipes.pi05.reference
 assert "torch" not in sys.modules
 assert "transformers" not in sys.modules
 from fluxvla_export.registry import available_recipes
-assert available_recipes() == ()
+assert available_recipes() == ("pi05-v1",)
 '''
         result = subprocess.run([sys.executable, '-c', code],
                                 env=os.environ.copy(),
