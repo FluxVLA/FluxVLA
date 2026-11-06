@@ -20,7 +20,17 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
 ]
-dependencies = []
+dependencies = [
+  # Preserve the existing Torch 2.6 training environments; test 2.6 and 2.8.
+  "torch>=2.6,<2.9",
+  "safetensors>=0.6.2,<0.7",
+  # safetensors.torch imports packaging but does not declare it in its core.
+  "packaging>=23.2",
+]
+
+[project.optional-dependencies]
+# safetensors 0.6.2 uses NumPy to serialize test tensors.
+test = ["numpy>=1.26,<3"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

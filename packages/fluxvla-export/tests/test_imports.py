@@ -8,9 +8,19 @@ import fluxvla_export
 
 class ImportTest(unittest.TestCase):
 
-    def test_public_surface_contains_only_handoff_contracts(self):
+    def test_public_surface_contains_handoff_and_artifact_apis(self):
         self.assertEqual(
             set(fluxvla_export.__all__), {
+                'ArtifactError',
+                'ConfigError',
+                'DeploymentConfig',
+                'DuplicateRecipeError',
+                'ExportRecipe',
+                'RecipeNotFoundError',
+                'load_checkpoint',
+                'load_config',
+                'load_fixture',
+                'prepare_tensorrt',
                 'ContractError',
                 'FluxVLAExportError',
                 'TensorLike',
@@ -23,9 +33,6 @@ class ImportTest(unittest.TestCase):
             })
         for name in fluxvla_export.__all__:
             self.assertTrue(hasattr(fluxvla_export, name))
-        for name in ('prepare_tensorrt', 'load_config', 'load_checkpoint',
-                     'load_fixture', 'ExportRecipe'):
-            self.assertFalse(hasattr(fluxvla_export, name))
 
     def test_import_does_not_load_model_or_backend_libraries(self):
         root = str(Path(fluxvla_export.__file__).resolve().parent.parent)
@@ -35,8 +42,8 @@ class ImportTest(unittest.TestCase):
             'from fluxvla_export import TensorSpec\n'
             "assert TensorSpec('x', 'float32', (2, 3)).shape == (2, 3)\n"
             "assert not any(name in sys.modules for name in "
-            "('torch', 'transformers', 'safetensors', 'fluxvla', 'fluxhermes', "
-            "'mmengine', 'onnx', 'tensorrt'))\n")
+            "('torch', 'transformers', 'safetensors', 'fluxvla', "
+            "'fluxhermes', 'mmengine', 'onnx', 'tensorrt'))\n")
         result = subprocess.run([sys.executable, '-I', '-c', code],
                                 capture_output=True,
                                 text=True)

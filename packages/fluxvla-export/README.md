@@ -1,28 +1,31 @@
 # fluxvla-export
 
-Independent tensor, graph and deployment handoff contracts for FluxHermes.
-FluxVLA owns model-specific computation; FluxHermes owns ONNX export and TensorRT
-builds. This package has no runtime dependencies and does not install FluxVLA's
-training stack.
+Standalone model frontend for FluxHermes. FluxVLA owns model computation and
+artifact contracts; FluxHermes owns export, backend builds, and deployment.
+Installing this package does not install the FluxVLA training stack.
 
-The current package provides `TensorSpec`, `PreparedGraph`, `PreparedDeployment`
-and engine/executor protocols. Model implementations, configuration/artifact
-readers and `prepare_tensorrt` are not included yet.
+## Strict artifacts and dispatch
 
-Input/output mappings follow specification order. Callers own module mode and
-backend option validation.
+`load_config` validates the complete versioned deployment schema without loading
+Torch. `load_checkpoint` and `load_fixture` validate safetensors hashes, complete
+keys, shapes, dtypes, and finite values before use. Checkpoints are never unpickled,
+renamed, or silently cast. The initial storage contract requires FP32 parameters.
+
+`prepare_tensorrt` requires a validated deployment configuration, checkpoint, input
+fixture, recipe name, and explicit device. This stage provides recipe dispatch but
+registers no built-in model; unknown recipes raise an error.
+
+`TensorSpec`, `PreparedGraph`, and `PreparedDeployment` preserve specification
+ordering and validate tensor/module boundaries. A valid handoff does not establish
+ONNX exportability or backend numerical parity.
 
 ## Development
 
-From the repository root, using Python 3.10–3.12:
-
 ```bash
-python -m pip install ./packages/fluxvla-export
+python -m pip install './packages/fluxvla-export[test]'
 python -m unittest discover -s packages/fluxvla-export/tests -v
-```
-
-Real CPU tensor/module handoff tests require a separately installed PyTorch:
-
-```bash
 python -m unittest discover -s packages/fluxvla-export/tests_torch -v
 ```
+
+Public imports remain dependency-light even when Torch and safetensors are
+installed. CI builds and tests the standalone wheel outside the source package.

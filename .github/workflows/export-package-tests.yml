@@ -1,13 +1,12 @@
-name: Export Package Contracts
+name: Standalone Export SDK
 
 on:
   pull_request:
-    branches: [master, main]
     paths:
       - 'packages/fluxvla-export/**'
       - '.github/workflows/export-package-tests.yml'
   push:
-    branches: [master, main, feature/fluxvla-export-foundation]
+    branches: [master, main, 'review/export-*']
     paths:
       - 'packages/fluxvla-export/**'
       - '.github/workflows/export-package-tests.yml'
@@ -21,16 +20,23 @@ defaults:
     shell: bash
 
 jobs:
-  contracts:
+  wheel:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
-        python: ['3.10', '3.12']
+        include:
+          - {python: '3.10', torch: '2.8.0'}
+          - {python: '3.12', torch: '2.8.0'}
     env:
       CUDA_VISIBLE_DEVICES: ''
       PYTHONNOUSERSITE: '1'
+      PYTHONDONTWRITEBYTECODE: '1'
+      HF_HUB_OFFLINE: '1'
+      TOKENIZERS_PARALLELISM: 'false'
+      OMP_NUM_THREADS: '1'
+      MKL_NUM_THREADS: '1'
       PIP_DISABLE_PIP_VERSION_CHECK: '1'
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
@@ -43,36 +49,44 @@ jobs:
         run: |
           python -m pip install build
           python -m build --outdir "$RUNNER_TEMP/export-dist" packages/fluxvla-export
-      - name: Install and verify dependency-free wheel
+      - name: Install wheel and verify lazy imports
         run: |
           python -m venv "$RUNNER_TEMP/export-runtime"
           runtime="$RUNNER_TEMP/export-runtime/bin/python"
+          "$runtime" -m pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
           wheels=("$RUNNER_TEMP"/export-dist/*.whl)
           test "${#wheels[@]}" -eq 1
-          "$runtime" -m pip install "${wheels[0]}"
+          "$runtime" -m pip install "${wheels[0]}[test]" numpy==1.26.4
           "$runtime" -m pip check
           "$runtime" -I - <<'PY'
           import importlib.metadata
           import importlib.resources
           import importlib.util
+          import sys
           import fluxvla_export
+          from fluxvla_export.registry import available_recipes
           assert 'site-packages' in fluxvla_export.__file__
+          assert available_recipes() == ()
+          assert not any(n in sys.modules for n in ('torch', 'transformers', 'safetensors'))
           dist = importlib.metadata.distribution('fluxvla-export')
-          assert not dist.requires
-          assert any(str(path).endswith('/LICENSE') for path in dist.files)
+          assert any(str(p).endswith('/LICENSE') for p in dist.files)
           assert importlib.resources.files('fluxvla_export').joinpath('py.typed').is_file()
-          for name in ('torch', 'transformers', 'safetensors', 'fluxvla', 'fluxhermes', 'onnx', 'tensorrt'):
+          for name in ('fluxvla', 'fluxhermes', 'mmengine', 'accelerate', 'timm', 'triton'):
               assert importlib.util.find_spec(name) is None, name
-          assert not hasattr(fluxvla_export, 'prepare_tensorrt')
           PY
-          cp -R packages/fluxvla-export/tests "$RUNNER_TEMP/export-tests"
-          "$runtime" -I -m unittest discover -s "$RUNNER_TEMP/export-tests" -v
-      - name: Check real CPU PyTorch handoff
-        if: matrix.python == '3.12'
+      - name: Run installed-wheel SDK and real Torch handoff tests
         run: |
-          runtime="$RUNNER_TEMP/export-runtime/bin/python"
-          "$runtime" -m pip install numpy==1.26.4
-          "$runtime" -m pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
-          "$runtime" -m pip check
+          cp -R packages/fluxvla-export/tests "$RUNNER_TEMP/export-tests"
           cp -R packages/fluxvla-export/tests_torch "$RUNNER_TEMP/export-tests-torch"
-          "$runtime" -I -m unittest discover -s "$RUNNER_TEMP/export-tests-torch" -v
+          "$RUNNER_TEMP/export-runtime/bin/python" -I - "$RUNNER_TEMP" <<'PY'
+          import pathlib, sys, unittest
+          root = pathlib.Path(sys.argv[1])
+          for name in ('export-tests', 'export-tests-torch'):
+              directory = str(root / name)
+              sys.path.insert(0, directory)
+              suite = unittest.TestLoader().discover(directory)
+              result = unittest.TextTestRunner(verbosity=2).run(suite)
+              assert result.testsRun > 0 and not result.skipped
+              assert result.wasSuccessful()
+              sys.path.remove(directory)
+          PY

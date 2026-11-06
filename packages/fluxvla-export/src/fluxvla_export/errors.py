@@ -13,3 +13,19 @@ class FluxVLAExportError(Exception):
 
 class ContractError(FluxVLAExportError, ValueError):
     """A public export contract is incomplete or inconsistent."""
+
+
+class ArtifactError(FluxVLAExportError, ValueError):
+    """An input artifact is missing, invalid, or inconsistent."""
+
+
+class ConfigError(FluxVLAExportError, ValueError):
+    """A versioned deployment configuration is invalid or unsupported."""
+
+
+class RecipeNotFoundError(FluxVLAExportError, LookupError):
+    """The requested export recipe is not registered."""
+
+
+class DuplicateRecipeError(FluxVLAExportError, ValueError):
+    """Two implementations attempted to register the same recipe name."""

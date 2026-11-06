@@ -7,12 +7,16 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 from __future__ import annotations
-
 import operator
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Protocol, Sequence, Tuple
+from pathlib import Path
+from typing import (TYPE_CHECKING, Any, Callable, Mapping, Protocol, Sequence,
+                    Tuple)
 
 from .errors import ContractError
+
+if TYPE_CHECKING:
+    from .config import DeploymentConfig
 
 Shape = Tuple[int, ...]
 
@@ -85,8 +89,7 @@ def _dtype_name(value: Any) -> str:
 def _validate_module(module: ExportModule, *, graph: str) -> None:
     required = ('forward', 'eval', 'state_dict')
     missing = [
-        name for name in required
-        if not callable(getattr(module, name, None))
+        name for name in required if not callable(getattr(module, name, None))
     ]
     if not callable(module) or missing:
         raise ContractError(
@@ -151,14 +154,15 @@ class TensorSpec:
             raise ContractError(f'{self.name}: dtype cannot be empty.')
         object.__setattr__(self, 'shape', _normalize_shape(self.shape))
         profiles = (self.min_shape, self.opt_shape, self.max_shape)
-        if any(value is not None for value in profiles) and not all(
-                value is not None for value in profiles):
+        if any(value is not None
+               for value in profiles) and not all(value is not None
+                                                  for value in profiles):
             raise ContractError(
                 f'{self.name}: min/opt/max shapes must be provided together.')
         if all(value is not None for value in profiles):
             normalized = tuple(
-                _normalize_shape(value, profile=True)
-                for value in profiles if value is not None)
+                _normalize_shape(value, profile=True) for value in profiles
+                if value is not None)
             minimum, optimum, maximum = normalized
             object.__setattr__(self, 'min_shape', minimum)
             object.__setattr__(self, 'opt_shape', optimum)
@@ -246,8 +250,7 @@ class PreparedGraph:
 
 
 ReferenceRunner = Callable[[], Mapping[str, TensorLike]]
-ExecutorFactory = Callable[
-    [Mapping[str, InferenceEngine]], DeploymentExecutor]
+ExecutorFactory = Callable[[Mapping[str, InferenceEngine]], DeploymentExecutor]
 
 
 @dataclass
@@ -336,3 +339,19 @@ class PreparedDeployment:
                 'executor_factory must return an object with callable '
                 'infer().')
         return executor
+
+
+class ExportRecipe(Protocol):
+    """Interface implemented once per supported model recipe."""
+
+    name: str
+
+    def prepare(
+        self,
+        *,
+        config: DeploymentConfig,
+        checkpoint: Path,
+        inputs: Path,
+        device: str,
+    ) -> PreparedDeployment:
+        ...
