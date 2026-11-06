@@ -137,6 +137,40 @@ does not transfer these settings into an evaluation config. For runners that
 load a checkpoint separately, point that checkpoint option to the same
 exported policy file.
 
+For PI0.5 RoboTwin RL checkpoints, also set the following options in the
+ordinary FluxVLA evaluation config **before constructing the model**:
+
+```python
+model = dict(
+    # Keep the architecture/tokenizer/statistics from the training config.
+    openpi_fp32_flow=True,
+    openpi_rl_numerics=True,
+    vision_backbone=dict(openpi_stem_fp32=True, openpi_rl_numerics=True),
+)
+```
+
+Merge these fields into the existing model config; they are not a complete
+model definition. The two `openpi_rl_numerics` flags preserve RL's RoPE,
+AdaRMS, timestep embedding, vision LayerNorm and stem layout behavior.
+They default to False for SFT and ordinary inference. Tensor-only exports
+cannot encode these switches: successful strict weight loading alone does
+not guarantee identical actions. Match explicit False overrides if the RL
+run intentionally disabled either flag. Do not apply these RoboTwin settings
+to unrelated PI0.5/SmolVLA checkpoints.
+
+For the BF16 RL compute path with FP32 master weights, ordinary evaluation
+also needs BF16 autocast, `enable_mixed_precision_training=True` and
+`preserve_fp32_residuals=False` so Gemma receives the same BF16 inputs. For
+FP32 RL compute, disable autocast and set
+`enable_mixed_precision_training=False`. Match the runner's precision
+settings as well as these model options.
+
+The PI0.5 RL builder migrates older saved RL configs that lack the new flags:
+it derives the model flag from `openpi_fp32_flow` and the vision flag from
+`openpi_stem_fp32`, after applying `model_overrides`. This covers training
+resume and `scripts/rl_eval.py`; explicit True/False flags always take
+precedence. It does not change the defaults for existing SFT recipes.
+
 ## Conservative PI0.5 RoboTwin training
 
 `tools/rl/robotwin_conservative/launch.py` packages the eight-GPU
