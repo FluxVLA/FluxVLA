@@ -240,6 +240,23 @@ class PI05GraphOnnxTests(unittest.TestCase):
                         self.artifacts(
                             amp=True, protected=protected, flow=flow))
 
+    def test_bf16_storage_widens_before_native_bf16_graph_export(self):
+        artifacts = self.artifacts(amp=True, protected=True, flow=True)
+        artifacts.document['checkpoint']['storage_dtype'] = 'bfloat16'
+        stored = {name: value.detach().bfloat16()
+                  if value.is_floating_point() else value.detach().clone()
+                  for name, value in artifacts.model.state_dict().items()}
+        artifacts.save_checkpoint(stored)
+        before = artifacts.checkpoint_path.read_bytes()
+        reference = artifacts.prepare()
+        for name, value in reference.model.state_dict().items():
+            expected = (stored[name].float() if stored[name].is_floating_point()
+                        else stored[name])
+            torch.testing.assert_close(value, expected, rtol=0, atol=0)
+        artifacts.model = reference.model
+        self.assert_native_bf16_exports(artifacts)
+        self.assertEqual(artifacts.checkpoint_path.read_bytes(), before)
+
     def test_bf16_images_and_states_export_with_native_flow(self):
         artifacts = self.artifacts(amp=True, bf16_inputs=True, flow=False)
         self.assertEqual(artifacts.tensors['images'].dtype, torch.bfloat16)

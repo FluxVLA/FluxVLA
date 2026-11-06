@@ -124,7 +124,9 @@ def prepare_reference(
     CPU construction is wrapped in ``fork_rng`` to restore the caller's RNG
     even on failure. The raw builder itself preserves the original normal
     seeded initialization semantics. Every checkpoint key, including the
-    unused expert embedding, is required with its exact native shape/dtype.
+    unused expert embedding, is required with its exact native shape and
+    declared storage dtype. Explicit BF16 storage is widened exactly to FP32
+    after complete validation; integer/bool buffer dtypes remain unchanged.
     """
     validate_device_syntax(device)
     resolved = load_config(config, recipe='pi05-v1')
@@ -176,6 +178,7 @@ def prepare_reference_from_config(
         checkpoint_path,
         expected_sha256=resolved.checkpoint_sha256,
         expected_state=model.state_dict(),
+        storage_dtype=resolved.checkpoint_storage_dtype,
     )
     model.load_state_dict(weights, strict=True)
     model.to(device=target)

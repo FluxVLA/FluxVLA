@@ -455,6 +455,7 @@ def produce_pi05_artifacts(
     checkpoint: str | Path,
     preprocessing: PreprocessingConfig,
     output_dir: str | Path,
+    checkpoint_storage_dtype: str = 'float32',
 ) -> PI05Artifacts:
     """Derive and write strict, hash-bound PI0.5 deployment artifacts.
 
@@ -462,8 +463,11 @@ def produce_pi05_artifacts(
     standalone PI05Model, in eval mode with FP32 master parameters. Compute
     precision comes from its mixed-precision/protection attributes, never
     ambient autocast. The existing native dense checkpoint is authoritative:
-    its keys, shapes, dtypes and finite values are checked. Its values need not
-    equal the live policy, allowing an explicitly selected EMA checkpoint.
+    its keys, shapes, declared storage dtype and finite values are checked.
+    Both float32 and explicitly declared bfloat16 storage permit a selected
+    EMA checkpoint whose values differ from the live model. References load
+    that authoritative checkpoint, not the live weights. BF16 storage widens
+    exactly into FP32 parameters; it does not recover pre-rounding values.
 
     All six preprocessed tensors, including fixed FP32 noise, and a complete
     PreprocessingConfig are mandatory. The training caller is responsible for
@@ -499,18 +503,20 @@ def produce_pi05_artifacts(
     document = _derive_document(model, snapshot, preprocessing,
                                 checkpoint_sha256,
                                 hashlib.sha256(fixture_bytes).hexdigest())
+    document['checkpoint']['storage_dtype'] = checkpoint_storage_dtype
     config = config_from_document(document, recipe='pi05-v1')
     validate_token_vocabulary(
         snapshot['lang_tokens'],
         vocab_size=config.model.vocab_size,
         label='Producer inputs')
     _validate_components(model, config)
-    # No load_state_dict is called on the live model. The reader rejects any
-    # missing/extra key, non-FP32 tensor, mismatched shape, or nonfinite value.
+    # Validate the complete authoritative checkpoint before any widening.
+    # No load_state_dict or dtype conversion is applied to the live model.
     validated_weights = load_checkpoint(
         checkpoint_path,
         expected_sha256=checkpoint_sha256,
-        expected_state=model.state_dict())
+        expected_state=model.state_dict(),
+        storage_dtype=config.checkpoint_storage_dtype)
     del validated_weights
     config_bytes = (
         json.dumps(config_to_document(config), indent=2, allow_nan=False) +

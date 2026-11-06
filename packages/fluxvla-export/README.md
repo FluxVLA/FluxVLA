@@ -9,7 +9,8 @@ Installing this package does not install the FluxVLA training stack.
 `load_config` validates the complete versioned deployment schema without loading
 Torch. `load_checkpoint` and `load_fixture` validate safetensors hashes, complete
 keys, shapes, dtypes, and finite values before use. Checkpoints are never unpickled,
-renamed, or silently cast. The initial storage contract requires FP32 parameters.
+renamed, or silently cast. FP32 storage is the default; BF16 storage requires an
+explicit declaration and exact widening to FP32 master parameters.
 
 `prepare_tensorrt` requires a validated deployment configuration, checkpoint, input
 fixture, recipe name, and explicit device. The `pi05-v1` recipe provides prefill and denoise graph boundaries; unknown
@@ -86,3 +87,19 @@ native operation ordering and avoid unsupported ONNX types/sequences.
 CI requires real export/check tests, native parity, and captured-program replay.
 CPU ONNX Runtime lacks BF16 Conv(22); its explicit rejection is tested, not
 reported as BF16 inference parity. Torch 2.6 remains a native-only test lane.
+
+## BF16 storage and validation limits
+
+Set `checkpoint.storage_dtype` to `bfloat16`, or pass
+`checkpoint_storage_dtype="bfloat16"` to the artifact producer. Storage precision
+is separate from native autocast policy. Mixed/undeclared BF16 and FP16 storage
+are rejected; integer/bool buffers remain exact. Omitted or explicit FP32 retains
+legacy canonical configuration hashes.
+
+A recorded trained-checkpoint run with synthetic inputs matched all 812 native/SDK
+master tensors and full native outputs exactly. ONNX export and TensorRT builds
+completed, but full TensorRT policy parity **failed**: action max absolute error
+0.0560526848, cosine 0.9999091078, against fixed atol/rtol 0.02 and cosine 0.999.
+There is no validated business deployment or speedup claim. Those large-model
+runs used phased processes and resource-aware CPU export; the ordinary SDK load
+peaked around 34.4 GiB host RSS. They are not a low-memory or one-process guarantee.

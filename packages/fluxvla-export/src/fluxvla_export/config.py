@@ -8,11 +8,13 @@
 """Strict, stdlib-only deployment configuration; no model is constructed.
 
 Schema 1 describes the proposed pi05-v1 boundary, not an installed recipe.
-It accepts native dense checkpoints with FP32 master parameters, optional
-BF16 autocast, plain Euler inference, and fixed-shape six-tensor fixtures.
+It accepts native dense FP32 or explicitly declared BF16 checkpoint storage,
+FP32 target parameters, optional BF16 autocast, plain Euler inference, and
+fixed-shape six-tensor fixtures.
 Training Python configs, dynamic profiles, RTC, LoRA, quantization, arbitrary
 HF config extensions, and per-parameter storage dtype maps are not supported.
-All JSON fields are required; every object rejects additional fields.
+JSON fields are required except checkpoint.storage_dtype (default float32);
+every object rejects additional fields.
 """
 
 from __future__ import annotations
@@ -162,6 +164,7 @@ class DeploymentConfig:
     inference: InferenceConfig
     precision: PrecisionConfig
     preprocessing: PreprocessingConfig
+    checkpoint_storage_dtype: str = 'float32'
 
 
 def _fail(path: str, message: str) -> None:
@@ -472,8 +475,14 @@ def _deployment(value: Any, recipe: str) -> DeploymentConfig:
         _fail(
             'recipe', f'configuration {data["recipe"]!r} does not match '
             f'requested recipe {recipe!r}')
-    checkpoint = _object(data['checkpoint'], 'checkpoint',
-                         ('format', 'kind', 'sha256'))
+    checkpoint_data = data['checkpoint']
+    if type(checkpoint_data) is dict:
+        checkpoint_data = {'storage_dtype': 'float32', **checkpoint_data}
+    checkpoint = _object(checkpoint_data, 'checkpoint',
+                         ('format', 'kind', 'sha256', 'storage_dtype'))
+    storage_dtype = _choice(checkpoint['storage_dtype'],
+                            'checkpoint.storage_dtype',
+                            ('float32', 'bfloat16'))
     _choice(checkpoint['format'], 'checkpoint.format', ('fluxvla-native', ))
     _choice(checkpoint['kind'], 'checkpoint.kind', ('dense', ))
     checkpoint_sha256 = _digest(checkpoint['sha256'], 'checkpoint.sha256')
@@ -494,7 +503,8 @@ def _deployment(value: Any, recipe: str) -> DeploymentConfig:
         model=model,
         inference=inference,
         precision=precision,
-        preprocessing=preprocessing)
+        preprocessing=preprocessing,
+        checkpoint_storage_dtype=storage_dtype)
 
 
 def config_from_document(document: Any, *, recipe: str) -> DeploymentConfig:
@@ -506,6 +516,8 @@ def config_from_document(document: Any, *, recipe: str) -> DeploymentConfig:
 def _config_document(config: DeploymentConfig) -> dict[str, Any]:
     if type(config) is not DeploymentConfig:
         _fail('config', 'expected DeploymentConfig')
+    _choice(config.checkpoint_storage_dtype, 'checkpoint.storage_dtype',
+            ('float32', 'bfloat16'))
     if type(config.input_specs) is not tuple:
         _fail('input_specs', 'expected an ordered tuple of TensorSpec')
     if any(type(spec) is not TensorSpec for spec in config.input_specs):
@@ -539,7 +551,9 @@ def _config_document(config: DeploymentConfig) -> dict[str, Any]:
         'checkpoint': {
             'format': 'fluxvla-native',
             'kind': 'dense',
-            'sha256': config.checkpoint_sha256
+            'sha256': config.checkpoint_sha256,
+            **({'storage_dtype': config.checkpoint_storage_dtype}
+               if config.checkpoint_storage_dtype != 'float32' else {}),
         },
         'inputs': {
             'format': 'safetensors',
