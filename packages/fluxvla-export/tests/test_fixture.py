@@ -1,16 +1,14 @@
 from __future__ import annotations
-
 import hashlib
 import tempfile
 import unittest
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
-
 from fluxvla_export.contracts import TensorSpec
 from fluxvla_export.errors import ArtifactError
 from fluxvla_export.fixture import load_fixture
+from safetensors.torch import save_file
 
 
 class FixtureTest(unittest.TestCase):
@@ -68,8 +66,12 @@ class FixtureTest(unittest.TestCase):
 
     def test_missing_and_extra_names_rejected(self):
         specs = (TensorSpec('images', 'float32', (1, 3)), )
-        for stored in ({}, {'image': torch.zeros(1, 3)},
-                       {'images': torch.zeros(1, 3), 'noise': torch.zeros(1)}):
+        for stored in ({}, {
+                'image': torch.zeros(1, 3)
+        }, {
+                'images': torch.zeros(1, 3),
+                'noise': torch.zeros(1)
+        }):
             with self.subTest(names=tuple(stored)):
                 self.save(stored)
                 with self.assertRaisesRegex(
@@ -108,18 +110,22 @@ class FixtureTest(unittest.TestCase):
                     self.load((TensorSpec('x', spec_dtype, (2, )), ))
 
     def test_nonfinite_fp32_and_bfloat16_rejected(self):
-        for dtype, spec_dtype in ((torch.float32, 'float32'),
-                                 (torch.bfloat16, 'bfloat16')):
+        for dtype, spec_dtype in ((torch.float32, 'float32'), (torch.bfloat16,
+                                                               'bfloat16')):
             for value in (float('nan'), float('inf'), -float('inf')):
                 with self.subTest(dtype=dtype, value=value):
                     self.save({'x': torch.tensor([value], dtype=dtype)})
-                    with self.assertRaisesRegex(
-                            ArtifactError, "'x'.*non-finite"):
+                    with self.assertRaisesRegex(ArtifactError,
+                                                "'x'.*non-finite"):
                         self.load((TensorSpec('x', spec_dtype, (1, )), ))
 
     def test_dynamic_profiles_accept_boundaries_and_intermediate_shapes(self):
-        spec = TensorSpec('tokens', 'int64', (1, -1),
-                          min_shape=(1, 2), opt_shape=(1, 4), max_shape=(1, 8))
+        spec = TensorSpec(
+            'tokens',
+            'int64', (1, -1),
+            min_shape=(1, 2),
+            opt_shape=(1, 4),
+            max_shape=(1, 8))
         for length in (2, 3, 4, 8):
             with self.subTest(length=length):
                 self.save({'tokens': torch.arange(length).reshape(1, length)})
@@ -127,14 +133,18 @@ class FixtureTest(unittest.TestCase):
                     self.load((spec, ))['tokens'].shape, (1, length))
 
     def test_dynamic_profiles_reject_outside_bounds(self):
-        spec = TensorSpec('tokens', 'int64', (1, -1),
-                          min_shape=(1, 2), opt_shape=(1, 4), max_shape=(1, 8))
+        spec = TensorSpec(
+            'tokens',
+            'int64', (1, -1),
+            min_shape=(1, 2),
+            opt_shape=(1, 4),
+            max_shape=(1, 8))
         for length in (1, 9):
             with self.subTest(length=length):
-                self.save({
-                    'tokens': torch.zeros(1, length, dtype=torch.int64)})
-                with self.assertRaisesRegex(
-                        ArtifactError, r'outside \[2, 8\]'):
+                self.save(
+                    {'tokens': torch.zeros(1, length, dtype=torch.int64)})
+                with self.assertRaisesRegex(ArtifactError,
+                                            r'outside \[2, 8\]'):
                     self.load((spec, ))
 
     def test_zero_sized_and_scalar_inputs_cannot_bypass_graph_contract(self):
@@ -145,11 +155,12 @@ class FixtureTest(unittest.TestCase):
                     self.load((TensorSpec('x', 'float32', (1, )), ))
 
     def test_metadata_cannot_relax_fixture_contract(self):
-        self.save({'wrong_name': torch.ones(1)}, metadata={
-            'input_names': '["images"]',
-            'images.dtype': 'float32',
-            'images.shape': '[1]',
-        })
+        self.save({'wrong_name': torch.ones(1)},
+                  metadata={
+                      'input_names': '["images"]',
+                      'images.dtype': 'float32',
+                      'images.shape': '[1]',
+                  })
         with self.assertRaisesRegex(ArtifactError, 'tensor keys'):
             self.load((TensorSpec('images', 'float32', (1, )), ))
 
@@ -157,8 +168,10 @@ class FixtureTest(unittest.TestCase):
         original_hash = self.save({'x': torch.tensor([1.0])})
         self.save({'x': torch.tensor([2.0])})
         with self.assertRaisesRegex(ArtifactError, 'SHA-256 mismatch'):
-            load_fixture(self.path, expected_sha256=original_hash,
-                         specs=(TensorSpec('x', 'float32', (1, )), ))
+            load_fixture(
+                self.path,
+                expected_sha256=original_hash,
+                specs=(TensorSpec('x', 'float32', (1, )), ))
 
     def test_renamed_torch_pickle_is_not_a_fixture(self):
         torch.save({'images': torch.zeros(1, 3)}, self.path)
