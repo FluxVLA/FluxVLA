@@ -8,8 +8,6 @@ For a checkpoint trained with different statistics, pass its own JSON via
 ``simulator.norm_stats_path`` in the RL configuration.
 """
 
-from copy import deepcopy
-
 from mmengine.config import read_base
 
 with read_base():
@@ -17,6 +15,9 @@ with read_base():
         _PI05_LIBERO_10_STATS as _LIBERO_10_STATS
     from ..smolvla.smolvla_libero_10_finetune import *  # noqa: F401,F403
 
-train_dataloader = deepcopy(train_dataloader)  # noqa: F405
+# Builtin dict copies work during MMEngine's lazy config parsing; imported
+# functions such as deepcopy become LazyObjects and cannot be called here.
+train_dataloader = dict(train_dataloader)  # noqa: F405
+train_dataloader['dataset'] = dict(train_dataloader['dataset'])
 train_dataloader['dataset']['dataset_statistics'] = _LIBERO_10_STATS
 del _LIBERO_10_STATS

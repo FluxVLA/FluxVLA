@@ -24,6 +24,21 @@ def _deep_update(target, updates):
             target[key] = copy.deepcopy(value)
 
 
+def _preserve_legacy_rl_numerics(model_cfg):
+    """Restore pre-opt-in RL behavior for saved configs missing new flags.
+
+    Only the RL builder uses this migration. SFT/ordinary inference retain
+    their default False flags, and explicit RL overrides remain authoritative.
+    These options must be set before model construction, not after loading.
+    """
+    model_cfg.setdefault('openpi_rl_numerics',
+                         bool(model_cfg.get('openpi_fp32_flow', False)))
+    vision = model_cfg.get('vision_backbone', {})
+    if isinstance(vision, Mapping):
+        vision.setdefault('openpi_rl_numerics',
+                          bool(vision.get('openpi_stem_fp32', False)))
+
+
 def read_checkpoint(path):
     """Read native or indexed safetensors with safe index paths."""
     path = Path(path).expanduser().resolve()
@@ -156,6 +171,7 @@ def build_pi05_policy(cfg, torch_dtype=None):
     model_cfg.pretrained_name_or_path = None
     model_cfg.num_steps = int(cfg.num_steps)
     _deep_update(model_cfg, options.get('model_overrides', {}))
+    _preserve_legacy_rl_numerics(model_cfg)
     if options.get('action_horizon') is not None:
         model_cfg.n_action_steps = int(options.action_horizon)
     # Gemma creates some norm parameters in BF16 even for an FP32 config.

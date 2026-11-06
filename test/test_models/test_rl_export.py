@@ -69,11 +69,14 @@ def test_export_rejects_invalid_state(tmp_path, state):
 
 
 @pytest.mark.parametrize('dtype', [torch.float32, torch.bfloat16])
-def test_pi05_export_preserves_eval_actions(tmp_path, dtype):
+@pytest.mark.parametrize('openpi_rl', [False, True])
+def test_pi05_export_preserves_eval_actions(tmp_path, dtype, openpi_rl):
     pytest.importorskip('rlinf')
     from mmengine import Config
 
     from fluxvla.engines import build_vla_from_cfg
+    from fluxvla.models.vlas.pi05_rl_builder import \
+        _preserve_legacy_rl_numerics
     from fluxvla.models.vlas.pi05_rl_policy import FluxPI05RLPolicy
 
     root = Path(__file__).resolve().parents[2]
@@ -85,7 +88,15 @@ def test_pi05_export_preserves_eval_actions(tmp_path, dtype):
     cfg.strict_mapping = True
     cfg.proj_width = 16
     cfg.n_action_steps = cfg.num_steps = 3
-    cfg.enable_mixed_precision_training = False
+    # Ordinary inference uses this flag to cast Gemma inputs, whereas the RL
+    # policy uses compute_dtype. Match both as well as the autocast context.
+    cfg.enable_mixed_precision_training = dtype == torch.bfloat16
+    cfg.preserve_fp32_residuals = False
+    # Ordinary evaluation must explicitly copy both switches from the RL run.
+    cfg.openpi_fp32_flow = openpi_rl
+    cfg.openpi_rl_numerics = openpi_rl
+    cfg.vision_backbone.openpi_stem_fp32 = openpi_rl
+    cfg.vision_backbone.openpi_rl_numerics = openpi_rl
     for key, hidden in (('llm_backbone', 32), ('llm_expert', 16)):
         block = cfg[key]
         block.hidden_size = hidden
@@ -122,7 +133,11 @@ def test_pi05_export_preserves_eval_actions(tmp_path, dtype):
     torch.set_num_threads(1)
     try:
         torch.manual_seed(42)
-        policy_cfg = cfg.copy()
+        policy_cfg = cfg.deepcopy()
+        # Emulate a saved RL config from before these opt-in flags existed.
+        policy_cfg.pop('openpi_rl_numerics')
+        policy_cfg.vision_backbone.pop('openpi_rl_numerics')
+        _preserve_legacy_rl_numerics(policy_cfg)
         policy_cfg.type = FluxPI05RLPolicy
         policy = build_vla_from_cfg(policy_cfg).float()
         policy.configure_rl(
