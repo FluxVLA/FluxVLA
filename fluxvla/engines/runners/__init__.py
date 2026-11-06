@@ -37,6 +37,8 @@ from .oli_inference_runner import OliInferenceRunner  # noqa: F401, F403
 from .oli_rtc_inference_runner import OliRTCInferenceRunner  # noqa: F401, F403
 from .rebot_dual_inference_runner import \
     RebotDualInferenceRunner  # noqa: F401, F403
+from .rebot_dual_rtc_inference_runner import \
+    RebotDualRTCInferenceRunner  # noqa: F401, F403
 from .tron2_inference_runner import Tron2InferenceRunner  # noqa: F401, F403
 from .tron2_rtc_inference_runner import \
     Tron2RTCInferenceRunner  # noqa: F401, F403
