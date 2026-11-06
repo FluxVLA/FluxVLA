@@ -8,7 +8,6 @@
 """Real graph-backed CPU engine execution, without model or output mocks."""
 
 from __future__ import annotations
-
 import copy
 import json
 import os
@@ -19,11 +18,10 @@ import unittest
 from pathlib import Path
 
 import torch
-
+from _pi05_test_utils import Artifacts
 from fluxvla_export.errors import ArtifactError, ContractError
 from fluxvla_export.recipes.pi05.executor import build_executor
 from fluxvla_export.recipes.pi05.recipe import PI05Recipe
-from _pi05_test_utils import Artifacts
 from test_config import config_document
 
 

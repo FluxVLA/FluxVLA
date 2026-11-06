@@ -3,7 +3,6 @@
 import unittest
 
 import torch
-
 from fluxvla_export import (ContractError, PreparedDeployment, PreparedGraph,
                             TensorSpec)
 

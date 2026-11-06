@@ -16,5 +16,4 @@ from fluxvla_export.components.projector import LinearProjector
 
 from fluxvla.engines import PROJECTORS
 
-
 PROJECTORS.register_module()(LinearProjector)

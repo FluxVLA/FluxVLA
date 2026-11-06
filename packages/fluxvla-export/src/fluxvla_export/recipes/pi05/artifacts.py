@@ -415,8 +415,8 @@ def _validate_components(model: Any, config: Any) -> None:
     # normalization, but allocate no real model weights and run no inference.
     with torch.random.fork_rng(devices=[]):
         canonical = PI05Model(config, _initialization_device='meta')
-    if (model.vision_backbone.vision.config._attn_implementation
-            != canonical.vision_backbone.vision.config._attn_implementation):
+    if (model.vision_backbone.vision.config._attn_implementation !=
+            canonical.vision_backbone.vision.config._attn_implementation):
         _error('model.vision_backbone.vision.config._attn_implementation',
                'schema 1 cannot represent an overridden vision backend')
     for name in _COMPONENT_NAMES:

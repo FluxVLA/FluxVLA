@@ -4,7 +4,6 @@
 # SPDX-License-Identifier: Apache-2.0
 # Notes: Attribution normalized and reused internal equivalents.
 
-
 import math
 from typing import Optional
 

@@ -6,16 +6,16 @@ independent ORIGINAL-revision evidence is produced separately by the capture /
 compare CLI in export_policy_probe.py, not invented by this same-tree test.
 """
 
+from test.export_policy_probe import (INPUT_NAMES, cached_evidence, case_specs,
+                                      deployment_document, previous)
+
 import pytest
 import torch
-from safetensors.torch import save_file
-
 from fluxvla_export.checkpoint import load_checkpoint
 from fluxvla_export.config import load_config
 from fluxvla_export.recipes.pi05.model import build_pi05_model
 from fluxvla_export.recipes.pi05.reference import prepare_reference
-from test.export_policy_probe import (INPUT_NAMES, cached_evidence, case_specs,
-                                      deployment_document, previous)
+from safetensors.torch import save_file
 
 
 @pytest.mark.parametrize('spec', case_specs(), ids=lambda spec: spec['name'])

@@ -3,7 +3,8 @@
 
 Capture BEFORE changing the original worktree, then compare in the SAME Python
 installation. No model source, weights, or purported golden outputs are bundled
-with this test. All expected tensors are produced by the requested original repo.
+with this test. All expected tensors are produced by the requested
+original repo.
 
 Example::
 
@@ -120,8 +121,9 @@ def case_specs():
             for conditional in (False, True):
                 cases.append(
                     dict(
-                        name=
-                        f'gemma-{"conditional" if conditional else "plain"}-{suffix}',
+                        name=('gemma-'
+                              f'{"conditional" if conditional else "plain"}'
+                              f'-{suffix}'),
                         kind='gemma',
                         amp=amp,
                         config=tiny_gemma_config(protected, conditional)))
@@ -202,12 +204,13 @@ def build_case_model(spec, shared=False):
     if spec['kind'] == 'siglip':
         cfg = dict(spec['config'])
         if shared:
-            from transformers import SiglipVisionConfig, SiglipVisionModel
             from fluxvla_export.components.siglip import SigLIPViTBackbone
+            from transformers import SiglipVisionConfig, SiglipVisionModel
             vision = SiglipVisionModel(
                 SiglipVisionConfig(**cfg.pop('vision_config')))
             return SigLIPViTBackbone(vision, **cfg).float().eval()
-        from fluxvla.models.backbones.visions.siglip_vit import SigLIPViTBackbone
+        from fluxvla.models.backbones.visions.siglip_vit import \
+            SigLIPViTBackbone
         return SigLIPViTBackbone(
             vision_backbone_id='siglip_224', **cfg).float().eval()
     if spec['kind'] == 'projector':
@@ -244,6 +247,7 @@ def _record_cache(results, cache, prefix):
 
 def _execute_policy(model, inputs, results):
     import torch
+
     from fluxvla.engines.utils.model_utils import make_att_2d_masks
 
     result = model(**_clone_tensors(inputs))
@@ -261,7 +265,8 @@ def _execute_policy(model, inputs, results):
         mask = model._prepare_attention_masks_4d(
             make_att_2d_masks(pad, blocks))
         positions = torch.cumsum(pad, dim=1) - 1
-        model.llm_backbone.config._attn_implementation = model.attention_implementation
+        model.llm_backbone.config._attn_implementation = (
+            model.attention_implementation)
         encoded = model.llm_backbone(
             inputs_embeds=prefix,
             attention_mask=mask,
@@ -278,7 +283,8 @@ def _execute_policy(model, inputs, results):
                                       inputs['noise'].clone(),
                                       inputs['time'].clone())
         _record(results, 'single_step_velocity', velocity)
-        # predict_action mutates its noise argument. Never pass the stored input.
+        # predict_action mutates its noise argument.
+        # Never pass the stored input.
         action = model.predict_action(**_clone_tensors(inference)).clone()
         repeated = model.predict_action(**_clone_tensors(inference)).clone()
         torch.testing.assert_close(action, repeated, rtol=0, atol=0)
@@ -482,8 +488,8 @@ def _provenance(repo):
         path = Path(filename).resolve()
         if not path.is_relative_to(repo):
             raise AssertionError(
-                f'Wrong-repository import: {name} resolved to {path}, not {repo}'
-            )
+                f'Wrong-repository import: {name} resolved to {path}, '
+                f'not {repo}')
         sources[str(path.relative_to(repo))] = _hash(path)
     sources['test/_cpu_model_runtime.py'] = _hash(repo /
                                                   'test/_cpu_model_runtime.py')
@@ -600,9 +606,8 @@ def run(args):
         args.baseline = args.baseline.resolve(strict=True)
         baseline_manifest = _read_json(args.baseline / 'manifest.json')
         if baseline_manifest['failures']:
-            raise AssertionError(
-                'Original baseline contains failures; inspect its manifest before comparison.'
-            )
+            raise AssertionError('Original baseline contains failures; '
+                                 'inspect its manifest before comparison.')
         if baseline_manifest['schema_version'] != SCHEMA_VERSION:
             raise AssertionError(
                 'Probe schema differs from the stored baseline.')
@@ -643,13 +648,12 @@ def run(args):
         if baseline_manifest is not None:
             if provenance['environment'] != baseline_manifest['provenance'][
                     'environment']:
-                raise AssertionError(
-                    'Original and migrated runs must use the exact same environment.'
-                )
+                raise AssertionError('Original and migrated runs must use '
+                                     'the exact same environment.')
         for spec in case_specs():
-            targets = ('training',
-                       'shared') if (args.command == 'compare' and spec['kind']
-                                     != 'policy') else ('training', )
+            targets = ('training', 'shared') if (
+                args.command == 'compare'
+                and spec['kind'] != 'policy') else ('training', )
             for target in targets:
                 label = spec['name'] + '/' + target
                 try:
@@ -668,14 +672,15 @@ def run(args):
                                 'file_sha256'].items():
                             if _hash(baseline_path / filename) != sha256:
                                 raise AssertionError(
-                                    f'Baseline artifact hash mismatch: {baseline_path / filename}'
-                                )
+                                    f'Baseline artifact hash mismatch: '
+                                    f'{baseline_path / filename}')
                         state = load_file(
                             str(baseline_path / 'state.safetensors'))
                         inputs = load_file(
                             str(baseline_path / 'inputs.safetensors'))
-                        # Check constructor state/layout before loading; strict=True
-                        # below separately proves complete checkpoint compatibility.
+                        # Check constructor state/layout before loading;
+                        # strict=True below separately proves complete
+                        # checkpoint compatibility.
                         if list(model.state_dict()
                                 ) != reference_metadata['state_keys']:
                             raise AssertionError(
@@ -722,9 +727,8 @@ def run(args):
         _write_json(output / 'manifest.json', manifest)
         cleanup()
     if manifest['failures']:
-        raise RuntimeError(
-            f'{len(manifest["failures"])} probe cases failed; inspect {output / "manifest.json"}'
-        )
+        raise RuntimeError(f'{len(manifest["failures"])} probe cases failed; '
+                           f'inspect {output / "manifest.json"}')
     print(
         json.dumps(
             dict(
@@ -744,9 +748,8 @@ def main():
         help='Capture real original state, inputs, outputs and gradients.')
     compare = commands.add_parser(
         'compare',
-        help=
-        'Compare migrated training and shared components to original artifacts.'
-    )
+        help=('Compare migrated training and shared components '
+              'to original artifacts.'))
     for command in (capture, compare):
         command.add_argument('--repo', type=Path, required=True)
         command.add_argument('--output', type=Path, required=True)

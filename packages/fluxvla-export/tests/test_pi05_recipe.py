@@ -5,10 +5,10 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-"""Preparation of real native PI0.5 modules and explicit flat graph contracts."""
+"""Preparation of real native PI0.5 modules and explicit flat graph contracts.
+"""
 
 from __future__ import annotations
-
 import json
 import tempfile
 import unittest
@@ -16,13 +16,13 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
-
+from _pi05_test_utils import Artifacts
 from fluxvla_export.contracts import PreparedDeployment, TensorSpec
 from fluxvla_export.errors import ArtifactError, ConfigError
-from fluxvla_export.recipes.pi05.graphs import PI05DenoiseGraph, PI05PrefillGraph
+from fluxvla_export.recipes.pi05.graphs import (PI05DenoiseGraph,
+                                                PI05PrefillGraph)
 from fluxvla_export.recipes.pi05.recipe import PI05Recipe
 from fluxvla_export.recipes.pi05.reference import prepare_reference_from_config
-from _pi05_test_utils import Artifacts
 from test_config import config_document
 from test_pi05_executor import graph_engines
 
@@ -186,8 +186,7 @@ class PI05RecipeTests(unittest.TestCase):
             rtol=0,
             atol=0)
 
-    def test_typed_reference_revalidates_full_config_and_input_cross_dimensions(
-            self):
+    def test_typed_reference_revalidates_config_and_input_dimensions(self):
         artifacts = Artifacts(self.directory)
         config = artifacts.config
         invalid_inputs = list(config.input_specs)

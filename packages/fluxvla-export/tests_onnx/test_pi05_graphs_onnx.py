@@ -12,12 +12,12 @@ from pathlib import Path
 import onnx
 import onnxruntime as ort
 import torch
-from onnxruntime.capi.onnxruntime_pybind11_state import (NotImplemented as
-                                                         OrtNotImplemented)
-
-from fluxvla_export.components.euler import plain_euler
-from fluxvla_export.recipes.pi05.graphs import PI05DenoiseGraph, PI05PrefillGraph
 from _pi05_test_utils import Artifacts
+from fluxvla_export.components.euler import plain_euler
+from fluxvla_export.recipes.pi05.graphs import (PI05DenoiseGraph,
+                                                PI05PrefillGraph)
+from onnxruntime.capi.onnxruntime_pybind11_state import \
+    NotImplemented as OrtNotImplemented
 from test_config import config_document
 
 
@@ -92,8 +92,10 @@ class PI05GraphOnnxTests(unittest.TestCase):
             tuple(value.name for value in graph.output), module.output_names)
         if module.autocast_enabled:
             initializers = {value.name for value in graph.initializer}
-            reductions = [node for node in graph.node
-                          if node.op_type.startswith('Reduce')]
+            reductions = [
+                node for node in graph.node
+                if node.op_type.startswith('Reduce')
+            ]
             self.assertTrue(reductions)
             for node in reductions:
                 # TensorRT 10.13 rejects even literal axes behind Reshape.
