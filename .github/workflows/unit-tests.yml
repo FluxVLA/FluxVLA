@@ -2,7 +2,6 @@ name: Unit tests
 
 on:
   pull_request:
-    branches: [master, main]
   push:
     branches: [master, main]
   workflow_dispatch:
@@ -52,6 +51,7 @@ jobs:
           # pinned test requirements below, without temporarily installing NumPy 2.
           python -m pip install --no-deps torch==2.8.0 torchvision==0.23.0 --index-url https://download.pytorch.org/whl/cpu
           python -m pip install -r test/requirements-cpu.txt
+          python -m pip install -e './packages/fluxvla-export[test]'
           python -m pip check
 
       - name: Check and record the CPU runtime
@@ -59,7 +59,8 @@ jobs:
           report_dir="$RUNNER_TEMP/fluxvla-cpu-test-reports"
           mkdir -p "$report_dir"
           echo "REPORT_DIR=$report_dir" >> "$GITHUB_ENV"
-          python - <<'PY'
+          # MMEngine classifies stdlib imports by their real file paths.
+          python -X frozen_modules=off - <<'PY'
           import sys
 
           import torch
@@ -90,7 +91,7 @@ jobs:
         run: |
           status=0
           for seed in 0 17 2026; do
-            PYTHONHASHSEED="$seed" python -m pytest --cpu-model-tests @test/cpu-tests.txt -q -ra \
+            PYTHONHASHSEED="$seed" python -X frozen_modules=off -m pytest --cpu-model-tests @test/cpu-tests.txt -q -ra \
               --test-order-seed="$seed" \
               --junitxml="$REPORT_DIR/junit-$seed.xml" \
               2>&1 | tee "$REPORT_DIR/pytest-$seed.log" || status=1
@@ -275,6 +276,7 @@ jobs:
       - name: Install test dependencies and build this checkout's extensions
         run: |
           "$BASE_PYTHON" -m pip install -r requirements-test.txt
+          "$BASE_PYTHON" -m pip install -e ./packages/fluxvla-export
           "$BASE_PYTHON" -m pip install --no-build-isolation --no-deps -e .
           "$BASE_PYTHON" -m pip freeze > "$REPORT_DIR/environment.txt"
           git rev-parse HEAD > "$REPORT_DIR/commit.txt"

@@ -15,6 +15,8 @@
 from typing import Callable, Dict, Tuple
 
 import torch
+from fluxvla_export.components.siglip import \
+    SigLIPViTBackbone as SharedSigLIPViTBackbone
 from timm.models.vision_transformer import Block, VisionTransformer
 
 from fluxvla.engines import VISION_BACKBONES
@@ -26,7 +28,7 @@ from .configs import VISION_BACKBONE_CONFIGS
 
 
 @VISION_BACKBONES.register_module()
-class SigLIPViTBackbone(VisionBackbone):
+class SigLIPViTBackbone(SharedSigLIPViTBackbone, VisionBackbone):
     """
     A vision backbone that uses the SigLIP ViT model for feature extraction.
 
@@ -43,35 +45,22 @@ class SigLIPViTBackbone(VisionBackbone):
                  pretrained_cfg: Dict = None,
                  openpi_stem_fp32: bool = False,
                  preserve_fp32_residuals: bool = False) -> None:
-        super().__init__(vision_backbone_id)
-        self.openpi_stem_fp32 = bool(openpi_stem_fp32)
-        self.preserve_fp32_residuals = bool(preserve_fp32_residuals)
         vision_cls = VISION_BACKBONE_CONFIGS[vision_backbone_id]['model_cls']
         if pretrained_cfg is None:
             assert vision_config is not None, 'vision_cfg must be provided if pretrained_cfg is specified'  # noqa: E501
             vision_cfg = VISION_BACKBONE_CONFIGS[vision_backbone_id]['config']
             vision_config = vision_cfg(**vision_config)
-            self.vision = vision_cls(vision_config)
+            vision = vision_cls(vision_config)
         else:
             pretrained_cfg = dict(pretrained_cfg)
             pretrained_cfg.setdefault('trust_remote_code', True)
-            self.vision = vision_cls.from_pretrained(**pretrained_cfg)
-
-    def _forward_openpi_stem(self, pixel_values: torch.Tensor) -> torch.Tensor:
-        """Run patch extraction and positional embedding in FP32."""
-        vision_model = self.vision.vision_model
-        with torch.autocast(
-                device_type=pixel_values.device.type, enabled=False):
-            hidden_states = vision_model.embeddings(pixel_values.float())
-
-        if (not self.preserve_fp32_residuals
-                and torch.is_autocast_enabled(pixel_values.device.type)):
-            encoder_dtype = torch.get_autocast_dtype(pixel_values.device.type)
-        else:
-            encoder_dtype = next(vision_model.encoder.parameters()).dtype
-        hidden_states = hidden_states.to(encoder_dtype)
-        encoder_outputs = vision_model.encoder(inputs_embeds=hidden_states)
-        return vision_model.post_layernorm(encoder_outputs.last_hidden_state)
+            vision = vision_cls.from_pretrained(**pretrained_cfg)
+        super().__init__(
+            vision=vision,
+            openpi_stem_fp32=openpi_stem_fp32,
+            preserve_fp32_residuals=preserve_fp32_residuals,
+            vision_backbone_id=vision_backbone_id,
+        )
 
     def get_fsdp_wrapping_policy(self) -> Callable:
         """
@@ -125,27 +114,3 @@ class SigLIPViTBackbone(VisionBackbone):
             torch.dtype: Typically bfloat16.
         """
         return torch.bfloat16
-
-    def forward(self, pixel_values: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """
-        Perform a forward pass using both DINO and SigLIP backbones.
-
-        Args:
-            pixel_values (Dict[str, torch.Tensor]): Dictionary containing:
-                - "dino": tensor input for DINOv2 model
-                - "siglip": tensor input for SigLIP model
-
-        Returns:
-            torch.Tensor: Concatenated patch features from both models.
-        """
-        token_embeddings = list()
-        pixel_values = pixel_values.unflatten(1, (-1, 3))
-        for i in range(pixel_values.shape[1]):
-            view = pixel_values[:, i, :, :]
-            if self.openpi_stem_fp32:
-                token_embeddings.append(self._forward_openpi_stem(view))
-            else:
-                token_embeddings.append(self.vision(view).last_hidden_state)
-
-        token_embeddings = torch.cat(token_embeddings, dim=1)
-        return token_embeddings
