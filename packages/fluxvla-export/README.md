@@ -35,3 +35,11 @@ installed. CI builds and tests the standalone wheel outside the source package.
 Registry-free Gemma, SigLIP, linear projection, and tensor helpers are shared
 with the training adapters. Training installation must install this local package
 before the root project; the installer scripts and CI do so explicitly.
+
+## Native PI0.5 reference
+
+`fluxvla_export.recipes.pi05.reference.prepare_reference` builds the canonical
+standalone model from a validated configuration, checkpoint, and fixture. Its
+policy mixins and FP32-time Euler loop are shared with ordinary PI0/PI0.5 training
+inference. Reference calls preserve caller fixtures by cloning the native mutable
+noise input. No built-in graph recipe is registered at this stage.

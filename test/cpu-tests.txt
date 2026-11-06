@@ -9,6 +9,8 @@ test/test_models/test_vla.py::test_tiny_pi_forward_backward
 test/test_models/test_vla.py::test_tiny_pi_predict_action
 test/test_models/test_projector.py
 test/test_models/test_export_component_reuse.py
+test/test_models/test_pi_policy_reuse.py
+test/test_models/test_pi05_reference_parity.py
 test/test_models/test_action_heads.py
 test/test_models/test_base_vla_checkpoint.py
 test/test_models/test_minimax_vla.py
