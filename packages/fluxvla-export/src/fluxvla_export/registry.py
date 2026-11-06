@@ -7,12 +7,10 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 from __future__ import annotations
-
 from typing import Callable
 
 from .contracts import ExportRecipe
-from .errors import (ContractError, DuplicateRecipeError,
-                     RecipeNotFoundError)
+from .errors import ContractError, DuplicateRecipeError, RecipeNotFoundError
 
 RecipeFactory = Callable[[], ExportRecipe]
 _RECIPE_FACTORIES: dict[str, RecipeFactory] = {}
@@ -46,8 +44,7 @@ def get_recipe(name: str) -> ExportRecipe:
         factory = _RECIPE_FACTORIES[name]
     except KeyError as error:
         available = ', '.join(available_recipes()) or '<none>'
-        message = (
-            f'Unknown export recipe {name!r}; available: {available}.')
+        message = (f'Unknown export recipe {name!r}; available: {available}.')
         raise RecipeNotFoundError(message) from error
     if not callable(factory):
         raise ContractError(f'Recipe factory {name!r} must be callable.')

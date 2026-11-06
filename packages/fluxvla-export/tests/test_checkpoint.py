@@ -1,5 +1,4 @@
 from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -11,12 +10,11 @@ import unittest
 from pathlib import Path
 
 import torch
-from safetensors.torch import load as safe_load
-from safetensors.torch import save_file
-
 from fluxvla_export._safetensors import _read_verified, validate_safetensors
 from fluxvla_export.checkpoint import load_checkpoint
 from fluxvla_export.errors import ArtifactError
+from safetensors.torch import load as safe_load
+from safetensors.torch import save_file
 
 
 def _sha256(path: Path) -> str:
@@ -49,7 +47,8 @@ class SafetensorsPreflightTest(unittest.TestCase):
     def validate(self, raw):
         self.path.write_bytes(raw)
         return validate_safetensors(
-            self.path, expected_sha256=_sha256(self.path),
+            self.path,
+            expected_sha256=_sha256(self.path),
             label='Test artifact')
 
     def test_public_import_does_not_load_optional_dependencies(self):
@@ -65,10 +64,19 @@ assert 'safetensors' not in sys.modules
         subprocess.run([sys.executable, '-c', code], check=True)
 
     def test_valid_format_with_scalar_and_empty_tensor(self):
-        raw = _raw_file({
-            'empty': {'dtype': 'F32', 'shape': [0, 3], 'data_offsets': [0, 0]},
-            'scalar': {'dtype': 'I64', 'shape': [], 'data_offsets': [0, 8]},
-        }, b'\x00' * 8)
+        raw = _raw_file(
+            {
+                'empty': {
+                    'dtype': 'F32',
+                    'shape': [0, 3],
+                    'data_offsets': [0, 0]
+                },
+                'scalar': {
+                    'dtype': 'I64',
+                    'shape': [],
+                    'data_offsets': [0, 8]
+                },
+            }, b'\x00' * 8)
         self.assertEqual(self.validate(raw), self.path)
 
     def test_preflight_returns_canonical_relative_and_symlink_paths(self):
@@ -78,7 +86,8 @@ assert 'safetensors' not in sys.modules
         for value in (os.path.relpath(self.path), link):
             with self.subTest(value=value):
                 verified = validate_safetensors(
-                    value, expected_sha256=_sha256(self.path),
+                    value,
+                    expected_sha256=_sha256(self.path),
                     label='Checkpoint')
                 self.assertEqual(verified, self.path)
                 self.assertTrue(verified.is_absolute())
@@ -94,16 +103,21 @@ actual = validate_safetensors('~/model.safetensors',
 assert actual == Path(sys.argv[2]), actual
 '''
         subprocess.run(
-            [sys.executable, '-c', code, _sha256(self.path), str(self.path)],
-            env={**os.environ, 'HOME': str(self.path.parent)}, check=True)
+            [sys.executable, '-c', code,
+             _sha256(self.path),
+             str(self.path)],
+            env={
+                **os.environ, 'HOME': str(self.path.parent)
+            },
+            check=True)
 
     def test_invalid_path_and_symlink_loop_are_artifact_errors(self):
         link = self.path.with_name('loop.safetensors')
         link.symlink_to(link.name)
         for value in ('bad\x00.safetensors', link):
             with self.subTest(value=value):
-                with self.assertRaisesRegex(
-                        ArtifactError, 'resolve artifact path'):
+                with self.assertRaisesRegex(ArtifactError,
+                                            'resolve artifact path'):
                     validate_safetensors(
                         value, expected_sha256='0' * 64, label='Checkpoint')
 
@@ -143,9 +157,10 @@ for validate in (
     else:
         raise AssertionError('FIFO must not be accepted as an artifact')
 '''
-        subprocess.run(
-            [sys.executable, '-c', code, str(self.path)],
-            check=True, timeout=10)
+        subprocess.run([sys.executable, '-c', code,
+                        str(self.path)],
+                       check=True,
+                       timeout=10)
 
     def test_expected_digest_must_be_sha256_hex(self):
         self.path.write_bytes(_raw_file({}))
@@ -156,27 +171,39 @@ for validate in (
                         self.path, expected_sha256=digest, label='Checkpoint')
 
     def test_hash_binds_exact_header_padding_and_payload_bytes(self):
-        original = _raw_file({
-            'x': {'dtype': 'U8', 'shape': [1], 'data_offsets': [0, 1]},
-        }, b'\x01')
+        original = _raw_file(
+            {
+                'x': {
+                    'dtype': 'U8',
+                    'shape': [1],
+                    'data_offsets': [0, 1]
+                },
+            }, b'\x01')
         self.path.write_bytes(original)
         expected = _sha256(self.path)
-        self.assertEqual(validate_safetensors(
-            self.path, expected_sha256=expected.upper(), label='Checkpoint'),
-            self.path)
-        for replacement in (
-                original[:-1] + b'\x02',
-                _raw_file({
-                    'x': {'dtype': 'I8', 'shape': [1], 'data_offsets': [0, 1]},
-                }, b'\x01'),
-                (original[:8] + original[8:-1].replace(b' ', b'\t')
-                 + original[-1:]),
-        ):
+        self.assertEqual(
+            validate_safetensors(
+                self.path,
+                expected_sha256=expected.upper(),
+                label='Checkpoint'), self.path)
+        for replacement in (original[:-1] + b'\x02',
+                            _raw_file(
+                                {
+                                    'x': {
+                                        'dtype': 'I8',
+                                        'shape': [1],
+                                        'data_offsets': [0, 1]
+                                    },
+                                }, b'\x01'),
+                            (original[:8] +
+                             original[8:-1].replace(b' ', b'\t') +
+                             original[-1:])):
             with self.subTest(replacement=replacement):
                 self.path.write_bytes(replacement)
                 with self.assertRaisesRegex(ArtifactError, 'SHA-256 mismatch'):
                     validate_safetensors(
-                        self.path, expected_sha256=expected,
+                        self.path,
+                        expected_sha256=expected,
                         label='Checkpoint')
 
     def test_rejects_non_safe_truncated_or_invalid_length(self):
@@ -189,8 +216,13 @@ for validate in (
 
     def test_rejects_invalid_header_json_and_duplicate_keys(self):
         for header in (
-                b'[]', b' {}', b'{', b'{"x":NaN}', b'{"x":Infinity}',
-                b'{"x":-Infinity}', b'{"\xff":{}}',
+                b'[]',
+                b' {}',
+                b'{',
+                b'{"x":NaN}',
+                b'{"x":Infinity}',
+                b'{"x":-Infinity}',
+                b'{"\xff":{}}',
                 b'{"__metadata__":{},"__metadata__":{}}',
                 b'{"x":{"dtype":"F32","dtype":"I32",'
                 b'"shape":[1],"data_offsets":[0,4]}}',
@@ -203,11 +235,11 @@ for validate in (
         from safetensors import SafetensorError, deserialize
 
         for header in (
-            b'{"x":{"dtype":"U8","shape":[-0],"data_offsets":[0,0]}}',
-            b'{"__metadata__":{"x":"\\ud800"}}',
-            b'{"\\ud800":{"dtype":"U8","shape":[0],"data_offsets":[0,0]}}',
-            b'{"x":{"dtype":"U8","shape":[0,18446744073709551616],'
-            b'"data_offsets":[0,0]}}',
+                b'{"x":{"dtype":"U8","shape":[-0],"data_offsets":[0,0]}}',
+                b'{"__metadata__":{"x":"\\ud800"}}',
+                b'{"\\ud800":{"dtype":"U8","shape":[0],"data_offsets":[0,0]}}',
+                b'{"x":{"dtype":"U8","shape":[0,18446744073709551616],'
+                b'"data_offsets":[0,0]}}',
         ):
             with self.subTest(header=header):
                 raw = _raw_file(header)
@@ -226,7 +258,10 @@ for validate in (
         normal = {'dtype': 'F32', 'shape': [1], 'data_offsets': [0, 4]}
         entries = [
             None,
-            {'dtype': 'F32', 'shape': [1]},
+            {
+                'dtype': 'F32',
+                'shape': [1]
+            },
             dict(normal, unexpected='ignored'),
             dict(normal, dtype='float32'),
             dict(normal, dtype=['F32']),
@@ -252,10 +287,32 @@ for validate in (
 
     def test_rejects_gaps_overlap_and_unindexed_trailing_bytes(self):
         for contents, data_size in (
-            ({'x': {'dtype': 'U8', 'shape': [1], 'data_offsets': [1, 2]}}, 2),
-            ({'x': {'dtype': 'U8', 'shape': [2], 'data_offsets': [0, 2]},
-              'y': {'dtype': 'U8', 'shape': [1], 'data_offsets': [1, 2]}}, 2),
-            ({'x': {'dtype': 'U8', 'shape': [1], 'data_offsets': [0, 1]}}, 2),
+            ({
+                'x': {
+                    'dtype': 'U8',
+                    'shape': [1],
+                    'data_offsets': [1, 2]
+                }
+            }, 2),
+            ({
+                'x': {
+                    'dtype': 'U8',
+                    'shape': [2],
+                    'data_offsets': [0, 2]
+                },
+                'y': {
+                    'dtype': 'U8',
+                    'shape': [1],
+                    'data_offsets': [1, 2]
+                }
+            }, 2),
+            ({
+                'x': {
+                    'dtype': 'U8',
+                    'shape': [1],
+                    'data_offsets': [0, 1]
+                }
+            }, 2),
             ({}, 1),
         ):
             with self.subTest(contents=contents):
@@ -282,7 +339,8 @@ class CheckpointTest(unittest.TestCase):
 
     def load(self, expected):
         return load_checkpoint(
-            self.path, expected_sha256=_sha256(self.path),
+            self.path,
+            expected_sha256=_sha256(self.path),
             expected_state=expected)
 
     def test_real_complete_native_state_including_scalar_and_empty(self):
@@ -312,8 +370,9 @@ class CheckpointTest(unittest.TestCase):
             'bf16': torch.tensor([1.0, 2.5], dtype=torch.bfloat16),
         }
         self.save(stored)
-        loaded = self.load({name: torch.empty_like(value)
-                            for name, value in stored.items()})
+        loaded = self.load(
+            {name: torch.empty_like(value)
+             for name, value in stored.items()})
         for name, value in loaded.items():
             torch.testing.assert_close(value, stored[name], rtol=0, atol=0)
             self.assertEqual(value.dtype, stored[name].dtype)
@@ -332,11 +391,12 @@ class CheckpointTest(unittest.TestCase):
 
     def test_missing_unexpected_and_prefixed_keys_are_not_remapped(self):
         expected = {'weight': torch.zeros(2), 'counter': torch.tensor(0)}
-        for stored in (
-            {'weight': torch.zeros(2)},
-            dict(expected, extra=torch.zeros(1)),
-            {'module.' + name: value for name, value in expected.items()},
-        ):
+        for stored in ({
+                'weight': torch.zeros(2)
+        }, dict(expected, extra=torch.zeros(1)), {
+                'module.' + name: value
+                for name, value in expected.items()
+        }):
             with self.subTest(keys=tuple(stored)):
                 self.save(stored)
                 with self.assertRaisesRegex(
@@ -367,8 +427,8 @@ class CheckpointTest(unittest.TestCase):
             for number in (float('nan'), float('inf'), -float('inf')):
                 with self.subTest(dtype=dtype, number=number):
                     self.save({'x': torch.tensor([number], dtype=dtype)})
-                    with self.assertRaisesRegex(
-                            ArtifactError, "'x'.*non-finite"):
+                    with self.assertRaisesRegex(ArtifactError,
+                                                "'x'.*non-finite"):
                         self.load({'x': torch.zeros(1, dtype=dtype)})
 
     def test_rejects_invalid_expected_state(self):
@@ -379,15 +439,18 @@ class CheckpointTest(unittest.TestCase):
                     self.load(expected)
 
     def test_metadata_cannot_override_external_contract_or_hash(self):
-        self.save({'x': torch.ones(2, dtype=torch.bfloat16)}, metadata={
-            'sha256': '0' * 64,
-            'dtype': 'float32',
-            'shape': '[2]',
-            'keys': '["x"]',
-        })
+        self.save({'x': torch.ones(2, dtype=torch.bfloat16)},
+                  metadata={
+                      'sha256': '0' * 64,
+                      'dtype': 'float32',
+                      'shape': '[2]',
+                      'keys': '["x"]',
+                  })
         with self.assertRaisesRegex(ArtifactError, 'SHA-256 mismatch'):
-            load_checkpoint(self.path, expected_sha256='0' * 64,
-                            expected_state={'x': torch.zeros(2)})
+            load_checkpoint(
+                self.path,
+                expected_sha256='0' * 64,
+                expected_state={'x': torch.zeros(2)})
         with self.assertRaisesRegex(ArtifactError, 'dtype'):
             self.load({'x': torch.zeros(2)})
         self.load({'x': torch.zeros(2, dtype=torch.bfloat16)})
@@ -396,16 +459,20 @@ class CheckpointTest(unittest.TestCase):
         self.save({'x': torch.tensor([1.0])})
         original_digest = _sha256(self.path)
         _, snapshot = _read_verified(
-            self.path, expected_sha256=original_digest,
-            label='Checkpoint', retain_bytes=True)
+            self.path,
+            expected_sha256=original_digest,
+            label='Checkpoint',
+            retain_bytes=True)
         replacement = self.path.with_name('replacement.safetensors')
         save_file({'x': torch.tensor([2.0])}, replacement)
         replacement.replace(self.path)
         torch.testing.assert_close(
             safe_load(snapshot)['x'], torch.tensor([1.0]))
         with self.assertRaisesRegex(ArtifactError, 'SHA-256 mismatch'):
-            load_checkpoint(self.path, expected_sha256=original_digest,
-                            expected_state={'x': torch.zeros(1)})
+            load_checkpoint(
+                self.path,
+                expected_sha256=original_digest,
+                expected_state={'x': torch.zeros(1)})
 
     def test_torch_serialization_never_falls_back_to_unpickling(self):
         marker = self.path.parent / 'unpickle-executed'
@@ -416,9 +483,11 @@ class CheckpointTest(unittest.TestCase):
 
     def test_preflight_streams_multiple_chunks(self):
         self.save({'x': torch.arange(300_000, dtype=torch.float32)})
-        self.assertEqual(validate_safetensors(
-            self.path, expected_sha256=_sha256(self.path), label='Checkpoint'),
-            self.path)
+        self.assertEqual(
+            validate_safetensors(
+                self.path,
+                expected_sha256=_sha256(self.path),
+                label='Checkpoint'), self.path)
 
 
 if __name__ == '__main__':
