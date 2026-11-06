@@ -112,3 +112,82 @@ the normal W&B authentication and online/offline settings.
   evaluate the initial SFT checkpoint.
 - `runner.save_interval` and `runner.val_check_interval` control checkpoint
   saving and validation through RLinf's native runner.
+
+### Export for standard FluxVLA evaluation
+
+Export the consolidated actor checkpoint (not per-rank training shards):
+
+```bash
+python scripts/rl_export.py /path/to/global_step_N /path/to/policy.pt
+# A direct actor/model_state_dict/full_weights.pt path is also accepted.
+```
+
+The export removes only `value_head.*`, preserving policy parameter names,
+buffers and dtypes. It leaves the training checkpoint intact. Set the normal
+FluxVLA config's `model.pretrained_name_or_path` to `policy.pt` and
+`model.strict_mapping=True`. The original `model.name_mapping` can remain:
+native Flux names take precedence, and upstream names use the mapping when
+there is no exact match. Missing weights and shape mismatches still fail
+strict loading. An unexported RL actor includes the critic and is not a
+strictly compatible checkpoint for a standard VLA model.
+
+Use the model architecture, normalization statistics, tokenizer, action
+horizon and inference precision/steps from the RL run. Exporting weights
+does not transfer these settings into an evaluation config. For runners that
+load a checkpoint separately, point that checkpoint option to the same
+exported policy file.
+
+## Conservative PI0.5 RoboTwin training
+
+`tools/rl/robotwin_conservative/launch.py` packages the eight-GPU
+`adjust_bottle` recipe used to avoid accumulating simulator memory across a
+long training process. It uses 64 training environments, four rollout rounds,
+actor/rollout microbatch 8, global batch 512, five PPO update epochs, policy
+LR `5e-6` and critic LR `1e-4`. Both `env.train.enable_offload` and
+`env.eval.enable_offload` are explicitly enabled; the top-level environment
+offload setting alone does not enable them in the pinned RLinf revision.
+Evaluation retains 128 fixed episodes.
+
+Prepare the simulator dependencies and rendering environment as above, then:
+
+```bash
+export FLUXVLA_ROOT=/path/to/FluxVLA
+export RLINF_ROOT=/path/to/RLinf
+export ROBOTWIN_PATH=/path/to/RoboTwin
+export PYTHONPATH="$FLUXVLA_ROOT:$RLINF_ROOT:$ROBOTWIN_PATH"
+export OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 MKL_NUM_THREADS=1
+export WANDB_MODE=offline  # Set online after configuring W&B authentication.
+
+python tools/rl/robotwin_conservative/launch.py \
+  --run-dir /path/to/run \
+  --assets-path /path/to/robotwin_assets \
+  --checkpoint /path/to/robotwin_sft \
+  --resolve
+# Remove --resolve to start training, or resume the same run directory.
+
+python tools/rl/robotwin_conservative/monitor.py \
+  --run-dir /path/to/run --once
+```
+
+The first segment evaluates and saves at step 1; subsequent segments end at
+steps 5, 10, 15, ..., 1000. After each successful segment, the supervisor
+terminates remaining descendants of that training process and validates the
+full weights and distributed checkpoint files. The next process restores
+model, optimizer, scheduler and actor RNG through `runner.resume_dir`.
+Environment seed cursors and rollout RNG restart, so the result is not
+bitwise equivalent to uninterrupted training. Each training step samples 256
+trajectories, versus 1024 in the official-sized configuration.
+
+The launcher stops on worker communication failures or host RAM usage at
+least 85% for three consecutive 15-second samples. It retains completed
+checkpoints and never automatically deletes them. It requires 100 GiB free
+before starting each segment. `psutil` is required by the supervisor;
+TensorBoard is required by the optional monitor. The run directory contains
+`status.json`, `checkpoints.json`, `commands/`, `logs/`, `memory.jsonl`, and
+`results/`. The monitor writes `progress.json`; omit `--once` to refresh it
+every minute. W&B records each segment as a separate run within one group
+and defaults to offline mode; TensorBoard retains cumulative training steps.
+
+Use a distinct run directory for a new experiment. To continue an existing
+one, rerun the same command with the same SFT checkpoint and asset paths;
+only checkpoints recorded after successful segment completion are resumed.

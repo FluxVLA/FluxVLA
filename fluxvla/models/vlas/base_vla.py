@@ -575,30 +575,31 @@ class BaseVLA(nn.Module, GenerationMixin, ABC):
 
         self._validate_pretrained_skip_prefixes()
 
-        # Load weights with name_mapping handling
-        if not self.name_mapping:
+        # SFT/RL exports already use Flux names, even when the config retains
+        # the mapping used to initialize from an upstream checkpoint.
+        native_keys = {
+            name
+            for name in self.state_dict()
+            if not self._skip_pretrained_key(name)
+        }
+        if not self.name_mapping or native_keys.issubset(pretrained_weights):
             self._load_unmapped_pretrained_weights(pretrained_weights)
         else:
-            for name, param in self.named_parameters():
+            # Include persistent buffers as well as parameters. Resolve exact
+            # names before aliases, including in partially mapped checkpoints.
+            for name, param in self.state_dict(keep_vars=True).items():
                 if self._skip_pretrained_key(name):
                     overwatch.info(
                         f"Retaining initialized parameter '{name}'.")
                     continue
-                if self.name_mapping is None:
-                    if self.strict_mapping and name not in pretrained_weights:
-                        raise ValueError(
-                            f"Parameter '{name}' not found in pretrained weights."  # noqa: E501, E713
-                        )
-                    if name in pretrained_weights and param.size(
-                    ) == pretrained_weights[name].size():
-                        # Copy the parameter withname the correct dtype
-                        with torch.no_grad():
-                            param.copy_(pretrained_weights[name].to(
-                                param.dtype))
-                    else:
-                        overwatch.info(
-                            f"Parameter '{name}' not found in pretrained weights, skipping."  # noqa: E501, E713
-                        )
+                if name in pretrained_weights:
+                    if param.size() != pretrained_weights[name].size():
+                        raise RuntimeError(
+                            f"Size mismatch for native key '{name}': "
+                            f'model={list(param.size())} vs '
+                            f'ckpt={list(pretrained_weights[name].size())}')
+                    with torch.no_grad():
+                        param.copy_(pretrained_weights[name].to(param.dtype))
                 else:
                     matched = False
                     matched_name = None
