@@ -169,11 +169,15 @@ RoboTwin 公式スクリプトを使用し、Clean（Easy）と Random（Hard）
 conda create -n fluxvla python=3.10 -y
 conda activate fluxvla
 
-# モードを 1 つ選択：sim-only、real-only、または full。
+# モードを 1 つ選択：real-only、sim-only、rlinf-only、または all。
 bash scripts/install_env.sh sim-only
 # bash scripts/install_env.sh real-only
-# bash scripts/install_env.sh full
+# RL モードには RLinf のソースが必要です（docs/rlinf.md を参照）：
+# RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh rlinf-only --profile cu128
+# RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh all --profile cu128
 ```
+
+`rlinf-only` はモデル依存関係、RLinf、Ray をインストールし、デフォルトではシミュレータやアセットを含みません。`all` は実機、シミュレーション、RL の全依存関係をインストールします。`RLINF_ROOT` と `cu128` が必要なのは、この 2 つの RL モードだけです。互換性のため、`full`（モード省略時のデフォルト）は引き続き実機 + シミュレーションのみで、RLinf を含みません。`sim` / `real` は従来の別名として維持し、`fluxvla-all` は `all` の別名です。
 
 <details>
 <summary><b>インストーラで問題がある場合：モードと CUDA profile の選択を確認</b></summary>

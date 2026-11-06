@@ -169,11 +169,15 @@ RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 
 conda create -n fluxvla python=3.10 -y
 conda activate fluxvla
 
-# 选择一种模式：sim-only、real-only 或 full。
+# 选择一种模式：real-only、sim-only、rlinf-only 或 all。
 bash scripts/install_env.sh sim-only
 # bash scripts/install_env.sh real-only
-# bash scripts/install_env.sh full
+# RL 模式需要 RLinf 源码目录（见 docs/rlinf.md）：
+# RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh rlinf-only --profile cu128
+# RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh all --profile cu128
 ```
+
+`rlinf-only` 安装模型依赖、RLinf 和 Ray，默认不安装仿真器或资产；`all` 安装真机、仿真和 RL 的全部依赖。只有这两个 RL 模式要求 `RLINF_ROOT` 和 `cu128`。为兼容旧命令，`full`（也是不传模式时的默认行为）仍只安装真机 + 仿真，不包含 RLinf；`sim` / `real` 保留为旧别名，`fluxvla-all` 是 `all` 的别名。
 
 <details>
 <summary><b>如果安装脚本遇到问题：检查安装模式和 CUDA profile 选择</b></summary>
