@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""PaliGemma text supervision and Pi05 image preprocessing for VLM SFT."""
+"""PaliGemma conversation and image-prefix transforms for VLM SFT."""
 
 import json
 import os
@@ -26,14 +26,19 @@ from fluxvla.engines import TRANSFORMS
 from .transform_images import ResizeImagesWithPad
 
 
-@TRANSFORMS.register_module()
-class ProcessPi05VLMSFTInputs:
-    """Encode canonical conversations using Pi05's PaliGemma vocabulary.
+# Keep the old registry key so saved training configs remain loadable.
+@TRANSFORMS.register_module(
+    name=['ProcessPaliGemmaVLMSFTInputs', 'ProcessPi05VLMSFTInputs'])
+class ProcessPaliGemmaVLMSFTInputs:
+    """Encode canonical conversations using a PaliGemma SentencePiece model.
 
     Format: BOS, system/user text + newline, assistant text + EOS. Only
     assistant tokens and their EOS are supervised. Images in the first user
     turn form a visual prefix; later images and videos are rejected rather
     than silently moved ahead of earlier answers. Multi-turn text is causal.
+    Images are center-padded to a square and normalized to [-1, 1]. This
+    contract is independent of robot states/actions; it is not the native
+    Hugging Face PaliGemma processor's bidirectional image/question prefix.
     """
 
     def __init__(self, tokenizer_path, image_size=224, max_length=1024):
@@ -57,7 +62,7 @@ class ProcessPi05VLMSFTInputs:
                 model_file=self.tokenizer_path)
             self._pid = os.getpid()
             if min(self._tokenizer.bos_id(), self._tokenizer.eos_id()) < 0:
-                raise ValueError('Pi05 SFT requires BOS/EOS tokenizer IDs.')
+                raise ValueError('VLM SFT requires BOS/EOS tokenizer IDs.')
         return self._tokenizer
 
     def __getstate__(self):
@@ -68,7 +73,7 @@ class ProcessPi05VLMSFTInputs:
         path.mkdir(parents=True, exist_ok=True)
         (path / 'tokenizer.model').write_bytes(
             self._get_tokenizer().serialized_model_proto())
-        (path / 'pi05_vlm_preprocessing.json').write_text(
+        (path / 'paligemma_vlm_preprocessing.json').write_text(
             json.dumps(
                 dict(
                     tokenizer='PaliGemma SentencePiece',
@@ -84,7 +89,7 @@ class ProcessPi05VLMSFTInputs:
     def __call__(self, data):
         messages = data.get('messages')
         if not isinstance(messages, list) or not messages:
-            raise ValueError('Configure BuildVLMMessages before Pi05 SFT.')
+            raise ValueError('Configure BuildVLMMessages before VLM SFT.')
         tokenizer = self._get_tokenizer()
         tokens, labels = [tokenizer.bos_id()], [-100]
         image_paths = []
@@ -95,7 +100,7 @@ class ProcessPi05VLMSFTInputs:
             if (role not in ('system', 'user', 'assistant')
                     or (role == 'system' and user_turns)
                     or (role == 'assistant' and previous != 'user')):
-                raise ValueError('Invalid Pi05 SFT conversation roles.')
+                raise ValueError('Invalid VLM SFT conversation roles.')
             user_turns += role == 'user'
             text = []
             for part in message['content']:
@@ -103,11 +108,11 @@ class ProcessPi05VLMSFTInputs:
                     text.append(part['text'])
                 elif part['type'] == 'image':
                     if role != 'user' or user_turns != 1:
-                        raise ValueError('Pi05 SFT images must occur in the '
+                        raise ValueError('VLM SFT images must occur in the '
                                          'first user turn.')
                     image_paths.append(part['image'])
                 else:
-                    raise ValueError('Pi05 SFT supports text and images only.')
+                    raise ValueError('VLM SFT supports text and images only.')
             text = ''.join(text)
             if role == 'assistant' and not text.strip():
                 raise ValueError('Assistant replies must contain text.')
@@ -134,7 +139,7 @@ class ProcessPi05VLMSFTInputs:
         tokens = ([tokenizer.bos_id()] + tokenizer.encode(question) +
                   tokenizer.encode('\n'))
         if len(tokens) > self.max_length:
-            raise ValueError('Pi05 generation prompt exceeds max_length.')
+            raise ValueError('VLM generation prompt exceeds max_length.')
         inputs = dict(
             input_ids=torch.tensor(tokens, dtype=torch.long),
             attention_mask=torch.ones(len(tokens), dtype=torch.bool))

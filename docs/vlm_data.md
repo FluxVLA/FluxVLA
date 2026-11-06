@@ -39,7 +39,7 @@ dataset = dict(
     transforms=[
         dict(type='BuildVLMMessages'),
         dict(
-            type='ProcessPi05VLMSFTInputs',
+            type='ProcessPaliGemmaVLMSFTInputs',
             tokenizer_path='./checkpoints/pi05_base',
             image_size=224,
             max_length=1024),
@@ -50,13 +50,24 @@ dataset = dict(
    instantiate a model or processor. Without transforms, this dict is its output.
 2. `BuildVLMMessages` normalizes LLaVA `from/value` conversations or supported
    `role/content` messages. It resolves media paths and preserves turn order.
-3. `ProcessPi05VLMSFTInputs` encodes Pi05 image/text inputs. For native Qwen VLMs,
+3. `ProcessPaliGemmaVLMSFTInputs` in `paligemma_vlm_transforms.py` encodes
+   PaliGemma-vocabulary conversations and normalized image views, without
+   depending on a Pi05 model or robot inputs. It retains the causal-text,
+   image-prefix contract used by the Pi05 examples; it does not switch to the
+   native Hugging Face PaliGemma processor's bidirectional prompt convention.
+   For native Qwen VLMs,
    use `ProcessVLMSFTInputs` with the matching `processor_path` and
    `processor_type`, as in [the Qwen config](../configs/vlm/qwen3_vl_2b_sft.py).
 4. `VLMSFTCollator` batches both Pi05 and native Qwen VLM inputs. Mixed training
    keeps a separate collator for the VLA stream. Metadata and raw conversations
    are not passed to the model. All assistant replies and their end tokens are
    supervised; user/system tokens and padding have label `-100`.
+
+The former `ProcessPi05VLMSFTInputs` config type remains a registry alias for
+loading saved configs; new configs use `ProcessPaliGemmaVLMSFTInputs`. When
+resuming an existing mixed-training checkpoint, retain its saved config type
+because the resume contract includes the original dataset configuration.
+Exported preprocessing metadata is named `paligemma_vlm_preprocessing.json`.
 
 For Pi05, a sample has `input_ids`, `attention_mask`, `labels` of shape `[L]`
 and `images` of shape `[3*N, H, W]`. The collated batch has:

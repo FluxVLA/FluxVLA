@@ -174,7 +174,7 @@ train_dataloader = dict(
                 image_size=224,
                 max_length=1024,
                 tokenizer_path='./checkpoints/pi05_base',
-                type='ProcessPi05VLMSFTInputs'),
+                type='ProcessPaliGemmaVLMSFTInputs'),
         ],
         type='LLaVAFormatDataset'),
     per_device_batch_size=1,

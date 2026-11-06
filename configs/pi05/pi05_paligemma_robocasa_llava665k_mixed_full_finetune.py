@@ -47,7 +47,7 @@ vlm_dataloader = dict(
         transforms=[
             dict(type='BuildVLMMessages'),
             dict(
-                type='ProcessPi05VLMSFTInputs',
+                type='ProcessPaliGemmaVLMSFTInputs',
                 image_size=224,
                 max_length=1024,
                 tokenizer_path=_base_.runner.tokenizer.model_path),

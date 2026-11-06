@@ -32,7 +32,8 @@ from fluxvla.engines.utils import build_vla_from_cfg, initialize_overwatch
 from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.root import RUNNERS
 from fluxvla.evaluators.textvqa import textvqa_score
-from fluxvla.transforms.pi05_vlm_transforms import ProcessPi05VLMSFTInputs
+from fluxvla.transforms.paligemma_vlm_transforms import \
+    ProcessPaliGemmaVLMSFTInputs
 
 overwatch = initialize_overwatch(__name__)
 
@@ -96,7 +97,7 @@ class TextVQAEvalRunner:
         self.cfg = cfg
         self.annotation_path = Path(annotation_path)
         self.image_root = Path(image_root)
-        self.processor = ProcessPi05VLMSFTInputs(**preprocessing)
+        self.processor = ProcessPaliGemmaVLMSFTInputs(**preprocessing)
         self.checkpoint = resolve_vlm_checkpoint(ckpt_path, checkpoint_dir)
         self.compare_base = compare_base or self.checkpoint is None
         self.run_dir = Path(run_dir)
