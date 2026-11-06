@@ -285,6 +285,7 @@ install_ffmpeg_runtime
 install_torchcodec
 
 if [[ "${SKIP_PROJECT}" -eq 0 ]]; then
+  pip_install -e "${PROJECT_ROOT}/packages/fluxvla-export"
   pip_install --no-build-isolation -e "${PROJECT_ROOT}"
 fi
 

@@ -12,11 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import torch
-import torch.nn.functional as F
+from fluxvla_export.components.pi_policy import PI05Computation
 
 from fluxvla.engines import VLAS
-from fluxvla.engines.utils.model_utils import create_sinusoidal_pos_embedding
 from fluxvla.engines.utils.overwatch import initialize_overwatch
 from .pi0_flowmatching import PI0FlowMatching
 
@@ -24,7 +22,7 @@ overwatch = initialize_overwatch(__name__)
 
 
 @VLAS.register_module()
-class PI05FlowMatching(PI0FlowMatching):
+class PI05FlowMatching(PI05Computation, PI0FlowMatching):
     """PI0 Flow Matching Model for Vision-Language Alignment.
     Implemented based on https://arxiv.org/abs/2504.16054
 
@@ -64,81 +62,3 @@ class PI05FlowMatching(PI0FlowMatching):
         assert kwargs.get('state_proj') is None, (
             'PI05FlowMatching does not use state_proj.')
         super().__init__(**kwargs)
-
-    def embed_suffix(self, states, noisy_actions, timestep):
-        """Embed the suffix tokens for the Pi0 head.
-
-        Args:
-            state (torch.Tensor): The state tensor of shape (bsize, state_dim).
-            noisy_actions (torch.Tensor): The noisy actions tensor of shape
-                (bsize, n_action_steps, action_dim).
-            timestep (torch.Tensor): The timestep tensor of shape (bsize,)
-                for scalar time, or (bsize, n_action_steps) for per-position
-                time (used in training-time RTC).
-
-        Returns:
-            Tuple[torch.Tensor, torch.Tensor, torch.Tensor,
-                  torch.Tensor]: A tuple containing the embedded suffix
-                tokens, padding masks, attention masks, and adarms_cond.
-        """
-        embs = []
-        pad_masks = []
-        att_masks = []
-
-        bsize = states.shape[0]
-        device = states.device
-
-        # Set attention masks so that image and language
-        # inputs do not attend to action tokens
-
-        # Embed timestep using sine-cosine positional
-        # encoding with sensitivity in the range [0, 1]
-        if self.openpi_fp32_flow:
-            with self._disable_autocast(noisy_actions):
-                time_emb = create_sinusoidal_pos_embedding(
-                    timestep.float(),
-                    self.proj_width,
-                    min_period=4e-3,
-                    max_period=4.0,
-                    device=device,
-                    dtype=torch.float32)
-                action_emb = self.action_in_proj(noisy_actions.float())
-                time_emb = F.silu(self.time_mlp_in(time_emb))
-                time_emb = F.silu(self.time_mlp_out(time_emb))
-        else:
-            dtype = states.dtype
-            time_emb = create_sinusoidal_pos_embedding(
-                timestep,
-                self.proj_width,
-                min_period=4e-3,
-                max_period=4.0,
-                device=device)
-            time_emb = time_emb.type(dtype=dtype)
-
-            # Fuse timestep + action information using an MLP
-            action_emb = self.action_in_proj(noisy_actions)
-            time_emb = F.silu(self.time_mlp_in(time_emb))
-            time_emb = F.silu(self.time_mlp_out(time_emb))
-        # Add to input tokens
-        embs.append(action_emb)
-
-        bsize, action_time_dim = action_emb.shape[:2]
-        action_time_mask = torch.ones(
-            bsize, action_time_dim, dtype=torch.bool, device=device)
-        pad_masks.append(action_time_mask)
-
-        # Set attention masks so that image and language inputs do not attend
-        # to action tokens.  Derive the mask from the supplied action window
-        # because evaluation and truncated episodes can use a horizon
-        # different from the training configuration.
-        if action_time_dim == 0:
-            raise ValueError('noisy_actions must contain at least one step')
-        att_masks += [1] + ([0] * (action_time_dim - 1))
-
-        embs = torch.cat(embs, dim=1)
-        pad_masks = torch.cat(pad_masks, dim=1)
-        att_masks = torch.tensor(
-            att_masks, dtype=torch.bool, device=embs.device)
-        att_masks = att_masks[None, :].expand(bsize, len(att_masks))
-
-        return embs, pad_masks, att_masks, time_emb
