@@ -8,7 +8,6 @@
 """Real PI0.5 prefill/denoise preparation for the generic export contract."""
 
 from __future__ import annotations
-
 import hashlib
 import json
 from functools import partial
@@ -17,7 +16,7 @@ from pathlib import Path
 from ...config import DeploymentConfig, config_to_document
 from ...contracts import PreparedDeployment, PreparedGraph, TensorSpec
 from ...errors import ContractError
-from .executor import (_checked_tensors, build_executor, make_runtime_metadata)
+from .executor import _checked_tensors, build_executor, make_runtime_metadata
 from .reference import prepare_reference_from_config
 
 
@@ -112,7 +111,8 @@ class PI05Recipe:
         # BF16 requires tensor-typed Dynamo lowering and Conv schema 22.
         # Legacy SDPA lowering produces invalid complex casts for BF16.
         # Standard optimization materializes constant reduction axes required
-        # by TensorRT; the native dtype boundaries and FP32 masters are retained.
+        # by TensorRT; the native dtype boundaries and FP32 masters
+        # are retained.
         if resolved.precision.autocast_dtype == 'bfloat16':
             export_options = {
                 'opset': 22,

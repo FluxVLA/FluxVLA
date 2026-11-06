@@ -31,12 +31,12 @@ try:
 except ImportError:
     from transformers.utils import LossKwargs as TransformersKwargs
 
+from fluxvla_export.components.condition_gemma import \
+    ConditionGemmaModel as _ConditionGemmaModel
 from fluxvla_export.components.condition_gemma import (  # noqa: F401
     GemmaAttention, GemmaDecoderLayer, GemmaMLP, GemmaPreTrainedModel,
     GemmaRMSNorm, GemmaRotaryEmbedding, _gated_residual, apply_rotary_pos_emb,
     eager_attention_forward, repeat_kv, rotate_half)
-from fluxvla_export.components.condition_gemma import (ConditionGemmaModel as
-                                                       _ConditionGemmaModel)
 
 from fluxvla.engines import LLM_BACKBONES
 from fluxvla.engines.utils.fsdp_wrapping import \

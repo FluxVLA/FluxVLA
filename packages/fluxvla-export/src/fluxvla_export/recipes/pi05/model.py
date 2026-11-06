@@ -13,7 +13,6 @@ registry, training import, pretrained download or checkpoint remapping is used.
 """
 
 from __future__ import annotations
-
 from dataclasses import asdict
 
 import torch

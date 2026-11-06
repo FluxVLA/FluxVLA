@@ -10,14 +10,13 @@ import unittest
 from pathlib import Path
 
 import torch
-
+from _pi05_test_utils import Artifacts
 from fluxvla_export.components.euler import plain_euler
 from fluxvla_export.components.tensor_utils import make_att_2d_masks
 from fluxvla_export.errors import ContractError
 from fluxvla_export.recipes.pi05.graphs import (PI05DenoiseGraph,
                                                 PI05PrefillGraph,
                                                 cache_tensor_names)
-from _pi05_test_utils import Artifacts
 from test_config import config_document
 
 
@@ -119,11 +118,12 @@ class PI05GraphTests(unittest.TestCase):
                                   for name in prefill.input_names))
                             with torch.autocast(
                                     'cpu', dtype=torch.bfloat16, enabled=amp):
-                                embeddings, padding, blocks = model.embed_prefix(
-                                    images=inputs['images'],
-                                    img_masks=inputs['img_masks'],
-                                    lang_tokens=inputs['lang_tokens'],
-                                    lang_masks=inputs['lang_masks'])
+                                (embeddings, padding,
+                                 blocks) = model.embed_prefix(
+                                     images=inputs['images'],
+                                     img_masks=inputs['img_masks'],
+                                     lang_tokens=inputs['lang_tokens'],
+                                     lang_masks=inputs['lang_masks'])
                                 embeddings = model._cast_gemma_input(
                                     embeddings)
                                 masks = model._prepare_attention_masks_4d(
@@ -180,7 +180,8 @@ class PI05GraphTests(unittest.TestCase):
                                         inputs['states'], padding, cache,
                                         inputs['noise'], timestep)
                                     # State values are genuinely unused, not a
-                                    # constant-zero edge inserted for an exporter.
+                                    # constant-zero edge inserted for an
+                                    # exporter.
                                     changed_states = model.denoise_step(
                                         inputs['states'] + 50, padding, cache,
                                         inputs['noise'], timestep)
@@ -322,12 +323,11 @@ class PI05GraphTests(unittest.TestCase):
 
     def test_euler_runtime_helper_has_no_model_or_transformers_dependency(
             self):
-        code = '''
-import sys
-from fluxvla_export.components.euler import plain_euler
-for prefix in ("transformers", "fluxvla", "mmengine", "accelerate", "timm"):
-    assert not any(name == prefix or name.startswith(prefix + ".") for name in sys.modules)
-'''
+        code = ('\nimport sys\nfrom fluxvla_export.components.euler import'
+                ' plain_euler\nfor prefix in ("transformers", "fluxvla", '
+                '"mmengine", "accelerate", "timm"):\n    assert not any(n'
+                'ame == prefix or name.startswith(prefix + ".") for name'
+                ' in sys.modules)\n')
         result = subprocess.run([sys.executable, '-c', code],
                                 env=os.environ.copy(),
                                 capture_output=True,

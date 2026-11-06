@@ -15,10 +15,9 @@
 from typing import Callable, Dict, Tuple
 
 import torch
+from fluxvla_export.components.siglip import \
+    SigLIPViTBackbone as SharedSigLIPViTBackbone
 from timm.models.vision_transformer import Block, VisionTransformer
-
-from fluxvla_export.components.siglip import (
-    SigLIPViTBackbone as SharedSigLIPViTBackbone)
 
 from fluxvla.engines import VISION_BACKBONES
 from fluxvla.engines.utils.fsdp_wrapping import (

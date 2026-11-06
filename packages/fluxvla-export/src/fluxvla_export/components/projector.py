@@ -17,7 +17,8 @@ import torch.nn as nn
 
 
 class LinearProjector(nn.Module):
-    """Map vision features to language features with one biased linear layer."""
+    """Map vision features to language features with one biased linear layer.
+    """
 
     def __init__(self, in_dim: int, out_dim: int) -> None:
         super().__init__()

@@ -1,7 +1,6 @@
 """API preflight/dispatch tests with real tensor files, not a PI0.5 model."""
 
 from __future__ import annotations
-
 import hashlib
 import json
 import tempfile
@@ -9,13 +8,11 @@ import unittest
 from pathlib import Path
 
 import torch
-from safetensors.torch import save_file
-
 from fluxvla_export import (ArtifactError, ConfigError, ContractError,
-                           DeploymentConfig, PreparedDeployment,
-                           PreparedGraph, RecipeNotFoundError, TensorSpec,
-                           prepare_tensorrt)
-from fluxvla_export import registry
+                            DeploymentConfig, PreparedDeployment,
+                            PreparedGraph, RecipeNotFoundError, TensorSpec,
+                            prepare_tensorrt, registry)
+from safetensors.torch import save_file
 from test_config import config_document
 
 
@@ -87,22 +84,30 @@ class ApiTest(unittest.TestCase):
         module = torch.nn.Identity().eval()
         inputs = {'noise': self.tensors['noise']}
         graph = PreparedGraph(
-            name='identity', module=module, inputs=inputs,
-            input_specs=(spec,), output_specs=(output,),
+            name='identity',
+            module=module,
+            inputs=inputs,
+            input_specs=(spec, ),
+            output_specs=(output, ),
         )
         return PreparedDeployment(
-            recipe='pi05-v1', graphs={'identity': graph},
-            policy_inputs=inputs, policy_input_specs=(spec,),
-            output_specs=(output,),
-            reference_runner=lambda: {
-                'actions': module(inputs['noise'].clone())},
+            recipe='pi05-v1',
+            graphs={'identity': graph},
+            policy_inputs=inputs,
+            policy_input_specs=(spec, ),
+            output_specs=(output, ),
+            reference_runner=lambda:
+            {'actions': module(inputs['noise'].clone())},
             executor_factory=lambda engines: IdentityExecutor(),
         )
 
     def prepare(self, **overrides):
         arguments = dict(
-            recipe='pi05-v1', config=self.config,
-            checkpoint=self.checkpoint, inputs=self.inputs, device='cpu',
+            recipe='pi05-v1',
+            config=self.config,
+            checkpoint=self.checkpoint,
+            inputs=self.inputs,
+            device='cpu',
         )
         arguments.update(overrides)
         return prepare_tensorrt(**arguments)
@@ -117,8 +122,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(checkpoint, self.checkpoint.resolve())
         self.assertEqual(inputs, self.inputs.resolve())
         self.assertEqual(device, 'cpu')
-        torch.testing.assert_close(
-            result.run_reference()['actions'], self.tensors['noise'])
+        torch.testing.assert_close(result.run_reference()['actions'],
+                                   self.tensors['noise'])
 
     def test_rejects_unknown_recipe_without_manufacturing_model(self):
         registry._RECIPE_FACTORIES.pop('pi05-v1')
@@ -129,8 +134,10 @@ class ApiTest(unittest.TestCase):
     def test_config_parameter_is_required(self):
         with self.assertRaisesRegex(TypeError, 'config'):
             prepare_tensorrt(
-                recipe='pi05-v1', checkpoint=self.checkpoint,
-                inputs=self.inputs, device='cpu')
+                recipe='pi05-v1',
+                checkpoint=self.checkpoint,
+                inputs=self.inputs,
+                device='cpu')
 
     def test_config_recipe_mismatch_prevents_dispatch(self):
         with self.assertRaises(ConfigError):
@@ -138,8 +145,8 @@ class ApiTest(unittest.TestCase):
         self.assertEqual(self.arguments, [])
 
     def test_rejects_invalid_device_before_reading_files(self):
-        for device in ('', ' ', ' cuda:0', 'cuda:0 ', 0, None,
-                       'cuda:-1', 'cuda:one', 'not-a-device'):
+        for device in ('', ' ', ' cuda:0', 'cuda:0 ', 0, None, 'cuda:-1',
+                       'cuda:one', 'not-a-device'):
             with self.subTest(device=device):
                 with self.assertRaisesRegex(ContractError, 'device'):
                     self.prepare(device=device, config='missing.json')

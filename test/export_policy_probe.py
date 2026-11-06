@@ -101,9 +101,8 @@ def deployment_document(model, inputs, state_path, inputs_path):
         vision=dict(
             type='siglip',
             **{
-                k:
-                getattr(vision.vision.config,
-                        'hidden_act' if k == 'hidden_activation' else k)
+                k: getattr(vision.vision.config,
+                           'hidden_act' if k == 'hidden_activation' else k)
                 for k in VISION_FIELDS
             }),
         backbone=gemma_document(backbone),
@@ -139,8 +138,7 @@ def deployment_document(model, inputs, state_path, inputs_path):
             format='safetensors',
             sha256=previous._hash(inputs_path),
             tensors={
-                name:
-                dict(
+                name: dict(
                     dtype=str(inputs[name].dtype)[6:],
                     shape=list(inputs[name].shape))
                 for name in INPUT_NAMES
@@ -222,7 +220,9 @@ def cached_evidence(model, spec, inputs):
             suffix = model.embed_suffix(values['states'], values['noise'],
                                         time)
             for name, value in zip(
-                ('embeddings', 'padding', 'blocks', 'condition'), suffix):
+                ('embeddings', 'padding', 'blocks', 'condition'),
+                    suffix,
+            ):
                 record(f'{mode}.suffix.{name}', value)
             velocity = model.denoise_step(values['states'], pad, cache,
                                           values['noise'], time)
@@ -329,8 +329,8 @@ def run(args):
         if repo == Path(baseline['provenance']['repo']):
             raise ValueError(
                 'Comparison must not import the original checkout')
-        if (baseline['provenance']['policy_probe_sha256']
-                != previous._hash(__file__)
+        if (baseline['provenance']['policy_probe_sha256'] !=
+                previous._hash(__file__)
                 or baseline['provenance']['probe_sha256'] != previous._hash(
                     previous.__file__)):
             raise AssertionError(
@@ -351,9 +351,9 @@ def run(args):
     cleanup = bootstrap_standalone(
         repo) if target == 'standalone' else previous._bootstrap(repo)
     import torch
-    from safetensors.torch import load_file, save_file
-    from fluxvla_export.config import load_config
     from fluxvla_export.checkpoint import load_checkpoint
+    from fluxvla_export.config import load_config
+    from safetensors.torch import load_file, save_file
     try:
         if baseline and provenance(
                 repo)['environment'] != baseline['provenance']['environment']:
@@ -377,8 +377,8 @@ def run(args):
                     inputs = load_file(str(source / 'inputs.safetensors'))
                     expected = load_file(str(source / 'results.safetensors'))
                     if target == 'standalone':
-                        from fluxvla_export.recipes.pi05.model import (
-                            build_pi05_model)
+                        from fluxvla_export.recipes.pi05.model import \
+                            build_pi05_model
                         model = build_pi05_model(
                             load_config(
                                 source / 'deployment.json',
@@ -407,8 +407,8 @@ def run(args):
                 })
                 details['cached'] = cached_details
                 if target == 'standalone':
-                    from fluxvla_export.recipes.pi05.reference import (
-                        prepare_reference)
+                    from fluxvla_export.recipes.pi05.reference import \
+                        prepare_reference
                     rng = torch.random.get_rng_state().clone()
                     reference = prepare_reference(
                         config=source / 'deployment.json',
@@ -494,9 +494,9 @@ def run(args):
                             'original vision.vision.config / '
                             'llm_backbone.config / llm_expert.config / '
                             'named LinearProjector.projector'),
-                        dimensions=
-                        ('original proj_width/max_action_dim/n_action_steps; '
-                         'states fixture last dimension'),
+                        dimensions=(
+                            'original proj_width/max_action_dim/'
+                            'n_action_steps; states fixture last dimension'),
                         precision=('original policy/vision/Gemma attributes; '
                                    'FP32 parameter dtypes checked'),
                         preprocessing=(
