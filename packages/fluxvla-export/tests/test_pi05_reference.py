@@ -8,7 +8,6 @@
 """Standalone PI0.5 tests with real tiny HF models and real safetensors."""
 
 from __future__ import annotations
-
 import copy
 import json
 import os
@@ -21,16 +20,15 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
-from transformers import SiglipVisionModel
-
+from _pi05_test_utils import Artifacts, fixture_tensors, write_config
 from fluxvla_export.components.condition_gemma import ConditionGemmaModel
 from fluxvla_export.components.pi_policy import PI05Computation
 from fluxvla_export.components.projector import LinearProjector
 from fluxvla_export.components.siglip import SigLIPViTBackbone
 from fluxvla_export.errors import ArtifactError, ConfigError, ContractError
 from fluxvla_export.recipes.pi05.model import PI05Model, build_pi05_model
-from _pi05_test_utils import Artifacts, fixture_tensors, write_config
 from test_config import config_document
+from transformers import SiglipVisionModel
 
 
 class PI05ReferenceTests(unittest.TestCase):
@@ -431,8 +429,7 @@ class PI05ReferenceTests(unittest.TestCase):
             rtol=0,
             atol=0)
 
-    def test_checkpoint_rejects_missing_unused_embedding_extra_head_and_remapping(
-            self):
+    def test_checkpoint_rejects_missing_keys_extra_head_and_remapping(self):
         artifacts = Artifacts(self.directory)
         original = dict(artifacts.model.state_dict())
         for variant in ('missing', 'head', 'remapped'):
@@ -441,9 +438,8 @@ class PI05ReferenceTests(unittest.TestCase):
                 if variant == 'missing':
                     del state['llm_expert.embed_tokens.weight']
                 elif variant == 'head':
-                    state[
-                        'vision_backbone.vision.vision_model.head.probe'] = torch.zeros(
-                            1, 1, 16)
+                    state['vision_backbone.vision.vision_model.head.probe'] = (
+                        torch.zeros(1, 1, 16))
                 else:
                     state = {
                         f'module.{key}': value

@@ -5,11 +5,9 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-
 """Safe artifact inspection without importing optional tensor dependencies."""
 
 from __future__ import annotations
-
 import hashlib
 import json
 import os
@@ -108,14 +106,14 @@ def _validate_header(header: bytes, *, data_size: int, owner: str) -> None:
         if name == '__metadata__':
             # Metadata is untrusted annotation, never a source of expected
             # names, shapes, dtypes, or digests.
-            if not isinstance(entry, dict) or any(
-                    not isinstance(value, str) for value in entry.values()):
-                raise ArtifactError(
-                    f'{owner}: safetensors metadata must map '
-                    'strings to strings.')
+            if not isinstance(entry, dict) or any(not isinstance(value, str)
+                                                  for value in entry.values()):
+                raise ArtifactError(f'{owner}: safetensors metadata must map '
+                                    'strings to strings.')
             continue
-        if not isinstance(entry, dict) or set(entry) != {
-                'dtype', 'shape', 'data_offsets'}:
+        if not isinstance(
+                entry,
+                dict) or set(entry) != {'dtype', 'shape', 'data_offsets'}:
             raise ArtifactError(
                 f'{owner}: tensor {name!r} has invalid safetensors fields.')
         dtype = entry['dtype']
@@ -132,9 +130,8 @@ def _validate_header(header: bytes, *, data_size: int, owner: str) -> None:
         if not isinstance(offsets, list) or len(offsets) != 2 or any(
                 type(offset) is not int or not 0 <= offset <= _MAX_U64
                 for offset in offsets):
-            raise ArtifactError(
-                f'{owner}: tensor {name!r} has invalid '
-                f'data_offsets {offsets!r}.')
+            raise ArtifactError(f'{owner}: tensor {name!r} has invalid '
+                                f'data_offsets {offsets!r}.')
         start, end = offsets
         if start > end or end > data_size:
             raise ArtifactError(
@@ -156,17 +153,16 @@ def _validate_header(header: bytes, *, data_size: int, owner: str) -> None:
     cursor = 0
     for start, end, name in sorted(intervals):
         if start != cursor:
-            raise ArtifactError(
-                f'{owner}: tensor {name!r} data_offsets '
-                'have a gap or overlap.')
+            raise ArtifactError(f'{owner}: tensor {name!r} data_offsets '
+                                'have a gap or overlap.')
         cursor = end
     if cursor != data_size:
         raise ArtifactError(f'{owner}: unindexed trailing safetensors data.')
 
 
 def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
-    return (value.st_dev, value.st_ino, value.st_size,
-            value.st_mtime_ns, value.st_ctime_ns)
+    return (value.st_dev, value.st_ino, value.st_size, value.st_mtime_ns,
+            value.st_ctime_ns)
 
 
 def _read_verified(
@@ -195,8 +191,10 @@ def _read_verified(
         # pre-open stat alone would race with path replacement. One descriptor
         # pins the opened file; the loader also pins immutable decoded bytes.
         with open(
-            path, 'rb',
-            opener=lambda name, flags: os.open(name, flags | os.O_NONBLOCK),
+                path,
+                'rb',
+                opener=lambda name, flags: os.open(name, flags | os.O_NONBLOCK
+                                                   ),
         ) as stream:
             before = os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode):
@@ -296,10 +294,9 @@ def _validate_keys(
 ) -> None:
     supplied, required = set(actual), set(expected)
     if supplied != required:
-        raise ArtifactError(
-            f'{owner}: tensor keys do not match; '
-            f'missing={sorted(required - supplied)}, '
-            f'unexpected={sorted(supplied - required)}.')
+        raise ArtifactError(f'{owner}: tensor keys do not match; '
+                            f'missing={sorted(required - supplied)}, '
+                            f'unexpected={sorted(supplied - required)}.')
 
 
 def _validate_finite(value: torch.Tensor, *, owner: str) -> None:

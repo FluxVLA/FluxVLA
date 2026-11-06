@@ -9,10 +9,14 @@ stubs, patched computations, or fabricated baseline tensors.
 import inspect
 import sys
 from contextlib import contextmanager
+from test.export_components_probe import fixture_inputs, tiny_policy_config
 
 import pytest
 import torch
 import torch.nn.functional as F
+from fluxvla_export.components.pi_policy import PI0Computation, PI05Computation
+from fluxvla_export.components.tensor_utils import (
+    create_sinusoidal_pos_embedding, make_att_2d_masks)
 
 from fluxvla.engines import VLAS, build_vla_from_cfg
 from fluxvla.engines.losses import reduce_action_bc_loss
@@ -21,10 +25,6 @@ from fluxvla.engines.utils.rtc_training import (apply_rtc_time_conditioning,
 from fluxvla.models.vlas.base_vla import BaseVLA
 from fluxvla.models.vlas.pi0_flowmatching import PI0FlowMatching
 from fluxvla.models.vlas.pi05_flowmatching import PI05FlowMatching
-from fluxvla_export.components.pi_policy import PI0Computation, PI05Computation
-from fluxvla_export.components.tensor_utils import (
-    create_sinusoidal_pos_embedding, make_att_2d_masks)
-from test.export_components_probe import fixture_inputs, tiny_policy_config
 
 POLICIES = (PI0FlowMatching, PI05FlowMatching)
 SHARED_METHODS = ('_disable_autocast', '_cast_gemma_input',
@@ -276,10 +276,8 @@ def test_cached_prediction_dispatches_real_euler_and_rtc(policy, amp, method):
             with _count_real_calls(handler, model.denoise_step) as calls:
                 output = model.predict_action(**inputs, **rtc)
             repeated = model.predict_action(
-                **{
-                    name: tensor.clone()
-                    for name, tensor in fixture.items()
-                }, **rtc)
+                **{name: tensor.clone()
+                   for name, tensor in fixture.items()}, **rtc)
     finally:
         hook.remove()
     assert calls[handler.__code__] == 1

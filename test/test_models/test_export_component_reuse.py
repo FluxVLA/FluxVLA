@@ -7,25 +7,25 @@ export_components_probe.py CLI; these tests never manufacture baseline goldens.
 """
 
 import inspect
+from test.export_components_probe import (SEED, build_case_model, case_specs,
+                                          execute_case, fixture_inputs,
+                                          tiny_policy_config)
 
 import pytest
 import torch
+from fluxvla_export.components import condition_gemma as shared_gemma
+from fluxvla_export.components import tensor_utils
+from fluxvla_export.components.projector import LinearProjector
+from fluxvla_export.components.siglip import SigLIPViTBackbone
 
 from fluxvla.engines import (LLM_BACKBONES, PROJECTORS, VISION_BACKBONES,
                              build_vla_from_cfg)
 from fluxvla.engines.utils import model_utils
 from fluxvla.models.backbones.llms import condition_gemma as training_gemma
-from fluxvla.models.backbones.visions.siglip_vit import (SigLIPViTBackbone as
-                                                         TrainingSigLIP)
-from fluxvla.models.projectors.linear_projector import (LinearProjector as
-                                                        TrainingProjector)
-from fluxvla_export.components import condition_gemma as shared_gemma
-from fluxvla_export.components import tensor_utils
-from fluxvla_export.components.projector import LinearProjector
-from fluxvla_export.components.siglip import SigLIPViTBackbone
-from test.export_components_probe import (SEED, build_case_model, case_specs,
-                                          execute_case, fixture_inputs,
-                                          tiny_policy_config)
+from fluxvla.models.backbones.visions.siglip_vit import \
+    SigLIPViTBackbone as TrainingSigLIP
+from fluxvla.models.projectors.linear_projector import \
+    LinearProjector as TrainingProjector
 
 
 @pytest.mark.parametrize('name', [
@@ -61,7 +61,8 @@ def test_training_gemma_adapter_inherits_shared_constructor_and_forward():
 def test_siglip_adapter_and_projector_share_real_implementations():
     assert issubclass(TrainingSigLIP, SigLIPViTBackbone)
     assert TrainingSigLIP.forward is SigLIPViTBackbone.forward
-    assert TrainingSigLIP._forward_openpi_stem is SigLIPViTBackbone._forward_openpi_stem
+    assert (TrainingSigLIP._forward_openpi_stem is
+            SigLIPViTBackbone._forward_openpi_stem)
     assert VISION_BACKBONES.get('SigLIPViTBackbone') is TrainingSigLIP
     assert TrainingProjector is LinearProjector
     assert PROJECTORS.get('LinearProjector') is LinearProjector
@@ -134,15 +135,16 @@ def test_real_pi_policy_uses_shared_modules_without_extra_state_prefixes(
         policy.llm_backbone.layers[0]) is shared_gemma.GemmaDecoderLayer
     assert type(policy.llm_expert.layers[0].mlp) is shared_gemma.GemmaMLP
     for model in (policy.llm_backbone, policy.llm_expert):
-        assert model.forward.__func__ is shared_gemma.ConditionGemmaModel.forward
+        assert (model.forward.__func__ is
+                shared_gemma.ConditionGemmaModel.forward)
         assert model.half_precision_dtype is torch.bfloat16
         assert callable(model.get_fsdp_wrapping_policy())
     keys = policy.state_dict()
-    for key in (
-            'llm_backbone.embed_tokens.weight',
-            'llm_expert.layers.0.self_attn.q_proj.weight',
-            'vision_backbone.vision.vision_model.embeddings.patch_embedding.weight',
-            'projector.projector.weight', 'action_out_proj.projector.weight'):
+    for key in ('llm_backbone.embed_tokens.weight',
+                'llm_expert.layers.0.self_attn.q_proj.weight',
+                ('vision_backbone.vision.vision_model.embeddings.'
+                 'patch_embedding.weight'), 'projector.projector.weight',
+                'action_out_proj.projector.weight'):
         assert key in keys
     assert not any('.core.' in key or '.shared.' in key for key in keys)
     expected_attention = (
