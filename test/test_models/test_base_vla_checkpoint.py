@@ -30,7 +30,8 @@ def _weights():
 
 @pytest.mark.parametrize('format',
                          ['pt', 'wrapped_pt', 'safetensors', 'shards'])
-def test_checkpoint_restores_parameters_and_buffers(tmp_path, format):
+@pytest.mark.parametrize('mapping', [None, {'projector': 'source'}])
+def test_checkpoint_restores_parameters_and_buffers(tmp_path, format, mapping):
     weights = _weights()
     if format == 'shards':
         path = tmp_path
@@ -47,7 +48,7 @@ def test_checkpoint_restores_parameters_and_buffers(tmp_path, format):
         torch.save({'model': weights} if format == 'wrapped_pt' else weights,
                    path)
 
-    model = _TinyVLA(pretrained_name_or_path=str(path))
+    model = _TinyVLA(pretrained_name_or_path=str(path), name_mapping=mapping)
     model.from_pretrained()
     for name, actual in model.state_dict().items():
         torch.testing.assert_close(actual, weights[name], rtol=0, atol=0)
@@ -70,8 +71,62 @@ def test_checkpoint_name_mapping_and_strict_missing_key(tmp_path):
         model.projector.weight, weights['projector.weight'], rtol=0, atol=0)
     torch.testing.assert_close(
         model.projector.bias, weights['projector.bias'], rtol=0, atol=0)
+    torch.testing.assert_close(model.scale, weights['scale'], rtol=0, atol=0)
 
     torch.save({'projector.weight': weights['projector.weight']}, path)
     model.name_mapping = None
     with pytest.raises(RuntimeError, match='Missing key'):
         model.from_pretrained()
+
+
+def test_mixed_checkpoint_prefers_native_keys(tmp_path):
+    path = tmp_path / 'mixed.pt'
+    weights = _weights()
+    torch.save(
+        {
+            'projector.weight': weights['projector.weight'],
+            'source.weight': torch.zeros_like(weights['projector.weight']),
+            'source.bias': weights['projector.bias'],
+            'source_scale': weights['scale'],
+        }, path)
+    model = _TinyVLA(
+        pretrained_name_or_path=str(path),
+        name_mapping={
+            'projector': 'source',
+            'scale': 'source_scale'
+        })
+    model.from_pretrained()
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, weights[name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('fault', ['missing', 'shape', 'unexpected'])
+def test_native_checkpoint_remains_strict_with_mapping(tmp_path, fault):
+    path = tmp_path / 'bad.pt'
+    weights = _weights()
+    if fault == 'missing':
+        weights.pop('projector.bias')
+    elif fault == 'shape':
+        weights['projector.weight'] = torch.zeros(1)
+    else:
+        weights['value_head.weight'] = torch.zeros(1)
+    torch.save(weights, path)
+    model = _TinyVLA(
+        pretrained_name_or_path=str(path),
+        name_mapping={'projector': 'source'})
+    with pytest.raises((RuntimeError, ValueError)):
+        model.from_pretrained()
+
+
+def test_native_mapping_honors_pretrained_skip_prefixes(tmp_path):
+    path = tmp_path / 'policy.pt'
+    torch.save(_weights(), path)
+    model = _TinyVLA(
+        pretrained_name_or_path=str(path),
+        name_mapping={'projector': 'source'},
+        pretrained_skip_prefixes=['projector.'])
+    before = model.projector.weight.detach().clone()
+    model.from_pretrained()
+    torch.testing.assert_close(model.projector.weight, before, rtol=0, atol=0)
+    torch.testing.assert_close(
+        model.scale, _weights()['scale'], rtol=0, atol=0)
