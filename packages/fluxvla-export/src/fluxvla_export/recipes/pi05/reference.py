@@ -12,7 +12,6 @@ Model libraries are loaded only when preparation or inference is requested.
 """
 
 from __future__ import annotations
-
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,7 +118,8 @@ def prepare_reference(
     inputs: str | Path,
     device: str,
 ) -> PI05Reference:
-    """Validate bound JSON/safetensors and strictly load the native PI0.5 graph.
+    """Validate bound JSON/safetensors and strictly load the native
+    PI0.5 graph.
 
     CPU construction is wrapped in ``fork_rng`` to restore the caller's RNG
     even on failure. The raw builder itself preserves the original normal

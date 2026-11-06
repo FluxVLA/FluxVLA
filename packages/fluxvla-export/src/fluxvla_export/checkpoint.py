@@ -5,11 +5,9 @@
 # You may obtain a copy of the License at
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
-
 """Strict, non-mutating loading of native dense model state."""
 
 from __future__ import annotations
-
 from collections.abc import Mapping
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -43,14 +41,14 @@ def load_checkpoint(
     import torch
 
     owner = f'Checkpoint {path}'
-    if storage_dtype is not None and (
-            type(storage_dtype) is not str
-            or storage_dtype not in ('float32', 'bfloat16')):
+    if storage_dtype is not None and (type(storage_dtype) is not str
+                                      or storage_dtype
+                                      not in ('float32', 'bfloat16')):
         raise ArtifactError(
             f'{owner}: storage_dtype must be None, float32 or bfloat16; '
             f'got {storage_dtype!r}.')
-    declared_dtype = (getattr(torch, storage_dtype)
-                      if storage_dtype is not None else None)
+    declared_dtype = (
+        getattr(torch, storage_dtype) if storage_dtype is not None else None)
     if not isinstance(expected_state, Mapping):
         raise ArtifactError(
             f'{owner}: expected_state must be a tensor mapping.')
@@ -83,8 +81,8 @@ def load_checkpoint(
     # BF16 values are represented exactly in FP32; no precision is recovered
     # or approximated. Never cast before validating the complete source state.
     return {
-        name: (tensors[name].to(dtype=torch.float32)
-               if storage_dtype == 'bfloat16'
-               and tensors[name].is_floating_point() else tensors[name])
+        name:
+        (tensors[name].to(dtype=torch.float32) if storage_dtype == 'bfloat16'
+         and tensors[name].is_floating_point() else tensors[name])
         for name in expected_state
     }

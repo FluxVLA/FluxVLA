@@ -7,7 +7,6 @@
 #     http://www.apache.org/licenses/LICENSE-2.0
 
 from __future__ import annotations
-
 from pathlib import Path
 
 from . import recipes as _recipes  # noqa: F401
@@ -49,7 +48,8 @@ def prepare_tensorrt(
         specs=resolved.input_specs,
     )
     validate_token_vocabulary(
-        tensors['lang_tokens'], vocab_size=resolved.model.vocab_size,
+        tensors['lang_tokens'],
+        vocab_size=resolved.model.vocab_size,
         label=f'Export inputs {inputs}',
     )
     # Recipes must revalidate hashes when loading paths. Preflight is not a
@@ -65,7 +65,6 @@ def prepare_tensorrt(
             f'Recipe {recipe!r} must return PreparedDeployment, got '
             f'{type(prepared).__name__}.')
     if prepared.recipe != recipe:
-        raise ContractError(
-            f'Recipe {recipe!r} returned deployment for '
-            f'{prepared.recipe!r}.')
+        raise ContractError(f'Recipe {recipe!r} returned deployment for '
+                            f'{prepared.recipe!r}.')
     return prepared

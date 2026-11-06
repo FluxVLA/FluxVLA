@@ -12,12 +12,12 @@ from pathlib import Path
 import onnx
 import onnxruntime as ort
 import torch
-from onnxruntime.capi.onnxruntime_pybind11_state import (NotImplemented as
-                                                         OrtNotImplemented)
-
-from fluxvla_export.components.euler import plain_euler
-from fluxvla_export.recipes.pi05.graphs import PI05DenoiseGraph, PI05PrefillGraph
 from _pi05_test_utils import Artifacts
+from fluxvla_export.components.euler import plain_euler
+from fluxvla_export.recipes.pi05.graphs import (PI05DenoiseGraph,
+                                                PI05PrefillGraph)
+from onnxruntime.capi.onnxruntime_pybind11_state import \
+    NotImplemented as OrtNotImplemented
 from test_config import config_document
 
 
@@ -92,8 +92,10 @@ class PI05GraphOnnxTests(unittest.TestCase):
             tuple(value.name for value in graph.output), module.output_names)
         if module.autocast_enabled:
             initializers = {value.name for value in graph.initializer}
-            reductions = [node for node in graph.node
-                          if node.op_type.startswith('Reduce')]
+            reductions = [
+                node for node in graph.node
+                if node.op_type.startswith('Reduce')
+            ]
             self.assertTrue(reductions)
             for node in reductions:
                 # TensorRT 10.13 rejects even literal axes behind Reshape.
@@ -243,15 +245,18 @@ class PI05GraphOnnxTests(unittest.TestCase):
     def test_bf16_storage_widens_before_native_bf16_graph_export(self):
         artifacts = self.artifacts(amp=True, protected=True, flow=True)
         artifacts.document['checkpoint']['storage_dtype'] = 'bfloat16'
-        stored = {name: value.detach().bfloat16()
-                  if value.is_floating_point() else value.detach().clone()
-                  for name, value in artifacts.model.state_dict().items()}
+        stored = {
+            name: value.detach().bfloat16()
+            if value.is_floating_point() else value.detach().clone()
+            for name, value in artifacts.model.state_dict().items()
+        }
         artifacts.save_checkpoint(stored)
         before = artifacts.checkpoint_path.read_bytes()
         reference = artifacts.prepare()
         for name, value in reference.model.state_dict().items():
-            expected = (stored[name].float() if stored[name].is_floating_point()
-                        else stored[name])
+            expected = (
+                stored[name].float()
+                if stored[name].is_floating_point() else stored[name])
             torch.testing.assert_close(value, expected, rtol=0, atol=0)
         artifacts.model = reference.model
         self.assert_native_bf16_exports(artifacts)

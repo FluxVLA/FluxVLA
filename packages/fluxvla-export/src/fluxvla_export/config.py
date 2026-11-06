@@ -18,7 +18,6 @@ every object rejects additional fields.
 """
 
 from __future__ import annotations
-
 import json
 import math
 import os
@@ -458,8 +457,8 @@ def _inputs(value: Any, model: ModelConfig, precision: PrecisionConfig,
     if prefix_length > model.backbone.max_position_embeddings:
         _fail('model.backbone.max_position_embeddings',
               f'must cover all {prefix_length} unmasked prefix positions')
-    if (prefix_length + model.action_horizon
-            > model.expert.max_position_embeddings):
+    if (prefix_length + model.action_horizon >
+            model.expert.max_position_embeddings):
         _fail('model.expert.max_position_embeddings',
               'must cover the full prefix plus action_horizon')
     return tuple(specs)
@@ -508,7 +507,8 @@ def _deployment(value: Any, recipe: str) -> DeploymentConfig:
 
 
 def config_from_document(document: Any, *, recipe: str) -> DeploymentConfig:
-    """Validate an in-memory JSON document with the same schema as file input."""
+    """Validate an in-memory JSON document with the same schema as file input.
+    """
     _string(recipe, 'recipe argument')
     return _deployment(document, recipe)
 
@@ -549,11 +549,15 @@ def _config_document(config: DeploymentConfig) -> dict[str, Any]:
         'schema_version': config.schema_version,
         'recipe': config.recipe,
         'checkpoint': {
-            'format': 'fluxvla-native',
-            'kind': 'dense',
-            'sha256': config.checkpoint_sha256,
-            **({'storage_dtype': config.checkpoint_storage_dtype}
-               if config.checkpoint_storage_dtype != 'float32' else {}),
+            'format':
+            'fluxvla-native',
+            'kind':
+            'dense',
+            'sha256':
+            config.checkpoint_sha256,
+            **({
+                'storage_dtype': config.checkpoint_storage_dtype
+            } if config.checkpoint_storage_dtype != 'float32' else {}),
         },
         'inputs': {
             'format': 'safetensors',
@@ -574,14 +578,17 @@ def _config_document(config: DeploymentConfig) -> dict[str, Any]:
 
 
 def config_to_document(config: DeploymentConfig) -> dict[str, Any]:
-    """Serialize validated schema fields without discarding unsupported data."""
+    """Serialize validated schema fields without discarding unsupported data.
+    """
     document = _config_document(config)
     config_from_document(document, recipe=config.recipe)
     return document
 
 
 def validate_config(config: DeploymentConfig) -> DeploymentConfig:
-    """Revalidate caller-constructed/replaced dataclasses and return canonical data."""
+    """Revalidate caller-constructed/replaced dataclasses and return
+    canonical data.
+    """
     return config_from_document(_config_document(config), recipe=config.recipe)
 
 

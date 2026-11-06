@@ -135,8 +135,8 @@ class PI05DenoiseGraph(nn.Module):
         self.eval()
 
     def forward(self, noisy_actions: torch.Tensor, timestep: torch.Tensor,
-                prefix_pad_masks: torch.Tensor, *flat_cache:
-                torch.Tensor) -> torch.Tensor:
+                prefix_pad_masks: torch.Tensor,
+                *flat_cache: torch.Tensor) -> torch.Tensor:
         if len(flat_cache) != 2 * self.num_layers:
             raise ContractError(
                 'PI0.5 denoise requires one key/value pair per prefix layer; '

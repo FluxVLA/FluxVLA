@@ -13,7 +13,6 @@ contract and delegates the exact plain Euler loop to the shared torch helper.
 """
 
 from __future__ import annotations
-
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType

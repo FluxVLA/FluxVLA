@@ -1,7 +1,6 @@
 """Structural contract tests; stand-ins are not numerical model evidence."""
 
 from __future__ import annotations
-
 import unittest
 
 from fluxvla_export import (ContractError, PreparedDeployment, PreparedGraph,

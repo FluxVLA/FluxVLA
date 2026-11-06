@@ -8,15 +8,14 @@ from dataclasses import replace
 from pathlib import Path
 
 import torch
-from safetensors.torch import load_file, save_file
-
 from _pi05_test_utils import Artifacts
 from fluxvla_export.checkpoint import load_checkpoint
-from fluxvla_export.config import (
-    config_from_document, config_to_document, load_config, validate_config)
+from fluxvla_export.config import (config_from_document, config_to_document,
+                                   load_config, validate_config)
 from fluxvla_export.errors import ArtifactError, ConfigError
 from fluxvla_export.recipes.pi05.artifacts import produce_pi05_artifacts
 from fluxvla_export.recipes.pi05.reference import prepare_reference
+from safetensors.torch import load_file, save_file
 from test_config import config_document
 
 
@@ -25,8 +24,11 @@ def _digest(path):
 
 
 def _bf16_state(state):
-    return {name: value.detach().bfloat16() if value.is_floating_point()
-            else value.detach().clone() for name, value in state.items()}
+    return {
+        name: value.detach().bfloat16()
+        if value.is_floating_point() else value.detach().clone()
+        for name, value in state.items()
+    }
 
 
 def _canonical(document):
@@ -46,8 +48,9 @@ class StorageConfigTests(unittest.TestCase):
                 self.assertEqual(config.checkpoint_storage_dtype, 'float32')
                 actual = _canonical(config_to_document(config))
                 self.assertEqual(actual, original)
-                self.assertEqual(hashlib.sha256(actual).digest(),
-                                 hashlib.sha256(original).digest())
+                self.assertEqual(
+                    hashlib.sha256(actual).digest(),
+                    hashlib.sha256(original).digest())
 
     def test_bfloat16_roundtrip_changes_provenance_not_checkpoint_digest(self):
         document = config_document()
@@ -59,8 +62,9 @@ class StorageConfigTests(unittest.TestCase):
         self.assertEqual(config.checkpoint_sha256, original.checkpoint_sha256)
         self.assertEqual(config_to_document(config), document)
         self.assertEqual(validate_config(config), config)
-        self.assertNotEqual(_canonical(config_to_document(original)),
-                            _canonical(config_to_document(config)))
+        self.assertNotEqual(
+            _canonical(config_to_document(original)),
+            _canonical(config_to_document(config)))
 
     def test_invalid_storage_declarations_and_replaced_configs_fail(self):
         original = config_from_document(config_document(), recipe='pi05-v1')
@@ -71,8 +75,8 @@ class StorageConfigTests(unittest.TestCase):
                 with self.assertRaisesRegex(ConfigError, 'storage_dtype'):
                     config_from_document(document, recipe='pi05-v1')
                 with self.assertRaisesRegex(ConfigError, 'storage_dtype'):
-                    validate_config(replace(
-                        original, checkpoint_storage_dtype=invalid))
+                    validate_config(
+                        replace(original, checkpoint_storage_dtype=invalid))
 
 
 class StorageLoaderTests(unittest.TestCase):
@@ -84,8 +88,10 @@ class StorageLoaderTests(unittest.TestCase):
 
     def load(self, expected, storage_dtype='bfloat16', digest=None):
         return load_checkpoint(
-            self.path, expected_sha256=digest or _digest(self.path),
-            expected_state=expected, storage_dtype=storage_dtype)
+            self.path,
+            expected_sha256=digest or _digest(self.path),
+            expected_state=expected,
+            storage_dtype=storage_dtype)
 
     def test_widening_matches_native_load_preserving_source_and_buffers(self):
         model = torch.nn.BatchNorm1d(3)
@@ -127,8 +133,12 @@ class StorageLoaderTests(unittest.TestCase):
                     self.load({'x': torch.zeros(2)}, invalid)
 
     def test_rejects_mixed_float_storage_and_non_float_buffer_casting(self):
-        expected = {'x': torch.zeros(2), 'y': torch.zeros(2),
-                    'count': torch.tensor(1), 'mask': torch.tensor(True)}
+        expected = {
+            'x': torch.zeros(2),
+            'y': torch.zeros(2),
+            'count': torch.tensor(1),
+            'mask': torch.tensor(True)
+        }
         original = _bf16_state(expected)
         for key, dtype in (('x', torch.float32), ('y', torch.float16),
                            ('count', torch.int32), ('mask', torch.int64)):
@@ -149,16 +159,20 @@ class StorageLoaderTests(unittest.TestCase):
         expected = {'x': torch.zeros(2)}
         cases = (
             ({}, 'tensor keys'),
-            ({'x': torch.ones(3, dtype=torch.bfloat16)}, 'shape'),
-            ({'x': torch.ones(2, dtype=torch.bfloat16),
-              'extra': torch.ones(1)}, 'tensor keys'),
+            ({
+                'x': torch.ones(3, dtype=torch.bfloat16)
+            }, 'shape'),
+            ({
+                'x': torch.ones(2, dtype=torch.bfloat16),
+                'extra': torch.ones(1)
+            }, 'tensor keys'),
         )
         for stored, error in cases:
             save_file(stored, self.path)
             with self.assertRaisesRegex(ArtifactError, error):
                 self.load(expected)
         for number in (float('nan'), float('inf'), -float('inf')):
-            save_file({'x': torch.full((2,), number, dtype=torch.bfloat16)},
+            save_file({'x': torch.full((2, ), number, dtype=torch.bfloat16)},
                       self.path)
             with self.assertRaisesRegex(ArtifactError, 'non-finite'):
                 self.load(expected)
@@ -188,10 +202,12 @@ class StorageProducerReferenceTests(unittest.TestCase):
 
     def produce(self, **options):
         return produce_pi05_artifacts(
-            model=self.assets.model, inputs=self.assets.tensors,
+            model=self.assets.model,
+            inputs=self.assets.tensors,
             checkpoint=self.assets.checkpoint_path,
             preprocessing=self.assets.config.preprocessing,
-            output_dir=self.output, **options)
+            output_dir=self.output,
+            **options)
 
     def test_native_bfloat16_load_producer_reference_and_hash_agree(self):
         stored = _bf16_state(self.assets.model.state_dict())
@@ -214,16 +230,19 @@ class StorageProducerReferenceTests(unittest.TestCase):
                          hashlib.sha256(before).hexdigest())
         self.assertEqual(result.checkpoint, self.assets.checkpoint_path)
         reference = prepare_reference(
-            config=result.config, checkpoint=result.checkpoint,
-            inputs=result.inputs, device='cpu')
-        torch.testing.assert_close(reference.run_reference()['actions'],
-                                   baseline, rtol=0, atol=0)
+            config=result.config,
+            checkpoint=result.checkpoint,
+            inputs=result.inputs,
+            device='cpu')
+        torch.testing.assert_close(
+            reference.run_reference()['actions'], baseline, rtol=0, atol=0)
         for name, value in reference.model.state_dict().items():
             self.assertEqual(value.dtype, state_before[name].dtype)
             torch.testing.assert_close(
                 value, state_before[name], rtol=0, atol=0)
-            self.assertTrue(torch.equal(
-                self.assets.model.state_dict()[name], state_before[name]))
+            self.assertTrue(
+                torch.equal(self.assets.model.state_dict()[name],
+                            state_before[name]))
         self.assertEqual(self.assets.checkpoint_path.read_bytes(), before)
 
     def test_unrounded_live_float32_is_not_the_checkpoint_reference(self):
@@ -238,29 +257,32 @@ class StorageProducerReferenceTests(unittest.TestCase):
         self.assets.save_checkpoint(stored)
         before = self.assets.checkpoint_path.read_bytes()
         result = self.produce(checkpoint_storage_dtype='bfloat16')
-        self.assertTrue(torch.equal(
-            live[key], torch.full_like(live[key], 1.003)))
+        self.assertTrue(
+            torch.equal(live[key], torch.full_like(live[key], 1.003)))
         reference = prepare_reference(
-            config=result.config, checkpoint=result.checkpoint,
-            inputs=result.inputs, device='cpu')
-        self.assertFalse(torch.equal(reference.model.state_dict()[key],
-                                     live[key]))
-        self.assets.model.load_state_dict(load_file(result.checkpoint),
-                                          strict=True)
+            config=result.config,
+            checkpoint=result.checkpoint,
+            inputs=result.inputs,
+            device='cpu')
+        self.assertFalse(
+            torch.equal(reference.model.state_dict()[key], live[key]))
+        self.assets.model.load_state_dict(
+            load_file(result.checkpoint), strict=True)
         with torch.no_grad():
             baseline = self.assets.model(**self.assets.tensors)
         self.assertFalse(torch.equal(baseline, unrounded_actions))
-        torch.testing.assert_close(reference.run_reference()['actions'],
-                                   baseline, rtol=0, atol=0)
+        torch.testing.assert_close(
+            reference.run_reference()['actions'], baseline, rtol=0, atol=0)
         self.assertEqual(self.assets.checkpoint_path.read_bytes(), before)
 
     def test_both_storage_types_accept_authoritative_ema_values(self):
         for storage_dtype in ('float32', 'bfloat16'):
             with self.subTest(storage_dtype=storage_dtype):
                 self.output = self.root / storage_dtype
-                weights = {name: value.detach().clone()
-                           for name, value in self.assets.model.state_dict()
-                           .items()}
+                weights = {
+                    name: value.detach().clone()
+                    for name, value in self.assets.model.state_dict().items()
+                }
                 key = 'action_out_proj.projector.bias'
                 weights[key].fill_(2.5)
                 if storage_dtype == 'bfloat16':
@@ -269,12 +291,15 @@ class StorageProducerReferenceTests(unittest.TestCase):
                 live = self.assets.model.state_dict()[key].clone()
                 result = self.produce(checkpoint_storage_dtype=storage_dtype)
                 reference = prepare_reference(
-                    config=result.config, checkpoint=result.checkpoint,
-                    inputs=result.inputs, device='cpu')
-                self.assertTrue(torch.equal(reference.model.state_dict()[key],
-                                            weights[key].float()))
-                self.assertTrue(torch.equal(
-                    self.assets.model.state_dict()[key], live))
+                    config=result.config,
+                    checkpoint=result.checkpoint,
+                    inputs=result.inputs,
+                    device='cpu')
+                self.assertTrue(
+                    torch.equal(reference.model.state_dict()[key],
+                                weights[key].float()))
+                self.assertTrue(
+                    torch.equal(self.assets.model.state_dict()[key], live))
                 self.assertFalse(torch.equal(live, weights[key].float()))
 
     def test_bfloat16_producer_and_reference_require_declaration(self):
@@ -298,20 +323,23 @@ class StorageProducerReferenceTests(unittest.TestCase):
             _bf16_state(self.assets.model.state_dict()))
         result = self.produce(checkpoint_storage_dtype='bfloat16')
         prepared = prepare_tensorrt(
-            recipe='pi05-v1', config=result.config,
-            checkpoint=result.checkpoint, inputs=result.inputs, device='cpu')
+            recipe='pi05-v1',
+            config=result.config,
+            checkpoint=result.checkpoint,
+            inputs=result.inputs,
+            device='cpu')
         config = load_config(result.config, recipe='pi05-v1')
-        self.assertEqual(prepared.metadata['source_config_sha256'],
-                         hashlib.sha256(_canonical(
-                             config_to_document(config))).hexdigest())
+        self.assertEqual(
+            prepared.metadata['source_config_sha256'],
+            hashlib.sha256(_canonical(config_to_document(config))).hexdigest())
         self.assertEqual(prepared.metadata['checkpoint_sha256'],
                          _digest(result.checkpoint))
-        self.assets.model.load_state_dict(load_file(result.checkpoint),
-                                          strict=True)
+        self.assets.model.load_state_dict(
+            load_file(result.checkpoint), strict=True)
         with torch.no_grad(), torch.autocast('cpu', dtype=torch.bfloat16):
             expected = self.assets.model(**self.assets.tensors)
-        torch.testing.assert_close(prepared.run_reference()['actions'],
-                                   expected, rtol=0, atol=0)
+        torch.testing.assert_close(
+            prepared.run_reference()['actions'], expected, rtol=0, atol=0)
         self.assertEqual(config.precision.parameter_dtype, 'float32')
         self.assertEqual(config.precision.autocast_dtype, 'bfloat16')
         self.assertEqual(config.checkpoint_storage_dtype, 'bfloat16')
