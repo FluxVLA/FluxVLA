@@ -84,6 +84,26 @@ class Normalize:
 
 
 @TRANSFORMS.register_module()
+class IdentityLiberoAction:
+    """Return native LIBERO actions without dataset-stat denormalization."""
+
+    def __init__(self,
+                 norm_stats=None,
+                 action_dim: int = 7,
+                 clip: bool = True) -> None:
+        del norm_stats
+        self.action_dim = int(action_dim)
+        self.clip = bool(clip)
+
+    def __call__(self, data: Dict) -> np.ndarray:
+        action = np.asarray(data['action'], dtype=np.float32)
+        action = action[..., :self.action_dim]
+        if self.clip:
+            action = np.clip(action, -1.0, 1.0)
+        return action
+
+
+@TRANSFORMS.register_module()
 class IdentityAction:
     """Return native actions without dataset-stat denormalization."""
 
@@ -869,7 +889,9 @@ class PadStatesAndActions:
                  model_action_dim: int,
                  state_key: str = 'states',
                  action_key: str = 'actions',
-                 pad_value: float = 0.0):
+                 pad_value: float = 0.0,
+                 *args,
+                 **kwargs):
         self.model_action_dim = int(model_action_dim)
         self.state_key = state_key
         self.action_key = action_key
@@ -984,6 +1006,104 @@ class SinCosKeys:
 
 
 @TRANSFORMS.register_module()
+class StateFromInputs:
+    """Normalize a single flat state key with generic statistics.
+
+    Generic version of :class:`LiberoProprioFromInputs` for benchmarks whose
+    observation carries one flat state vector (e.g. RoboDojo's 14D joint
+    state) instead of separate eef pos/quat/gripper keys. All field names are
+    configurable; nothing is hardcoded to a benchmark.
+
+    Args:
+        state_key (str): Input key holding the raw state vector (default
+            'states', the training name for the observation state).
+        stat_key (str): Statistics key inside ``data['norm_stats']``.
+        norm_type (str): Normalization type (default 'min_max').
+        clip_norm (bool): Whether to clip min-max/quantile normalized state to
+            [-1, 1]. Defaults to False.
+        state_dim (int | None): Padded output dimension.
+        out_key (str): Output key for the normalized state (default
+            'states').
+    """
+
+    def __init__(self,
+                 state_key: str = 'states',
+                 stat_key: str = 'proprio',
+                 norm_type: str = 'min_max',
+                 clip_norm: bool = False,
+                 state_dim: int = None,
+                 out_key: str = 'states') -> None:
+        if norm_type not in {'mean_std', 'quantile', 'min_max'}:
+            raise ValueError(f'Unsupported norm_type: {norm_type!r}')
+        self.state_key = state_key
+        self.stat_key = stat_key
+        self.norm_type = norm_type
+        self.clip_norm = bool(clip_norm)
+        self.state_dim = state_dim
+        self.out_key = out_key
+
+    def __call__(self, data: Dict) -> Dict:
+        if self.state_key not in data:
+            raise KeyError(f'Missing state key: {self.state_key!r}')
+        state = np.asarray(data[self.state_key], dtype=np.float32)
+        if state.ndim != 1 or state.size == 0:
+            raise ValueError(
+                f'State {self.state_key!r} must be a nonempty 1-D array, '
+                f'got {state.shape}')
+        stats = data['norm_stats'][self.stat_key]
+        if self.norm_type == 'min_max':
+            state = self._normalize_min_max(state, stats)
+        elif self.norm_type == 'quantile':
+            state = self._normalize_quantile(state, stats)
+        else:
+            state = self._normalize_mean_std(state, stats)
+        if self.clip_norm and self.norm_type in {'min_max', 'quantile'}:
+            state = np.clip(state, -1.0, 1.0)
+        out = dict(data)
+        if self.state_dim is not None:
+            padded = np.zeros(self.state_dim, dtype=np.float32)
+            padded[:state.shape[0]] = state
+            out[self.out_key] = padded
+        else:
+            out[self.out_key] = state
+        return out
+
+    def _normalize_min_max(self, state: np.ndarray, stats: Dict):
+        assert 'min' in stats and stats['min'] is not None
+        assert 'max' in stats and stats['max'] is not None
+        low = np.asarray(stats['min'], dtype=np.float32)
+        high = np.asarray(stats['max'], dtype=np.float32)
+        if low.shape[-1] != state.shape[-1]:
+            raise ValueError(
+                f'State stats width {low.shape[-1]} does not match state '
+                f'width {state.shape[-1]}')
+        return (state - low) / (high - low + 1e-6) * 2.0 - 1.0
+
+    def _normalize_quantile(self, state: np.ndarray, stats: Dict):
+        assert 'q01' in stats and stats['q01'] is not None
+        assert 'q99' in stats and stats['q99'] is not None
+        low = np.asarray(stats['q01'])
+        high = np.asarray(stats['q99'])
+        self._validate_stats_width(state, low)
+        return (state - low) / (high - low + 1e-6) * 2.0 - 1.0
+
+    def _normalize_mean_std(self, state: np.ndarray, stats: Dict):
+        assert 'mean' in stats and stats['mean'] is not None
+        assert 'std' in stats and stats['std'] is not None
+        mean = np.asarray(stats['mean'])
+        std = np.asarray(stats['std'])
+        self._validate_stats_width(state, mean)
+        return (state - mean) / (std + 1e-6)
+
+    def _validate_stats_width(self, state: np.ndarray,
+                              values: np.ndarray) -> None:
+        if values.shape[-1] != state.shape[-1]:
+            raise ValueError(
+                f'State stats width {values.shape[-1]} does not match state '
+                f'width {state.shape[-1]}')
+
+
+@TRANSFORMS.register_module()
 class LiberoProprioFromInputs:
     """Build Libero proprio state from inputs and optionally normalize it.
 
@@ -1019,7 +1139,8 @@ class LiberoProprioFromInputs:
                  prefix: str = 'global',
                  linear_mode: str = 'min/max',
                  clamp: float = 5.0,
-                 modality_keys: Optional[List[str]] = None) -> None:
+                 modality_keys: Optional[List[str]] = None,
+                 rotation_representation: str = 'axisangle') -> None:
         if norm_type not in (None, 'none', 'linear', 'mean_std', 'quantile',
                              'min_max'):
             raise ValueError(f'Unsupported norm_type: {norm_type!r}')
@@ -1030,6 +1151,9 @@ class LiberoProprioFromInputs:
         if modality_keys is not None and state_dim is not None:
             raise ValueError(
                 'state_dim padding is not supported with modality_keys.')
+        if rotation_representation not in ('axisangle', 'rot6d'):
+            raise ValueError(
+                "rotation_representation must be 'axisangle' or 'rot6d'.")
         self.norm_type = norm_type
         self.state_dim = state_dim
         self.pos_key = pos_key
@@ -1043,6 +1167,7 @@ class LiberoProprioFromInputs:
         self.linear_mode = linear_mode
         self.clamp = float(clamp)
         self.modality_keys = tuple(modality_keys or ())
+        self.rotation_representation = rotation_representation
 
     def __call__(self, data: Dict) -> Dict:
         assert self.pos_key in data and self.quat_key in \
@@ -1061,11 +1186,18 @@ class LiberoProprioFromInputs:
             data[self.quat_key], dtype=input_dtype).reshape(-1)
         robot0_gripper_qpos = np.asarray(
             data[self.gripper_key], dtype=input_dtype).reshape(-1)
-        rotation = np.asarray(
-            quat2axisangle(robot0_eef_quat), dtype=input_dtype).reshape(-1)
-        if robot0_eef_pos.size != 3 or rotation.size != 3:
+        if self.rotation_representation == 'axisangle':
+            rotation = np.asarray(
+                quat2axisangle(robot0_eef_quat), dtype=input_dtype).reshape(-1)
+        else:
+            from scipy.spatial.transform import Rotation
+            rotation = Rotation.from_quat(robot0_eef_quat.reshape(
+                1, 4)).as_matrix()[0]
+            rotation = rotation[:, :2].T.reshape(-1).astype(input_dtype)
+        if robot0_eef_pos.size != 3 or rotation.size not in (3, 6):
             raise ValueError(
-                'LIBERO proprio expects 3D position and axis-angle rotation.')
+                'LIBERO proprio expects 3D position and 3D axis-angle or '
+                '6D rotation.')
 
         state = np.concatenate((
             robot0_eef_pos,
@@ -1094,6 +1226,10 @@ class LiberoProprioFromInputs:
 
         out = dict(data)
         if self.modality_keys:
+            if self.rotation_representation != 'axisangle':
+                raise ValueError(
+                    'modality_keys require axis-angle rotation representation.'
+                )
             split_points = [1, 2, 3, 4, 5, 6]
             values = np.split(state, split_points)
             out[self.out_key] = {
@@ -1101,6 +1237,10 @@ class LiberoProprioFromInputs:
                 for key, value in zip(self.modality_keys, values)
             }
         elif self.state_dim is not None:
+            if self.state_dim < state.shape[0]:
+                raise ValueError(
+                    f'state_dim={self.state_dim} is smaller than the '
+                    f'constructed state width {state.shape[0]}.')
             out[self.out_key] = np.zeros((self.state_dim), dtype=state.dtype)
             out[self.out_key][:state.shape[0]] = state
         else:

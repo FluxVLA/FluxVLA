@@ -11,27 +11,25 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Durable ROS evaluation events and native FluxVLA evaluation artifacts.
+"""Durable evaluation events and native FluxVLA evaluation artifacts.
 
-``FluxVLAROSEvaluationReporter`` is the small adapter boundary used by ROS 1
-and ROS 2 servers.  A server passes versioned ``run_start``,
+``FluxVLAEvaluationReportWriter`` is the transport-neutral component used by
+the ZMQ server. A server passes versioned ``run_start``,
 ``episode_start``, ``episode_end`` and ``run_end`` events to
-``process_event``.  The reporter validates ordering and idempotency, journals
-accepted events, maintains native live progress, and writes the native LIBERO
-or RoboCasa result schema selected by the evaluation config.
+``process_event``.  The writer validates ordering, journals
+accepted events, maintains native live progress, and writes the native LIBERO,
+RoboCasa, or RoboDojo result schema selected by the evaluation config.
 
-The class deliberately has no ROS dependency.  Server adapters may construct
-it before ROS initialization and later replace the default Overwatch logger
-with :meth:`set_logger`.
+The class deliberately has no transport dependency. Server adapters may
+construct it before binding sockets and later replace the default Overwatch
+logger with :meth:`set_logger`.
 """
 
 from __future__ import annotations
-import copy
 import csv
 import json
 import math
 import os
-import threading
 import time
 from collections import defaultdict
 from collections.abc import Mapping, Sequence
@@ -57,12 +55,70 @@ LIBERO_SUITE_TASK_COUNTS = {
     'libero_10': 10,
     'libero_90': 90,
 }
-REPORT_KINDS = frozenset({'libero', 'robocasa'})
+REPORT_KINDS = frozenset({'libero', 'robocasa', 'robodojo'})
 ROBOCASA_GROUP_ORDER = ('Cabinet', 'Drawer', 'Microwave', 'Generalization')
+ROBODOJO_DIMENSION_TASKS = {
+    'Generalization': (
+        'stack_bowls',
+        'push_T',
+        'pack_objects_into_box',
+        'fold_clothes',
+        'hang_mugs',
+        'sweep_blocks',
+        'pour_liquid_into_cup',
+        'make_toast',
+        'arrange_largest_number',
+        'sort_nesting_dolls_by_size',
+        'store_laptop_and_headphones',
+        'stack_blocks',
+    ),
+    'Precision': (
+        'fasten_screws',
+        'plug_in_charger',
+        'insert_tubes',
+        'pour_balls_into_vase',
+        'play_Xylophone',
+        'deposit_coin',
+        'insert_key',
+        'build_tower',
+    ),
+    'Long-Horizon': (
+        'put_bottles_into_dustbin',
+        'fill_pen_holder',
+        'classify_objects',
+        'play_tic_tac_toe',
+        'fill_egg_holder',
+        'organize_table',
+        'make_kong',
+        'play_stacking_toy',
+    ),
+    'Memory': (
+        'cover_blocks',
+        'match_and_pick_from_conveyor',
+        'swap_blocks',
+        'swap_T',
+        'press_by_number',
+        'imitate_sorting_sequence',
+    ),
+    'Open': (
+        'align_blocks',
+        'general_pickup',
+        'stack_blocks_by_language',
+        'solve_equation',
+        'classify_objects_by_language',
+        'pick_from_conveyor_by_image',
+        'store_tools_in_toolbox',
+        'pour_by_language',
+    ),
+}
+ROBODOJO_GENERALIZATION_TASKS = frozenset(
+    ROBODOJO_DIMENSION_TASKS['Generalization'])
+ROBODOJO_GENERALIZATION_HALF_EPISODES = 25
+ROBODOJO_STANDALONE_EPISODES = 50
 
 
 class EvaluationEventError(ValueError):
-    """A rejected ROS evaluation event."""
+    """A rejected evaluation event."""
 
 
 @dataclass(frozen=True)
@@ -75,7 +131,7 @@ class _TaskManifestEntry:
 
 @dataclass
 class _RunState:
-    session_id: str
+    run_session_id: str
     run_id: str
     run_dir: Path
     start: dict
@@ -87,32 +143,10 @@ class _RunState:
     completed_keys: set[tuple[int, int]] = field(default_factory=set)
 
 
-@dataclass(frozen=True)
-class _CachedRequest:
-    fingerprint: str
-    response: dict
-
-
 def _cfg_get(config, key: str, default=None):
     if isinstance(config, Mapping):
         return config.get(key, default)
     return getattr(config, key, default)
-
-
-def _runner_eval_config(config):
-    runner = _cfg_get(config, 'runner')
-    if runner is None:
-        return config
-    if isinstance(config, Mapping) and isinstance(runner, Mapping):
-        # Some configs wrap runner-native fields in ``eval.runner`` while the
-        # ROS server adds authoritative task overrides at ``eval`` level.
-        # Preserve both, with the outer values taking precedence.
-        merged = dict(runner)
-        merged.update(
-            {key: value
-             for key, value in config.items() if key != 'runner'})
-        return merged
-    return runner
 
 
 def _resolve_report_kind(config, explicit=None) -> str:
@@ -159,6 +193,14 @@ def _require_int(value, name: str, minimum: Optional[int] = None) -> int:
     return value
 
 
+def _require_optional_int(value,
+                          name: str,
+                          minimum: Optional[int] = None) -> Optional[int]:
+    if value is None:
+        return None
+    return _require_int(value, name, minimum)
+
+
 def _require_number(value,
                     name: str,
                     minimum: Optional[float] = None) -> float:
@@ -176,6 +218,21 @@ def _require_bool(value, name: str) -> bool:
     if not isinstance(value, bool):
         raise EvaluationEventError(f'{name} must be a boolean')
     return value
+
+
+def _require_episode_count_overrides(value, name: str) -> dict[str, int]:
+    if value is None:
+        return {}
+    if not isinstance(value, Mapping):
+        raise EvaluationEventError(f'{name} must be a mapping')
+    normalized = {}
+    for task_id, count in value.items():
+        task_id = _require_string(task_id, f'{name} key')
+        if task_id in normalized:
+            raise EvaluationEventError(
+                f'{name} contains duplicate task id {task_id!r}')
+        normalized[task_id] = _require_int(count, f'{name}[{task_id!r}]', 1)
+    return normalized
 
 
 def _require_datetime(value, name: str) -> tuple[str, float]:
@@ -209,6 +266,57 @@ def _robocasa_group_name(env_name: str) -> str:
     return 'Generalization'
 
 
+def _robodojo_episode_stats(episodes: Sequence[dict],
+                            expected_episodes: int) -> dict:
+    count = len(episodes)
+    successes = sum(bool(episode['success']) for episode in episodes)
+    score_sum = sum(float(episode.get('score') or 0.0) for episode in episodes)
+    success_rate = successes / count * 100.0 if count else None
+    scored_episodes = sum(
+        episode.get('score') is not None for episode in episodes)
+    mean_score = score_sum / count * 100.0 if count else None
+    duration = sum(float(episode['duration_s']) for episode in episodes)
+    return {
+        'episodes': count,
+        'expected_episodes': expected_episodes,
+        'complete': count >= expected_episodes,
+        'successes': successes,
+        'success_rate_pct': success_rate,
+        'scored_episodes': scored_episodes,
+        'mean_score_pct': mean_score,
+        'total_duration_s': duration,
+    }
+
+
+def _robodojo_macro_stats(task_stats: Sequence[dict],
+                          expected_tasks: int) -> dict:
+    completed = [stats for stats in task_stats if stats['complete']]
+    success_rates = [stats['success_rate_pct'] for stats in completed]
+    scores = [stats['mean_score_pct'] for stats in completed]
+    success_rate = (
+        sum(success_rates) / len(success_rates) if success_rates else None)
+    mean_score = sum(scores) / len(scores) if scores else None
+    return {
+        'completed_tasks': len(completed),
+        'expected_tasks': expected_tasks,
+        'complete': len(completed) == expected_tasks,
+        'success_rate_pct': success_rate,
+        'mean_score_pct': mean_score,
+    }
+
+
+def _format_optional_metric(value) -> str:
+    return '—' if value is None else f'{float(value):.2f}'
+
+
+def _format_robodojo_metric(stats: Mapping[str, Any]) -> str:
+    score = stats.get('mean_score_pct')
+    success_rate = stats.get('success_rate_pct')
+    if score is None or success_rate is None:
+        return '—/—%'
+    return f'{float(score):.2f}/{float(success_rate):.2f}%'
+
+
 def _write_json_atomic(path: Path, value: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f'{path.name}.tmp')
@@ -219,8 +327,8 @@ def _write_json_atomic(path: Path, value: Any) -> None:
     os.replace(temporary, path)
 
 
-class FluxVLAROSEvaluationReporter:
-    """Consume ROS evaluation lifecycle events and write native artifacts.
+class FluxVLAEvaluationReportWriter:
+    """Consume evaluation lifecycle events and write native artifacts.
 
     Args:
         result_root: Result root. It is resolved to an absolute path;
@@ -228,16 +336,19 @@ class FluxVLAROSEvaluationReporter:
         config_path: Authoritative FluxVLA MMEngine config path.
         ckpt_path: Authoritative model checkpoint path.
         eval_config: The selected FluxVLA eval runner config. It must define
-            ``model_family`` and ``num_trials_per_task``. LIBERO additionally
-            requires ``task_suite_name``; RoboCasa requires ``task_list``.
-        report_kind: Optional explicit ``libero`` or ``robocasa`` selector.
+            ``model_family`` and ``num_trials_per_task``. Optional
+            ``num_trials_per_task_overrides`` entries replace that default
+            for exact task ids. LIBERO additionally requires
+            ``task_suite_name``; RoboCasa requires ``task_list``.
+        report_kind: Optional explicit ``libero``, ``robocasa``, or
+            ``robodojo`` selector.
         logger: Optional ``Callable[[str], None]``. Defaults to Overwatch.
         feishu: Optional mapping with ``sheet_url``, ``app_id``, ``app_secret``
             and ``timeout``. Missing credentials retain the native environment
             variable fallback.
 
     ``process_event`` returns a response dict containing ``accepted``,
-    ``error``, ``run_dir``, ``duplicate``, ``next_sequence`` and ``status``.
+    ``error``, ``run_dir``, ``next_sequence`` and ``status``.
     Protocol validation failures are returned in-band rather than raised. The
     first event of every run has sequence ``1``.
     """
@@ -253,7 +364,9 @@ class FluxVLAROSEvaluationReporter:
         self.result_root = Path(result_root).expanduser().resolve()
         self.config_path = str(Path(config_path).expanduser().resolve())
         self.ckpt_path = str(Path(ckpt_path).expanduser().resolve())
-        self.eval_config = _runner_eval_config(eval_config)
+        if not isinstance(eval_config, Mapping):
+            raise EvaluationEventError('eval_config must be a mapping')
+        self.eval_config = dict(eval_config)
         self.report_kind = _resolve_report_kind(self.eval_config, report_kind)
         suite_default = 'robocasa' if self.report_kind == 'robocasa' else None
         self.task_suite_name = _require_string(
@@ -265,12 +378,16 @@ class FluxVLAROSEvaluationReporter:
         self.num_trials_per_task = _require_int(
             _cfg_get(self.eval_config, 'num_trials_per_task'),
             'eval_config.num_trials_per_task', 1)
+        self.num_trials_per_task_overrides = \
+            _require_episode_count_overrides(
+                _cfg_get(self.eval_config,
+                         'num_trials_per_task_overrides'),
+                'eval_config.num_trials_per_task_overrides')
         self.action_order = _require_string(
             _cfg_get(self.eval_config, 'action_order',
                      'n15' if self.model_family == 'groot' else 'fluxvla'),
             'eval_config.action_order')
         self.task_list = self._configured_task_list()
-        self.configured_task_ids = _cfg_get(self.eval_config, 'task_ids')
         self.result_gpu_id = _require_int(
             _cfg_get(self.eval_config, 'result_gpu_id', 0),
             'eval_config.result_gpu_id', 0)
@@ -278,9 +395,7 @@ class FluxVLAROSEvaluationReporter:
         self._logger = logger or overwatch.info
         self._feishu = _require_mapping(feishu or {}, 'feishu')
         self._active: Optional[_RunState] = None
-        self._requests: dict[str, _CachedRequest] = {}
         self._last_run_dir: Optional[Path] = None
-        self._lock = threading.RLock()
 
     def set_logger(self, logger=None) -> None:
         """Bind a runtime logger; ``None`` restores Overwatch."""
@@ -302,24 +417,21 @@ class FluxVLAROSEvaluationReporter:
                       *,
                       version=EVENT_VERSION) -> dict:
         """Validate and persist one evaluation lifecycle event."""
-        with self._lock:
-            try:
-                return self._process_event(event_type, request_id,
-                                           run_session_id, sequence, payload,
-                                           version)
-            # Protocol and artifact errors are returned in-band.
-            except Exception as exc:
-                error = f'{type(exc).__name__}: {exc}'
-                self._log(f'[ros-eval] rejected event: {error}')
-                active = self._active
-                return {
-                    'accepted': False,
-                    'duplicate': False,
-                    'error': error,
-                    'run_dir': str(active.run_dir) if active else self.run_dir,
-                    'next_sequence': active.next_sequence if active else 1,
-                    'status': 'running' if active else 'idle',
-                }
+        try:
+            return self._process_event(event_type, request_id, run_session_id,
+                                       sequence, payload, version)
+        # Protocol and artifact errors are returned in-band.
+        except Exception as exc:
+            error = f'{type(exc).__name__}: {exc}'
+            self._log(f'[zmq-eval] rejected event: {error}')
+            active = self._active
+            return {
+                'accepted': False,
+                'error': error,
+                'run_dir': str(active.run_dir) if active else self.run_dir,
+                'next_sequence': active.next_sequence if active else 1,
+                'status': 'running' if active else 'idle',
+            }
 
     def _process_event(self, event_type, request_id, run_session_id, sequence,
                        payload, version) -> dict:
@@ -334,26 +446,11 @@ class FluxVLAROSEvaluationReporter:
             raise EvaluationEventError(f'unsupported event version {version}; '
                                        f'expected {EVENT_VERSION}')
         payload = _require_mapping(payload, 'payload')
-        fingerprint = json.dumps(
-            [version, event_type, run_session_id, sequence, payload],
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(',', ':'))
-
-        cached = self._requests.get(request_id)
-        if cached is not None:
-            if cached.fingerprint != fingerprint:
-                raise EvaluationEventError(
-                    f'request_id {request_id!r} was reused with different data'
-                )
-            response = copy.deepcopy(cached.response)
-            response['duplicate'] = True
-            return response
 
         if event_type == 'run_start':
             if self._active is not None:
                 raise EvaluationEventError(
-                    f'run {self._active.session_id!r} is already active')
+                    f'run {self._active.run_session_id!r} is already active')
             if sequence != 1:
                 raise EvaluationEventError(
                     f'run_start sequence must be 1, got {sequence}')
@@ -366,38 +463,24 @@ class FluxVLAROSEvaluationReporter:
             state = self._active
             if state is None:
                 raise EvaluationEventError('no evaluation run is active')
-            if run_session_id != state.session_id:
+            if run_session_id != state.run_session_id:
                 raise EvaluationEventError(
                     f'event session {run_session_id!r} does not match active '
-                    f'run {state.session_id!r}')
+                    f'run {state.run_session_id!r}')
             if sequence != state.next_sequence:
                 raise EvaluationEventError(
                     f'expected sequence {state.next_sequence}, got {sequence}')
-            snapshot = self._snapshot_mutable_state(state)
-            try:
-                if event_type == 'episode_start':
-                    self._episode_start(state, payload)
-                    status = 'running'
-                elif event_type == 'episode_end':
-                    self._episode_end(state, payload)
-                    status = 'running'
-                else:
-                    status = self._run_end(state, payload)
-                    # Local finalization is intentionally completed before
-                    # the run_end event is committed. All local writes are
-                    # idempotent, so a transient filesystem failure can safely
-                    # retry the same request and sequence without duplicating
-                    # a Feishu row.
-                    summary_path = self._write_summary_artifacts(state)
-                self._append_event(state, version, event_type, request_id,
-                                   sequence, payload)
-            except Exception:
-                # Event handlers update in-memory progress before the durable
-                # journal append. Restore it when either an artifact write or
-                # the journal commit fails, so the same request/sequence can
-                # be retried without observing a half-accepted episode.
-                self._restore_mutable_state(state, snapshot)
-                raise
+            if event_type == 'episode_start':
+                self._episode_start(state, payload)
+                status = 'running'
+            elif event_type == 'episode_end':
+                self._episode_end(state, payload)
+                status = 'running'
+            else:
+                status = self._run_end(state, payload)
+                summary_path = self._write_summary_artifacts(state)
+            self._append_event(state, version, event_type, request_id,
+                               sequence, payload)
             state.next_sequence += 1
             response = self._response(state, status=status)
             if event_type == 'run_end':
@@ -408,28 +491,9 @@ class FluxVLAROSEvaluationReporter:
 
         response['error'] = ''
         response['accepted'] = True
-        response['duplicate'] = False
-        self._requests[request_id] = _CachedRequest(
-            fingerprint=fingerprint, response=copy.deepcopy(response))
         return response
 
-    @staticmethod
-    def _snapshot_mutable_state(state: _RunState) -> tuple[dict, int, set]:
-        return (
-            copy.deepcopy(state.active_episodes),
-            len(state.episodes),
-            set(state.completed_keys),
-        )
-
-    @staticmethod
-    def _restore_mutable_state(state: _RunState, snapshot: tuple[dict, int,
-                                                                 set]) -> None:
-        active_episodes, episode_count, completed_keys = snapshot
-        state.active_episodes = active_episodes
-        del state.episodes[episode_count:]
-        state.completed_keys = completed_keys
-
-    def _start_run(self, session_id: str, payload: dict) -> _RunState:
+    def _start_run(self, run_session_id: str, payload: dict) -> _RunState:
         schema_version = payload.get('schema_version')
         if str(schema_version) not in {'1', '1.0'}:
             raise EvaluationEventError(
@@ -440,7 +504,7 @@ class FluxVLAROSEvaluationReporter:
                          or run_name in {'.', '..'}):
             raise EvaluationEventError(
                 'payload.run_name must be a path component')
-        seed = _require_int(payload.get('seed'), 'payload.seed')
+        base_seed = _require_int(payload.get('base_seed'), 'payload.base_seed')
         episodes_per_task = _require_int(
             payload.get('episodes_per_task'), 'payload.episodes_per_task', 1)
         max_episode_steps = _require_int(
@@ -453,12 +517,6 @@ class FluxVLAROSEvaluationReporter:
             payload.get('total_tasks'), 'payload.total_tasks', 1)
         total_episodes = _require_int(
             payload.get('total_episodes'), 'payload.total_episodes', 1)
-        full_suite = _require_bool(
-            payload.get('full_suite'), 'payload.full_suite')
-        if total_episodes != total_tasks * episodes_per_task:
-            raise EvaluationEventError(
-                'payload.total_episodes must equal total_tasks * '
-                'episodes_per_task')
         tasks_value = payload.get('tasks')
         if (not isinstance(tasks_value, Sequence)
                 or isinstance(tasks_value, (str, bytes))):
@@ -514,6 +572,29 @@ class FluxVLAROSEvaluationReporter:
             tasks_by_id[task_id] = entry
             tasks_by_index[task_index] = entry
 
+        episode_counts_value = payload.get('episodes_per_task_by_task')
+        if episode_counts_value is None:
+            episodes_per_task_by_task = {
+                task_id: episodes_per_task
+                for task_id in tasks_by_id
+            }
+        else:
+            episodes_per_task_by_task = _require_episode_count_overrides(
+                episode_counts_value, 'payload.episodes_per_task_by_task')
+            expected_task_ids = set(tasks_by_id)
+            actual_task_ids = set(episodes_per_task_by_task)
+            if actual_task_ids != expected_task_ids:
+                missing = sorted(expected_task_ids - actual_task_ids)
+                extra = sorted(actual_task_ids - expected_task_ids)
+                raise EvaluationEventError(
+                    'payload.episodes_per_task_by_task must exactly match '
+                    f'the task manifest; missing={missing}, extra={extra}')
+        expected_total_episodes = sum(episodes_per_task_by_task.values())
+        if total_episodes != expected_total_episodes:
+            raise EvaluationEventError(
+                'payload.total_episodes must equal the sum of '
+                'episodes_per_task_by_task')
+
         run_id, run_dir = self._allocate_run_dir(run_name)
         run_dir.mkdir(parents=True, exist_ok=False)
         (run_dir / 'rank_progress').mkdir()
@@ -523,46 +604,85 @@ class FluxVLAROSEvaluationReporter:
             'successes': 0,
         })
         state = _RunState(
-            session_id=session_id,
+            run_session_id=run_session_id,
             run_id=run_id,
             run_dir=run_dir,
             start={
                 'schema_version': RUN_SCHEMA_VERSION,
                 'run_name': run_name,
-                'seed': seed,
+                'base_seed': base_seed,
                 'episodes_per_task': episodes_per_task,
+                'episodes_per_task_by_task': episodes_per_task_by_task,
                 'max_episode_steps': max_episode_steps,
                 'execute_horizon': execute_horizon,
                 'total_tasks': total_tasks,
                 'total_episodes': total_episodes,
-                'full_suite': full_suite,
             },
             tasks_by_id=tasks_by_id,
             tasks_by_index=tasks_by_index,
         )
         self._append_log(
-            state, f'ROS evaluation session: {session_id}\n'
+            state, f'ZMQ evaluation session: {run_session_id}\n'
             f'task_suite: {self.task_suite_name}\n'
             f'model_family: {self.model_family}\n'
             f'config: {self.config_path}\n'
             f'ckpt: {self.ckpt_path}\n')
-        self._log(f'[ros-eval] run_start session={session_id} '
+        self._log(f'[zmq-eval] run_start session={run_session_id} '
                   f'episodes={total_episodes} run_dir={run_dir}')
         return state
 
+    def _episode_identity(
+        self, state: _RunState, payload: dict
+    ) -> tuple[_TaskManifestEntry, int, int, Optional[int], Optional[int]]:
+        task_id = _require_string(payload.get('task_id'), 'payload.task_id')
+        task = state.tasks_by_id.get(task_id)
+        if task is None:
+            raise EvaluationEventError(
+                f'task {task_id!r} is not in the run manifest')
+        episode_index = _require_int(
+            payload.get('episode_index'), 'payload.episode_index', 0)
+        episodes_per_task = self._episodes_for_task(state, task)
+        if episode_index >= episodes_per_task:
+            raise EvaluationEventError(
+                f'payload.episode_index exceeds episodes_per_task for '
+                f'task {task.task_id!r}')
+        policy_seed = _require_int(
+            payload.get('policy_seed'), 'payload.policy_seed')
+        if 'environment_seed' not in payload:
+            raise EvaluationEventError('payload.environment_seed is required')
+        environment_seed = _require_optional_int(
+            payload.get('environment_seed'), 'payload.environment_seed')
+        if 'environment_case_index' not in payload:
+            raise EvaluationEventError(
+                'payload.environment_case_index is required')
+        environment_case_index = _require_optional_int(
+            payload.get('environment_case_index'),
+            'payload.environment_case_index', 0)
+        return (task, episode_index, policy_seed, environment_seed,
+                environment_case_index)
+
     def _episode_start(self, state: _RunState, payload: dict) -> None:
-        task, episode_index, seed, description = self._episode_identity(
-            state, payload)
+        (task, episode_index, policy_seed, environment_seed,
+         environment_case_index) = self._episode_identity(state, payload)
         started_at, started_epoch = _require_datetime(
             payload.get('started_at'), 'payload.started_at')
         key = (task.task_index, episode_index)
         if key in state.completed_keys:
             raise EvaluationEventError(f'episode {key} already completed')
-        if key in state.active_episodes:
-            raise EvaluationEventError(f'episode {key} is already active')
         episode_id = payload.get('episode_id')
         if episode_id is not None:
             episode_id = _require_string(episode_id, 'payload.episode_id')
+        active = state.active_episodes.get(key)
+        if active is not None:
+            if episode_id is None or active.get('episode_id') != episode_id:
+                raise EvaluationEventError(f'episode {key} is already active')
+            for name, value in (
+                ('policy_seed', policy_seed),
+                ('environment_seed', environment_seed),
+            ):
+                if active[name] != value:
+                    raise EvaluationEventError(f'episode retry changed {name}')
+        elif episode_id is not None:
             if any(
                     active.get('episode_id') == episode_id
                     for active in state.active_episodes.values()):
@@ -571,9 +691,11 @@ class FluxVLAROSEvaluationReporter:
         current = {
             'task_id': task.task_id,
             'task_index': task.task_index,
-            'description': description,
+            'description': task.description,
             'episode_index': episode_index,
-            'seed': seed,
+            'policy_seed': policy_seed,
+            'environment_seed': environment_seed,
+            'environment_case_index': environment_case_index,
             'started_at': started_at,
             'started_epoch': started_epoch,
         }
@@ -583,15 +705,15 @@ class FluxVLAROSEvaluationReporter:
         self._append_log(
             state,
             f'Evaluating Task {task.task_index}, Trial {episode_index}\n'
-            f'\nTask: {description}\n'
+            f'\nTask: {task.description}\n'
             f'Starting episode {episode_index + 1}...\n')
         self._log(f'Evaluating Task {task.task_index}, Trial {episode_index}')
-        self._log(f'\nTask: {description}')
+        self._log(f'\nTask: {task.description}')
         self._log(f'Starting episode {episode_index + 1}...')
 
     def _episode_end(self, state: _RunState, payload: dict) -> None:
-        task, episode_index, seed, description = self._episode_identity(
-            state, payload)
+        (task, episode_index, policy_seed, environment_seed,
+         environment_case_index) = self._episode_identity(state, payload)
         episode_key = (task.task_index, episode_index)
         current = state.active_episodes.get(episode_key)
         if current is None:
@@ -609,10 +731,10 @@ class FluxVLAROSEvaluationReporter:
             episode_id = _require_string(episode_id, 'payload.episode_id')
             current['episode_id'] = episode_id
         for key, value in (
-            ('task_index', task.task_index),
             ('episode_index', episode_index),
-            ('seed', seed),
-            ('description', description),
+            ('policy_seed', policy_seed),
+            ('environment_seed', environment_seed),
+            ('environment_case_index', environment_case_index),
         ):
             if current[key] != value:
                 raise EvaluationEventError(
@@ -627,6 +749,12 @@ class FluxVLAROSEvaluationReporter:
             payload.get('termination_reason'), 'payload.termination_reason')
         model_calls = _require_int(
             payload.get('model_calls'), 'payload.model_calls', 0)
+        score = payload.get('score')
+        if score is not None:
+            score = _require_number(score, 'payload.score', 0.0)
+            if score > 1.0:
+                raise EvaluationEventError(
+                    f'payload.score must be <= 1.0, got {score!r}')
         info = _require_mapping(payload.get('info', {}), 'payload.info')
         prediction_metadata = payload.get('prediction_metadata', [])
         if (not isinstance(prediction_metadata, Sequence)
@@ -657,50 +785,52 @@ class FluxVLAROSEvaluationReporter:
             'info': info,
             'prediction_metadata': prediction_metadata,
         }
+        if score is not None:
+            result['score'] = score
         state.episodes.append(result)
         state.completed_keys.add(episode_key)
         del state.active_episodes[episode_key]
         successes = sum(bool(item['success']) for item in state.episodes)
         success_rate = successes / len(state.episodes) * 100
-        _write_json_atomic(state.run_dir / 'rank_progress' / 'rank0.json', {
+        scores = [
+            float(item['score']) for item in state.episodes
+            if item.get('score') is not None
+        ]
+        mean_score = sum(scores) / len(scores) if scores else None
+        rank_progress = {
             'rank': 0,
             'episodes': len(state.episodes),
             'successes': successes,
-        })
+        }
+        if score is not None:
+            rank_progress['score'] = score
+        if mean_score is not None:
+            rank_progress['scored_episodes'] = len(scores)
+            rank_progress['mean_score'] = mean_score
+        _write_json_atomic(state.run_dir / 'rank_progress' / 'rank0.json',
+                           rank_progress)
+        score_log = ''
+        if score is not None:
+            score_log += f'# local score: {score * 100:.1f}%\n'
+        if mean_score is not None:
+            score_log += f'# local mean score: {mean_score * 100:.1f}%\n'
         self._append_log(
             state, f'Success: {success}\n'
             f'# local episodes completed so far: {len(state.episodes)}\n'
-            f'# local successes: {successes} ({success_rate:.1f}%)\n')
+            f'# local successes: {successes} ({success_rate:.1f}%)\n'
+            f'{score_log}')
+        score_progress = ''
+        if score is not None:
+            score_progress += (f' current_progress_score={score * 100:.2f}%')
+        if mean_score is not None:
+            score_progress += (f' mean_progress_score={mean_score * 100:.2f}%')
         self._log('[eval-progress] '
                   f'episodes={len(state.episodes)}/'
                   f"{state.start['total_episodes']} "
+                  f'current_success={success} '
                   f'successes={successes} '
-                  f'success_rate={success_rate:.2f}%')
-
-    def _episode_identity(
-            self, state: _RunState,
-            payload: dict) -> tuple[_TaskManifestEntry, int, int, str]:
-        task_id = _require_string(payload.get('task_id'), 'payload.task_id')
-        task_index = _require_int(
-            payload.get('task_index'), 'payload.task_index', 0)
-        task = state.tasks_by_id.get(task_id)
-        if task is None or task.task_index != task_index:
-            raise EvaluationEventError(
-                f'task {task_id!r}/{task_index} is not in the run manifest')
-        description = _require_string(
-            payload.get('description', ''),
-            'payload.description',
-            allow_empty=True)
-        if description != task.description:
-            raise EvaluationEventError(
-                f'task {task_id!r} description changed during the run')
-        episode_index = _require_int(
-            payload.get('episode_index'), 'payload.episode_index', 0)
-        if episode_index >= state.start['episodes_per_task']:
-            raise EvaluationEventError(
-                'payload.episode_index exceeds episodes_per_task')
-        seed = _require_int(payload.get('seed'), 'payload.seed')
-        return task, episode_index, seed, description
+                  f'success_rate={success_rate:.2f}%'
+                  f'{score_progress}')
 
     def _run_end(self, state: _RunState, payload: dict) -> str:
         status = _require_string(payload.get('status'),
@@ -712,8 +842,6 @@ class FluxVLAROSEvaluationReporter:
             raise EvaluationEventError(
                 'finished run still has active episodes: '
                 f'{sorted(state.active_episodes)}')
-        full_suite = _require_bool(
-            payload.get('full_suite'), 'payload.full_suite')
         completed = _require_int(
             payload.get('completed_episodes'), 'payload.completed_episodes', 0)
         total = _require_int(
@@ -725,8 +853,6 @@ class FluxVLAROSEvaluationReporter:
                 'run_end completed_episodes does not match accepted episodes')
         if total != state.start['total_episodes']:
             raise EvaluationEventError('run_end total_episodes changed')
-        if full_suite != state.start['full_suite']:
-            raise EvaluationEventError('run_end full_suite changed during run')
         if 'error' in payload:
             json.dumps(payload['error'], ensure_ascii=False)
         state.active_episodes.clear()
@@ -735,7 +861,7 @@ class FluxVLAROSEvaluationReporter:
             f'# episodes completed: {completed}\n'
             f'# successes: '
             f"{sum(bool(item['success']) for item in state.episodes)}\n")
-        self._log(f'[ros-eval] run_end status={status} '
+        self._log(f'[zmq-eval] run_end status={status} '
                   f'episodes={completed}/{total} run_dir={state.run_dir}')
         return status
 
@@ -743,7 +869,7 @@ class FluxVLAROSEvaluationReporter:
                               summary_path: Path) -> dict:
         eligible, reason = self._feishu_eligibility(state, end)
         if not eligible:
-            self._log(f'[ros-eval] Feishu skipped: {reason}')
+            self._log(f'[zmq-eval] Feishu skipped: {reason}')
             return {
                 'reported_to_feishu': False,
                 'report_reason': reason,
@@ -762,7 +888,7 @@ class FluxVLAROSEvaluationReporter:
                 log_unconfigured=True)
         except Exception as exc:  # Feishu is best effort after local commit.
             reason = f'{type(exc).__name__}: {exc}'
-            self._log(f'[ros-eval] Feishu skipped: {reason}')
+            self._log(f'[zmq-eval] Feishu skipped: {reason}')
             return {
                 'reported_to_feishu': False,
                 'report_reason': reason,
@@ -777,6 +903,8 @@ class FluxVLAROSEvaluationReporter:
     def _write_summary_artifacts(self, state: _RunState) -> Path:
         if self.report_kind == 'robocasa':
             return self._write_robocasa_summary_artifacts(state)
+        if self.report_kind == 'robodojo':
+            return self._write_robodojo_summary_artifacts(state)
         return self._write_libero_summary_artifacts(state)
 
     def _write_libero_summary_artifacts(self, state: _RunState) -> Path:
@@ -792,6 +920,7 @@ class FluxVLAROSEvaluationReporter:
         total_trials = 0
         total_time = 0.0
         max_time = 0.0
+        all_scores = []
         for task_index in sorted(grouped):
             episodes = sorted(
                 grouped[task_index], key=lambda item: item['episode_index'])
@@ -809,6 +938,14 @@ class FluxVLAROSEvaluationReporter:
             start_time = time.strftime('%Y-%m-%d %H:%M:%S',
                                        time.localtime(start_epoch))
             count = len(episodes)
+            scores = [
+                float(item['score']) for item in episodes
+                if item.get('score') is not None
+            ]
+            score_metrics = ({
+                'scored_episodes': len(scores),
+                'mean_score': sum(scores) / len(scores),
+            } if scores else {})
             per_task = {
                 'task_suite': self.task_suite_name,
                 'task_id': task_index,
@@ -820,6 +957,7 @@ class FluxVLAROSEvaluationReporter:
                 'start_time': start_time,
                 'duration': duration,
                 'gpu_id': self.result_gpu_id,
+                **score_metrics,
             }
             _write_json_atomic(suite_dir / f'task{task_index}_results.json',
                                per_task)
@@ -829,7 +967,7 @@ class FluxVLAROSEvaluationReporter:
                 manager_suite_dir /
                 f'gpu{self.result_gpu_id}_task{task_index}_results.json',
                 per_task)
-            complete = count == state.start['episodes_per_task']
+            complete = count == self._episodes_for_task(state, task)
             task_state = 'SUCCESS' if complete else 'PARTIAL'
             (status_dir /
              f'{self.task_suite_name}_task{task_index}.status').write_text(
@@ -842,7 +980,9 @@ class FluxVLAROSEvaluationReporter:
                 'total_episodes': count,
                 'successes': successes,
                 'task_description': task.description,
+                **score_metrics,
             }
+            all_scores.extend(scores)
             total_successes += successes
             total_trials += count
             total_time += duration
@@ -880,11 +1020,337 @@ class FluxVLAROSEvaluationReporter:
                 'average_task_time': average_time,
             },
         }
+        if all_scores:
+            score_metrics = {
+                'scored_episodes': len(all_scores),
+                'mean_score': sum(all_scores) / len(all_scores),
+            }
+            summary['suite_stats'][self.task_suite_name].update(score_metrics)
+            summary['overall'].update(score_metrics)
         summary_path = state.run_dir / 'summary.json'
         _write_json_atomic(summary_path, summary)
         self._log(f'# episodes completed: {total_trials}')
         self._log(f'# successes: {total_successes} ({success_rate:.1f}%)')
-        self._log(f'[ros-eval] wrote LIBERO summary artifacts to '
+        if all_scores:
+            self._log(f'# mean score: '
+                      f'{sum(all_scores) / len(all_scores) * 100:.1f}%')
+        self._log(f'[zmq-eval] wrote {self.report_kind.upper()} summary '
+                  f'artifacts to {state.run_dir}')
+        return summary_path
+
+    def _write_robodojo_summary_artifacts(self, state: _RunState) -> Path:
+        grouped = defaultdict(list)
+        for episode in state.episodes:
+            grouped[episode['task_id']].append(episode)
+        for episodes in grouped.values():
+            episodes.sort(key=lambda item: item['episode_index'])
+
+        task_result_dir = state.run_dir / 'robodojo'
+        status_dir = state.run_dir / 'task_status'
+        manager_result_dir = self.result_root / 'robodojo'
+        task_result_dir.mkdir(exist_ok=True)
+        status_dir.mkdir(exist_ok=True)
+        manager_result_dir.mkdir(parents=True, exist_ok=True)
+
+        raw_task_results = {}
+        for task_index in sorted(state.tasks_by_index):
+            task = state.tasks_by_index[task_index]
+            episodes = grouped.get(task.task_id, ())
+            expected = self._episodes_for_task(state, task)
+            stats = _robodojo_episode_stats(episodes, expected)
+            status = ('complete' if stats['complete'] else
+                      'partial' if episodes else 'missing')
+            raw_task_results[task.task_id] = {
+                'task_id': task.task_id,
+                'task_index': task_index,
+                'task_description': task.description,
+                'status': status,
+                **stats,
+            }
+            mean_score = stats['mean_score_pct']
+            normalized_mean_score = (
+                mean_score / 100.0 if mean_score is not None else None)
+            per_task = {
+                'task_suite': self.task_suite_name,
+                'task_id': task_index,
+                'task_name': task.task_id,
+                'task_description': task.description,
+                'successes': stats['successes'],
+                'total_episodes': stats['episodes'],
+                'success_rate': stats['success_rate_pct'],
+                'scored_episodes': stats['scored_episodes'],
+                'mean_score': normalized_mean_score,
+                'duration': stats['total_duration_s'],
+                'gpu_id': self.result_gpu_id,
+            }
+            _write_json_atomic(
+                task_result_dir / f'task{task_index}_results.json', per_task)
+            _write_json_atomic(
+                manager_result_dir /
+                f'gpu{self.result_gpu_id}_task{task_index}_results.json',
+                per_task)
+            start_epoch = min(
+                (episode['started_epoch'] for episode in episodes), default=0)
+            task_state = 'SUCCESS' if stats['complete'] else 'PARTIAL'
+            (status_dir / f'robodojo_task{task_index}.status').write_text(
+                f"{task_state}|{stats['successes']}|{stats['episodes']}|"
+                f'{int(start_epoch)}',
+                encoding='utf-8')
+
+        task_results = {}
+        generalization_splits = {}
+        for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+            for task_name in task_names:
+                if task_name in ROBODOJO_GENERALIZATION_TASKS:
+                    standard_episodes = list(grouped.get(task_name, ()))
+                    random_task = f'{task_name}_random'
+                    random_episodes = list(grouped.get(random_task, ()))
+                    half_count = ROBODOJO_GENERALIZATION_HALF_EPISODES
+                    standard = standard_episodes[:half_count]
+                    random = random_episodes[:half_count]
+                    standard_stats = _robodojo_episode_stats(
+                        standard, half_count)
+                    random_stats = _robodojo_episode_stats(random, half_count)
+                    stats = _robodojo_episode_stats(
+                        standard + random, ROBODOJO_STANDALONE_EPISODES)
+                    splits_complete = (
+                        standard_stats['complete']
+                        and random_stats['complete'])
+                    stats['complete'] = splits_complete
+                    stats['source_tasks'] = [task_name, random_task]
+                    generalization_splits[task_name] = {
+                        'standard': {
+                            'task_id': task_name,
+                            **standard_stats,
+                        },
+                        'random': {
+                            'task_id': random_task,
+                            **random_stats,
+                        },
+                    }
+                else:
+                    task_episodes = list(grouped.get(task_name, ()))
+                    selected = task_episodes[:ROBODOJO_STANDALONE_EPISODES]
+                    stats = _robodojo_episode_stats(
+                        selected, ROBODOJO_STANDALONE_EPISODES)
+                    stats['source_tasks'] = [task_name]
+                stats['task'] = task_name
+                stats['dimension'] = dimension
+                if stats['complete']:
+                    stats['status'] = 'complete'
+                elif stats['episodes']:
+                    stats['status'] = 'partial'
+                else:
+                    stats['status'] = 'missing'
+                task_results[task_name] = stats
+
+        dimensions = {}
+        for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+            dimension_tasks = [task_results[task] for task in task_names]
+            dimensions[dimension] = _robodojo_macro_stats(
+                dimension_tasks, len(task_names))
+        split_summary = {}
+        expected_gen_tasks = len(ROBODOJO_DIMENSION_TASKS['Generalization'])
+        for split in ('standard', 'random'):
+            split_tasks = [
+                generalization_splits[task][split]
+                for task in ROBODOJO_DIMENSION_TASKS['Generalization']
+            ]
+            split_summary[split] = _robodojo_macro_stats(
+                split_tasks, expected_gen_tasks)
+        available_dimensions = [
+            stats for stats in dimensions.values() if stats['completed_tasks']
+        ]
+        available_count = len(available_dimensions)
+        macro_success_rate = (
+            sum(stats['success_rate_pct'] for stats in available_dimensions) /
+            available_count if available_dimensions else None)
+        macro_score = (
+            sum(stats['mean_score_pct'] for stats in available_dimensions) /
+            available_count if available_dimensions else None)
+        dimensions_complete = all(stats['complete']
+                                  for stats in dimensions.values())
+        official_macro = {
+            'available_dimensions': available_count,
+            'expected_dimensions': len(ROBODOJO_DIMENSION_TASKS),
+            'complete': dimensions_complete,
+            'success_rate_pct': macro_success_rate,
+            'mean_score_pct': macro_score,
+        }
+        completed_task_cells = sum(stats['complete']
+                                   for stats in task_results.values())
+        expected_task_cells = sum(
+            len(tasks) for tasks in ROBODOJO_DIMENSION_TASKS.values())
+        total_episodes = state.start['total_episodes']
+        episode_micro = _robodojo_episode_stats(state.episodes, total_episodes)
+
+        summary = {
+            'schema_version': RUN_SCHEMA_VERSION,
+            'benchmark': 'robodojo',
+            'run_id': state.run_id,
+            'ckpt': self.ckpt_path,
+            'config': self.config_path,
+            'task_suite': self.task_suite_name,
+            'model_family': self.model_family,
+            'aggregation': {
+                'generalization': '25 standard + 25 random episodes per task',
+                'standalone': '50 episodes per task',
+                'dimension': 'macro average over complete task cells',
+                'overall': 'macro average over available dimensions',
+                'display': 'Score/SR%',
+            },
+            'run': {
+                'run_name': state.start['run_name'],
+                'base_seed': state.start['base_seed'],
+                'full_suite': self._is_full_suite(state),
+                'episode_progress': {
+                    'completed': len(state.episodes),
+                    'expected': state.start['total_episodes'],
+                },
+                'official_task_progress': {
+                    'completed': completed_task_cells,
+                    'expected': expected_task_cells,
+                },
+            },
+            'overall': {
+                'official_macro': official_macro,
+                'episode_micro': episode_micro,
+            },
+            'dimensions': dimensions,
+            'generalization_split_summary': split_summary,
+            'task_results': task_results,
+            'generalization_splits': generalization_splits,
+            'raw_task_results': raw_task_results,
+        }
+        summary_path = state.run_dir / 'summary.json'
+        _write_json_atomic(summary_path, summary)
+
+        overview_stats = [
+            official_macro,
+            split_summary['standard'],
+            split_summary['random'],
+            dimensions['Precision'],
+            dimensions['Long-Horizon'],
+            dimensions['Memory'],
+            dimensions['Open'],
+        ]
+        overview_header = (
+            '| **Average** | Gen-Std | Gen-Rand | <br> | Precision | '
+            'Long-Horizon | Memory | Open<br> |')
+        overview_separator = (
+            '| ----------- | ------- | -------- | ---- | --------- | '
+            '------------ | ------ | -------- |')
+        trailing_overview_metrics = [
+            _format_robodojo_metric(stats) for stats in overview_stats[3:]
+        ]
+        overview_row = '| ' + ' | '.join([
+            _format_robodojo_metric(overview_stats[0]),
+            _format_robodojo_metric(overview_stats[1]),
+            _format_robodojo_metric(overview_stats[2]),
+            '',
+            *trailing_overview_metrics,
+        ]) + ' |'
+        markdown_lines = [
+            '# RoboDojo Evaluation Summary',
+            '',
+            'Each overview cell is `Score/SR%`.',
+            '',
+            (f'- Episodes: {len(state.episodes)}/'
+             f"{state.start['total_episodes']}"),
+            (f'- Official task cells: {completed_task_cells}/'
+             f'{expected_task_cells}'),
+            '',
+            overview_header,
+            overview_separator,
+            overview_row,
+            '',
+            '## Capability Breakdown',
+            '',
+            '| Capability | Complete Tasks | Score | SR (%) |',
+            '| ---------- | -------------: | --------: | -----: |',
+        ]
+        for dimension, stats in dimensions.items():
+            markdown_lines.append(
+                f"| {dimension} | {stats['completed_tasks']}/"
+                f"{stats['expected_tasks']} | "
+                f"{_format_optional_metric(stats['mean_score_pct'])} | "
+                f"{_format_optional_metric(stats['success_rate_pct'])} |")
+        markdown_lines.extend([
+            '',
+            '## Per-Task Results',
+            '',
+            '| Capability | Task | Status | Episodes | Score | SR (%) |',
+            '| ---------- | ---- | ------ | -------: | --------: | -----: |',
+        ])
+        for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+            for task_name in task_names:
+                stats = task_results[task_name]
+                markdown_lines.append(
+                    f"| {dimension} | `{task_name}` | {stats['status']} | "
+                    f"{stats['episodes']}/{stats['expected_episodes']} | "
+                    f"{_format_optional_metric(stats['mean_score_pct'])} | "
+                    f"{_format_optional_metric(stats['success_rate_pct'])} |")
+        (state.run_dir / 'summary.md').write_text(
+            '\n'.join(markdown_lines) + '\n', encoding='utf-8')
+
+        with (state.run_dir / 'summary.csv').open(
+                'w', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow([
+                'Metric', 'Average', 'Gen-Std', 'Gen-Rand', 'Precision',
+                'Long-Horizon', 'Memory', 'Open'
+            ])
+            writer.writerow([
+                'Score',
+                *[stats['mean_score_pct'] for stats in overview_stats],
+            ])
+            writer.writerow([
+                'Success Rate (%)',
+                *[stats['success_rate_pct'] for stats in overview_stats],
+            ])
+
+        with (state.run_dir / 'task_success_rates.csv').open(
+                'w', newline='', encoding='utf-8') as stream:
+            writer = csv.writer(stream)
+            writer.writerow([
+                'Capability', 'Task', 'Status', 'Episodes',
+                'Expected Episodes', 'Successes', 'Success Rate (%)',
+                'Scored Episodes', 'Mean Score'
+            ])
+            for dimension, task_names in ROBODOJO_DIMENSION_TASKS.items():
+                for task_name in task_names:
+                    stats = task_results[task_name]
+                    writer.writerow([
+                        dimension, task_name, stats['status'],
+                        stats['episodes'], stats['expected_episodes'],
+                        stats['successes'], stats['success_rate_pct'],
+                        stats['scored_episodes'], stats['mean_score_pct']
+                    ])
+
+        incomplete_tasks = [
+            task_name for task_name, stats in task_results.items()
+            if not stats['complete']
+        ]
+        (state.run_dir / 'failed_tasks.txt').write_text(
+            ''.join(f'{task_name}\n' for task_name in incomplete_tasks),
+            encoding='utf-8')
+        text_lines = [
+            '=== RoboDojo Official Evaluation Summary ===',
+            'Metric order: Score/SR%',
+            (f'Official task cells: {completed_task_cells}/'
+             f'{expected_task_cells}'),
+            overview_header,
+            overview_separator,
+            overview_row,
+        ]
+        (state.run_dir / 'summary.txt').write_text(
+            '\n'.join(text_lines) + '\n', encoding='utf-8')
+
+        self._log('[zmq-eval] RoboDojo official overview (Score/SR%):\n'
+                  f'{overview_header}\n{overview_separator}\n{overview_row}')
+        self._log(f'[zmq-eval] official task cells '
+                  f'{completed_task_cells}/{expected_task_cells}')
+        self._log(f'[zmq-eval] wrote RoboDojo summary artifacts to '
                   f'{state.run_dir}')
         return summary_path
 
@@ -917,6 +1383,7 @@ class FluxVLAROSEvaluationReporter:
         incomplete_tasks = []
 
         for task_index in sorted(state.tasks_by_index):
+            task = state.tasks_by_index[task_index]
             episodes = sorted(
                 grouped.get(task_index, ()),
                 key=lambda item: item['episode_index'])
@@ -959,7 +1426,7 @@ class FluxVLAROSEvaluationReporter:
                 manager_result_dir /
                 f'gpu{self.result_gpu_id}_task{task_index}_results.json',
                 per_task)
-            complete = count == state.start['episodes_per_task']
+            complete = count == self._episodes_for_task(state, task)
             if not complete:
                 incomplete_tasks.append(task_index)
             start_epoch = min(item['started_epoch'] for item in episodes)
@@ -1065,7 +1532,7 @@ class FluxVLAROSEvaluationReporter:
         _write_json_atomic(summary_path, summary)
         self._log(f'# episodes completed: {total_trials}')
         self._log(f'# successes: {total_successes} ({overall_rate:.1f}%)')
-        self._log(f'[ros-eval] wrote RoboCasa summary artifacts to '
+        self._log(f'[zmq-eval] wrote RoboCasa summary artifacts to '
                   f'{state.run_dir}')
         return summary_path
 
@@ -1098,6 +1565,10 @@ class FluxVLAROSEvaluationReporter:
             f'model_family: {self.model_family}',
             f'task_ids: {task_ids}',
             f"num_trials_per_task: {state.start['episodes_per_task']}",
+            'episodes_per_task_by_task: ' + json.dumps(
+                state.start['episodes_per_task_by_task'],
+                ensure_ascii=False,
+                sort_keys=True),
             f"eval_chunk_size: {state.start['execute_horizon']}",
             f"num_steps_wait: {_cfg_get(cfg, 'num_steps_wait', None)}",
             f'num_inference_steps: '
@@ -1113,7 +1584,7 @@ class FluxVLAROSEvaluationReporter:
             f'save_multi_view_rollout_videos: '
             f"{_cfg_get(cfg, 'save_multi_view_rollout_videos', False)}",
             f"rollout_dir: {_cfg_get(cfg, 'rollout_dir', None)}",
-            f"seed: {state.start['seed']}",
+            f"base_seed: {state.start['base_seed']}",
             f'# successes: {total_successes} / {total_trials} '
             f'({success_rate:.1f}%)',
             '',
@@ -1168,10 +1639,6 @@ class FluxVLAROSEvaluationReporter:
                             end: dict) -> tuple[bool, str]:
         if end['status'].lower() != 'finished':
             return False, 'run status is not finished'
-        if not state.start['full_suite'] or not end['full_suite']:
-            return False, 'run is not marked as a full suite'
-        if self.configured_task_ids is not None:
-            return False, 'authoritative eval config contains a task filter'
         if self.expected_task_indexes is None:
             return False, 'complete authoritative task manifest is unknown'
         selected = set(state.tasks_by_index)
@@ -1182,18 +1649,37 @@ class FluxVLAROSEvaluationReporter:
             return False, 'total task count does not match eval metadata'
         if state.start['episodes_per_task'] != self.num_trials_per_task:
             return False, 'episodes_per_task does not match eval metadata'
-        expected_total = len(self.expected_task_indexes) * \
-            self.num_trials_per_task
+        expected_counts = {
+            task.task_id:
+            self.num_trials_per_task_overrides.get(task.task_id,
+                                                   self.num_trials_per_task)
+            for task in state.tasks_by_index.values()
+        }
+        if state.start['episodes_per_task_by_task'] != expected_counts:
+            return (False,
+                    'episodes_per_task_by_task does not match eval metadata')
+        expected_total = sum(expected_counts.values())
         if (end['completed_episodes'] != end['total_episodes']
                 or end['total_episodes'] != expected_total):
             return False, 'completed episode total is not the full suite total'
         counts = defaultdict(int)
         for episode in state.episodes:
             counts[episode['task_index']] += 1
-        if any(counts[index] != self.num_trials_per_task
+        if any(counts[index] != expected_counts[
+                state.tasks_by_index[index].task_id]
                for index in self.expected_task_indexes):
             return False, 'one or more tasks has an incomplete episode count'
         return True, 'eligible full-suite evaluation'
+
+    def _is_full_suite(self, state: _RunState) -> bool:
+        if self.expected_task_indexes is None:
+            return False
+        return (set(state.tasks_by_index) == self.expected_task_indexes and
+                state.start['total_tasks'] == len(self.expected_task_indexes))
+
+    @staticmethod
+    def _episodes_for_task(state: _RunState, task: _TaskManifestEntry) -> int:
+        return state.start['episodes_per_task_by_task'][task.task_id]
 
     def _expected_task_indexes(self) -> Optional[set[int]]:
         if self.task_list is not None:
@@ -1268,7 +1754,7 @@ class FluxVLAROSEvaluationReporter:
             'event_version': version,
             'event_type': event_type,
             'request_id': request_id,
-            'run_session_id': state.session_id,
+            'run_session_id': state.run_session_id,
             'sequence': sequence,
             'recorded_at': datetime.now().astimezone().isoformat(),
             'payload': payload,
@@ -1288,7 +1774,7 @@ class FluxVLAROSEvaluationReporter:
                 else:
                     journal_path.unlink(missing_ok=True)
             except OSError as rollback_error:
-                self._log('[ros-eval] failed to roll back journal append: '
+                self._log('[zmq-eval] failed to roll back journal append: '
                           f'{rollback_error}')
             raise
 
@@ -1302,7 +1788,6 @@ class FluxVLAROSEvaluationReporter:
     def _response(self, state: _RunState, status: str) -> dict:
         return {
             'accepted': True,
-            'duplicate': False,
             'error': '',
             'run_dir': str(state.run_dir),
             'next_sequence': state.next_sequence,
@@ -1314,7 +1799,7 @@ class FluxVLAROSEvaluationReporter:
             self._logger(message)
         # Logging must never fail evaluation reporting.
         except Exception as exc:
-            overwatch.warning(f'[ros-eval] logger failed: {exc}; {message}')
+            overwatch.warning(f'[zmq-eval] logger failed: {exc}; {message}')
 
 
-__all__ = ['EvaluationEventError', 'FluxVLAROSEvaluationReporter']
+__all__ = ['EvaluationEventError', 'FluxVLAEvaluationReportWriter']

@@ -34,9 +34,15 @@ import_heterogeneous_runtime_symbols(
         'dreamzero_vla': ['DreamZeroVLA'],
         'fastwam_vla': ['FastWAMVLA'],
         'cosmos3_flowmatching': ['Cosmos3FlowMatching'],
+        'openai_vla': [
+            'OpenAILiberoVLA',
+            'OpenAIRobocasaVLA',
+            'OpenAIOliVLA',
+        ],
+        'minimax_vla': ['MiniMaxLiberoVLA', 'MiniMaxRobocasaVLA'],
         'openai_responses_vla': [
             'OpenAIResponsesVLA', 'OpenAIResponsesOliVLA',
-            'OpenAIResponsesRobocasaVLA'
+            'OpenAIResponsesRobocasaVLA',
         ],
     },
 )

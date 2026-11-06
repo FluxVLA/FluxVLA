@@ -942,6 +942,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         replay_images.append(frame)
                 t = 0
                 episode_start = time.time()
+                record_observation = getattr(self.dataset,
+                                             'record_observation', None)
+                if record_observation is not None:
+                    record_observation(obs, t)
 
                 while t < self.max_episode_steps:
                     # Build input dict for the dataset transform pipeline.
@@ -1071,6 +1075,8 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                 replay_images.append(frame)
 
                         t += 1
+                        if record_observation is not None:
+                            record_observation(obs, t)
                         if info.get('success', False):
                             success = True
                             break

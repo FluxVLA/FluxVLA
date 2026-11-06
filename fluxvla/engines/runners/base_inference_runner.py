@@ -18,6 +18,7 @@ import select
 import sys
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Dict, List, Optional
@@ -49,6 +50,10 @@ class BaseInferenceRunner:
     inference to a remote ZMQ GPU server instead of loading the model
     locally.  Subclasses (URInferenceRunner, AlohaInferenceRunner) work
     identically in both local and remote modes.
+
+    Without ``ckpt_path``, configured local components are built without
+    injecting checkpoint statistics or loading weights. This supports API
+    policies and other models that initialize themselves from configuration.
 
     Args:
         cfg (Dict): Configuration dictionary for the VLA model.
@@ -117,12 +122,34 @@ class BaseInferenceRunner:
         if self._use_remote:
             self._init_zmq_client(remote_inference)
         else:
+            model_cfg = (cfg.get('inference_model')
+                         if isinstance(cfg, Mapping) else
+                         getattr(cfg, 'inference_model', None))
             if ckpt_path is not None:
+                missing = [
+                    name for name, value in (
+                        ('dataset', dataset),
+                        ('denormalize_action', denormalize_action),
+                        ('cfg.inference_model', model_cfg)) if value is None
+                ]
+                if missing:
+                    raise ValueError('Checkpoint inference requires ' +
+                                     ', '.join(missing))
+                checkpoint_path = Path(ckpt_path)
+                if not checkpoint_path.is_file():
+                    raise FileNotFoundError(
+                        f'Checkpoint file not found at {ckpt_path}')
                 data_stat_path = os.path.join(
-                    Path(ckpt_path).resolve().parent.parent,
+                    checkpoint_path.resolve().parent.parent,
                     'dataset_statistics.json')
-                assert os.path.exists(data_stat_path), (
-                    f'Dataset statistics file not found at {data_stat_path}!')
+                if not Path(data_stat_path).is_file():
+                    raise FileNotFoundError(
+                        'Dataset statistics file not found at '
+                        f'{data_stat_path}')
+                # Checkpoint metadata belongs to this runner, not a shared
+                # caller config that may later build a checkpoint-free model.
+                denormalize_action = denormalize_action.copy()
+                dataset = dataset.copy()
                 denormalize_action['norm_stats'] = data_stat_path
                 dataset['norm_stats'] = data_stat_path
                 dataset['model_path'] = os.path.dirname(
@@ -133,12 +160,11 @@ class BaseInferenceRunner:
                     denormalize_action)
             if dataset is not None:
                 self.dataset = build_dataset_from_cfg(dataset)
-            if cfg is not None and hasattr(cfg, 'inference_model'):
-                self.vla = build_vla_from_cfg(cfg.inference_model)
+            if model_cfg is not None:
+                self.vla = build_vla_from_cfg(model_cfg)
 
             if ckpt_path is not None:
-                assert Path.exists(Path(ckpt_path)), \
-                    f'Checkpoint path {ckpt_path} does not exist!'
+                ckpt_path = os.fspath(ckpt_path)
                 if ckpt_path.endswith('.safetensors'):
                     state_dict = load_file(ckpt_path, device='cpu')
                 else:
@@ -285,6 +311,10 @@ class BaseInferenceRunner:
         GPU, and sets random seeds.  In remote mode, pings the ZMQ
         server to verify connectivity.
         """
+        if not self._use_remote and self.vla is None:
+            raise ValueError(
+                'Local inference requires cfg.inference_model before '
+                'run_setup; use remote_inference for a remote policy.')
         set_seed_everywhere(self.seed)
         if self._use_remote:
             if not self.ping():

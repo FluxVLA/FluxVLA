@@ -36,7 +36,7 @@ _OPENAI_BASE_URL = (_environ.get('OPENAI_BASE_URL')
 _OPENAI_API_KEY_ENV = (_environ.get('OPENAI_API_KEY_ENV') or 'OPENAI_API_KEY')
 
 inference_model = dict(
-    type='OpenAIResponsesVLA',
+    type='OpenAILiberoVLA',
     model='gpt-6-astra',
     base_url=_OPENAI_BASE_URL,
     api_key_env=_OPENAI_API_KEY_ENV,
@@ -97,14 +97,14 @@ eval = dict(
     # Fifty ten-step GPT action chunks plus settling/reset headroom.
     max_steps=550,
     seed=7,
-    dataset_stats_path=None,
+    norm_stats_path=None,
     requires_dataset_stats=False,
     dataset=dict(
         type='OpenAILiberoEvalDataset',
         img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
         resize_size=512,
     ),
-    denormalize_action=dict(type='IdentityAction', action_dim=7, clip=True),
+    denormalize_action=dict(type='IdentityLiberoAction', action_dim=7),
     model_build_device='cpu',
     enable_mixed_precision_training=False,
     preprocess_every_step=False,

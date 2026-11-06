@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Raw simulator observation adapters for API-hosted policies."""
+"""Raw observation adapters for API-hosted simulator and robot policies."""
 
 from typing import Any, Dict, List
 
@@ -23,7 +23,7 @@ from fluxvla.engines import DATASETS
 
 @DATASETS.register_module()
 class OpenAILiberoEvalDataset:
-    """Prepare raw images and proprioception for ``OpenAIResponsesVLA``.
+    """Prepare raw images and proprioception for ``OpenAILiberoVLA``.
 
     Unlike local VLA datasets, this adapter performs no tokenization,
     normalization, tensor conversion, or CUDA transfer. The API policy owns
@@ -77,7 +77,7 @@ class OpenAILiberoEvalDataset:
 
 @DATASETS.register_module()
 class OpenAIOliInferenceDataset:
-    """Adapt an Oli keypoint observation to the OpenAI policy interface."""
+    """Prepare named OLI observations for ``OpenAIOliVLA``."""
 
     _KEYPOINT_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
                        'right_wrist')

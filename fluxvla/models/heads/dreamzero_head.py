@@ -31,6 +31,25 @@ KVCacheType: TypeAlias = torch.Tensor
 logger = logging.getLogger(__name__)
 
 
+def _expand_block_timesteps_for_actions(
+    timestep_id_block: torch.Tensor,
+    action_horizon: int,
+) -> torch.Tensor:
+    """Expand one timestep per video block to its paired action tokens."""
+    if timestep_id_block.ndim != 3:
+        raise ValueError(
+            'timestep_id_block must have shape [B, blocks, frames], got '
+            f'{tuple(timestep_id_block.shape)}')
+    num_video_intervals = (
+        timestep_id_block.shape[1] * timestep_id_block.shape[2])
+    if num_video_intervals == 0 or action_horizon % num_video_intervals != 0:
+        raise ValueError(
+            f'action_horizon={action_horizon} is not divisible by the '
+            f'{num_video_intervals} non-conditioning video frames.')
+    repeats = action_horizon // num_video_intervals
+    return timestep_id_block.repeat(1, 1, repeats).flatten(1)
+
+
 def _import_dreamzero_modules():
     """Lazily import DreamZero modules so the rest of fluxvla still works
     even when optional dependencies (flash-attn, etc.) are missing."""
@@ -89,6 +108,8 @@ class DreamZeroHead(nn.Module):
             distribution parameters.
         pretrained_name_or_path: Path to Wan 2.1 checkpoint directory for
             loading DiT pretrained weights.  ``None`` skips loading.
+        official_inference: Use released seed 1140, 8-DiT/16-UniPC schedule,
+            BF16 scheduler and image-latent prefill. Default keeps old configs.
     """
 
     def __init__(
@@ -125,6 +146,7 @@ class DreamZeroHead(nn.Module):
         use_gradient_checkpointing: bool = True,
         cfg_scale: float = 1.0,
         max_chunk_size: int = -1,
+        official_inference: bool = False,
         *args,
         **kwargs,
     ):
@@ -145,6 +167,7 @@ class DreamZeroHead(nn.Module):
         self.use_cache = False
         self.cfg_scale = cfg_scale
         self.max_chunk_size = max_chunk_size
+        self.official_inference = official_inference
 
         # ----- build DiT model -----
         self.model = CausalWanModel(
@@ -227,6 +250,19 @@ class DreamZeroHead(nn.Module):
     # ------------------------------------------------------------------
     # Training forward
     # ------------------------------------------------------------------
+    @staticmethod
+    def _reduce_temporal_loss(losses, valid_lengths=None, sample_weight=None):
+        if valid_lengths is not None:
+            # Normalize each sample by its original length, so adding future
+            # padding neither dilutes its loss nor changes its batch weight.
+            valid = (
+                torch.arange(losses.shape[1], device=losses.device)[None] <
+                valid_lengths[:, None])
+            losses = (losses.masked_fill(~valid, 0).sum(dim=1) /
+                      valid_lengths.clamp_min(1)).unsqueeze(1)
+        return reduce_action_bc_loss(
+            losses.unsqueeze(-1), sample_weight=sample_weight)
+
     def forward(
         self,
         prompt_embs: torch.Tensor,
@@ -237,6 +273,7 @@ class DreamZeroHead(nn.Module):
         actions: torch.Tensor,
         action_masks: torch.Tensor,
         embodiment_ids: torch.Tensor,
+        num_valid_blocks: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Dict:
         """Training forward pass with flow-matching loss.
@@ -251,11 +288,32 @@ class DreamZeroHead(nn.Module):
             actions: ``[B, action_horizon, action_dim]`` in **[-1,1]**.
             action_masks: ``[B, action_horizon, action_dim]`` boolean.
             embodiment_ids: ``[B]`` integer embodiment category.
+            num_valid_blocks: ``[B]`` unpadded block counts, if the batch was
+                padded by VideoActionBlockCollator. Padding must be at the end.
 
         Returns:
             dict with ``loss``, ``dynamics_loss``, ``action_loss``.
         """
         device = actions.device
+        valid_video_lengths = valid_action_lengths = None
+        if num_valid_blocks is not None:
+            num_valid_blocks = num_valid_blocks.to(device=device)
+            max_blocks = (latents.shape[2] - 1) // self.num_frame_per_block
+            if (num_valid_blocks.shape != (actions.shape[0], )
+                    or num_valid_blocks.is_floating_point()
+                    or (num_valid_blocks < 1).any()
+                    or (num_valid_blocks > max_blocks).any()):
+                raise ValueError('num_valid_blocks must contain one valid '
+                                 'positive block count per sample.')
+            if (actions.shape[1] != max_blocks * self.num_action_per_block
+                    or states.shape[1] != max_blocks * self.num_state_per_block
+                    or latents.shape[2] !=
+                    1 + max_blocks * self.num_frame_per_block):
+                raise ValueError('Padded video, actions and states must have '
+                                 'the same number of complete blocks.')
+            valid_video_lengths = (1 +
+                                   num_valid_blocks * self.num_frame_per_block)
+            valid_action_lengths = num_valid_blocks * self.num_action_per_block
 
         # --- Flow-matching noise ---
         noise = torch.randn_like(latents)
@@ -283,10 +341,9 @@ class DreamZeroHead(nn.Module):
                                         1:].reshape(timestep_id.shape[0], -1,
                                                     self.num_frame_per_block)
         timestep_id_block[:, :, 1:] = timestep_id_block[:, :, 0:1]
-        timestep_id_block = timestep_id_block.reshape(
-            timestep_id_block.shape[0], -1)
-        timestep_id = torch.concat([timestep_id[:, :1], timestep_id_block],
-                                   dim=1)
+        flat_timestep_id_block = timestep_id_block.flatten(1)
+        timestep_id = torch.concat(
+            [timestep_id[:, :1], flat_timestep_id_block], dim=1)
 
         _, num_lat_frames, num_channels, lat_h, lat_w = noise.shape
         frame_seqlen = int(lat_h * lat_w / 4)
@@ -311,18 +368,8 @@ class DreamZeroHead(nn.Module):
                 0, self.scheduler.num_train_timesteps,
                 (actions.shape[0], actions.shape[1]))
         else:
-            timestep_action_id = timestep_id_block.repeat(
-                1,
-                1,
-                actions.shape[1] // (noise.shape[1] - 1) if
-                (noise.shape[1] - 1) > 0 else 1,
-            )
-            timestep_action_id = timestep_action_id.reshape(
-                timestep_action_id.shape[0], -1)
-            if timestep_action_id.shape[1] != actions.shape[1]:
-                timestep_action_id = torch.randint(
-                    0, self.scheduler.num_train_timesteps,
-                    (actions.shape[0], actions.shape[1]))
+            timestep_action_id = _expand_block_timesteps_for_actions(
+                timestep_id_block, actions.shape[1])
 
         timestep_action = self.scheduler.timesteps[timestep_action_id].to(
             device)
@@ -360,8 +407,8 @@ class DreamZeroHead(nn.Module):
             self.scheduler.training_weight(timestep.flatten(0, 1)).unflatten(
                 0, (noise.shape[0], noise.shape[1])).to(device))
         sample_weight = kwargs.get('sample_weight')
-        weighted_dynamics_loss = reduce_action_bc_loss(
-            weight_dyn.unsqueeze(-1), sample_weight=sample_weight)
+        weighted_dynamics_loss = self._reduce_temporal_loss(
+            weight_dyn, valid_video_lengths, sample_weight=sample_weight)
 
         action_loss_raw = F.mse_loss(
             action_noise_pred.float(),
@@ -373,8 +420,8 @@ class DreamZeroHead(nn.Module):
                 timestep_action.flatten(0, 1)).unflatten(
                     0,
                     (noise_action.shape[0], noise_action.shape[1])).to(device))
-        weighted_action_loss = reduce_action_bc_loss(
-            weight_act.unsqueeze(-1), sample_weight=sample_weight)
+        weighted_action_loss = self._reduce_temporal_loss(
+            weight_act, valid_action_lengths, sample_weight=sample_weight)
 
         loss = weighted_dynamics_loss + weighted_action_loss
 
@@ -553,22 +600,29 @@ class DreamZeroHead(nn.Module):
         num_state_tokens = num_action_blocks * self.num_state_per_block
         states = states[:, :num_state_tokens].to(torch.bfloat16)
 
-        noisy_latents = torch.randn(
-            b,
-            num_channels,
-            denoise_frames,
-            lat_h,
-            lat_w,
-            device=device,
-            dtype=latents_dtype,
-        )
-        noisy_actions = torch.randn(
-            b,
-            self.action_horizon,
-            self.max_action_dim,
-            device=device,
-            dtype=latents_dtype,
-        )
+        if self.official_inference and num_inference_steps != 16:
+            raise ValueError(
+                'Official DreamZero inference requires 16 scheduler steps')
+
+        def generate_noise(shape):
+            generator = None
+            if self.official_inference:
+                generator = torch.Generator(device=device).manual_seed(1140)
+            return torch.randn(
+                shape,
+                generator=generator,
+                device=device,
+                dtype=latents_dtype,
+            )
+
+        # Upstream DreamZero starts video and action sampling from separate
+        # generators initialized with the same fixed seed. Do not share one
+        # generator here: doing so changes the action noise whenever the video
+        # resolution or number of denoised frames changes.
+        noisy_latents = generate_noise(
+            (b, num_channels, denoise_frames, lat_h, lat_w))
+        noisy_actions = generate_noise(
+            (b, self.action_horizon, self.max_action_dim))
 
         sample_scheduler = FlowUniPCMultistepScheduler(
             num_train_timesteps=self.scheduler.num_train_timesteps,
@@ -612,6 +666,11 @@ class DreamZeroHead(nn.Module):
             y_future = ys[:, :, -denoise_frames:]
         prompt_embs = self._as_prompt_emb_list(prompt_embs)
         use_cfg = self.cfg_scale != 1.0 and len(prompt_embs) > 1
+        # Released 8-DiT / 16-UniPC schedule; reuse velocity on other steps.
+        dit_steps = {0, 1, 2, 6, 10, 13, 14, 15}
+        scheduler_dtype = (
+            latents_dtype if self.official_inference else torch.float32)
+        previous_prediction = None
 
         for step_index in range(len(sample_scheduler.timesteps)):
             video_timestep = sample_scheduler.timesteps[step_index]
@@ -620,40 +679,44 @@ class DreamZeroHead(nn.Module):
             t_video = video_timestep.expand(b, denoise_frames)
             t_action = action_timestep.expand(b, self.action_horizon)
 
-            predictions = self._single_flowmatching_step(
-                prompt_embs=prompt_embs,
-                reference_latents=noisy_latents,
-                clip_feas=clip_feas,
-                ys=y_future,
-                start_frame=current_start_frame,
-                kv_caches=[kv_cache, kv_cache_neg],
-                crossattn_caches=[crossattn_cache, crossattn_cache_neg],
-                timestep=t_video,
-                timestep_action=t_action,
-                action=noisy_actions,
-                state=states,
-                embodiment_id=embodiment_ids,
-                update_cache=False,
-            )
-            flow_pred_cond, flow_pred_cond_action = predictions[0]
-            flow_pred = flow_pred_cond
+            if not self.official_inference or step_index in dit_steps:
+                predictions = self._single_flowmatching_step(
+                    prompt_embs=prompt_embs,
+                    reference_latents=noisy_latents,
+                    clip_feas=clip_feas,
+                    ys=y_future,
+                    start_frame=current_start_frame,
+                    kv_caches=[kv_cache, kv_cache_neg],
+                    crossattn_caches=[crossattn_cache, crossattn_cache_neg],
+                    timestep=t_video,
+                    timestep_action=t_action,
+                    action=noisy_actions,
+                    state=states,
+                    embodiment_id=embodiment_ids,
+                    update_cache=False,
+                )
+                flow_pred_cond, flow_pred_cond_action = predictions[0]
+                flow_pred = flow_pred_cond
 
-            if use_cfg:
-                flow_pred_uncond, _ = predictions[1]
-                flow_pred = flow_pred_uncond + self.cfg_scale * (
-                    flow_pred_cond - flow_pred_uncond)
+                if use_cfg:
+                    flow_pred_uncond, _ = predictions[1]
+                    flow_pred = flow_pred_uncond + self.cfg_scale * (
+                        flow_pred_cond - flow_pred_uncond)
+                previous_prediction = (flow_pred, flow_pred_cond_action)
+            else:
+                flow_pred, flow_pred_cond_action = previous_prediction
 
             noisy_latents = sample_scheduler.step(
-                model_output=flow_pred.float(),
+                model_output=flow_pred.to(scheduler_dtype),
                 timestep=video_timestep,
-                sample=noisy_latents.float(),
+                sample=noisy_latents.to(scheduler_dtype),
                 step_index=step_index,
                 return_dict=False,
             )[0]
             noisy_actions = sample_scheduler_action.step(
-                model_output=flow_pred_cond_action.float(),
+                model_output=flow_pred_cond_action.to(scheduler_dtype),
                 timestep=action_timestep,
-                sample=noisy_actions.float(),
+                sample=noisy_actions.to(scheduler_dtype),
                 step_index=step_index,
                 return_dict=False,
             )[0]

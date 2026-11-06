@@ -299,6 +299,45 @@ def sdpa_attention_forward(
     return attn_output, None
 
 
+def sdpa_math_fp32_attention_forward(
+    module: nn.Module,
+    query: torch.Tensor,
+    key: torch.Tensor,
+    value: torch.Tensor,
+    attention_mask: Optional[torch.Tensor],
+    scaling: float,
+    dropout: float = 0.0,
+    **kwargs,
+):
+    """Opt-in FP32 math attention, including the softmax backward pass.
+
+    Casting SDPA inputs alone still permits a fused backend. With large
+    adaptive-normalization activations, its backward pass can lose accuracy
+    even in FP32. Select the math backend explicitly and retain FP32 output.
+    This allocates the attention matrix; use only in recipes that request it.
+    """
+    from torch.nn.attention import SDPBackend, sdpa_kernel
+
+    with torch.autocast(device_type=query.device.type, enabled=False):
+        key_states = repeat_kv(key.float(), module.num_key_value_groups)
+        value_states = repeat_kv(value.float(), module.num_key_value_groups)
+        mask = attention_mask
+        if mask is not None:
+            mask = mask[:, :, :, :key_states.shape[-2]]
+            if mask.is_floating_point():
+                mask = mask.float()
+        with sdpa_kernel(SDPBackend.MATH):
+            output = F.scaled_dot_product_attention(
+                query.float(),
+                key_states,
+                value_states,
+                attn_mask=mask,
+                scale=scaling,
+                dropout_p=dropout if module.training else 0.0,
+                is_causal=kwargs.get('is_causal', False))
+        return output.transpose(1, 2).contiguous(), None
+
+
 def apply_rope(x, positions, max_wavelength=10_000):
     """
     Applies RoPE positions [B, L] to x [B, L, H, D].

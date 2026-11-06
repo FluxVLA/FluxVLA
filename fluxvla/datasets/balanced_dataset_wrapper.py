@@ -44,6 +44,10 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
         name_mappings: Optional statistics key mappings.
         sampling_weights: Optional positive source weights. When set, preserve
             deterministic weighted sampling with replacement.
+        sampling_unit: ``frame`` samples frames uniformly within each source.
+            ``episode`` first samples an episode uniformly, then a frame in
+            that episode. Requires weighted sampling and ParquetDataset
+            sources. This prevents long demonstrations dominating training.
         epoch_size: Number of virtual samples in one epoch. By default this is
             ``num_sources * max(source_lengths)`` for balanced cycling, or
             ``max(source_length / probability)`` for weighted sampling.
@@ -68,7 +72,13 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
         dataset_statistics_path: Optional[str] = None,
         auto_compute_statistics: Optional[Dict] = None,
         epoch_size: Optional[int] = None,
+        sampling_unit: str = 'frame',
     ) -> None:
+        if sampling_unit not in ('frame', 'episode'):
+            raise ValueError('`sampling_unit` must be "frame" or "episode".')
+        if sampling_unit == 'episode' and sampling_weights is None:
+            raise ValueError('Episode sampling requires `sampling_weights`.')
+        self.sampling_unit = sampling_unit
         super().__init__(
             datasets=datasets,
             statistic_keys=statistic_keys,
@@ -99,6 +109,9 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
 
         self.sampling_probabilities = self._normalize_sampling_weights(
             sampling_weights)
+        self._source_episodes = (
+            self._build_source_episodes()
+            if sampling_unit == 'episode' else None)
         self.source_total_len = self.total_len
         if epoch_size is None:
             if self.sampling_probabilities is None:
@@ -110,6 +123,41 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
         if int(epoch_size) <= 0:
             raise ValueError('`epoch_size` must be a positive integer.')
         self.total_len = int(epoch_size)
+
+    def _build_source_episodes(self):
+        """Group eligible positions by root and episode, without video IO.
+
+        Episode IDs are local to a root, and sample_indices may select only
+        part of the original dataset. Keep both indirections when grouping.
+        Arrow column access avoids materializing millions of Python rows.
+        """
+        groups = []
+        column_cache = {}
+        for source, positions in enumerate(self._source_positions):
+            dataset = self.datasets[source] if self.is_list else self.dataset
+            hf_dataset = getattr(dataset, 'dataset', None)
+            sample_indices = getattr(dataset, 'sample_indices', None)
+            cumulative = getattr(dataset, 'dataset_cumulative_sizes', None)
+            if (hf_dataset is None or sample_indices is None
+                    or cumulative is None or not hasattr(hf_dataset, 'data')):
+                raise ValueError('Episode sampling requires ParquetDataset '
+                                 'sources with episode_index metadata.')
+            if id(dataset) not in column_cache:
+                column_cache[id(dataset)] = hf_dataset.data.column(
+                    'episode_index').to_numpy(zero_copy_only=False)
+            frame_indices = np.asarray(sample_indices)[positions %
+                                                       len(sample_indices)]
+            episode_ids = column_cache[id(dataset)][frame_indices]
+            root_ids = np.searchsorted(
+                cumulative[1:], frame_indices, side='right')
+            order = np.lexsort((episode_ids, root_ids))
+            roots, episodes = root_ids[order], episode_ids[order]
+            changes = ((roots[1:] != roots[:-1])
+                       | (episodes[1:] != episodes[:-1]))
+            boundaries = np.concatenate(
+                ([0], np.flatnonzero(changes) + 1, [len(order)]))
+            groups.append((order, boundaries))
+        return groups
 
     def _build_source_positions(self) -> List[np.ndarray]:
         if self.is_list:
@@ -180,7 +228,15 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
             source_index = int(
                 rng.choice(
                     len(self.source_lengths), p=self.sampling_probabilities))
-            sample_index = int(rng.choice(self.source_lengths[source_index]))
+            if self._source_episodes is None:
+                sample_index = int(
+                    rng.choice(self.source_lengths[source_index]))
+            else:
+                positions, boundaries = self._source_episodes[source_index]
+                episode = int(rng.integers(len(boundaries) - 1))
+                offset = rng.integers(boundaries[episode],
+                                      boundaries[episode + 1])
+                sample_index = int(positions[offset])
             return source_index, sample_index
 
         source_order, source_offsets = self._epoch_source_order_and_offsets(

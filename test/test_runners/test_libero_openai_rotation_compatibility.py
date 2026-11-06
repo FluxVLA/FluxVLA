@@ -23,7 +23,7 @@ import torch
 from fluxvla.datasets.openai_eval_dataset import OpenAILiberoEvalDataset
 from fluxvla.engines.runners import libero_eval_runner as module
 from fluxvla.engines.runners.libero_eval_runner import LiberoEvalRunner
-from fluxvla.models.vlas.openai_responses_vla import OpenAIResponsesVLA
+from fluxvla.models.vlas.openai_vla import OpenAILiberoVLA
 from fluxvla.transforms.normalize import IdentityLiberoAction
 
 
@@ -74,7 +74,7 @@ def test_existing_runner_delivers_rotation_without_special_handling(
     for name in ('broadcast_object_list', 'all_reduce', 'barrier'):
         monkeypatch.setattr(module.dist, name, lambda *args, **kwargs: None)
 
-    model = OpenAIResponsesVLA(action_horizon=8)
+    model = OpenAILiberoVLA(action_horizon=8)
     rotation = np.eye(3)[axis] * sign * 0.2
     monkeypatch.setattr(
         model, '_post_json', lambda _: {

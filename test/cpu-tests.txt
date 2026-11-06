@@ -10,4 +10,10 @@ test/test_models/test_vla.py::test_tiny_pi_predict_action
 test/test_models/test_projector.py
 test/test_models/test_action_heads.py
 test/test_models/test_base_vla_checkpoint.py
+test/test_models/test_minimax_vla.py
+test/test_models/test_openai_libero_rotation.py
+test/test_models/test_tool_calling_vla.py
 test/test_models/test_pi0_time_sampling.py
+test/test_runners/test_libero_openai_rotation_compatibility.py
+test/test_runners/test_robocasa_eval_output_paths.py
+test/test_runners/test_robotwin_eval_output_paths.py

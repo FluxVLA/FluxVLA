@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import signal
+import sys
 import time
 import unicodedata
 from collections import deque
@@ -51,12 +52,12 @@ class OliInferenceRunner(BaseInferenceRunner):
                  interactive: bool = True,
                  default_prompt_id: str = None,
                  default_execution_count: int = 1,
-                 allow_custom_instruction: bool = False,
                  apply_jpeg_compression: bool = False,
                  prepare_pose=None,
                  prepare_pose_duration_sec: float = 5.0,
                  prepare_pose_prompt_id: str = None,
                  *args,
+                 allow_custom_instruction: bool = False,
                  **kwargs):
         self.execute_horizon = execute_horizon
         self.interactive = bool(interactive)
@@ -167,6 +168,8 @@ class OliInferenceRunner(BaseInferenceRunner):
     def _get_user_task_instruction(self, default_instruction: str):
         """Select a configured prompt or enter a custom instruction."""
         del default_instruction
+        if not self._running:
+            return []
         if not self.interactive:
             prompt_id = self.default_prompt_id
             self._selected_prompt_id = prompt_id
@@ -180,25 +183,27 @@ class OliInferenceRunner(BaseInferenceRunner):
             if self.prepare_pose_prompt_id is not None else '')
         input_label = ('Prompt ID or instruction'
                        if self.allow_custom_instruction else 'Prompt ID')
+        repeat_commands = [
+            command for command in ('r', 'repeat')
+            if command not in self.task_descriptions
+            and command != self.prepare_pose_prompt_id
+        ]
+        repeat_hint = (f'{"/".join(repeat_commands)} to repeat, '
+                       if repeat_commands else '')
         while self._running:
             try:
                 value = input(f'{input_label} [{self.default_prompt_id}] '
                               f'(available: {prompt_ids}{prepare_hint}; '
-                              'r to repeat, q to quit): ')
+                              f'{repeat_hint}q to quit): ')
             except (EOFError, KeyboardInterrupt):
                 self._running = False
+                return []
+            if not self._running:
                 return []
             prompt_id = self._normalize_input(value)
             if prompt_id.lower() in {'q', 'quit', 'exit'}:
                 self._running = False
                 return []
-            if prompt_id.lower() in {'r', 'repeat'}:
-                if self._last_instruction is None:
-                    print('No previous instruction to repeat.', flush=True)
-                    continue
-                description = self._last_instruction
-                prompt_id = 'repeat'
-                break
             if prompt_id == '':
                 prompt_id = self.default_prompt_id
             if prompt_id == self.prepare_pose_prompt_id:
@@ -207,6 +212,14 @@ class OliInferenceRunner(BaseInferenceRunner):
                 continue
             if prompt_id in self.task_descriptions:
                 description = self._get_task_description(prompt_id)
+                break
+            # Keep existing configured IDs ahead of the new shortcut.
+            if prompt_id.lower() in {'r', 'repeat'}:
+                if self._last_instruction is None:
+                    print('No previous instruction to repeat.', flush=True)
+                    continue
+                description = self._last_instruction
+                prompt_id = 'repeat'
                 break
             if self.allow_custom_instruction:
                 description = prompt_id
@@ -224,6 +237,8 @@ class OliInferenceRunner(BaseInferenceRunner):
                     f'(default: {self.default_execution_count}, q to quit): ')
             except (EOFError, KeyboardInterrupt):
                 self._running = False
+                return []
+            if not self._running:
                 return []
             value = self._normalize_input(value)
             if value.lower() in {'q', 'quit', 'exit'}:
@@ -244,6 +259,8 @@ class OliInferenceRunner(BaseInferenceRunner):
                 continue
             break
 
+        if not self._running:
+            return []
         self._selected_prompt_id = prompt_id
         self._selected_execution_count = execution_count
         self._last_instruction = description
@@ -252,6 +269,19 @@ class OliInferenceRunner(BaseInferenceRunner):
             f'description={description!r}',
             flush=True)
         return [description] * execution_count
+
+    def run_setup(self):
+        """Release the operator if device setup or a remote ping fails."""
+        try:
+            return super().run_setup()
+        except BaseException:
+            try:
+                self.cleanup()
+            except Exception as exc:
+                print(
+                    f'[OLI_CLEANUP_FAILED] {exc}; '
+                    'preserving setup error', flush=True)
+            raise
 
     def run(self, initial_instruction='pour water into the cup'):
         """Main inference loop using time-based rate control.
@@ -273,6 +303,16 @@ class OliInferenceRunner(BaseInferenceRunner):
                     self._run_continuous()
             except _ShutdownRequested:
                 pass
+            finally:
+                error_in_flight = sys.exc_info()[0] is not None
+                try:
+                    self.cleanup()
+                except Exception as exc:
+                    if not error_in_flight:
+                        raise
+                    overwatch.error(
+                        f'[OLI_CLEANUP_FAILED] {exc}; '
+                        'preserving original error')
 
     def _infer_and_execute_chunk(self, instruction):
         """Predict and execute one action chunk, preserving its context."""
@@ -400,11 +440,22 @@ class OliInferenceRunner(BaseInferenceRunner):
             return 0
         if self.execute_horizon is not None:
             actions = actions[:self.execute_horizon]
+        # The operator knows the active joint/keypoint and hand contracts.
+        # Validate every point before sending any prefix of this chunk.
+        validator = getattr(self.ros_operator, 'validate_action_chunk', None)
+        if validator is not None:
+            validator(actions)
         sent_steps = 0
         for action in actions:
             if not self._running:
                 break
-            self.ros_operator.send_action(action)
+            try:
+                self.ros_operator.send_action(action)
+            except Exception:
+                print(
+                    f'[OLI_EXECUTION_FAILED] step={sent_steps}; '
+                    f'completed_send_calls={sent_steps}', flush=True)
+                raise
             sent_steps += 1
             time.sleep(self._dt)
         return sent_steps
@@ -430,8 +481,17 @@ class OliInferenceRunner(BaseInferenceRunner):
         """Clean up resources."""
         print('Cleaning up OliInferenceRunner')
         self._running = False
-        if hasattr(self.ros_operator, 'stop_trajectory'):
-            self.ros_operator.stop_trajectory()
-        if hasattr(self.ros_operator, 'close'):
-            self.ros_operator.close()
-        super().cleanup()
+        first_error = None
+        for cleanup in (
+                getattr(self.ros_operator, 'stop_trajectory', None),
+                getattr(self.ros_operator, 'close', None), super().cleanup):
+            if cleanup is None:
+                continue
+            try:
+                cleanup()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                print(f'[OLI_CLEANUP_FAILED] {exc}', flush=True)
+        if first_error is not None:
+            raise first_error

@@ -190,8 +190,12 @@ class ProcessPrompts():
             lang_tokens.append(negative_tokens)
             lang_masks.append(negative_token_mask)
         labels = list(tokens)
-        inputs['lang_tokens'] = np.array(tokens)
-        inputs['lang_masks'] = np.array(token_mask)
+        # Preserve the conditional/negative pair for DreamZero video CFG.
+        # Keep the historical one-dimensional output for ordinary prompts.
+        inputs['lang_tokens'] = np.array(
+            lang_tokens if self.negative_prompt is not None else tokens)
+        inputs['lang_masks'] = np.array(
+            lang_masks if self.negative_prompt is not None else token_mask)
         if self.with_labels:
             assert 'actions' in inputs, "Data must contain 'actions' key."
             actions = inputs['actions']

@@ -2,8 +2,9 @@
 """Explicit import isolation for real CPU model unit tests, not an app runtime.
 
 FluxVLA's package initializers eagerly import unrelated CUDA-only models and
-RADIO globally replaces timm attention. For CPU unit tests ONLY, namespace
-packages locate the original source modules without running those initializers.
+training/data integrations; RADIO globally replaces timm attention. For CPU
+unit tests ONLY, namespace packages locate the original model and evaluation
+modules without running those initializers.
 Registries, builders, model classes and all tensor operations remain unchanged.
 This does not test normal ``import fluxvla`` or CUDA integration; the full GPU
 suite still uses the production import path in a separate interpreter.
@@ -40,7 +41,9 @@ def bootstrap():
     root = Path(__file__).resolve().parents[1]
     packages = (
         'fluxvla',
+        'fluxvla.datasets',
         'fluxvla.engines',
+        'fluxvla.engines.runners',
         'fluxvla.models',
         'fluxvla.models.backbones',
         'fluxvla.models.backbones.llms',
@@ -50,6 +53,7 @@ def bootstrap():
         'fluxvla.models.projectors',
         'fluxvla.models.vlas',
         'fluxvla.tokenizers',
+        'fluxvla.transforms',
     )
     for name in packages:
         spec = ModuleSpec(name, loader=None, is_package=True)
@@ -87,6 +91,15 @@ def bootstrap():
         'models.vlas.llava_vla',
         'models.vlas.pi0_flowmatching',
         'models.vlas.pi05_flowmatching',
+        # Register the real API policies and evaluation components without
+        # importing unrelated training runners or parquet datasets.
+        'models.vlas.openai_vla',
+        'models.vlas.minimax_vla',
+        'datasets.openai_eval_dataset',
+        'transforms.normalize',
+        'transforms.robocasa_transforms',
+        'engines.runners.libero_eval_runner',
+        'engines.runners.robocasa_eval_runner',
     )
     for name in modules:
         module = importlib.import_module('fluxvla.' + name)

@@ -1,10 +1,30 @@
 bddl==1.0.1
+embreex==4.4.0
+fasteners==0.20
 gym==0.25.2
-gymnasium
+gymnasium==1.3.0
 hydra-core==1.2.0
+imageio==2.37.3
 -e git+https://github.com/yinchimaoliang/LIBERO.git@058fda1ddebe92918af091cb6816759ca6d003f0#egg=libero
 lxml
+manifold3d==3.5.2
+mplib==0.2.1
+msgpack==1.2.1
 mujoco==3.2.6
+numpy-quaternion==2024.0.13
+open3d==0.18.0
+opencv-python==4.11.0.86
+pycollada==0.9.3
+pyglet==1.5.31
+pyzmq==27.1.0
 robomimic==0.2.0
 -e git+https://github.com/yinchimaoliang/robosuite.git@e293cc32ff3c48957a4ebcad09952432b0dc9049#egg=robosuite
+sapien==3.0.0b1
+scikit-image==0.25.2
+setuptools==80.9.0
 tensorflow==2.15.0
+toppra==0.6.9
+transforms3d==0.4.2
+trimesh==4.4.3
+warp-lang==1.12.0
+yourdfpy==0.0.60

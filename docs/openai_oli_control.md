@@ -35,13 +35,12 @@ state. Checkpoint preprocessing selects the fields declared by its modality.
 The final twelve keypoint action values are published in their original order,
 followed by the configured force levels.
 
-The GPT policy gives every pose target, including base, the same relative
-interface: `dxyz_m` is a displacement in the current robot-base frame and
-`drpy_deg` is a rotation about the target's local axes. The adapter keeps the
-Operator wire unchanged. It converts base z to an absolute height, converts the
-relative base rotation to yaw delta plus absolute roll/pitch, and divides
-x/y/yaw across the 50 published points. Omitted base motion emits zero x/y and
-the all-zero rotation sentinel together with the current measured height.
+The GPT policy requests absolute `xyz_m` positions and pairs of semantic
+direction vectors. Key-body targets use the robot-base frame; base targets use
+the fixed command-world frame. The adapter converts a base target to per-step
+body-frame x/y and yaw increments, absolute height, and absolute pitch/roll,
+while preserving the Operator wire. Omitted base motion emits zero x/y and the
+all-zero rotation sentinel together with the current measured height.
 
 The Operator accepts `upper_only` and `full` keypoint action layouts. With raw
 fingers they are 45-D and 66-D; with binary hands they are 35-D and 56-D.
@@ -51,13 +50,14 @@ supplies all five key-body poses, the full base action, and hands.
 
 ## GPT-6 policy
 
-`OpenAIResponsesOliVLA` reuses main's Responses API implementation. It sends
+`OpenAIOliVLA` reuses main's Responses API implementation. It sends
 the available RGB views, all five key-body poses, base pose, and a summary of
-the 12-D finger state to GPT-6. The base input pose is absolute in the world
-frame; head, wrist, and foot input poses are absolute in the robot-base frame.
-Input orientation is reported as three target-local unit axes rather than Euler
-angles: base uses `local_axes_in_world`, while head, wrists, and feet use
-`local_axes_in_base`. Local frames are defined by the same canonical pose: the
+the 12-D finger state to GPT-6. The base input combines accumulated command
+x/y/yaw with measured height/pitch/roll; head, wrist, and foot input poses are
+absolute in the robot-base frame. Orientation uses semantic direction pairs:
+wrist finger direction and palm-facing normal, head gaze and up directions,
+foot toe and top-normal directions, and base forward and up directions.
+Local frames are defined by the same canonical pose: the
 robot stands upright, its arms hang at its sides, and both palms face inward.
 In that pose every local frame is aligned with robot-base `+x` forward, `+y`
 left, and `+z` up. Each frame is rigidly attached to its target. For both
@@ -65,26 +65,47 @@ neutral wrists, local `-z` points from wrist to fingers and local `+x` points
 approximately toward the thumb. The left palm faces local `-y`, while the right
 palm faces local `+y`.
 
-For head, wrist, and foot outputs, `dxyz_m` is the requested final position
-minus the input position in the input-time robot-base frame. For base output,
-`dx/dy` is the final planar displacement in the input-time body-heading frame,
-while `dz` is the final world-height change. `drpy_deg` is the total relative
-rotation from the input orientation about that target's input-time local axes.
-Neither value is a per-trajectory-point increment. Hands use their six native
-channels. The policy converts these relative requests into the existing 66-D
-Operator/WBT contract.
+For head, wrist, and foot outputs, `xyz_m` is an absolute target in the
+robot-base frame. Base `xyz_m` is absolute in the command-world frame.
+Orientation fields are `finger_direction_in_base` and
+`palm_facing_direction_in_base` for wrists, `gaze_direction_in_base` and
+`head_up_direction_in_base` for head, `toe_direction_in_base` and
+`foot_top_normal_in_base` for feet, and `forward_direction_in_world` and
+`up_direction_in_world` for base. Supply both directions when requesting an
+orientation; omit both to hold it. Hands use six native channels per side.
+The policy converts these absolute requests into the existing 66-D contract.
 
 Every GPT command is constrained before it reaches MROS:
 
 - wrist displacement is limited to 8 cm per call;
-- head displacement is limited to 3 cm per call;
+- head displacement is limited to 5 cm per call by the provided config
+  (the model constructor default is 3 cm);
 - foot displacement is limited to 8 cm per call;
 - base xy displacement is limited to 10 cm and height change to 8 cm per call;
 - relative pose rotation is limited to 15 degrees per call;
 - absolute base roll and pitch are limited to 15 degrees;
-- wrist and head xyz are clipped to the configured workspace;
-- keypoint poses and hands are linearly interpolated to the target over all 50
-  steps.
+- wrist and head targets are clipped to the configured workspace. If a
+  requested key-body's current position is outside it, inference fails before
+  generating actions rather than moving farther than the per-call limit.
+  Omitted targets remain held, including poses outside the workspace;
+- keypoint positions and hands are linearly interpolated over 50 steps;
+  keypoint rotations follow the relative rotation vector.
+
+Native finger observations require valid feedback. Missing first feedback or
+a cache older than `finger_state_max_age_sec` (default 1 second) drops the
+observation. Invalid shape, non-finite values, or values outside `[0,100]`
+raise an error. Age is measured since a successful local message read, not a
+sensor timestamp; deployment must verify whether MROS can return cached
+messages repeatedly. Binary hand observations retain main's command-based
+behavior.
+
+Hand targets are checked before interpolation, and the runner preflights all
+points it will execute before publishing any of them. Both MROS body and hand
+messages are built and validated before sending. After a publisher exception,
+further commands through that operator are blocked. A body call returning
+success updates the accumulated command pose, but is not an execution receipt;
+hand publication may still fail. Check controller state and reinitialize the
+operator before resuming; do not automatically replay incremental actions.
 
 ## Running
 
@@ -98,19 +119,42 @@ export OPENAI_BASE_URL='https://api.openai.com/v1'  # optional gateway
 Observation-only mode defaults to one action chunk and publishes nothing:
 
 ```bash
-/root/miniconda3/envs/fluxvla/bin/python scripts/inference.py \
-  --config configs/openai/gpt6_astra_oli_keypoint_inference.py
+python scripts/inference.py \
+  --config configs/openai/gpt6_astra_oli_keypoint_inference.py \
+  --cfg-options inference.disable_puppet_arm=True
 ```
 
 Live mode must be enabled explicitly. The runner's execution count controls
 the number of GPT action chunks:
 
 ```bash
-/root/miniconda3/envs/fluxvla/bin/python scripts/inference.py \
+python scripts/inference.py \
   --config configs/openai/gpt6_astra_oli_keypoint_inference.py \
   --cfg-options inference.disable_puppet_arm=False \
   inference.default_execution_count=20
 ```
+
+Run these commands in the configured FluxVLA environment. The default config
+now sets `disable_puppet_arm=True`; observation-only still calls the model API.
+
+## Diagnosing a stopped run
+
+| Log marker | Meaning and next check |
+| --- | --- |
+| `OLI_HAND_STATE_UNAVAILABLE` | Waiting for the first valid or fresh hand message; inspect the hand bridge, topic and local read age. |
+| `OLI_HAND_STATE_INVALID` | Invalid finger feedback; check its layout, finite values and native `[0,100]` units. |
+| `OLI_TARGET_INVALID` | Invalid model target; inspect the tool arguments and target value range. |
+| `OLI_WORKSPACE_STATE` | A requested key-body starts outside workspace; check coordinate frames and bounds. |
+| `OLI_ACTION_INVALID` / `OLI_CHUNK_INVALID` | An action point fails validation; chunk errors identify a zero-based step. No prefix is sent by this preflight. |
+| `OLI_FORCE_INVALID` | Force configuration must have two finite values. |
+| `OLI_PUBLISH_FAILED` | Delivery is uncertain or partial; the message identifies body or hands. Check the robot before recreating the operator. |
+| `OLI_PUBLISH_LATCHED` | A previous publish failure blocks subsequent commands; no automatic recovery or replay. |
+| `OLI_EXECUTION_FAILED` | The zero-based failing step and completed local send calls; these counts are not robot execution receipts. |
+| `OLI_CLEANUP_FAILED` | Cleanup failed; the original inference/publish error remains the primary exception. |
+
+Shape/non-finite target errors also include the field name (for example
+`OLI target.left_hand`). Keep the complete traceback, config overrides, model
+trace, and exact code revision when recording a hardware failure.
 
 Type `p` and press Enter while a chunk is running to pause after that chunk.
 Only one process may publish robot commands. First validate the behavior

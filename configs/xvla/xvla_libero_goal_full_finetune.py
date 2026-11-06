@@ -1,4 +1,3 @@
-#!/usr/bin/env bash
 # Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,13 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Stable shell entry point for the FluxThemis ROS inference service. The
-# Python module remains the single owner of argument parsing and server logic.
+_base_ = './xvla_libero_full_finetune_base.py'
 
-set -euo pipefail
+train_dataloader = dict(
+    dataset=dict(
+        datasets=dict(
+            data_root_path=('./datasets/libero_xvla_lerobot/'
+                            'libero_goal_no_noops_lerobot'), ), ), )
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-
-cd "${PROJECT_ROOT}"
-exec python "${SCRIPT_DIR}/ros_inference_server.py" "$@"
+eval = dict(task_suite_name='libero_goal')

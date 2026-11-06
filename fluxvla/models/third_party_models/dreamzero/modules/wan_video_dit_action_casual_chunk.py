@@ -4,10 +4,11 @@
 # Origin: Source
 # Upstream-URL: https://github.com/dreamzero0/dreamzero/blob/main/groot/vla/model/dreamzero/modules/wan_video_dit_action_casual_chunk.py
 # Upstream-Ref: main
-# Notes: Attribution normalized; no functional change.
+# Notes: Compatible checkpoint APIs; cached state attention matches training.
 
 import math
 import os
+from functools import partial
 from typing import Any, TypeAlias
 
 import torch
@@ -1254,11 +1255,23 @@ class CausalWanSelfAttention(nn.Module):
             new_v = new_v[:, -self.max_attention_size:]
 
             if action_register_length is not None:
-                x = self.attn(
-                    torch.cat([roped_query, roped_action_query], dim=1),
+                # Training keeps state tokens independent of video/action
+                # tokens. Preserve that mask during cached inference: mixing
+                # them changes the state representation at every DiT layer.
+                num_state = self.num_state_per_block
+                x_joint = self.attn(
+                    torch.cat([
+                        roped_query, roped_action_query[:, :-num_state]
+                    ], dim=1),
                     torch.cat([new_k, roped_action_key], dim=1),
                     torch.cat([new_v, action_v], dim=1),
                 )
+                x_state = self.attn(
+                    roped_action_query[:, -num_state:],
+                    roped_action_key[:, -num_state:],
+                    action_v[:, -num_state:],
+                )
+                x = torch.cat([x_joint, x_state], dim=1)
             else:
                 x = self.attn(
                     roped_query,
@@ -1570,11 +1583,20 @@ class CausalWanModel(ModelMixin, ConfigMixin):
         # initialize weights
         self.init_weights()
 
-        self.gradient_checkpointing = True
+        self.gradient_checkpointing = False
+        self._gradient_checkpointing_func = partial(
+            torch.utils.checkpoint.checkpoint, use_reentrant=False)
         self.independent_first_frame = False if self.num_frame_per_block == 1 else True
 
-    def _set_gradient_checkpointing(self, module, value=False):
-        self.gradient_checkpointing = value
+    def _set_gradient_checkpointing(self, module=None, value=False, *,
+                                    enable=None,
+                                    gradient_checkpointing_func=None):
+        """Accept both the legacy Module.apply and current diffusers API."""
+        if module is not None and module is not self:
+            return
+        self.gradient_checkpointing = value if enable is None else enable
+        if gradient_checkpointing_func is not None:
+            self._gradient_checkpointing_func = gradient_checkpointing_func
 
     @staticmethod
     def _prepare_blockwise_causal_attn_mask(
@@ -2351,12 +2373,10 @@ class CausalWanModel(ModelMixin, ConfigMixin):
 
         for block in self.blocks:
             if torch.is_grad_enabled() and self.gradient_checkpointing:
-                x = torch.utils.checkpoint.checkpoint(
-                    create_custom_forward(block),
-                    x,
-                    **kwargs,
-                    use_reentrant=False,
-                )
+                # Diffusers' callback accepts positional inputs only. Bind
+                # block kwargs without dropping a caller-supplied callback.
+                x = self._gradient_checkpointing_func(
+                    partial(create_custom_forward(block), **kwargs), x)
             else:
                 x, _ = block(x, **kwargs)
 

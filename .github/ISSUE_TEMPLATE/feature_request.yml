@@ -1,0 +1,98 @@
+name: Feature request
+description: Propose a FluxVLA model, dataset, training, evaluation, or deployment improvement
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement. Search the [existing issues](https://github.com/FluxVLA/FluxVLA/issues) and review the [contribution guide](https://github.com/FluxVLA/FluxVLA/blob/main/CONTRIBUTING.md) first. Discuss substantial model or infrastructure changes before starting implementation.
+
+        Do not include credentials, private datasets, or private checkpoint contents. Describe the need without exposing sensitive information.
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I have searched for existing requests for this feature.
+          required: true
+        - label: I have removed credentials and private information from this request.
+          required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: Explain the workflow this feature would enable or improve and who would benefit.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Related component
+      multiple: true
+      options:
+        - Model, backbone, or action head
+        - Dataset, transforms, or collator
+        - Training, checkpointing, or optimization
+        - Evaluation or benchmark support
+        - Inference acceleration or RTC
+        - Robot operator or remote serving
+        - Installation or hardware platform support
+        - Documentation or developer tooling
+        - Other (describe in proposal)
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: Describe the expected behavior, affected interfaces, and any compatibility or dependency considerations.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Models, data, and platforms
+      description: If applicable, identify model/source repositories, checkpoint formats, dataset versions, benchmarks, robot platforms, and hardware constraints. Use public references only.
+      placeholder: Model family, LIBERO/RoboCasa task, ALOHA/UR3/Franka/Tron2/Oli platform, action layout, or new platform requirements
+    validations:
+      required: false
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Explain why existing configs, components, or workarounds do not address the need.
+    validations:
+      required: false
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+      description: Suggest correctness tests, source-model parity checks, or reproducible benchmarks. Include hardware, seeds, and evaluation settings where relevant.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Possible contribution
+      description: Optional; implementation support is not required to propose a feature.
+      options:
+        - label: I can help implement the change.
+        - label: I can help test or benchmark the change.
+        - label: I can help update the documentation.
+
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Include relevant public papers, examples, or related issues.
+    validations:
+      required: false

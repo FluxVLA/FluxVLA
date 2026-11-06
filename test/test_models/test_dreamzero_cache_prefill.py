@@ -49,8 +49,9 @@ class _FakeBackbone:
 
 class _FakeHead:
 
-    def __init__(self):
+    def __init__(self, official_inference=False):
         self.model = SimpleNamespace(local_attn_size=-1)
+        self.official_inference = official_inference
         self.current_start_frame = 0
         self.num_frame_per_block = 2
         self.num_state_per_block = 1
@@ -65,16 +66,16 @@ class _FakeHead:
     def predict_action(self, **kwargs):
         self.last_kwargs = kwargs
         self.current_start_frame = max(1, self.current_start_frame) + 2
-        return torch.zeros(1, 10, 32)
+        return torch.zeros(1, 10, 32, dtype=torch.bfloat16)
 
 
-def _make_vla():
+def _make_vla(official_inference=False):
     vla = DreamZeroVLA.__new__(DreamZeroVLA)
     torch.nn.Module.__init__(vla)
     vla.use_cache = True
     vla.frame_window_size = 17
     vla.vlm_backbone = _FakeBackbone()
-    vla.vla_head = _FakeHead()
+    vla.vla_head = _FakeHead(official_inference=official_inference)
     return vla
 
 
@@ -89,22 +90,32 @@ def _predict_once(vla, frames=1):
 
 
 @pytest.mark.parametrize('frames', [1, 4, 9])
-def test_cache_prefill_encodes_one_clean_conditioning_frame(frames):
-    vla = _make_vla()
+@pytest.mark.parametrize('official_inference', [False, True])
+def test_cache_prefill_encodes_one_clean_conditioning_frame(
+        frames, official_inference):
+    vla = _make_vla(official_inference=official_inference)
     actions = _predict_once(vla, frames)
 
     assert actions.shape == (1, 10, 32)
-    assert vla.vlm_backbone.encode_video_calls == 1
-    assert vla.vlm_backbone.last_video.shape[2] == 1
-    assert torch.all(vla.vlm_backbone.last_video == frames - 1)
+    assert actions.dtype == torch.float32
+    if official_inference:
+        assert vla.vlm_backbone.encode_video_calls == 0
+        assert vla.vlm_backbone.last_video is None
+        expected = vla.vlm_backbone.condition_latent.transpose(1, 2)
+    else:
+        assert vla.vlm_backbone.encode_video_calls == 1
+        assert vla.vlm_backbone.last_video.shape[2] == 1
+        assert torch.all(vla.vlm_backbone.last_video == frames - 1)
+        expected = vla.vlm_backbone.encoded_video.transpose(1, 2)
     assert torch.all(vla.vlm_backbone.last_image == frames - 1)
-    expected = vla.vlm_backbone.encoded_video.transpose(1, 2)
     torch.testing.assert_close(vla.vla_head.last_kwargs['latents'], expected)
     assert vla.vla_head.last_kwargs['states'].shape == (1, 1, 64)
 
 
-def test_cache_continuation_encodes_observations_and_single_frame_resets():
-    vla = _make_vla()
+@pytest.mark.parametrize('official_inference', [False, True])
+def test_cache_continuation_encodes_observations_and_single_frame_resets(
+        official_inference):
+    vla = _make_vla(official_inference=official_inference)
     _predict_once(vla, frames=4)
     _predict_once(vla, frames=4)
     torch.testing.assert_close(

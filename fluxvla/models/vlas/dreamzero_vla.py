@@ -47,6 +47,8 @@ class DreamZeroVLA(BaseVLA):
     * ``action_masks`` – ``[B, action_horizon]`` or
       ``[B, action_horizon, action_dim]`` boolean.
     * ``embodiment_ids`` – ``[B]`` integer (optional, defaults to 0).
+    * ``num_valid_blocks`` – ``[B]`` integer counts before temporal padding
+      (optional, supplied by VideoActionBlockCollator).
 
     Encoding (T5, CLIP, VAE) is done by ``Wan21Backbone`` (vlm_backbone),
     then encoded tensors are passed to ``DreamZeroHead`` (vla_head).
@@ -65,6 +67,7 @@ class DreamZeroVLA(BaseVLA):
         freeze_vlm_backbone: bool = True,
         freeze_projector: bool = True,
         use_cache: bool = True,
+        pretrained_skip_prefixes: Optional[List[str]] = None,
         *args,
         **kwargs,
     ) -> None:
@@ -74,6 +77,7 @@ class DreamZeroVLA(BaseVLA):
             pretrained_name_or_path=pretrained_name_or_path,
             name_mapping=name_mapping,
             strict_mapping=strict_mapping,
+            pretrained_skip_prefixes=pretrained_skip_prefixes,
             freeze_llm_backbone=freeze_llm_backbone,
             freeze_vlm_backbone=freeze_vlm_backbone,
             freeze_projector=freeze_projector,
@@ -182,6 +186,7 @@ class DreamZeroVLA(BaseVLA):
         frame_masks: Optional[torch.Tensor] = None,
         embodiment_ids: Optional[torch.Tensor] = None,
         img_masks: Optional[torch.Tensor] = None,
+        num_valid_blocks: Optional[torch.Tensor] = None,
         # accepted but unused
         task_description: Optional[List[str]] = None,
         **kwargs,
@@ -248,12 +253,80 @@ class DreamZeroVLA(BaseVLA):
             actions=actions,
             action_masks=action_masks,
             embodiment_ids=embodiment_ids,
+            num_valid_blocks=num_valid_blocks,
             sample_weight=kwargs.get('sample_weight'),
         )
 
     # ------------------------------------------------------------------
     # Inference
     # ------------------------------------------------------------------
+    @torch.no_grad()
+    def _predict_from_observed_video(self, video, lang_tokens, lang_masks,
+                                     states, embodiment_ids):
+        """Rebuild causal context from complete, correctly sampled past blocks.
+
+        A replan can execute fewer actions than a generated block. In that
+        case advancing a persistent cache by a full block changes its time
+        coordinates. Encoding the actual past at the training stride avoids
+        both that shift and fabricated frames during warmup.
+        """
+        head = self.vla_head
+        frames_per_block = 4 * head.num_frame_per_block
+        frames = video.shape[2]
+        if (frames < 1 or (frames - 1) % frames_per_block
+                or frames + frames_per_block > self.frame_window_size):
+            raise ValueError('Observed video must contain complete past '
+                             'blocks and leave room for one future block')
+        head.reset_inference_state()
+        backbone = self.vlm_backbone
+        backbone.set_frozen_modules_to_eval_mode()
+        prompts = self._encode_wan_prompts(lang_tokens, lang_masks)
+        clip, condition, first_latent = backbone.encode_image(
+            video[:, :, :1].transpose(1, 2), self.frame_window_size,
+            video.shape[-2], video.shape[-1])
+        latents = (
+            first_latent if frames == 1 else backbone.encode_video(video))
+        batch_size = video.shape[0]
+        device, dtype = latents.device, latents.dtype
+        states = self._prepare_states(states, 1)
+        states = torch.nn.functional.pad(
+            states, (0, head.max_state_dim - states.shape[-1]))
+        if embodiment_ids is None:
+            embodiment_ids = torch.zeros(
+                batch_size, dtype=torch.long, device=device)
+        kv, kv_neg = head._create_cache_pair(batch_size, dtype, device, 0)
+        cross, cross_neg = head._create_cache_pair(batch_size, dtype, device,
+                                                   512)
+        start = 0
+        while start < latents.shape[2]:
+            end = start + (1 if start == 0 else head.num_frame_per_block)
+            head._single_flowmatching_step(
+                prompt_embs=prompts,
+                reference_latents=latents[:, :, start:end],
+                clip_feas=clip,
+                ys=condition[:, :, start:end],
+                start_frame=start,
+                kv_caches=[kv, kv_neg],
+                crossattn_caches=[cross, cross_neg])
+            start = end
+        return head._sample_action_block(
+            prompt_embs=prompts,
+            clip_feas=clip,
+            ys=condition,
+            states=states,
+            embodiment_ids=embodiment_ids,
+            kv_cache=kv,
+            kv_cache_neg=kv_neg,
+            crossattn_cache=cross,
+            crossattn_cache_neg=cross_neg,
+            current_start_frame=start,
+            denoise_frames=head.num_frame_per_block,
+            latents_dtype=dtype,
+            latents_shape=(latents.shape[1], latents.shape[3],
+                           latents.shape[4],
+                           latents.shape[3] * latents.shape[4] // 4),
+            num_inference_steps=head.num_inference_steps).float()
+
     def predict_action(
         self,
         images: torch.Tensor,
@@ -262,8 +335,13 @@ class DreamZeroVLA(BaseVLA):
         states: torch.Tensor,
         embodiment_ids: Optional[torch.Tensor] = None,
         reset_history: bool = False,
+        observed_video_history: bool = False,
         **kwargs,
     ) -> torch.Tensor:
+        if observed_video_history:
+            return self._predict_from_observed_video(images, lang_tokens,
+                                                     lang_masks, states,
+                                                     embodiment_ids)
         device = images.device
         # images: [B, C, T, H, W] (prepared by PrepareVideo)
         video = images
@@ -305,13 +383,18 @@ class DreamZeroVLA(BaseVLA):
             self.vlm_backbone.set_frozen_modules_to_eval_mode()
             prompt_embs = self._encode_wan_prompts(
                 lang_tokens.to(device), lang_masks.to(device))
-            latents = self.vlm_backbone.encode_video(video_for_latents)
-            clip_feas, image_cond, _ = self.vlm_backbone.encode_image(
-                condition_image.transpose(1, 2),
-                self.frame_window_size,
-                h,
-                w,
-            )
+            clip_feas, image_cond, condition_latent = (
+                self.vlm_backbone.encode_image(
+                    condition_image.transpose(1, 2),
+                    self.frame_window_size,
+                    h,
+                    w,
+                ))
+            if initial_cache_fill and self.vla_head.official_inference:
+                # Upstream pre-fills with the image-conditioning latent.
+                latents = condition_latent
+            else:
+                latents = self.vlm_backbone.encode_video(video_for_latents)
             observed_latent_frames = latents.shape[2]
         else:
             # Stateless inference keeps the previous behavior: pad video to the
@@ -365,7 +448,8 @@ class DreamZeroVLA(BaseVLA):
         if self.use_cache:
             head_kwargs['observed_latent_frames'] = observed_latent_frames
 
-        return self.vla_head.predict_action(**head_kwargs)
+        # NumPy-based evaluation cannot consume BF16 tensors.
+        return self.vla_head.predict_action(**head_kwargs).float()
 
     # ------------------------------------------------------------------
     # BaseVLA abstract method implementations

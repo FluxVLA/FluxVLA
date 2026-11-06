@@ -76,6 +76,20 @@ FLUXVLA_ROBOCASA_GR1_DIR="${FLUXVLA_ROBOCASA_GR1_DIR:-${FLUXVLA_ROBOCASA_SRC_ROO
 FLUXVLA_ROBOCASA_ASSETS="${FLUXVLA_ROBOCASA_ASSETS:-always}"
 FLUXVLA_ROBOCASA_ASSET_ENDPOINT="${FLUXVLA_ROBOCASA_ASSET_ENDPOINT:-${HF_ENDPOINT:-https://hf-mirror.com}}"
 FLUXVLA_ROBOCASA_ASSET_CACHE="${FLUXVLA_ROBOCASA_ASSET_CACHE:-/tmp/robocasa-assets}"
+FLUXVLA_ROBOTWIN_INSTALL="${FLUXVLA_ROBOTWIN_INSTALL:-auto}"
+FLUXVLA_ROBOTWIN_CUROBO_REPO="${FLUXVLA_ROBOTWIN_CUROBO_REPO:-https://github.com/NVlabs/curobo.git}"
+FLUXVLA_ROBOTWIN_CUROBO_REF="${FLUXVLA_ROBOTWIN_CUROBO_REF:-v0.7.8}"
+FLUXVLA_ROBOTWIN_CUROBO_DIR="${FLUXVLA_ROBOTWIN_CUROBO_DIR:-${FLUXVLA_ROBOCASA_SRC_ROOT}/curobo}"
+FLUXVLA_ROBOTWIN_CUROBO_SOURCE="${FLUXVLA_ROBOTWIN_CUROBO_SOURCE:-${FLUXVLA_ROBOTWIN_CUROBO_DIR}}"
+FLUXVLA_ROBOTWIN_CUROBO_VERSION="${FLUXVLA_ROBOTWIN_CUROBO_VERSION:-0.7.8}"
+FLUXVLA_ROBOTWIN_CUROBO_SOURCE_SHA256="${FLUXVLA_ROBOTWIN_CUROBO_SOURCE_SHA256:-a14b801b3cf097f0a2eac668c53539e00f234abc0ed515ef8b9e231b27ff038b}"
+FLUXVLA_ROBOTWIN_CUDA_ARCH_LIST="${FLUXVLA_ROBOTWIN_CUDA_ARCH_LIST:-8.0}"
+FLUXVLA_ROBOTWIN_MAX_JOBS="${FLUXVLA_ROBOTWIN_MAX_JOBS:-8}"
+FLUXVLA_ROBOTWIN_TORCH_SERIES="${FLUXVLA_ROBOTWIN_TORCH_SERIES:-2.8}"
+FLUXVLA_ROBOTWIN_ROOT="${FLUXVLA_ROBOTWIN_ROOT:-${FLUXVLA_ROBOCASA_SRC_ROOT}/RoboTwin}"
+FLUXVLA_ROBOTWIN_REPO="${FLUXVLA_ROBOTWIN_REPO:-https://github.com/RoboTwin-Platform/RoboTwin.git}"
+FLUXVLA_ROBOTWIN_ASSET_ENDPOINT="${FLUXVLA_ROBOTWIN_ASSET_ENDPOINT:-${HF_ENDPOINT:-https://hf-mirror.com}}"
+FLUXVLA_ROBOTWIN_REF="${FLUXVLA_ROBOTWIN_REF:-c3ddfa8b97d5519efa828b075999bd0006778e5e}"
 
 usage() {
   cat <<'EOF'
@@ -110,6 +124,10 @@ Options:
                               when RoboCasa source checkouts are installed.
   --skip-robocasa-assets      Skip RoboCasa asset download. --skip-robocasa
                               also skips asset download.
+  --with-robotwin             Require the validated cuRobo source and rebuild it
+                              for the selected PyTorch profile.
+  --skip-robotwin             Skip the cuRobo rebuild. RoboTwin Python packages
+                              remain part of requirements-sim.txt.
   -h, --help                  Show this help.
 
 Environment variables:
@@ -222,6 +240,58 @@ Environment variables:
   FLUXVLA_ROBOCASA_ASSET_CACHE
                       Local archive cache for RoboCasa asset downloads.
                       Default: /tmp/robocasa-assets.
+  FLUXVLA_ROBOTWIN_INSTALL
+                      RoboTwin cuRobo build mode: auto, always, or never. Auto
+                      builds only for sim/full mode when the cuRobo source
+                      directory exists. Python packages are always included by
+                      requirements-sim.txt. Default: auto.
+  FLUXVLA_ROBOTWIN_CUROBO_SOURCE
+                      cuRobo source tree compiled for the active PyTorch.
+                      Default: FLUXVLA_ROBOTWIN_CUROBO_DIR. When the tree is
+                      absent, --with-robotwin clones
+                      FLUXVLA_ROBOTWIN_CUROBO_REPO at
+                      FLUXVLA_ROBOTWIN_CUROBO_REF into that directory; any tree
+                      used must pass the pinned digest check (upstream v0.7.8
+                      is bit-identical to the validated source).
+  FLUXVLA_ROBOTWIN_CUROBO_REPO, FLUXVLA_ROBOTWIN_CUROBO_REF,
+  FLUXVLA_ROBOTWIN_CUROBO_DIR
+                      Upstream cuRobo repository, pinned ref, and clone
+                      destination for the fallback. Defaults:
+                      https://github.com/NVlabs/curobo.git, v0.7.8,
+                      <src root>/curobo.
+  FLUXVLA_ROBOTWIN_CUROBO_VERSION
+                      Expected cuRobo version. Default: 0.7.8.
+  FLUXVLA_ROBOTWIN_CUROBO_SOURCE_SHA256
+                      Expected digest of the validated cuRobo source tree.
+                      Override only when intentionally validating new source.
+  FLUXVLA_ROBOTWIN_CUDA_ARCH_LIST
+                      TORCH_CUDA_ARCH_LIST used to build cuRobo. Default: 8.0.
+  FLUXVLA_ROBOTWIN_MAX_JOBS
+                      Parallel cuRobo build jobs. Default: 8.
+  FLUXVLA_ROBOTWIN_TORCH_SERIES
+                      Torch major.minor series the cuRobo source is validated
+                      for. Other profiles skip (auto) or fail (--with-robotwin)
+                      the cuRobo build. Default: 2.8.
+  FLUXVLA_ROBOTWIN_ROOT
+                      RoboTwin checkout used by unified evaluation (runtime
+                      ROBOTWIN_ROOT). With --with-robotwin it is cloned from
+                      FLUXVLA_ROBOTWIN_REPO at FLUXVLA_ROBOTWIN_REF when
+                      missing, its simulator assets are downloaded, and the
+                      embodiment config paths are (re)generated. Default:
+                      <src root>/RoboTwin.
+  FLUXVLA_ROBOTWIN_REPO
+                      Upstream RoboTwin repository. Default:
+                      https://github.com/RoboTwin-Platform/RoboTwin.git.
+  FLUXVLA_ROBOTWIN_REF
+                      Validated RoboTwin commit for evaluation. The checkout
+                      is verified against it; mismatch is an error with
+                      --with-robotwin and a warning in auto mode. Update only
+                      after re-validating evaluation results.
+  FLUXVLA_ROBOTWIN_ASSET_ENDPOINT
+                      Hugging Face endpoint for the RoboTwin asset download
+                      (dataset TianxingChen/RoboTwin2.0, ~16 GB unpacked).
+                      Default: HF_ENDPOINT if set, otherwise
+                      https://hf-mirror.com.
 
 Examples:
   conda activate fluxvla
@@ -232,6 +302,7 @@ Examples:
   FLUXVLA_EGL_SETUP=always bash scripts/install_env.sh sim-only
   FLUXVLA_ROBOCASA_SRC_ROOT=/data/src bash scripts/install_env.sh sim-only
   bash scripts/install_env.sh sim-only --skip-robocasa
+  bash scripts/install_env.sh sim-only --profile cu128 --with-robotwin --skip-robocasa
   GH_PROXY_CANDIDATES="https://ghfast.top https://gh.llkk.cc https://gh-proxy.com" bash scripts/install_env.sh full
 EOF
 }
@@ -329,6 +400,14 @@ while [[ $# -gt 0 ]]; do
       FLUXVLA_ROBOCASA_ASSETS="never"
       shift
       ;;
+    --with-robotwin)
+      FLUXVLA_ROBOTWIN_INSTALL="always"
+      shift
+      ;;
+    --skip-robotwin)
+      FLUXVLA_ROBOTWIN_INSTALL="never"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -400,6 +479,15 @@ case "${FLUXVLA_ROBOCASA_ASSETS}" in
     ;;
   *)
     echo "FLUXVLA_ROBOCASA_ASSETS must be one of: always, never" >&2
+    exit 1
+    ;;
+esac
+
+case "${FLUXVLA_ROBOTWIN_INSTALL}" in
+  auto|always|never)
+    ;;
+  *)
+    echo "FLUXVLA_ROBOTWIN_INSTALL must be one of: auto, always, never" >&2
     exit 1
     ;;
 esac
@@ -561,6 +649,21 @@ needs_sim_runtime() {
   [[ "${ENV_MODE}" == "sim-only" || "${ENV_MODE}" == "full" ]]
 }
 
+needs_robotwin_runtime() {
+  needs_sim_runtime || return 1
+  case "${FLUXVLA_ROBOTWIN_INSTALL}" in
+    always)
+      return 0
+      ;;
+    never)
+      return 1
+      ;;
+    auto)
+      [[ -d "${FLUXVLA_ROBOTWIN_CUROBO_SOURCE}" ]]
+      ;;
+  esac
+}
+
 needs_robocasa_sources() {
   case "${FLUXVLA_ROBOCASA_INSTALL}" in
     always)
@@ -585,8 +688,8 @@ ensure_git_available() {
     return 0
   fi
 
-  echo "Error: git is required to install RoboCasa source checkouts." >&2
-  echo "       Install git or rerun with --skip-robocasa." >&2
+  echo "Error: git is required to install source checkouts." >&2
+  echo "       Install git or skip the corresponding source installation." >&2
   exit 1
 }
 
@@ -601,6 +704,12 @@ git_checkout_repo() {
   echo "Preparing ${name}: ${repo}@${ref}"
   echo "  checkout: ${dir}"
 
+  if [[ -e "${dir}" && ! -d "${dir}/.git" ]]; then
+    echo "Error: ${dir} exists but is not a git checkout." >&2
+    echo "       Move it aside or choose a different source checkout directory." >&2
+    exit 1
+  fi
+
   if [[ "${DRY_RUN}" == "1" ]]; then
     echo "+ mkdir -p ${parent}"
     if [[ -d "${dir}/.git" ]]; then
@@ -614,13 +723,7 @@ git_checkout_repo() {
   fi
 
   mkdir -p "${parent}"
-  if [[ -d "${dir}/.git" ]]; then
-    :
-  elif [[ -e "${dir}" ]]; then
-    echo "Error: ${dir} exists but is not a git checkout." >&2
-    echo "       Move it aside, set FLUXVLA_ROBOCASA_SRC_ROOT, or rerun with --skip-robocasa." >&2
-    exit 1
-  else
+  if [[ ! -d "${dir}/.git" ]]; then
     run git clone "${repo}" "${dir}"
   fi
 
@@ -1650,6 +1753,255 @@ install_requirements() {
   esac
 }
 
+install_robotwin_curobo() {
+  local selected="$1"
+  if ! needs_robotwin_runtime; then
+    return
+  fi
+
+  local torch_series
+  torch_series="$(profile_torch_version "${selected}")"
+  if [[ "${torch_series}" != "${FLUXVLA_ROBOTWIN_TORCH_SERIES}" ]]; then
+    if [[ "${FLUXVLA_ROBOTWIN_INSTALL}" == "always" ]]; then
+      echo "Error: the RoboTwin cuRobo source is validated for torch" >&2
+      echo "       ${FLUXVLA_ROBOTWIN_TORCH_SERIES}.*, but profile ${selected} installs torch ${torch_series}.*." >&2
+      echo "       Use --profile cu128, or override FLUXVLA_ROBOTWIN_TORCH_SERIES only" >&2
+      echo "       after validating the cuRobo build against that torch." >&2
+      exit 1
+    fi
+    echo "Skipping RoboTwin cuRobo build: profile ${selected} installs torch" \
+      "${torch_series}.*, but the validated source targets torch" \
+      "${FLUXVLA_ROBOTWIN_TORCH_SERIES}.*."
+    return
+  fi
+
+  local curobo_source="${FLUXVLA_ROBOTWIN_CUROBO_SOURCE}"
+  if [[ ! -f "${curobo_source}/pyproject.toml" ]]; then
+    echo "RoboTwin cuRobo source not found at: ${curobo_source}"
+    curobo_source="${FLUXVLA_ROBOTWIN_CUROBO_DIR}"
+    git_checkout_repo "cuRobo" "${FLUXVLA_ROBOTWIN_CUROBO_REPO}" \
+      "${FLUXVLA_ROBOTWIN_CUROBO_REF}" "${curobo_source}"
+    if [[ "${DRY_RUN}" == "0" && ! -f "${curobo_source}/pyproject.toml" ]]; then
+      echo "Error: cuRobo checkout at ${curobo_source} has no pyproject.toml." >&2
+      echo "       Set FLUXVLA_ROBOTWIN_CUROBO_SOURCE to a cuRobo 0.7.8 tree." >&2
+      exit 1
+    fi
+  fi
+
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "+ verify RoboTwin cuRobo source digest: ${curobo_source}"
+  else
+    local source_sha256
+    source_sha256="$("${PYTHON_BIN}" - "${curobo_source}" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1]).resolve()
+digest = hashlib.sha256()
+for path in sorted(item for item in root.rglob("*") if item.is_file()):
+    relative = path.relative_to(root)
+    if any(
+        part in {".git", "build", "__pycache__"}
+        or part.endswith(".egg-info")
+        for part in relative.parts
+    ):
+        continue
+    if path.suffix in {".so", ".pyc"}:
+        continue
+    digest.update(relative.as_posix().encode())
+    digest.update(b"\0")
+    digest.update(hashlib.sha256(path.read_bytes()).digest())
+print(digest.hexdigest())
+PY
+    )"
+    if [[ "${source_sha256}" != "${FLUXVLA_ROBOTWIN_CUROBO_SOURCE_SHA256}" ]]; then
+      echo "Error: RoboTwin cuRobo source digest does not match the validated tree." >&2
+      echo "       expected: ${FLUXVLA_ROBOTWIN_CUROBO_SOURCE_SHA256}" >&2
+      echo "       actual:   ${source_sha256}" >&2
+      exit 1
+    fi
+    echo "RoboTwin cuRobo source digest: ${source_sha256}"
+  fi
+
+  # cuRobo resolves its version through setuptools_scm both at build time
+  # (SETUPTOOLS_SCM_PRETEND_VERSION) and at import time; with
+  # --no-build-isolation it must already be present in the environment.
+  pip_install_direct "setuptools_scm>=8"
+
+  # Drop stale build outputs so the extensions are always compiled against the
+  # torch in this environment (in-place builds reuse old objects otherwise).
+  run rm -rf "${curobo_source}/build"
+  run find "${curobo_source}/src" -name "*.so" -delete
+
+  echo "Building RoboTwin cuRobo from: ${curobo_source}"
+  run_with_timeout env \
+    "SETUPTOOLS_SCM_PRETEND_VERSION=${FLUXVLA_ROBOTWIN_CUROBO_VERSION}" \
+    "TORCH_CUDA_ARCH_LIST=${FLUXVLA_ROBOTWIN_CUDA_ARCH_LIST}" \
+    "MAX_JOBS=${FLUXVLA_ROBOTWIN_MAX_JOBS}" \
+    "CUDA_HOME=${CUDA_HOME:-/usr/local/cuda}" \
+    "${PYTHON_BIN}" -m pip install \
+    --force-reinstall --no-deps --no-build-isolation \
+    -e "${curobo_source}"
+
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    return
+  fi
+
+  "${PYTHON_BIN}" - "${FLUXVLA_ROBOTWIN_CUROBO_VERSION}" <<'PY'
+import importlib.metadata as metadata
+import sys
+
+import torch  # noqa: F401  (loads libc10.so for the CUDA extensions)
+import curobo
+import curobo.curobolib.geom_cu as geom_cu
+
+expected = sys.argv[1]
+installed = metadata.version("nvidia-curobo")
+if installed != expected:
+    raise SystemExit(
+        f"Expected nvidia-curobo {expected}, found {installed}"
+    )
+print("RoboTwin cuRobo installed:", installed, curobo.__file__)
+print("RoboTwin cuRobo CUDA extension:", geom_cu.__file__)
+PY
+}
+
+download_robotwin_assets() {
+  local asset_dir="${FLUXVLA_ROBOTWIN_ROOT}/assets"
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "+ download RoboTwin assets into ${asset_dir} (skipped if present)"
+    return
+  fi
+
+  # Simulator assets: three archives from the upstream Hugging Face dataset,
+  # unpacked in place. Each is skipped when its directory already exists so
+  # reruns and pre-populated checkouts never re-download 16 GB.
+  local missing=()
+  local name
+  for name in background_texture embodiments objects; do
+    [[ -d "${asset_dir}/${name}" ]] || missing+=("${name}")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Downloading RoboTwin assets (${missing[*]}) via ${FLUXVLA_ROBOTWIN_ASSET_ENDPOINT}"
+    if ! command -v unzip >/dev/null 2>&1; then
+      echo "Error: unzip is required to unpack RoboTwin assets." >&2
+      exit 1
+    fi
+    (
+      cd "${asset_dir}" || exit 1
+      HF_ENDPOINT="${FLUXVLA_ROBOTWIN_ASSET_ENDPOINT}" \
+      "${PYTHON_BIN}" - "${missing[@]}" <<'PY'
+import sys
+
+from huggingface_hub import snapshot_download
+
+patterns = [f"{name}.zip" for name in sys.argv[1:]]
+snapshot_download(
+    repo_id="TianxingChen/RoboTwin2.0",
+    allow_patterns=patterns,
+    local_dir=".",
+    repo_type="dataset",
+    resume_download=True,
+)
+PY
+      for name in "${missing[@]}"; do
+        echo "Unpacking ${name}.zip"
+        if ! unzip -q -o "${name}.zip"; then
+          echo "Error: failed to unpack ${name}.zip." >&2
+          exit 1
+        fi
+        rm -f "${name}.zip"
+      done
+      rm -rf __MACOSX
+    )
+  else
+    echo "RoboTwin assets present under ${asset_dir}"
+  fi
+}
+
+provision_robotwin_checkout() {
+  if ! needs_robotwin_runtime; then
+    return
+  fi
+
+  local root="${FLUXVLA_ROBOTWIN_ROOT}"
+  if [[ ! -d "${root}/.git" ]]; then
+    if [[ "${FLUXVLA_ROBOTWIN_INSTALL}" != "always" ]]; then
+      echo "Warning: RoboTwin checkout not found at ${root};" >&2
+      echo "         rerun with --with-robotwin to clone it, or set" >&2
+      echo "         FLUXVLA_ROBOTWIN_ROOT (see --help)." >&2
+      return
+    fi
+    ensure_git_available
+    git_checkout_repo "RoboTwin" "${FLUXVLA_ROBOTWIN_REPO}" \
+      "${FLUXVLA_ROBOTWIN_REF}" "${root}"
+  fi
+
+  download_robotwin_assets
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "+ ${PYTHON_BIN} ${root}/script/update_embodiment_config_path.py"
+    return
+  fi
+
+  # Embodiment configs embed absolute asset paths; regenerate them from the
+  # *_tmp.yml templates for this checkout location (idempotent, offline).
+  (
+    cd "${root}" &&
+    "${PYTHON_BIN}" script/update_embodiment_config_path.py </dev/null >/dev/null
+  )
+  echo "RoboTwin embodiment config paths generated for ${root}"
+}
+
+verify_robotwin_checkout() {
+  if ! needs_robotwin_runtime; then
+    return
+  fi
+
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    echo "+ verify RoboTwin checkout: ${FLUXVLA_ROBOTWIN_ROOT} @ ${FLUXVLA_ROBOTWIN_REF}"
+    return
+  fi
+
+  if [[ ! -d "${FLUXVLA_ROBOTWIN_ROOT}" ]]; then
+    if [[ "${FLUXVLA_ROBOTWIN_INSTALL}" == "always" ]]; then
+      echo "Error: RoboTwin checkout not found: ${FLUXVLA_ROBOTWIN_ROOT}" >&2
+      exit 1
+    fi
+    return
+  fi
+
+  local head_ref
+  head_ref="$(git -C "${FLUXVLA_ROBOTWIN_ROOT}" rev-parse HEAD 2>/dev/null || true)"
+  if [[ -z "${head_ref}" ]]; then
+    echo "Warning: ${FLUXVLA_ROBOTWIN_ROOT} is not a git checkout;" >&2
+    echo "         cannot verify the validated RoboTwin ref ${FLUXVLA_ROBOTWIN_REF}." >&2
+    return
+  fi
+  if [[ "${head_ref}" != "${FLUXVLA_ROBOTWIN_REF}" ]]; then
+    if [[ "${FLUXVLA_ROBOTWIN_INSTALL}" == "always" ]]; then
+      echo "Error: RoboTwin checkout ${FLUXVLA_ROBOTWIN_ROOT} is at" >&2
+      echo "       ${head_ref}," >&2
+      echo "       but evaluation results were validated at" >&2
+      echo "       ${FLUXVLA_ROBOTWIN_REF}." >&2
+      echo "       Check out that ref, or update FLUXVLA_ROBOTWIN_REF after" >&2
+      echo "       re-validating evaluation results." >&2
+      exit 1
+    fi
+    echo "Warning: RoboTwin checkout is at ${head_ref}," >&2
+    echo "         not the validated ref ${FLUXVLA_ROBOTWIN_REF}." >&2
+    return
+  fi
+  echo "RoboTwin checkout verified at ${head_ref}"
+
+  local dirty_count
+  dirty_count="$(git -C "${FLUXVLA_ROBOTWIN_ROOT}" status --porcelain 2>/dev/null | wc -l)"
+  if [[ "${dirty_count}" -gt 0 ]]; then
+    echo "Warning: RoboTwin checkout has ${dirty_count} uncommitted change(s);" >&2
+    echo "         evaluation semantics may drift from the validated ref." >&2
+  fi
+}
+
 download_robocasa_assets() {
   if [[ "${FLUXVLA_ROBOCASA_ASSETS}" != "always" ]]; then
     return
@@ -2122,6 +2474,16 @@ main() {
     echo "RoboCasa asset download: never (RoboCasa source checkout skipped)"
   fi
   echo "RoboCasa source root: ${FLUXVLA_ROBOCASA_SRC_ROOT}"
+  if needs_sim_runtime; then
+    echo "RoboTwin Python dependencies: included by requirements-sim.txt"
+  fi
+  if needs_robotwin_runtime; then
+    echo "RoboTwin cuRobo rebuild: enabled (torch ${FLUXVLA_ROBOTWIN_TORCH_SERIES}.* profiles only)"
+    echo "RoboTwin cuRobo source: ${FLUXVLA_ROBOTWIN_CUROBO_SOURCE}"
+    echo "RoboTwin checkout: ${FLUXVLA_ROBOTWIN_ROOT} (${FLUXVLA_ROBOTWIN_REPO} @ ${FLUXVLA_ROBOTWIN_REF})"
+  else
+    echo "RoboTwin cuRobo rebuild: disabled"
+  fi
 
   ensure_build_tools
   ensure_pip
@@ -2132,6 +2494,9 @@ main() {
   install_requirements
   install_ffmpeg_runtime
   install_torchcodec "${selected}"
+  install_robotwin_curobo "${selected}"
+  provision_robotwin_checkout
+  verify_robotwin_checkout
   install_robocasa_sources
   configure_libero_egl_runtime
   install_flash_attn "${selected}"

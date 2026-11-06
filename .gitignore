@@ -8,6 +8,9 @@
 *.svg
 *.webp
 
+# Keep the real-robot demo used by the READMEs
+!/docs/fluxvla-real-robot-demo-compressed.gif
+
 # Ignore video files
 *.mp4
 *.mkv
@@ -65,7 +68,7 @@ datasets/*
 .vscode/
 
 # Ignore local experiment directories
-src/
+/src/
 
 # Coding assistants' stuff
 .agents/
@@ -82,3 +85,10 @@ AGENTS.md
 .cursorignore
 .cursorindexingignore
 FluxBisim/
+
+# Local prebuilt wheel caches (flash-attn / cuRobo); not distributed via git
+wheelhouse/
+wheels/
+
+# Local change log kept out of git
+/lessons.md

@@ -25,6 +25,7 @@ import logging
 import logging.config
 import os
 from contextlib import nullcontext
+from datetime import timedelta
 from logging import LoggerAdapter
 from typing import Any, Callable, ClassVar, Dict, MutableMapping, Tuple, Union
 
@@ -58,6 +59,12 @@ LOG_CONFIG = {
     },
 }
 logging.config.dictConfig(LOG_CONFIG)
+
+# torch's default process-group timeout is 10 minutes, which startup phases
+# (dataset statistics, per-rank dataset construction, weight loading) exceed
+# on slow shared storage. Override in minutes with FLUXVLA_DIST_TIMEOUT_MIN.
+DIST_TIMEOUT = timedelta(
+    minutes=float(os.environ.get('FLUXVLA_DIST_TIMEOUT_MIN', 30)))
 
 
 class ContextAdapter(LoggerAdapter):
@@ -109,8 +116,12 @@ class DistributedOverwatch:
             name (str): Logger name (typically module or experiment name).
         """
         from accelerate import PartialState
+
+        # Forwarded to torch.distributed.init_process_group; ignored once the
+        # process group already exists.
         self.logger, self.distributed_state = ContextAdapter(
-            logging.getLogger(name), extra={}), PartialState()
+            logging.getLogger(name),
+            extra={}), PartialState(timeout=DIST_TIMEOUT)
 
         self.debug = self.logger.debug
         self.info = self.logger.info

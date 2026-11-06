@@ -5,6 +5,8 @@ numpy==1.26.4
 mmengine==0.10.7
 # Keep MMEngine's OpenCV dependency compatible with NumPy 1.x.
 opencv-python==4.11.0.86
+# Evaluation utilities import imageio; simulator and codec extras are not used.
+imageio==2.37.3
 transformers==5.3.0
 accelerate==0.33.0
 diffusers==0.30.2

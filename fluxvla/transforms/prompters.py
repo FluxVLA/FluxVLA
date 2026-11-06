@@ -197,6 +197,7 @@ class ParquetPrompter:
                  use_conversation: bool = True,
                  add_new_line: bool = False,
                  lowercase_task_description: bool = False,
+                 prompt_template: Optional[str] = None,
                  *args,
                  **kwargs):
         self.prompt = ''
@@ -211,6 +212,7 @@ class ParquetPrompter:
         self.use_conversation = use_conversation
         self.add_new_line = add_new_line
         self.lowercase_task_description = lowercase_task_description
+        self.prompt_template = prompt_template
 
     def __call__(self, inputs):
         assert 'task_description' in inputs, \
@@ -218,6 +220,9 @@ class ParquetPrompter:
         task_description = inputs['task_description']
         if self.lowercase_task_description:
             task_description = str(task_description).lower()
+        if self.prompt_template is not None:
+            task_description = self.prompt_template.format(
+                task=task_description)
         if not self.use_conversation:
             prompt = task_description
         else:

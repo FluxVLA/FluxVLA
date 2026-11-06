@@ -364,6 +364,49 @@ class ProcessOBSInputs():
         return inputs
 
 
+@TRANSFORMS.register_module()
+class ProcessEvalInputs:
+    """Load benchmark eval images into the parquet-style transform chain.
+
+    Generic entry point for an online observation dict whose images are
+    top-level ``uint8 [H, W, 3]`` arrays (e.g. RoboDojo's three cameras).
+
+    Args:
+        img_keys (List[str]): Image keys to fetch from the inputs.
+        embodiment_id (int | None): Optional embodiment id written to
+            ``embodiment_ids``.
+    """
+
+    def __init__(self,
+                 img_keys: List[str] = None,
+                 embodiment_id: int = None) -> None:
+        if img_keys is None:
+            raise ValueError('ProcessEvalInputs requires img_keys')
+        self.img_keys = list(img_keys)
+        self.embodiment_id = embodiment_id
+
+    def __call__(self, inputs: Dict) -> Dict:
+        images = []
+        img_masks = []
+        for img_key in self.img_keys:
+            if img_key not in inputs:
+                raise KeyError(f'Missing image key: {img_key!r}')
+            img = np.asarray(inputs[img_key])
+            if img.ndim != 3 or img.dtype != np.uint8:
+                raise TypeError(
+                    f'Image {img_key!r} must be uint8 [H, W, 3], got '
+                    f'{img.dtype} {img.shape}')
+            image = Image.fromarray(img).convert('RGB')
+            images.append(image)
+            img_masks.append(True)
+        inputs['pixel_values'] = images
+        inputs['img_masks'] = img_masks
+        if self.embodiment_id is not None:
+            inputs['embodiment_ids'] = np.array(
+                self.embodiment_id, dtype=np.int32)
+        return inputs
+
+
 # === Libero-specific Image Loader Transform ===
 @TRANSFORMS.register_module()
 class ProcessLiberoEvalInputs:
@@ -396,7 +439,9 @@ class ProcessLiberoEvalInputs:
                  resize_size: int = None,
                  resize_backend: str = 'numpy',
                  jpeg_roundtrip: bool = False,
-                 embodiment_id: int = None) -> None:
+                 embodiment_id: int = None,
+                 num_padding_imgs: int = 0,
+                 rotate_180_keys: Optional[List[str]] = None) -> None:
         self.img_keys = img_keys
         self.center_crop = center_crop
         self.use_pil = use_pil
@@ -410,6 +455,15 @@ class ProcessLiberoEvalInputs:
         self.resize_backend = resize_backend
         self.jpeg_roundtrip = jpeg_roundtrip
         self.embodiment_id = embodiment_id
+        self.num_padding_imgs = int(num_padding_imgs)
+        if self.num_padding_imgs < 0:
+            raise ValueError('num_padding_imgs must be non-negative')
+        self.rotate_180_keys = (None if rotate_180_keys is None else
+                                set(rotate_180_keys))
+
+    def _should_rotate_180(self, img_key: str) -> bool:
+        return (self.rotate_180_keys is None
+                or img_key in self.rotate_180_keys)
 
     def __call__(self, inputs: Dict) -> Dict:
         # Load raw images
@@ -419,7 +473,10 @@ class ProcessLiberoEvalInputs:
             if img_key not in inputs:
                 raise KeyError(f'Missing image key: {img_key!r}')
             img = np.asarray(inputs[img_key])
-            img = img[::-1, ::-1].copy()
+            if self._should_rotate_180(img_key):
+                img = img[::-1, ::-1].copy()
+            else:
+                img = img.copy()
             if self.resize_size is not None:
                 if isinstance(self.resize_size, int):
                     height, width = self.resize_size, self.resize_size
@@ -447,9 +504,19 @@ class ProcessLiberoEvalInputs:
 
                 images.append(image)
                 img_masks.append(True)
+            if self.num_padding_imgs > 0 and images:
+                padding = Image.fromarray(np.zeros_like(img)).convert('RGB')
+                images.extend(
+                    [padding.copy() for _ in range(self.num_padding_imgs)])
+                img_masks.extend([False] * self.num_padding_imgs)
         else:
             images = imgs
             img_masks = [True] * len(imgs)
+            if self.num_padding_imgs > 0 and images:
+                padding = np.zeros_like(np.asarray(images[0]))
+                images.extend(
+                    [padding.copy() for _ in range(self.num_padding_imgs)])
+                img_masks.extend([False] * self.num_padding_imgs)
         inputs['pixel_values'] = images
         inputs['img_masks'] = img_masks
         inputs['replay_img'] = replay_img

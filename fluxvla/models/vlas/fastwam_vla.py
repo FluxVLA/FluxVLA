@@ -66,6 +66,9 @@ class FastWAMVLA(BaseVLA):
     ``action_masks`` / ``frame_masks`` use ``True`` for valid entries.
 
     Args:
+        pretrained_name_or_path: Optional training initialization checkpoint.
+            None builds the architecture without pretrained weights so a
+            complete evaluation checkpoint can be loaded afterwards.
         num_inference_steps: Default denoising steps for action and video
             inference. Individual prediction calls may override this value.
             Defaults to 20.
@@ -98,10 +101,8 @@ class FastWAMVLA(BaseVLA):
             strict_mapping=True,
             pretrained_skip_prefixes=pretrained_skip_prefixes,
         )
-        if pretrained_name_or_path is None:
-            raise ValueError(
-                'FastWAMVLA requires a complete `.safetensors` checkpoint.')
-        if not str(pretrained_name_or_path).endswith('.safetensors'):
+        if (pretrained_name_or_path is not None
+                and not str(pretrained_name_or_path).endswith('.safetensors')):
             raise ValueError(
                 'FastWAM base weights must be a complete `.safetensors` '
                 f'checkpoint, got: {pretrained_name_or_path}')

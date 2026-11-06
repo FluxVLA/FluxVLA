@@ -5,6 +5,7 @@
 </p>
 
 <div align="center">
+<a href="https://arxiv.org/abs/2609.17210"><img src="https://img.shields.io/badge/arXiv-2609.17210-b31b1b" alt="arXiv"></a>
 <a href="https://huggingface.co/limxdynamics/FluxVLAEngine"><img src="https://img.shields.io/badge/HuggingFace-yellow?logo=huggingface&logoColor=white" alt="Hugging Face"></a>
 <a href="https://fluxvla.limxdynamics.com"><img src="https://img.shields.io/badge/Documentation-Purple?color=8A2BE2&logo=readthedocs"></a>
 <a href="https://fluxvla.limxdynamics.com/zh/"><img src="https://img.shields.io/badge/中文文档-red?logo=readthedocs"></a>
@@ -20,6 +21,15 @@
 
 FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台，以统一配置、标准接口、模块解耦、可部署为核心设计理念，构建从数据到真机部署的完整工程闭环，并以“标准化产学研基座”为目标，显著降低 VLA 研究与开发的工程门槛。
 
+## 真机演示
+
+<p align="center">
+  <img src="docs/fluxvla-real-robot-demo-compressed.gif" alt="FluxVLA 真机任务演示" width="800">
+</p>
+<p align="center">
+  <em>移动操作、桌面整理、双臂叠布与袋内取物（加速播放）。</em>
+</p>
+
 ## 框架
 
 <p align="center">
@@ -27,6 +37,8 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 </p>
 
 ## 性能
+
+#### LIBERO
 
 | Codebase                         |                                                     Libero-Spatial                                                      |                                                      Libero-Object                                                      |                                                      Libero-Goal                                                      |                                                      Libero-Long                                                      |                                                Libero-Average                                                |
 | -------------------------------- | :---------------------------------------------------------------------------------------------------------------------: | :---------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :-------------------------------------------------------------------------------------------------------------------: | :----------------------------------------------------------------------------------------------------------: |
@@ -63,7 +75,47 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 - `Generalization`：剩余的 18 个后训练新任务。
 - RoboCasa 结果均使用每个任务 50 次试验评测。
 
+#### RoboDojo
+
+RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 次试验；12 个泛化任务各包含 25 次标准布局和 25 次随机布局试验。因此，每个模型共评测 2,100 个 episode。指标格式为：进度分数 / 成功率（%）。模型按平均进度分数升序排列。
+
+| 模型                  |                                                                                                                                     平均 | 标准泛化（Gen-Std） | 随机泛化（Gen-Rand） |           精度 |         长时程 |         记忆 |     开放任务 |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------: | ------------------: | -------------------: | -------------: | -------------: | -----------: | -----------: |
+| FluxVLA(Cosmos3-Nano) |                   [3.03 / 0.93%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robodojo_full_finetune_bs2048) |        3.95 / 1.33% |         1.20 / 0.67% |   2.29 / 0.00% |   8.74 / 2.75% | 1.23 / 0.67% | 0.30 / 0.25% |
+| FluxVLA(GR00T N1.7)   | [3.08 / 1.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robodojo_full_finetune_freeze_vlm_bs256) |        6.52 / 4.33% |         0.85 / 0.33% |   2.11 / 0.50% |   6.19 / 1.50% | 3.13 / 2.67% | 0.30 / 0.25% |
+| FluxVLA(DiT4DiT)      |                         [4.84 / 2.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robodojo_full_finetune_bs128) |        5.67 / 3.33% |         0.83 / 0.00% |   4.49 / 0.00% |  12.17 / 6.50% | 2.45 / 2.33% | 1.83 / 1.75% |
+| FluxVLA(SmolVLA)      |                         [5.29 / 2.98%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robodojo_full_finetune_bs512) |        8.15 / 5.33% |         0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% | 3.97 / 2.33% | 0.67 / 0.67% |
+| FluxVLA(FastWAM)      |                          [5.29 / 2.97%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robodojo_full_finetune_bs32) |        7.07 / 3.67% |         0.52 / 0.33% |   3.96 / 0.25% |  14.99 / 9.50% | 2.95 / 2.33% | 0.78 / 0.75% |
+| FluxVLA(GR00T N1.5)   |                  [5.50 / 3.17%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robodojo_full_finetune_bs640) |        6.48 / 3.33% |         1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% | 5.48 / 4.33% | 0.25 / 0.25% |
+| FluxVLA(PI0)          |                   [5.96 / 3.37%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robodojo_full_finetune_bs256) |       13.05 / 9.67% |         0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% | 0.00 / 0.00% |
+| FluxVLA(PI0.5)        |                 [13.61 / 8.83%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robodojo_full_finetune_bs256) |      22.65 / 16.00% |         6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% | 2.20 / 2.00% |
+
+#### RoboTwin
+
+我们采用多任务训练设置，该设置也被 [Motus](https://arxiv.org/html/2512.13030v1#S5.SS2)、[LingBot-VA](https://arxiv.org/html/2601.21998v2#S4.SS3.SSS2) 和 [StarVLA](https://arxiv.org/html/2604.05014v1#S5.SS4) 使用：使用每个任务的 50 条 clean 和 500 条 randomized 示范，在全部 50 个任务上联合训练一个策略。这与原始 RoboTwin 基准使用每个任务 50 条 clean 示范进行单任务训练的设置不同。
+
+我们使用 RoboTwin 官方脚本评测，在 Clean（Easy）和 Random（Hard）两种设置下，每个任务各评测 100 个 episode。所有报告结果均使用相同的评测 seed（`0`），而非多个 seed 的平均值。提供的配置使用 `unseen` 指令。分数为成功率（%）；`Average` 是 Clean 和 Random 的均值，并链接至模型 checkpoint。
+
+| Model               |     Clean |    Random |                                                                                                                         Average |
+| ------------------- | --------: | --------: | ------------------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(PI0)        |     68.26 |     67.76 |        [68.01](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(Cosmos3)    |     82.40 |     77.96 |        [80.18](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robotwin_all_data_full_finetune_bs1024) |
+| FluxVLA(PI0.5)      |     81.04 |     83.56 |       [82.30](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(SmolVLA)    |     87.02 |     85.88 |              [86.45](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robotwin_all_data_full_finetune_bs512) |
+| FluxVLA(GR00T N1.5) |     89.34 |     88.34 |       [88.84](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(GR00T N1.7) |     88.70 |     89.14 | [88.92](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(DiT4DiT)    |     90.78 |     89.54 |              [90.16](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(FastWAM)    | **90.86** | **89.96** |          [**90.41**](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robotwin_all_data_full_finetune_bs256) |
+
 ## 📢 最新动态
+
+**\[2026/10/27\]** 🔥 现已支持 RoboTwin 评测。
+
+**\[2026/10/24\]** 🔥 FluxVLA 现已支持通过兼容 Anthropic 的 Messages API，以及兼容 OpenAI 的 Chat Completions 和 Responses API，在 LIBERO 和 RoboCasa GR1 上评测 MiniMax M3.1 Flash。
+
+**\[2026/10/15\]** 🔥 现已支持通过 [FluxThemis](https://github.com/FluxVLA/FluxThemis) 进行 RoboDojo 评测。
+
+**\[2026/09/16\]** 🔥 FluxVLA Engine [技术报告](https://arxiv.org/abs/2609.17210) 已在 arXiv 发布。
 
 **\[2026/09/09\]** 🔥 FluxVLA 现已支持通过 OpenAI Responses API 使用 GPT-6 Astra 进行无需 checkpoint 的 LIBERO 评测，包括多视角观测、原生 LIBERO 动作控制、环境变量凭据配置和结构化 rollout 产物。
 
@@ -75,7 +127,7 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 **\[2026/08/13\]** 🔥 现已支持世界动作模型 FastWAM。
 
-**\[2026/08/10\]** 🔥 FluxVLA 现已支持在 NVIDIA Jetson Orin 上部署，GR00T-N1.5 端侧加速推理可达到 7.4 Hz。Orin 初始刷机流程见 [docs/orin_flashing_zh-CN.md](docs/orin_flashing_zh-CN.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
+**\[2026/08/10\]** 🔥 FluxVLA 现已支持在 NVIDIA Jetson Orin 上部署，GR00T-N1.5 端侧加速推理可达到 7.4 Hz。Orin 初始刷机流程见 [docs/orin_flashing.md](docs/orin_flashing.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md)。
 
 **\[2026/06/30\]** 🔥 现已支持 Franka 单臂与双臂真机推理，包括 joint/eepose 控制配置与部署指南。详见 [docs/franka.md](docs/franka.md)。
 
@@ -126,9 +178,10 @@ bash scripts/install_env.sh sim-only
 <details>
 <summary><b>如果安装脚本遇到问题：检查安装模式和 CUDA profile 选择</b></summary>
 
-`sim-only` 会安装仿真 / LIBERO / RoboCasa 运行时依赖，并把固定版本的 RoboCasa 源码 checkout 放到 `./src`；`real-only` 会安装真机和远程推理依赖；`full` 会同时安装两类依赖。如果不需要 RoboCasa checkout，可传入 `--skip-robocasa`。
+`sim-only` 会安装 LIBERO、RoboCasa 和 RoboTwin 的仿真运行时依赖；`real-only` 会安装真机和远程推理依赖；`full` 会同时安装两类依赖。额外的仿真器准备如下：
 
-只要安装器安装 RoboCasa 源码 checkout（`sim-only`、`full` 或 `real-only --with-robocasa`），默认也会下载 RoboCasa 仿真资产。安装器会调用 `scripts/download_robocasa_assets.py`，并使用 `FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（默认依次取 `HF_ENDPOINT`、`https://hf-mirror.com`）。如只想跳过资产下载，可使用 `--skip-robocasa-assets`；如需同时跳过源码 checkout 和资产，可使用 `--skip-robocasa`。
+- **RoboCasa：** `sim-only` 和 `full` 默认安装 `./src` 下固定版本的源码 checkout 及仿真资产，也可通过 `real-only --with-robocasa` 安装。资产由 `scripts/download_robocasa_assets.py` 下载，使用 `FLUXVLA_ROBOCASA_ASSET_ENDPOINT`（默认依次取 `HF_ENDPOINT`、`https://hf-mirror.com`）。使用 `--skip-robocasa-assets` 仅跳过资产，或使用 `--skip-robocasa` 同时跳过源码 checkout 和资产。
+- **RoboTwin：** `sim-only` 和 `full` 默认安装 Python 依赖。在默认的 `auto` 模式下，已有的 cuRobo 源码目录会触发其构建（需要兼容的 PyTorch），以及已有 RoboTwin checkout 的资产和路径准备。添加 `--with-robotwin --profile cu128` 还会获取缺失的固定版本源码、准备缺失的资产和 embodiment 路径，并为 PyTorch 2.8 构建 cuRobo（需要 `nvcc`）。使用 `--skip-robotwin` 可跳过这些准备步骤，但仍安装 Python 依赖。默认 checkout 为 `src/RoboTwin`。如需自定义位置，在安装时设置 `FLUXVLA_ROBOTWIN_ROOT`，并在评测时将 `ROBOTWIN_ROOT` 设为同一路径。
 
 安装器会优先根据当前 CUDA toolkit / `nvcc` 版本自动选择 PyTorch CUDA profile：CUDA >= 12.8 选择 `cu128`，否则选择 `cu124`。如果没有检测到 toolkit，则回退到驱动报告的 CUDA 版本和 GPU 代际。也可以通过 `--profile cu128` 或 `--profile cu124` 手动覆盖。
 
@@ -310,7 +363,7 @@ pip install --no-build-isolation -e .
 <details>
 <summary><b>Jetson Orin Docker 配置</b></summary>
 
-Jetson Orin 从刷机到 JetPack 初始化见 [docs/orin_flashing_zh-CN.md](docs/orin_flashing_zh-CN.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
+Jetson Orin 从刷机到 JetPack 初始化见 [docs/orin_flashing.md](docs/orin_flashing.md)，FluxVLA Docker 环境启动与运行测试见 [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md)。
 
 当前验证过的 Orin 运行环境已发布为 Docker 镜像：
 
@@ -319,7 +372,7 @@ docker pull fluxvla/fluxvla:fluxvla-orin-1.0.0
 scripts/run_docker.sh
 ```
 
-`scripts/run_docker.sh` 默认使用该镜像，并把当前仓库挂载到容器内 `/workspace/FluxVLA`。详细运行方式见 [docs/orin_docker_runtime_zh-CN.md](docs/orin_docker_runtime_zh-CN.md)。
+`scripts/run_docker.sh` 默认使用该镜像，并把当前仓库挂载到容器内 `/workspace/FluxVLA`。详细运行方式见 [docs/orin_docker_runtime.md](docs/orin_docker_runtime.md)。
 
 </details>
 
@@ -483,17 +536,20 @@ tensorboard --logdir work_dirs/tensorboard
 
 下载所需数据集并放到 `./datasets` 目录。请根据配置仅下载你需要的数据集。
 
-| 数据集                  | 下载链接                                                                                                                                                                     |
-| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)         |
-| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1)       |
-| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)                 |
-| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)             |
-| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                 |
-| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                   |
-| ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0) |
-| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)           |
-| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                   |
+| 数据集                  | 下载链接                                                                                                                                                                                                 |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| libero-object           | [limxdynamics/FluxVLAData/libero_object_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_object_no_noops_lerobotv2.1)                                     |
+| libero-spatial          | [limxdynamics/FluxVLAData/libero_spatial_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_spatial_no_noops_lerobotv2.1)                                   |
+| libero-10               | [limxdynamics/FluxVLAData/libero_10_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_10_no_noops_lerobotv2.1)                                             |
+| libero-goal             | [limxdynamics/FluxVLAData/libero_goal_no_noops_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/libero_goal_no_noops_lerobotv2.1)                                         |
+| RoboCasa GR1 (30 demos) | [limxdynamics/FluxVLAData/robocasa_gr1_24tasks_first30ep](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_gr1_24tasks_first30ep)                                             |
+| RoboCasa GR1            | [limxdynamics/FluxVLAData/robocasa_lerobot_V2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robocasa_lerobot_V2.1)                                                               |
+| RoboTwin Clean          | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1)           |
+| RoboTwin Random         | [limxdynamics/FluxVLAData/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1) |
+| RoboDojo                | [RoboDojo-Benchmark/RoboDojo（LeRobot v2.1）](https://huggingface.co/datasets/RoboDojo-Benchmark/RoboDojo/tree/main/data/RoboDojo_lerobot_v21_video)                                                     |
+| ARM manual test         | [limxdynamics/FluxVLAData/ARM_manual_test_10Episodes_lerobotv3.0](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/ARM_manual_test_10Episodes_lerobotv3.0)                             |
+| RealRobot_AgileX_aloha  | [limxdynamics/FluxVLAData/RealRobot_AgileX_aloha_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_AgileX_aloha_lerobot_v2)                                       |
+| RealRobot_UR3_Chem      | [limxdynamics/FluxVLAData/RealRobot_UR3_Chem_lerobot_v2](https://huggingface.co/datasets/limxdynamics/FluxVLAData/tree/main/RealRobot_UR3_Chem_lerobot_v2)                                               |
 
 例如，下载 libero-10 数据集：
 
@@ -513,6 +569,17 @@ huggingface-cli download limxdynamics/FluxVLAData \
 ```
 
 如需使用全量 RoboCasa GR1 数据训练，将 include 模式替换为 `robocasa_lerobot_V2.1/*`。
+
+进行 RoboTwin 训练时，将 Clean 和 Randomized 两个数据集下载到 `./datasets`：
+
+```bash
+huggingface-cli download limxdynamics/FluxVLAData \
+  --repo-type dataset \
+  --include "robotwin_lerobotv2.1/*" \
+  --local-dir ./datasets
+```
+
+提供的配置直接从 `./datasets/robotwin_lerobotv2.1/` 读取两个数据集。数据源自 [StarVLA/RoboTwin-Randomized](https://huggingface.co/datasets/StarVLA/RoboTwin-Randomized/tree/main)，并按域分别合并为 LeRobot v2.1 格式。
 
 </details>
 
@@ -696,11 +763,11 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 <details>
 <summary><b>私有数据集目录结构</b></summary>
 
-若使用 fluxvla 在私有数据集上训练，需要先将原始数据（如 ALOHA 双臂机器人采集的 HDF5 文件）转换为 LeRobot Dataset v2.1 格式。详细的转换步骤请参考 [数据转换指南](docs/data_convert.md)。
+若使用 fluxvla 在私有数据集上训练，请先自行准备 LeRobot Dataset v2.1 格式的数据，例如用外部工具将 ALOHA 双臂机器人采集的 HDF5 文件转换为该格式。
 
 对 SARM 而言，只要补齐所需的 SARM 标注列，FluxVLA 同时兼容 LeRobot v2.1 与 v3.x 数据集。SARM 需要的元信息格式见 [docs/sarm.md](docs/sarm.md)。
 
-转换后的数据集目录结构如下：
+数据集目录结构如下：
 
 ```
 ├── data
@@ -849,9 +916,17 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 </details>
 
 <details>
-<summary><b>支持不同 VLA 模型</b></summary>
+<summary><b>支持不同 VLA 和 WAM 模型</b></summary>
 
-- 支持 OpenVLA、LlavaVLA、Gr00t、Pi0、Pi0.5、FastWAM 与 DiT4DiT。
+- **VLA 模型：** OpenVLA、LlavaVLA、SmolVLA、X-VLA、GR00T N1.5、GR00T N1.7、Pi0 和 Pi0.5。
+- **WAM 模型：** DreamZero、FastWAM（含 IDM 和 Joint 变体）、Cosmos3（Nano、Super 和 Edge）以及 DiT4DiT。
+
+</details>
+
+<details>
+<summary><b>支持基于 API 的模型推理</b></summary>
+
+- 支持通过 API 和 tool-calling 策略进行 GPT-6 Astra 和 MiniMax M3.1 Flash 推理，无需本地模型 checkpoint。
 
 </details>
 
@@ -971,6 +1046,24 @@ torchrun --standalone --nnodes 1 --nproc-per-node 1 scripts/eval.py \
 ```
 
 `eval.seed` 控制 RoboCasa episode seeds 以及评估过程中 GR00T 随机 action sampling seeds。`PYTHONHASHSEED` 与其相互独立，必须在 Python 启动前设置；复现已报告的 RoboCasa 结果时，建议使用相同数值。
+
+RoboTwin GR00T N1.5 评测示例（全部 50 个任务，Clean 和 Random）：
+
+```bash
+WANDB_MODE=disabled TOKENIZERS_PARALLELISM=false \
+torchrun --standalone --nnodes 1 --nproc-per-node 2 scripts/eval.py \
+  --config configs/gr00tn15/gr00tn15_eagle_3b_robotwin_all_data_full_finetune.py \
+  --ckpt-path checkpoints/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128/checkpoints/step-142386-epoch-03-loss=0.0027.safetensors \
+  --cfg-options \
+    eval.norm_stats_path=checkpoints/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128/dataset_statistics.json \
+    eval.result_output_dir=work_dirs/gr00t_robotwin_eval \
+    "eval.task_suite_name=['clean','random']" \
+    eval.num_trials_per_task=100 \
+    eval.instruction_type=unseen \
+    eval.seed=0
+```
+
+`eval.seed` 将初始候选 episode seed 设为 `100000 * (1 + seed)`。RoboTwin 会递增该 seed，并跳过未通过专家验证的场景，直到完成指定数量的有效 episode 评测。它还会影响场景随机化、指令选择和随机策略采样。
 
 </details>
 
@@ -1113,22 +1206,21 @@ pip install numpy==1.26.4
 
 ## 支持
 
-如果你在使用本仓库时遇到问题，欢迎联系我们。你可以直接联系 [mason@limxdynamics.com](mason@limxdynamics.com) 和 [wayne@limxdynamics.com](wayne@limxdynamics.com)，或在 Github 提交 issue 获取帮助。
+如果你在使用本仓库时遇到问题，欢迎联系我们。你可以直接联系 [mason@limxdynamics.com](mailto:mason@limxdynamics.com) 和 [wayne@limxdynamics.com](mailto:wayne@limxdynamics.com)，或在 Github 提交 issue 获取帮助。
 
 ## 🙏 引用与致谢
 
 如果你在学术研究或工程项目中使用了 FluxVLA，欢迎引用以下工作：
 
 ```bibtex
-@software{FluxVLA2026,
-  author  = {Li, Yinhao and Mao, Weixin and Lan, Zihan and Rong, Jikun and Zhu, Minzhao and Mao, Yiming and Shen, Bowen and Huang, Xu},
-  title   = {{FluxVLA Engine: A One-Stop VLA Engineering Platform for Embodied Intelligence}},
-  year    = {2026},
-  month   = apr,
-  version = {1.0.0},
-  doi     = {10.5281/zenodo.20049506},
-  url     = {https://github.com/FluxVLA/FluxVLA},
-  license = {Apache-2.0},
+@misc{li2026fluxvlaengineonestopvla,
+  title={FluxVLA Engine: A One-Stop VLA Engineering Platform for Embodied Intelligence},
+  author={Yinhao Li and Weixin Mao and Zihan Lan and Jikun Rong and Qirui Hu and Yiming Zhang and Weipeng Deng and Bowen Shen and Minzhao Zhu and Yiming Mao and Yan Yang and Chenguang Cui and Hongyuan Chen and Xu Huang and Zheyi Zhao and Pinxi Shen and Bozhen He and Zhen Fu and Yifan Wang and Zexin Zhang and Ang Gao and Haoyu Chen and Chengqi Shi and Hua Chen},
+  year={2026},
+  eprint={2609.17210},
+  archivePrefix={arXiv},
+  primaryClass={cs.RO},
+  url={https://arxiv.org/abs/2609.17210},
 }
 
 @InProceedings{Mao_2026_CVPR,

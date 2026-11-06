@@ -39,20 +39,7 @@ Available tasks:
 | Screw Pitcher Lid       | `data_collect/screw_pitcher_lid/pitcher_lid_screw_collect.py` | `apartmentshort`        | `pitcher_lid_screw_config.yaml` |
 | Handover Book           | `data_collect/handover_book/book_handover_collect.py`         | `apartment`, `industry` | `book_handover_config.yaml`     |
 
-Convert collected HDF5 data before training:
-
-```bash
-cd /path/to/FluxVLA
-python tools/convert_hdf_to_lerobot.py <raw_hdf5_dir> \
-  --repo-id <dataset_name> \
-  --output-dir datasets \
-  --init-task "<task_instruction>" \
-  --robot-type aloha_sim
-```
-
-Set `--repo-id` to the converted dataset name and `--init-task` to the task instruction used for training.
-
-For more details about the data format, see [Data Conversion](data_convert.md).
+Episodes collected this way are raw HDF5 files. Convert them to the LeRobot Dataset v2.1 format with your own tooling before training, and use the task instruction as the `task` label.
 
 ## Model Training
 

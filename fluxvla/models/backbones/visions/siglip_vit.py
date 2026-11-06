@@ -33,15 +33,19 @@ class SigLIPViTBackbone(VisionBackbone):
     Args:
         vision_backbone_id (str): Identifier string for the backbone.
         pretrained_cfg (Dict): Configuration for loading the pretrained model.
+        preserve_fp32_residuals (bool): Preserve FP32 encoder inputs with FP32
+            parameters. Defaults to False for legacy recipe parity.
     """
 
     def __init__(self,
                  vision_backbone_id: str,
                  vision_config: Dict = None,
                  pretrained_cfg: Dict = None,
-                 openpi_stem_fp32: bool = False) -> None:
+                 openpi_stem_fp32: bool = False,
+                 preserve_fp32_residuals: bool = False) -> None:
         super().__init__(vision_backbone_id)
         self.openpi_stem_fp32 = bool(openpi_stem_fp32)
+        self.preserve_fp32_residuals = bool(preserve_fp32_residuals)
         vision_cls = VISION_BACKBONE_CONFIGS[vision_backbone_id]['model_cls']
         if pretrained_cfg is None:
             assert vision_config is not None, 'vision_cfg must be provided if pretrained_cfg is specified'  # noqa: E501
@@ -60,7 +64,8 @@ class SigLIPViTBackbone(VisionBackbone):
                 device_type=pixel_values.device.type, enabled=False):
             hidden_states = vision_model.embeddings(pixel_values.float())
 
-        if torch.is_autocast_enabled(pixel_values.device.type):
+        if (not self.preserve_fp32_residuals
+                and torch.is_autocast_enabled(pixel_values.device.type)):
             encoder_dtype = torch.get_autocast_dtype(pixel_values.device.type)
         else:
             encoder_dtype = next(vision_model.encoder.parameters()).dtype

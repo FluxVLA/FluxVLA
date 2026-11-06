@@ -849,7 +849,16 @@ class GrootN17VLA(BaseVLA):
                 dtype=batch.get('dtype', 'bfloat16'),
                 seed=batch.get('seed'),
             )
+        required = {
+            'lang_tokens',
+            'lang_masks',
+            'images',
+            'image_grid_thw',
+            'states',
+            'embodiment_ids',
+        }
+        missing = sorted(required.difference(inputs))
         raise NotImplementedError(
             'GrootN17VLA.predict_action expects FluxVLA inputs containing '
             'lang_tokens, lang_masks, images, image_grid_thw, states, and '
-            'embodiment_ids.')
+            f'embodiment_ids. Missing={missing}, received={sorted(inputs)}.')

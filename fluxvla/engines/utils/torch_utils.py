@@ -1,4 +1,4 @@
-# Copyright 2026 Limx Dynamics
+﻿# Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -128,7 +128,7 @@ def set_global_seed(
     Raises:
         AssertionError: If the seed is outside the bounds of np.uint32.
     """
-    assert np.iinfo(np.uint32).min < seed < np.iinfo(
+    assert np.iinfo(np.uint32).min <= seed <= np.iinfo(
         np.uint32).max, 'Seed outside the np.uint32 bounds!'
 
     # Set Seed as an Environment Variable
@@ -207,7 +207,7 @@ def worker_init_function(worker_id: int) -> None:
 # === BFloat16 Support ===
 
 
-def check_bloat16_supported() -> bool:
+def check_bf16_supported() -> bool:
     try:
         import packaging.version
         import torch.cuda.nccl as nccl

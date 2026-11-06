@@ -11,7 +11,8 @@ from typing import Dict, Optional
 
 import torch
 import wandb
-from peft import LoraConfig, PeftModel, get_peft_model
+from peft import (LoraConfig, PeftModel, cast_mixed_precision_params,
+                  get_peft_model)
 from torch.nn.parallel import DistributedDataParallel as DDP
 from transformers.pytorch_utils import Conv1D
 
@@ -94,6 +95,9 @@ class DDPTrainRunner(BaseTrainRunner):
         max_keep_ckpts (int): Maximum number of checkpoints to keep.
         device_id (int): ID of the device to run the training on.
             Defaults to 2.
+        keep_lora_trainable_params_fp32 (bool): Keep adapters and
+            ``modules_to_save`` in FP32 while frozen weights use BF16.
+            Opt-in to preserve existing LoRA recipes. Defaults to False.
     """
 
     def __init__(self,
@@ -125,6 +129,7 @@ class DDPTrainRunner(BaseTrainRunner):
                  resume_from: Optional[str] = None,
                  lora_before_device_move: bool = True,
                  static_graph: bool = True,
+                 keep_lora_trainable_params_fp32: bool = False,
                  **kwargs) -> None:
 
         if kwargs:
@@ -162,6 +167,8 @@ class DDPTrainRunner(BaseTrainRunner):
         self.args = args
         self.max_grad_norm = max_grad_norm
         self.lora_before_device_move = lora_before_device_move
+        self.keep_lora_trainable_params_fp32 = (
+            keep_lora_trainable_params_fp32)
         self.static_graph = static_graph
         self.distributed_state = overwatch.distributed_state
         self.recent_losses = deque(maxlen=self.grad_accumulation_steps)
@@ -188,11 +195,23 @@ class DDPTrainRunner(BaseTrainRunner):
     def _model_uses_lora(self) -> bool:
         return bool(getattr(self.cfg.model, 'use_lora', False))
 
-    def _move_vla_to_device(self, target_device: torch.device) -> None:
-        torch.cuda.empty_cache()
-        if (self.enable_mixed_precision_training
+    def _cast_lora_params_for_mixed_precision(self) -> bool:
+        if not (self.keep_lora_trainable_params_fp32 and isinstance(
+                self.vla, PeftModel) and self.enable_mixed_precision_training
                 and self.mixed_precision_dtype == torch.bfloat16
                 and not self.keep_params_fp32):
+            return False
+        # Cast before the device move: AdamW has no implicit FP32 masters.
+        cast_mixed_precision_params(self.vla, dtype=torch.bfloat16)
+        return True
+
+    def _move_vla_to_device(self, target_device: torch.device) -> None:
+        torch.cuda.empty_cache()
+        if self._cast_lora_params_for_mixed_precision():
+            self.vla = self.vla.to(device=target_device)
+        elif (self.enable_mixed_precision_training
+              and self.mixed_precision_dtype == torch.bfloat16
+              and not self.keep_params_fp32):
             self.vla = self.vla.to(device=target_device, dtype=torch.bfloat16)
         else:
             self.vla = self.vla.to(target_device)
@@ -210,9 +229,12 @@ class DDPTrainRunner(BaseTrainRunner):
             lora_dropout=self.cfg.model.lora_dropout,
             target_modules=target_modules,
             modules_to_save=modules_to_save,
-            init_lora_weights='gaussian',
+            init_lora_weights=getattr(self.cfg.model, 'init_lora_weights',
+                                      'gaussian'),
         )
         self.vla = get_peft_model(self.vla, lora_config)
+        # Also covers adapters injected after moving the frozen base.
+        self._cast_lora_params_for_mixed_precision()
         self.vla.print_trainable_parameters()
 
     def run_setup(self, n_train_examples: int) -> None:
@@ -254,8 +276,8 @@ class DDPTrainRunner(BaseTrainRunner):
             # Collect checkpoint layer classes (same as FSDP)
             checkpoint_layer_classes = set()
 
-            # Add LLM backbone transformer layers
-            if hasattr(self, 'llm_transformer_layer_cls'):
+            # Models such as DreamZero have no LLM transformer layer class.
+            if getattr(self, 'llm_transformer_layer_cls', None) is not None:
                 checkpoint_layer_classes.add(self.llm_transformer_layer_cls)
 
             # Add Vision Transformer blocks (for timm models)
@@ -268,7 +290,8 @@ class DDPTrainRunner(BaseTrainRunner):
             # Add LLM expert layers
             if hasattr(self.vla,
                        'llm_expert') and self.vla.llm_expert is not None:
-                if hasattr(self.vla.llm_expert, 'transformer_layer_cls'):
+                if getattr(self.vla.llm_expert, 'transformer_layer_cls',
+                           None) is not None:
                     checkpoint_layer_classes.add(
                         self.vla.llm_expert.transformer_layer_cls)
 
