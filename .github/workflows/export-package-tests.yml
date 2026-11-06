@@ -53,6 +53,7 @@ jobs:
         run: |
           python -m venv "$RUNNER_TEMP/export-runtime"
           runtime="$RUNNER_TEMP/export-runtime/bin/python"
+          "$runtime" -m pip install --upgrade pip
           "$runtime" -m pip install torch==${{ matrix.torch }} --index-url https://download.pytorch.org/whl/cpu
           wheels=("$RUNNER_TEMP"/export-dist/*.whl)
           test "${#wheels[@]}" -eq 1
