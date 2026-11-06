@@ -72,7 +72,8 @@ setup(
         'Programming Language :: Python :: 3',
         'Operating System :: OS Independent',
     ],
-    install_requires=[],
+    # Install this checkout's shared package before installing FluxVLA.
+    install_requires=['fluxvla-export==0.1.0'],
     ext_modules=[
         make_cuda_ext(
             name='gemma_rotary_embedding_ext',
