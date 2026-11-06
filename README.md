@@ -151,11 +151,19 @@ Choose one of the following installation paths:
 conda create -n fluxvla python=3.10 -y
 conda activate fluxvla
 
-# Choose one mode: sim-only, real-only, or full.
+# Choose one mode: real-only, sim-only, rlinf-only, or all.
 bash scripts/install_env.sh sim-only
 # bash scripts/install_env.sh real-only
-# bash scripts/install_env.sh full
+# RL modes require an RLinf source checkout (see docs/rlinf.md):
+# RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh rlinf-only --profile cu128
+# RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh all --profile cu128
 ```
+
+`rlinf-only` installs model dependencies, RLinf and Ray without simulators or
+assets by default; `all` combines real-robot, simulation and RL dependencies.
+Only these RL modes require `RLINF_ROOT` and `cu128`. For backward compatibility,
+`full` (also the default when no mode is supplied) still means real + sim,
+without RLinf. `sim` / `real` remain aliases; `fluxvla-all` is an alias for `all`.
 
 <details>
 <summary><b>If the installer has issues: check modes and CUDA profile selection</b></summary>
@@ -165,7 +173,8 @@ the pinned RoboCasa source checkouts under `./src`, `real-only` installs
 real-robot and remote-inference dependencies, and `full` installs both. Pass
 `--skip-robocasa` if you do not need the RoboCasa checkouts.
 RoboCasa simulator assets are downloaded by default whenever the installer
-installs the RoboCasa source checkouts (`sim-only`, `full`, or `real-only --with-robocasa`). The installer calls `scripts/download_robocasa_assets.py`
+installs the RoboCasa source checkouts (`sim-only`, `all`, `full`, or an explicit
+`--with-robocasa`). The installer calls `scripts/download_robocasa_assets.py`
 and uses `FLUXVLA_ROBOCASA_ASSET_ENDPOINT` (default: `HF_ENDPOINT`, then
 `https://hf-mirror.com`). Use `--skip-robocasa-assets` to skip only the assets,
 or `--skip-robocasa` to skip both the source checkouts and the assets.

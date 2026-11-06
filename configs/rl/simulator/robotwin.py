@@ -57,7 +57,9 @@ simulator = dict(
         num_steps=5,
         attention_implementation='eager',
         openpi_fp32_flow=True,
-        vision_backbone=dict(openpi_stem_fp32=True)))
+        # Explicitly preserve RL numerics without changing old SFT switches.
+        openpi_rl_numerics=True,
+        vision_backbone=dict(openpi_stem_fp32=True, openpi_rl_numerics=True)))
 runner = dict(
     max_epochs=200,
     max_steps=200,

@@ -17,8 +17,8 @@ model = dict(
         transformer_layer_cls_to_wrap=['SmolVLMEncoderLayer'],
         module_classes_to_wrap=['LinearProjector', 'ValueHead']),
     fluxvla=dict(
-        config_path=('${oc.env:FLUXVLA_ROOT}/configs/smolvla/s'
-                     'molvla_libero_10_finetune.py'),
+        config_path=('${oc.env:FLUXVLA_ROOT}/configs/rl/'
+                     'smolvla_libero_10.py'),
         tokenizer_path='${simulator.tokenizer_path}',
         norm_stats_path='${simulator.norm_stats_path}',
         compute_dtype='bf16',
