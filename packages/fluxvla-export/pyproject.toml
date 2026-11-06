@@ -32,6 +32,17 @@ dependencies = [
 [project.optional-dependencies]
 # safetensors 0.6.2 uses NumPy to serialize test tensors.
 test = ["numpy>=1.26,<3"]
+# Verified public ONNX exporter profile. Newer IR/protobuf combinations change
+# function inlining/serialization; native inference still supports Torch 2.6.
+test-onnx = [
+  "torch==2.8.0",
+  "numpy==1.26.4",
+  "onnx==1.18.0",
+  "onnxscript==0.3.2",
+  "onnx-ir==0.1.7",
+  "protobuf==5.29.5",
+  "onnxruntime==1.23.2",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

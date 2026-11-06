@@ -133,7 +133,11 @@ class GemmaRMSNorm(nn.Module):
         if modulation.dim() == 2 and len(x.shape) == 3:
             modulation = modulation.unsqueeze(1)
 
-        scale, shift, gate = torch.chunk(modulation, 3, dim=-1)
+        # The dense projection has exactly 3 * dim outputs. Tensor slices
+        # preserve this partition without ONNX sequences, which exclude BF16.
+        scale = modulation[..., :self.dim]
+        shift = modulation[..., self.dim:2 * self.dim]
+        gate = modulation[..., 2 * self.dim:]
 
         # Apply adaptive normalization:
         # use model weight dtype to ensure compatibility

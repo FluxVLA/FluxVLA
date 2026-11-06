@@ -59,6 +59,10 @@ def make_att_2d_masks(pad_masks, att_masks):
     if pad_masks.ndim != 2:
         raise ValueError(pad_masks.ndim)
 
+    # PyTorch promotes bool cumsum to int64 implicitly; ONNX CumSum does not
+    # accept bool. Make the identical promotion explicit for export.
+    if att_masks.dtype == torch.bool:
+        att_masks = att_masks.to(torch.int64)
     cumsum = torch.cumsum(att_masks, dim=1)
     att_2d_masks = cumsum[:, None, :] <= cumsum[:, :, None]
     pad_2d_masks = pad_masks[:, None, :] * pad_masks[:, :, None]

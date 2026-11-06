@@ -75,3 +75,14 @@ artifacts = produce_pi05_artifacts(
     output_dir="deployment-inputs",  # Must not already exist.
 )
 ```
+
+## Supported ONNX test profile
+
+Install the `test-onnx` extra for the pinned Torch 2.8 exporter stack. FP32 uses
+legacy opset18 with constant folding disabled; native BF16 uses Dynamo opset22
+with optimization enabled. Explicit bool CumSum promotion and AdaRMS slices retain
+native operation ordering and avoid unsupported ONNX types/sequences.
+
+CI requires real export/check tests, native parity, and captured-program replay.
+CPU ONNX Runtime lacks BF16 Conv(22); its explicit rejection is tested, not
+reported as BF16 inference parity. Torch 2.6 remains a native-only test lane.

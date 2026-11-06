@@ -91,3 +91,20 @@ jobs:
               assert result.wasSuccessful()
               sys.path.remove(directory)
           PY
+      - name: Verify the supported Torch 2.8 ONNX profile
+        if: matrix.torch == '2.8.0'
+        run: |
+          runtime="$RUNNER_TEMP/export-runtime/bin/python"
+          wheels=("$RUNNER_TEMP"/export-dist/*.whl)
+          "$runtime" -m pip install "${wheels[0]}[test-onnx]"
+          "$runtime" -m pip check
+          cp -R packages/fluxvla-export/tests_onnx "$RUNNER_TEMP/export-tests-onnx"
+          "$runtime" -I - "$RUNNER_TEMP" <<'PY'
+          import pathlib, sys, unittest
+          root = pathlib.Path(sys.argv[1])
+          sys.path.insert(0, str(root / 'export-tests'))
+          suite = unittest.TestLoader().discover(str(root / 'export-tests-onnx'))
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          assert result.testsRun > 0 and not result.skipped
+          assert result.wasSuccessful()
+          PY
