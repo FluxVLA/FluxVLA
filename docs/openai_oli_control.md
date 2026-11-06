@@ -156,6 +156,38 @@ Shape/non-finite target errors also include the field name (for example
 `OLI target.left_hand`). Keep the complete traceback, config overrides, model
 trace, and exact code revision when recording a hardware failure.
 
+## Trace files for successful and failed calls
+
+With `trace_dir` configured, each logical model call creates `call_0001`,
+`call_0002`, and so on. The request is saved before calling the API, and any
+JSON response is saved before tool parsing or target validation. The HTML
+report includes pending, received, generated and failed states.
+
+| File | Meaning |
+| --- | --- |
+| `request.json` and `image_*` | Prepared request and its extracted input images; saved before transport. No HTTP authorization headers are recorded. |
+| `response.json` | Received JSON, including invalid tool responses. Absent if no JSON response was obtained. |
+| `response.txt` | Raw response text when JSON decoding fails in transport, such as an HTML gateway reply. |
+| `arguments.json` | Parsed tool arguments, saved before motion validation. |
+| `metadata.json` | Response ID/model, latency and token metadata when a JSON response was received. |
+| `status.json` | Call start/update time, status, stage, and `execution_status=not_recorded`. |
+| `error.json` | Exception type/message, failing stage, traceback and chained causes, including HTTP status when available. |
+| `action_chunk.json` | Generated actions; absent when generation failed before this stage. This is not proof of publication or execution. |
+
+Stages identify `request`, `response_parse`, `target_validation`,
+`interpolation`, and trace preparation/save/finalization. A transport timeout,
+HTTP failure, invalid tool arguments or rejected target retains its original
+exception. If recording that exception also fails, the console reports
+`OLI_TRACE_WRITE_FAILED` and preserves the primary error. A trace write failure
+on a successful generation prevents returning actions to the runner.
+
+HTTP retries inside one protocol call share a single trace directory. Error
+responses that the protocol raises instead of returning are represented by
+the exception chain and available error text; the trace does not fabricate a
+JSON response. Budget exhaustion or invalid observations before request
+preparation do not create a new API-call directory. Publication failures are
+reported separately by the runner/operator log markers above.
+
 Type `p` and press Enter while a chunk is running to pause after that chunk.
 Only one process may publish robot commands. First validate the behavior
 against Mujoco. This layer does not provide collision

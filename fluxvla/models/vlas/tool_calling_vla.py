@@ -1614,25 +1614,39 @@ class ToolCallingOliVLA(ToolCallingVLA):
                                                     current_state)
         self._history.append(observation)
 
-        # 2. Ask GPT for one absolute whole-body target.
-        request, response, call, arguments = self._request_tool_call(
-            'control_oli')
-        self.last_note = str(arguments.get('note', ''))
+        # Journal each stage so rejected responses remain inspectable too.
+        trace_call = None
+        try:
+            request = self._request_body()
+            if self.trace_writer is not None:
+                trace_call = self.trace_writer.begin_call(request)
+            _, _, call, arguments = self._request_tool_call(
+                'control_oli', request=request, trace_call=trace_call)
+            self.last_note = str(arguments.get('note', ''))
 
-        # 3. Bound the target, then interpolate it into the 66D action chunk.
-        target = self._bound_targets(current_state, arguments.get('targets'))
-        actions = self._interpolate_action_chunk(current_state, target)
+            if trace_call is not None:
+                self.trace_writer.mark_stage(trace_call, 'target_validation')
+            target = self._bound_targets(
+                current_state, arguments.get('targets'))
+            if trace_call is not None:
+                self.trace_writer.mark_stage(trace_call, 'interpolation')
+            actions = self._interpolate_action_chunk(current_state, target)
 
-        # 4. Preserve this turn for GPT context and the human-readable trace.
-        self._record_tool_call('control_oli', call, len(actions))
-        if self.trace_writer is not None:
-            self.trace_writer.append(
-                request=request,
-                response=response,
-                arguments=arguments,
-                metadata=self.last_response_metadata,
-                actions=actions.detach().cpu().numpy())
-        return actions
+            self._record_tool_call('control_oli', call, len(actions))
+            if trace_call is not None:
+                self.trace_writer.mark_stage(trace_call, 'trace_finalize')
+                self.trace_writer.finish_call(
+                    trace_call, actions.detach().cpu().numpy())
+            return actions
+        except BaseException as exc:
+            if trace_call is not None:
+                try:
+                    self.trace_writer.fail_call(trace_call, exc)
+                except Exception as trace_error:
+                    print(
+                        f'[OLI_TRACE_WRITE_FAILED] {trace_error}; '
+                        f'original {type(exc).__name__} preserved', flush=True)
+            raise
 
     def _image_content(self, images, image_names):
         content = []
@@ -1666,14 +1680,30 @@ class ToolCallingOliVLA(ToolCallingVLA):
             )
         return calls[0]
 
-    def _request_tool_call(self, name: str):
+    def _request_tool_call(self, name: str, *, request=None, trace_call=None):
         """Send the current history and decode one tool call."""
-        request = self._request_body()
+        request = self._request_body() if request is None else request
         started = time.monotonic()
         response = self._post_json(request)
         latency = time.monotonic() - started
         self._llm_calls += 1
 
+        # Save any JSON response, even if it is not a valid Responses object.
+        response_info = response if isinstance(response, dict) else {}
+        usage = response_info.get('usage') or {}
+        usage = usage if isinstance(usage, dict) else {}
+        self.last_response_metadata = {
+            'id': response_info.get('id'),
+            'model': response_info.get('model', self.model),
+            'latency_seconds': latency,
+            'input_tokens': usage.get('input_tokens'),
+            'output_tokens': usage.get('output_tokens'),
+        }
+        if trace_call is not None:
+            self.trace_writer.save_response(
+                trace_call, response, self.last_response_metadata)
+        if not isinstance(response, dict):
+            raise RuntimeError('OpenAI response must be an object')
         call = self._function_call(response, name)
         raw_arguments = call.get('arguments', '{}')
         try:
@@ -1684,14 +1714,8 @@ class ToolCallingOliVLA(ToolCallingVLA):
         if not isinstance(arguments, dict):
             raise RuntimeError(f'{name} arguments must be an object')
 
-        usage = response.get('usage') or {}
-        self.last_response_metadata = {
-            'id': response.get('id'),
-            'model': response.get('model', self.model),
-            'latency_seconds': latency,
-            'input_tokens': usage.get('input_tokens'),
-            'output_tokens': usage.get('output_tokens'),
-        }
+        if trace_call is not None:
+            self.trace_writer.save_arguments(trace_call, arguments)
         return request, response, call, arguments
 
     def _record_tool_call(self, name: str, call: Dict[str, Any],

@@ -7,6 +7,7 @@ from mmengine import Config
 
 ROOT = Path(__file__).resolve().parents[2]
 CONFIG_PATH = ROOT / 'configs/pi05/pi05_rebot_dual_inference.py'
+RTC_CONFIG_PATH = ROOT / 'configs/pi05/pi05_rebot_dual_rtc_inference.py'
 
 
 def test_rebot_config_covers_training_and_inference():
@@ -60,3 +61,46 @@ def test_rebot_runner_dispatches_async_dual_arm_trajectory():
                                                                        7:14])
     assert kwargs['dt'] == runner.dt
     assert kwargs['async_exec'] is True
+
+
+def test_rebot_rtc_config_and_relative_prefix_rebasing():
+    from fluxvla.engines.runners.rebot_dual_rtc_inference_runner import \
+        RebotDualRTCInferenceRunner
+    from fluxvla.transforms.normalize import DenormalizeDeltaAction
+
+    cfg = Config.fromfile(RTC_CONFIG_PATH)
+    assert cfg.inference.type == 'RebotDualRTCInferenceRunner'
+    assert cfg.inference.action_chunk == 50
+    assert cfg.inference.execute_horizon == 10
+    assert cfg.inference.rtc_config.method == 'guidance'
+
+    mask = np.asarray([True] * 6 + [False] + [True] * 6 + [False])
+    denormalizer = DenormalizeDeltaAction(
+        norm_stats={
+            'private': {
+                'action': {
+                    'q01': [-2.0] * 14,
+                    'q99': [2.0] * 14,
+                }
+            }
+        },
+        norm_type='quantile',
+        action_dim=14,
+        delta_action_mask=mask)
+    runner = object.__new__(RebotDualRTCInferenceRunner)
+    runner.denormalize_action = denormalizer
+    runner._rtc_action_scale = None
+    previous_state = np.linspace(-0.3, 0.3, 14, dtype=np.float32)
+    current_state = previous_state + 0.1
+    remaining = np.zeros((3, 32), dtype=np.float32)
+    remaining[:, :14] = np.linspace(-0.5, 0.5, 14, dtype=np.float32)
+
+    before = denormalizer(dict(action=remaining[None], state=previous_state))
+    rebased = runner._rebase_prefix(remaining, previous_state, current_state)
+    after = denormalizer(dict(action=rebased[None], state=current_state))
+
+    assert np.allclose(after, before)
+    absolute_dims = np.flatnonzero(~mask)
+    assert np.array_equal(rebased[:, absolute_dims], remaining[:,
+                                                               absolute_dims])
+    assert np.array_equal(rebased[:, 14:], remaining[:, 14:])

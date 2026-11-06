@@ -10,6 +10,7 @@ import html
 import json
 import os
 import re
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict
@@ -18,7 +19,7 @@ import numpy as np
 
 
 class OpenAITraceWriter:
-    """Persist every completed API turn and refresh one HTML report."""
+    """Journal requests before transport and retain failed model turns."""
 
     def __init__(self,
                  root_dir: str,
@@ -139,14 +140,29 @@ class OpenAITraceWriter:
         latency = record['latency']
         input_tokens = record['input_tokens']
         output_tokens = record['output_tokens']
-        rows, columns = record['action_shape']
+        shape = record['action_shape']
+        chunk_label = (
+            f'{shape[0]} × {shape[1]}' if shape else 'not generated')
         artifacts = record['artifacts']
+        links = ' · '.join(
+            f'<a href="{self._escape(url)}">{self._escape(name)}</a>'
+            for name, url in artifacts.items())
+        status = self._escape(record['status'])
+        stage = self._escape(record['stage'])
+        error = record.get('error')
+        error_panel = (
+            '<section><h3>Failure</h3><pre><code>' +
+            self._escape(self._json(error)) + '</code></pre></section>'
+            if error is not None else '')
         return f'''<section id="call-panel-{index}" role="tabpanel"
   aria-labelledby="call-tab-{index}"{hidden}>
+  <p>Status: <strong>{status}</strong> · Stage: {stage}.
+    This model trace does not record robot execution.</p>
+  {error_panel}
   <div class="meta">
     <span>Latency <strong>{latency:.2f} s</strong></span>
     <span>Tokens <strong>{input_tokens} + {output_tokens}</strong></span>
-    <span>Chunk <strong>{rows} × {columns}</strong></span>
+    <span>Chunk <strong>{chunk_label}</strong></span>
   </div>
   <div class="context">
     <span class="tag">{context}</span><span>→ GPT call {index}</span>
@@ -165,16 +181,12 @@ class OpenAITraceWriter:
   <details><summary>Observation</summary>
     <pre><code>{observation}</code></pre>
   </details>
-  <p class="artifacts">Full artifacts:
-    <a href="{self._escape(artifacts['request'])}">request</a> ·
-    <a href="{self._escape(artifacts['response'])}">response</a> ·
-    <a href="{self._escape(artifacts['action_chunk'])}">
-      {rows}×{columns} action chunk</a>
-  </p>
+  <p class="artifacts">Full artifacts: {links}</p>
 </section>'''
 
     def _render(self) -> str:
         call_count = len(self.records)
+        last_index = self.records[-1]['index'] if self.records else 0
         total_latency = sum(record['latency'] for record in self.records)
         input_tokens = sum(record['input_tokens'] for record in self.records)
         output_tokens = sum(record['output_tokens'] for record in self.records)
@@ -183,11 +195,11 @@ class OpenAITraceWriter:
             'aria-controls="call-panel-{0}" '
             'aria-selected="{1}" class="{2}" type="button">Call {0}</button>'.
             format(record['index'],
-                   str(record['index'] == call_count).lower(),
-                   'active' if record['index'] == call_count else '')
+                   str(record['index'] == last_index).lower(),
+                   'active' if record['index'] == last_index else '')
             for record in self.records)
         panels = ''.join(
-            self._render_call(record, record['index'] == call_count)
+            self._render_call(record, record['index'] == last_index)
             for record in self.records)
         system_prompt = self._escape(self.system_prompt)
         tools = self._escape(self._json(self.tools))
@@ -335,69 +347,210 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
             os.fsync(stream.fileno())
         os.replace(temporary, self.path)
 
-    def append(self, request: Dict[str, Any], response: Dict[str, Any],
-               arguments: Dict[str, Any], metadata: Dict[str, Any],
-               actions: np.ndarray) -> Path:
-        """Persist one completed model turn before its actions are executed."""
+    @staticmethod
+    def _write_text(path: Path, text: str) -> None:
+        temporary = path.with_suffix(path.suffix + '.tmp')
+        with temporary.open('w', encoding='utf-8') as stream:
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+
+    def _write_json(self, path: Path, value: Any) -> str:
+        text = self._json(value)
+        self._write_text(path, text)
+        return text
+
+    def _record(self, call_dir: Path) -> Dict[str, Any]:
+        for record in self.records:
+            if record['directory'] == call_dir:
+                return record
+        raise ValueError('Unknown trace call directory')
+
+    def _write_status(self, record: Dict[str, Any]) -> None:
+        self._write_json(record['directory'] / 'status.json', {
+            'index': record['index'],
+            'started_at': record['time'],
+            'updated_at': self._utc_now(),
+            'status': record['status'],
+            'stage': record['stage'],
+            'execution_status': 'not_recorded',
+        })
+
+    def begin_call(self, request: Dict[str, Any]) -> Path:
+        """Save the prepared request before any API operation is attempted."""
         self.calls += 1
         call_dir = self.run_dir / f'call_{self.calls:04d}'
         call_dir.mkdir()
+        # Keep a complete request even if externalizing an image fails.
+        self._write_json(call_dir / 'request.json', request)
         saved_request, images = self._save_request(request, call_dir)
-        request_text = self._json(saved_request)
-        response_text = self._json(response)
-        action_text = self._json(actions.tolist())
-        (call_dir / 'request.json').write_text(request_text, encoding='utf-8')
-        (call_dir / 'response.json').write_text(
-            response_text, encoding='utf-8')
-        (call_dir / 'action_chunk.json').write_text(
-            action_text, encoding='utf-8')
-
+        request_text = self._write_json(
+            call_dir / 'request.json', saved_request)
         if not self.records:
             self.system_prompt = next((item.get('content', '')
                                        for item in request.get('input', [])
                                        if item.get('role') == 'system'), '')
             self.tools = request.get('tools', [])
         observation = self._observation_text(request)
-        self.records.append({
+        record = {
             'index':
             self.calls,
+            'directory':
+            call_dir,
             'time':
             self._utc_now(),
+            'status':
+            'pending',
+            'stage':
+            'request',
             'latency':
-            float(metadata.get('latency_seconds') or 0.0),
+            0.0,
             'input_tokens':
-            metadata.get('input_tokens') or 0,
+            0,
             'output_tokens':
-            metadata.get('output_tokens') or 0,
+            0,
             'action_shape':
-            list(actions.shape),
+            None,
             'observation':
             observation,
             'task_prompt':
             self._task_prompt(observation),
             'arguments':
-            arguments,
+            {},
             'images':
             images,
             'artifacts': {
                 'request': self._data_url('application/json', request_text),
-                'response': self._data_url('application/json', response_text),
-                'action_chunk': self._data_url('application/json',
-                                               action_text),
             },
-        })
+        }
+        self.records.append(record)
+        try:
+            self._write_status(record)
+            self._write_html()
+        except BaseException as exc:
+            record['stage'] = 'trace_prepare'
+            try:
+                self.fail_call(call_dir, exc)
+            except Exception as trace_error:
+                print(f'[OLI_TRACE_WRITE_FAILED] {trace_error}', flush=True)
+            raise
+        return call_dir
+
+    def mark_stage(self, call_dir: Path, stage: str) -> None:
+        record = self._record(call_dir)
+        record['stage'] = stage
+        self._write_status(record)
+
+    @staticmethod
+    def _metric(value: Any) -> float:
+        try:
+            number = float(value)
+        except (ValueError, TypeError):
+            return 0.0
+        return number if np.isfinite(number) else 0.0
+
+    def save_response(self, call_dir: Path, response: Any,
+                      metadata: Dict[str, Any]) -> None:
+        """Persist the response before parsing or validating its tool call."""
+        record = self._record(call_dir)
+        record['stage'] = 'response_save'
+        text = self._write_json(call_dir / 'response.json', response)
+        record['artifacts']['response'] = self._data_url(
+            'application/json', text)
+        self._write_json(call_dir / 'metadata.json', metadata)
+        record['latency'] = self._metric(metadata.get('latency_seconds'))
+        record['input_tokens'] = int(self._metric(
+            metadata.get('input_tokens')))
+        record['output_tokens'] = int(self._metric(
+            metadata.get('output_tokens')))
+        record['status'] = 'response_received'
+        self.mark_stage(call_dir, 'response_parse')
+        self._write_html()
+
+    def save_arguments(self, call_dir: Path,
+                       arguments: Dict[str, Any]) -> None:
+        record = self._record(call_dir)
+        record['arguments'] = copy.deepcopy(arguments)
+        self._write_json(call_dir / 'arguments.json', arguments)
+
+    def finish_call(self, call_dir: Path, actions: np.ndarray) -> Path:
+        """Record generated actions, without claiming they were executed."""
+        record = self._record(call_dir)
+        text = self._write_json(
+            call_dir / 'action_chunk.json', actions.tolist())
+        record['artifacts']['action_chunk'] = self._data_url(
+            'application/json', text)
+        record['action_shape'] = list(actions.shape)
+        record['status'] = 'generated'
+        record['stage'] = 'actions_generated'
+        self._write_status(record)
         self._write_html()
         if self.console:
             targets = json.dumps(
-                arguments.get('targets', {}),
+                record['arguments'].get('targets', {}),
                 ensure_ascii=False,
                 separators=(',', ':'))
-            note = str(arguments.get('note', ''))
+            note = str(record['arguments'].get('note', ''))
             print(
-                f'[gpt-trace] call={self.calls} '
-                f'latency={self.records[-1]["latency"]:.2f}s '
-                f'tokens={self.records[-1]["input_tokens"]}+'
-                f'{self.records[-1]["output_tokens"]} targets={targets} '
+                f'[gpt-trace] call={record["index"]} status=generated '
+                f'latency={record["latency"]:.2f}s '
+                f'tokens={record["input_tokens"]}+'
+                f'{record["output_tokens"]} targets={targets} '
                 f'note={note!r}',
                 flush=True)
         return call_dir
+
+    def fail_call(self, call_dir: Path, error: BaseException) -> None:
+        """Retain the failure and its chained transport cause."""
+        record = self._record(call_dir)
+        causes = []
+        cause = error.__cause__ or error.__context__
+        seen = {id(error)}
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            item = {'type': type(cause).__name__, 'message': str(cause)}
+            if isinstance(getattr(cause, 'code', None), int):
+                item['http_status'] = cause.code
+            causes.append(item)
+            cause = cause.__cause__ or cause.__context__
+        details = {
+            'type': type(error).__name__,
+            'message': str(error),
+            'stage': record['stage'],
+            'time': self._utc_now(),
+            'causes': causes,
+            'traceback': ''.join(traceback.format_exception(
+                type(error), error, error.__traceback__)),
+        }
+        if isinstance(getattr(error, 'code', None), int):
+            details['http_status'] = error.code
+        text = self._write_json(call_dir / 'error.json', details)
+        if (record['stage'] == 'request'
+                and isinstance(error, json.JSONDecodeError)):
+            self._write_text(call_dir / 'response.txt', error.doc)
+        record['error'] = details
+        record['artifacts']['error'] = self._data_url('application/json', text)
+        record['status'] = 'failed'
+        self._write_status(record)
+        self._write_html()
+        print(f'[gpt-trace] call={record["index"]} status=failed '
+              f'stage={record["stage"]} error={call_dir / "error.json"}',
+              flush=True)
+
+    def append(self, request: Dict[str, Any], response: Dict[str, Any],
+               arguments: Dict[str, Any], metadata: Dict[str, Any],
+               actions: np.ndarray) -> Path:
+        """Compatibility entry for callers saving an already completed turn."""
+        call_dir = self.begin_call(request)
+        try:
+            self.save_response(call_dir, response, metadata)
+            self.save_arguments(call_dir, arguments)
+            self.mark_stage(call_dir, 'trace_finalize')
+            return self.finish_call(call_dir, actions)
+        except BaseException as exc:
+            try:
+                self.fail_call(call_dir, exc)
+            except Exception as trace_error:
+                print(f'[OLI_TRACE_WRITE_FAILED] {trace_error}', flush=True)
+            raise
