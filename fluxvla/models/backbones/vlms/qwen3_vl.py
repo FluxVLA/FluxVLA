@@ -20,6 +20,7 @@ from transformers.models.qwen3_vl.modeling_qwen3_vl import \
     Qwen3VLTextDecoderLayer
 
 from fluxvla.engines import VLM_BACKBONES
+from fluxvla.engines.losses.causal_lm import causal_lm_loss
 from fluxvla.engines.utils.fsdp_wrapping import \
     build_transformer_layer_wrap_policy
 from fluxvla.engines.utils.name_map import str_to_dtype
@@ -158,14 +159,45 @@ class Qwen3VL(VLMBackbone):
         grid_thw[:, 2] = grid_w
         return grid_thw
 
-    def forward(self,
-                images: torch.Tensor,
-                lang_tokens: torch.Tensor,
-                img_masks: torch.Tensor,
-                lang_masks: Optional[torch.Tensor] = None,
-                image_grid_thw: Optional[torch.LongTensor] = None,
-                *args,
-                **kwargs):
+    supports_vlm_training = True
+
+    def forward(self, *args, task='vla', **kwargs):
+        if task == 'vlm':
+            return self.forward_vlm(**kwargs)
+        if task != 'vla':
+            raise ValueError(f'Unsupported Qwen task: {task}')
+        return self.forward_features(*args, **kwargs)
+
+    def forward_vlm(self,
+                    *,
+                    labels,
+                    input_ids,
+                    attention_mask=None,
+                    ignore_index=-100,
+                    **inputs):
+        """Use native multimodal fusion and return causal language loss."""
+        if labels.shape != input_ids.shape:
+            raise ValueError('VLM labels must match input_ids.')
+        if attention_mask is not None:
+            labels = labels.masked_fill(~attention_mask.bool(), ignore_index)
+        # Compute CE only in causal_lm_loss, retaining its token-sum output.
+        outputs = self.vlm(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+            return_dict=True,
+            output_hidden_states=False,
+            **inputs)
+        return causal_lm_loss(outputs.logits, labels, ignore_index)
+
+    def forward_features(self,
+                         images: torch.Tensor,
+                         lang_tokens: torch.Tensor,
+                         img_masks: torch.Tensor,
+                         lang_masks: Optional[torch.Tensor] = None,
+                         image_grid_thw: Optional[torch.LongTensor] = None,
+                         *args,
+                         **kwargs):
         """
         VLA path: vision + language tokens ->
         (last_hidden_state, mask, mask).

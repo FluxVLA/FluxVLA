@@ -123,6 +123,7 @@ class PI0FlowMatching(BaseVLA):
                  openpi_fp32_flow: bool = False,
                  rtc_training_config: Optional[Dict] = None,
                  preserve_fp32_residuals: bool = False,
+                 pretrained_skip_prefixes: Optional[List[str]] = None,
                  **kwargs):
         super(PI0FlowMatching, self).__init__(
             vision_backbone=vision_backbone,
@@ -131,6 +132,7 @@ class PI0FlowMatching(BaseVLA):
             projector=projector,
             vla_head=vla_head,
             pretrained_name_or_path=pretrained_name_or_path,
+            pretrained_skip_prefixes=pretrained_skip_prefixes,
             enable_mixed_precision_training=enable_mixed_precision_training,
             freeze_vision_backbone=freeze_vision_backbone,
             freeze_llm_backbone=freeze_llm_backbone,
@@ -756,13 +758,15 @@ class PI0FlowMatching(BaseVLA):
         v_t, u_t = self._select_flow_loss_dimensions(v_t, u_t)
         losses = F.mse_loss(u_t, v_t, reduction='none')
         sample_weight = kwarg.get('sample_weight')
+        statistics = kwarg.get('return_loss_statistics', False)
         loss = reduce_action_bc_loss(
-            losses, action_mask=action_masks, sample_weight=sample_weight)
+            losses,
+            action_mask=action_masks,
+            sample_weight=sample_weight,
+            return_statistics=statistics)
 
-        return_dict = dict(
-            predictions=v_t,
-            loss=loss,
-        )
+        return_dict = dict(predictions=v_t)
+        return_dict.update(loss if statistics else dict(loss=loss))
         return return_dict
 
     def _predict_action_plain(self, x_t, denoise, bsize, dt, device):
