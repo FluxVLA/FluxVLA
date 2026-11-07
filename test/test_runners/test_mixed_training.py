@@ -9,7 +9,7 @@ import pytest
 import torch
 from mmengine import Config
 
-from fluxvla.collators.pi05_vlm_sft_collator import Pi05VLMSFTCollator
+from fluxvla.collators.vlm_sft_collator import VLMSFTCollator
 from fluxvla.engines.runners.mixed_training import (MixedTraining,
                                                     TaskDataStream)
 
@@ -18,10 +18,17 @@ def configuration():
     return Config(
         dict(
             train_dataloader=dict(dataset=dict(type='unused-in-unit-test')),
-            runner=dict(collator=dict(type='Pi05VLMSFTCollator')),
+            runner=dict(
+                collator=dict(
+                    type='VLMSFTCollator',
+                    pad_token_id=0,
+                    image_layout='views')),
             vlm_dataloader=dict(
                 dataset=dict(type='unused-in-unit-test'),
-                collator=dict(type='Pi05VLMSFTCollator'),
+                collator=dict(
+                    type='VLMSFTCollator',
+                    pad_token_id=0,
+                    image_layout='views'),
                 per_device_batch_size=1,
                 per_device_num_workers=0,
                 grad_accumulation_steps=2)))
@@ -152,7 +159,9 @@ def test_schedule_separate_streams_and_checkpoint_contract():
             input_ids=torch.tensor([2, i, 1]),
             labels=torch.tensor([-100, i, 1])) for i in range(3, 8)
     ]
-    assert isinstance(mixed.vlm_collator, Pi05VLMSFTCollator)
+    assert isinstance(mixed.vlm_collator, VLMSFTCollator)
+    assert mixed.vlm_collator.image_layout == 'views'
+    assert mixed.vlm_collator.pad_token_id == 0
     mixed.setup(runner, list(range(10)), vlm_dataset=language)
     observed = []
 

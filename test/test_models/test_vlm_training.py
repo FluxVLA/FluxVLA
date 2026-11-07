@@ -8,7 +8,7 @@ import torch
 import torch.nn.functional as F
 from mmengine import Config
 
-from fluxvla.collators.pi05_vlm_sft_collator import Pi05VLMSFTCollator
+from fluxvla.collators.vlm_sft_collator import VLMSFTCollator
 from fluxvla.engines import build_vla_from_cfg
 from fluxvla.engines.losses.causal_lm import causal_lm_loss
 from fluxvla.models.backbones.vlms.causal_vlm import CausalVLMBackbone
@@ -149,12 +149,13 @@ def test_pi05_collator_pads_views_and_keeps_robot_fields_out():
             labels=torch.tensor([-100, 1]),
             images=torch.empty(0, 8, 8)),
     ]
-    batch = Pi05VLMSFTCollator()(samples)
+    batch = VLMSFTCollator(pad_token_id=0, image_layout='views')(samples)
     assert set(batch) == {
         'input_ids', 'attention_mask', 'labels', 'images', 'img_masks'
     }
     assert batch['images'].shape == (2, 6, 8, 8)
     assert batch['img_masks'].tolist() == [[True, True], [False, False]]
+    assert batch['input_ids'][1, -1] == 0
     assert batch['labels'][1, -1] == -100
     assert not batch['attention_mask'][1, -1]
 
