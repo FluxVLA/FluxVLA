@@ -880,11 +880,12 @@ class BaseTrainRunner(ABC):
             try:
                 return next(dataloader_iter), dataloader_iter
             except StopIteration:
-                # With a known step budget, the outer training loop owns
-                # the epoch counter. Filling the last accumulation window
-                # may restart a finite loader before that boundary; this
-                # must not count the same epoch twice.
-                if not self.steps_per_epoch:
+                # Preserve legacy VLA iterator/sampler epoch semantics.
+                # Only VLM with a known step budget lets the outer loop
+                # own this counter: filling its last accumulation window
+                # can restart a finite loader, but must not count the same
+                # epoch twice and end training early.
+                if self.train_task != 'vlm' or not self.steps_per_epoch:
                     self.current_epoch += 1
                 dataloader_iter = None
 

@@ -215,9 +215,10 @@ class DDPTrainRunner(BaseTrainRunner):
 
     def _move_vla_to_device(self, target_device: torch.device) -> None:
         torch.cuda.empty_cache()
-        if self.keep_params_fp32:
+        if self.train_task in ('vlm', 'mixed') and self.keep_params_fp32:
             # Some backbones initialize selected parameters in BF16. Merely
             # skipping the BF16 cast does not give them FP32 master weights.
+            # Legacy VLA jobs retain their original per-parameter dtypes.
             self.vla = self.vla.to(device=target_device, dtype=torch.float32)
         elif self._cast_lora_params_for_mixed_precision():
             self.vla = self.vla.to(device=target_device)
