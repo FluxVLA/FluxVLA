@@ -278,9 +278,9 @@ class OliInferenceRunner(BaseInferenceRunner):
             try:
                 self.cleanup()
             except Exception as exc:
-                print(
-                    f'[OLI_CLEANUP_FAILED] {exc}; '
-                    'preserving setup error', flush=True)
+                print(f'[OLI_CLEANUP_FAILED] {exc}; '
+                      'preserving setup error',
+                      flush=True)
             raise
 
     def run(self, initial_instruction='pour water into the cup'):
@@ -310,9 +310,8 @@ class OliInferenceRunner(BaseInferenceRunner):
                 except Exception as exc:
                     if not error_in_flight:
                         raise
-                    overwatch.error(
-                        f'[OLI_CLEANUP_FAILED] {exc}; '
-                        'preserving original error')
+                    overwatch.error(f'[OLI_CLEANUP_FAILED] {exc}; '
+                                    'preserving original error')
 
     def _infer_and_execute_chunk(self, instruction):
         """Predict and execute one action chunk, preserving its context."""
@@ -454,7 +453,8 @@ class OliInferenceRunner(BaseInferenceRunner):
             except Exception:
                 print(
                     f'[OLI_EXECUTION_FAILED] step={sent_steps}; '
-                    f'completed_send_calls={sent_steps}', flush=True)
+                    f'completed_send_calls={sent_steps}',
+                    flush=True)
                 raise
             sent_steps += 1
             time.sleep(self._dt)
@@ -482,9 +482,9 @@ class OliInferenceRunner(BaseInferenceRunner):
         print('Cleaning up OliInferenceRunner')
         self._running = False
         first_error = None
-        for cleanup in (
-                getattr(self.ros_operator, 'stop_trajectory', None),
-                getattr(self.ros_operator, 'close', None), super().cleanup):
+        for cleanup in (getattr(self.ros_operator, 'stop_trajectory',
+                                None), getattr(self.ros_operator, 'close',
+                                               None), super().cleanup):
             if cleanup is None:
                 continue
             try:

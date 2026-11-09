@@ -141,8 +141,8 @@ class OpenAITraceWriter:
         input_tokens = record['input_tokens']
         output_tokens = record['output_tokens']
         shape = record['action_shape']
-        chunk_label = (
-            f'{shape[0]} × {shape[1]}' if shape else 'not generated')
+        chunk_label = (f'{shape[0]} × {shape[1]}'
+                       if shape else 'not generated')
         artifacts = record['artifacts']
         links = ' · '.join(
             f'<a href="{self._escape(url)}">{self._escape(name)}</a>'
@@ -150,10 +150,9 @@ class OpenAITraceWriter:
         status = self._escape(record['status'])
         stage = self._escape(record['stage'])
         error = record.get('error')
-        error_panel = (
-            '<section><h3>Failure</h3><pre><code>' +
-            self._escape(self._json(error)) + '</code></pre></section>'
-            if error is not None else '')
+        error_panel = ('<section><h3>Failure</h3><pre><code>' +
+                       self._escape(self._json(error)) +
+                       '</code></pre></section>' if error is not None else '')
         return f'''<section id="call-panel-{index}" role="tabpanel"
   aria-labelledby="call-tab-{index}"{hidden}>
   <p>Status: <strong>{status}</strong> · Stage: {stage}.
@@ -368,14 +367,15 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
         raise ValueError('Unknown trace call directory')
 
     def _write_status(self, record: Dict[str, Any]) -> None:
-        self._write_json(record['directory'] / 'status.json', {
-            'index': record['index'],
-            'started_at': record['time'],
-            'updated_at': self._utc_now(),
-            'status': record['status'],
-            'stage': record['stage'],
-            'execution_status': 'not_recorded',
-        })
+        self._write_json(
+            record['directory'] / 'status.json', {
+                'index': record['index'],
+                'started_at': record['time'],
+                'updated_at': self._utc_now(),
+                'status': record['status'],
+                'stage': record['stage'],
+                'execution_status': 'not_recorded',
+            })
 
     def begin_call(self, request: Dict[str, Any]) -> Path:
         """Save the prepared request before any API operation is attempted."""
@@ -385,8 +385,8 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
         # Keep a complete request even if externalizing an image fails.
         self._write_json(call_dir / 'request.json', request)
         saved_request, images = self._save_request(request, call_dir)
-        request_text = self._write_json(
-            call_dir / 'request.json', saved_request)
+        request_text = self._write_json(call_dir / 'request.json',
+                                        saved_request)
         if not self.records:
             self.system_prompt = next((item.get('content', '')
                                        for item in request.get('input', [])
@@ -394,32 +394,19 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
             self.tools = request.get('tools', [])
         observation = self._observation_text(request)
         record = {
-            'index':
-            self.calls,
-            'directory':
-            call_dir,
-            'time':
-            self._utc_now(),
-            'status':
-            'pending',
-            'stage':
-            'request',
-            'latency':
-            0.0,
-            'input_tokens':
-            0,
-            'output_tokens':
-            0,
-            'action_shape':
-            None,
-            'observation':
-            observation,
-            'task_prompt':
-            self._task_prompt(observation),
-            'arguments':
-            {},
-            'images':
-            images,
+            'index': self.calls,
+            'directory': call_dir,
+            'time': self._utc_now(),
+            'status': 'pending',
+            'stage': 'request',
+            'latency': 0.0,
+            'input_tokens': 0,
+            'output_tokens': 0,
+            'action_shape': None,
+            'observation': observation,
+            'task_prompt': self._task_prompt(observation),
+            'arguments': {},
+            'images': images,
             'artifacts': {
                 'request': self._data_url('application/json', request_text),
             },
@@ -460,16 +447,16 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
             'application/json', text)
         self._write_json(call_dir / 'metadata.json', metadata)
         record['latency'] = self._metric(metadata.get('latency_seconds'))
-        record['input_tokens'] = int(self._metric(
-            metadata.get('input_tokens')))
-        record['output_tokens'] = int(self._metric(
-            metadata.get('output_tokens')))
+        record['input_tokens'] = int(
+            self._metric(metadata.get('input_tokens')))
+        record['output_tokens'] = int(
+            self._metric(metadata.get('output_tokens')))
         record['status'] = 'response_received'
         self.mark_stage(call_dir, 'response_parse')
         self._write_html()
 
-    def save_arguments(self, call_dir: Path,
-                       arguments: Dict[str, Any]) -> None:
+    def save_arguments(self, call_dir: Path, arguments: Dict[str,
+                                                             Any]) -> None:
         record = self._record(call_dir)
         record['arguments'] = copy.deepcopy(arguments)
         self._write_json(call_dir / 'arguments.json', arguments)
@@ -477,8 +464,8 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
     def finish_call(self, call_dir: Path, actions: np.ndarray) -> Path:
         """Record generated actions, without claiming they were executed."""
         record = self._record(call_dir)
-        text = self._write_json(
-            call_dir / 'action_chunk.json', actions.tolist())
+        text = self._write_json(call_dir / 'action_chunk.json',
+                                actions.tolist())
         record['artifacts']['action_chunk'] = self._data_url(
             'application/json', text)
         record['action_shape'] = list(actions.shape)
@@ -515,13 +502,20 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
             causes.append(item)
             cause = cause.__cause__ or cause.__context__
         details = {
-            'type': type(error).__name__,
-            'message': str(error),
-            'stage': record['stage'],
-            'time': self._utc_now(),
-            'causes': causes,
-            'traceback': ''.join(traceback.format_exception(
-                type(error), error, error.__traceback__)),
+            'type':
+            type(error).__name__,
+            'message':
+            str(error),
+            'stage':
+            record['stage'],
+            'time':
+            self._utc_now(),
+            'causes':
+            causes,
+            'traceback':
+            ''.join(
+                traceback.format_exception(
+                    type(error), error, error.__traceback__)),
         }
         if isinstance(getattr(error, 'code', None), int):
             details['http_status'] = error.code
@@ -534,9 +528,10 @@ setInterval(() => { if (refresh.checked) location.reload(); }, 3000);
         record['status'] = 'failed'
         self._write_status(record)
         self._write_html()
-        print(f'[gpt-trace] call={record["index"]} status=failed '
-              f'stage={record["stage"]} error={call_dir / "error.json"}',
-              flush=True)
+        print(
+            f'[gpt-trace] call={record["index"]} status=failed '
+            f'stage={record["stage"]} error={call_dir / "error.json"}',
+            flush=True)
 
     def append(self, request: Dict[str, Any], response: Dict[str, Any],
                arguments: Dict[str, Any], metadata: Dict[str, Any],

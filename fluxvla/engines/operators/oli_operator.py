@@ -582,8 +582,9 @@ class OliOperator(BaseOperator):
                 ) from exc
             self.last_finger_state = values[:12].copy()
             self._finger_state_received_at = time.monotonic()
-        age = (float('inf') if self._finger_state_received_at is None else
-               time.monotonic() - self._finger_state_received_at)
+        age = (
+            float('inf') if self._finger_state_received_at is None else
+            time.monotonic() - self._finger_state_received_at)
         if age > self.finger_state_max_age_sec:
             self._latest_keypoint_state = None
             self._warn_get_frame_missing(
@@ -899,8 +900,8 @@ class OliOperator(BaseOperator):
         command = self._decode_keypoint_action(action, action_layout)
         hand_action = command['hand']
         base_action = command['base']
-        base_state = self._preview_base_action(
-            base_action[:3], base_action[3:])
+        base_state = self._preview_base_action(base_action[:3],
+                                               base_action[3:])
         base_pos, _, base_rotation = base_state
         base_quat = base_rotation.as_quat()
         published_quats = {}
@@ -928,7 +929,9 @@ class OliOperator(BaseOperator):
             'right_wrist': right_wrist,
         }
         self._publish_teleop_command(
-            anchors, hand_action, base_state=base_state,
+            anchors,
+            hand_action,
+            base_state=base_state,
             published_quats=published_quats)
 
     def _ensure_publish_ready(self):
@@ -997,7 +1000,11 @@ class OliOperator(BaseOperator):
             raise RuntimeError(
                 f'Unsupported Oli command_mode: {self.command_mode}')
 
-    def _publish_teleop_command(self, anchors, hand_action, *, base_state=None,
+    def _publish_teleop_command(self,
+                                anchors,
+                                hand_action,
+                                *,
+                                base_state=None,
                                 published_quats=None):
         """Publish the internal nine-anchor TeleopMsg envelope."""
         from mros.teleop_msgs.msg import TeleopMsg
@@ -1011,8 +1018,8 @@ class OliOperator(BaseOperator):
             self._make_keypoint(name, position, quaternion)
             for name, (position, quaternion) in anchors.items()
         ]
-        self._publish_mros_action(
-            message, hand_action, base_state, published_quats)
+        self._publish_mros_action(message, hand_action, base_state,
+                                  published_quats)
 
     def _publish_mros_action(self, body, hand_action, base_state, quats=None):
         """Prebuild both messages; latch any uncertain or partial delivery."""
@@ -1111,8 +1118,7 @@ class OliOperator(BaseOperator):
         from mros.controller_msgs.msg import JointCmd
         from mros.teleop_msgs.msg import TeleopMsg
 
-        base_state = self._preview_base_action(
-            action[31:34], action[34:40])
+        base_state = self._preview_base_action(action[31:34], action[34:40])
         base_pos, _, base_rotation = base_state
         base_quat = base_rotation.as_quat()
 
@@ -1134,8 +1140,7 @@ class OliOperator(BaseOperator):
             self._make_keypoint('base_link', base_pos, base_quat[[3, 0, 1, 2]])
         ]
         hand_end = 52 if self.hand_mode == 'finger' else 42
-        self._publish_mros_action(
-            teleop_msg, action[40:hand_end], base_state)
+        self._publish_mros_action(teleop_msg, action[40:hand_end], base_state)
 
     def _send_joints(self, q):
         """Send 31 joint position targets via ``request_servoj``."""
@@ -1179,7 +1184,7 @@ class OliOperator(BaseOperator):
             levels = (2., 2.) if self.control_backend == 'mros' else (3., 3.)
         try:
             values = np.asarray(levels, dtype=np.float64)
-            if (values.shape != (2,) or not np.isfinite(values).all()
+            if (values.shape != (2, ) or not np.isfinite(values).all()
                     or np.any(np.abs(values) > np.finfo(np.float32).max)):
                 raise ValueError('expected two finite force levels')
         except (TypeError, ValueError) as exc:

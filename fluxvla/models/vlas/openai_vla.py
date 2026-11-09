@@ -24,8 +24,8 @@ from typing import Any, Dict
 from fluxvla.engines import VLAS
 # Re-export shared prompts alongside the concrete OpenAI policies.
 from .tool_calling_vla import DEFAULT_LIBERO_SYSTEM_PROMPT  # noqa: F401
-from .tool_calling_vla import DEFAULT_ROBOCASA_SYSTEM_PROMPT  # noqa: F401
 from .tool_calling_vla import DEFAULT_OLI_SYSTEM_PROMPT  # noqa: F401
+from .tool_calling_vla import DEFAULT_ROBOCASA_SYSTEM_PROMPT  # noqa: F401
 from .tool_calling_vla import (ToolCallingOliVLA, ToolCallingRobocasaVLA,
                                ToolCallingVLA)
 

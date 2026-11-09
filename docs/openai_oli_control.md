@@ -139,18 +139,18 @@ now sets `disable_puppet_arm=True`; observation-only still calls the model API.
 
 ## Diagnosing a stopped run
 
-| Log marker | Meaning and next check |
-| --- | --- |
-| `OLI_HAND_STATE_UNAVAILABLE` | Waiting for the first valid or fresh hand message; inspect the hand bridge, topic and local read age. |
-| `OLI_HAND_STATE_INVALID` | Invalid finger feedback; check its layout, finite values and native `[0,100]` units. |
-| `OLI_TARGET_INVALID` | Invalid model target; inspect the tool arguments and target value range. |
-| `OLI_WORKSPACE_STATE` | A requested key-body starts outside workspace; check coordinate frames and bounds. |
-| `OLI_ACTION_INVALID` / `OLI_CHUNK_INVALID` | An action point fails validation; chunk errors identify a zero-based step. No prefix is sent by this preflight. |
-| `OLI_FORCE_INVALID` | Force configuration must have two finite values. |
-| `OLI_PUBLISH_FAILED` | Delivery is uncertain or partial; the message identifies body or hands. Check the robot before recreating the operator. |
-| `OLI_PUBLISH_LATCHED` | A previous publish failure blocks subsequent commands; no automatic recovery or replay. |
-| `OLI_EXECUTION_FAILED` | The zero-based failing step and completed local send calls; these counts are not robot execution receipts. |
-| `OLI_CLEANUP_FAILED` | Cleanup failed; the original inference/publish error remains the primary exception. |
+| Log marker                                 | Meaning and next check                                                                                                  |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `OLI_HAND_STATE_UNAVAILABLE`               | Waiting for the first valid or fresh hand message; inspect the hand bridge, topic and local read age.                   |
+| `OLI_HAND_STATE_INVALID`                   | Invalid finger feedback; check its layout, finite values and native `[0,100]` units.                                    |
+| `OLI_TARGET_INVALID`                       | Invalid model target; inspect the tool arguments and target value range.                                                |
+| `OLI_WORKSPACE_STATE`                      | A requested key-body starts outside workspace; check coordinate frames and bounds.                                      |
+| `OLI_ACTION_INVALID` / `OLI_CHUNK_INVALID` | An action point fails validation; chunk errors identify a zero-based step. No prefix is sent by this preflight.         |
+| `OLI_FORCE_INVALID`                        | Force configuration must have two finite values.                                                                        |
+| `OLI_PUBLISH_FAILED`                       | Delivery is uncertain or partial; the message identifies body or hands. Check the robot before recreating the operator. |
+| `OLI_PUBLISH_LATCHED`                      | A previous publish failure blocks subsequent commands; no automatic recovery or replay.                                 |
+| `OLI_EXECUTION_FAILED`                     | The zero-based failing step and completed local send calls; these counts are not robot execution receipts.              |
+| `OLI_CLEANUP_FAILED`                       | Cleanup failed; the original inference/publish error remains the primary exception.                                     |
 
 Shape/non-finite target errors also include the field name (for example
 `OLI target.left_hand`). Keep the complete traceback, config overrides, model
@@ -163,16 +163,16 @@ With `trace_dir` configured, each logical model call creates `call_0001`,
 JSON response is saved before tool parsing or target validation. The HTML
 report includes pending, received, generated and failed states.
 
-| File | Meaning |
-| --- | --- |
+| File                         | Meaning                                                                                                              |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------- |
 | `request.json` and `image_*` | Prepared request and its extracted input images; saved before transport. No HTTP authorization headers are recorded. |
-| `response.json` | Received JSON, including invalid tool responses. Absent if no JSON response was obtained. |
-| `response.txt` | Raw response text when JSON decoding fails in transport, such as an HTML gateway reply. |
-| `arguments.json` | Parsed tool arguments, saved before motion validation. |
-| `metadata.json` | Response ID/model, latency and token metadata when a JSON response was received. |
-| `status.json` | Call start/update time, status, stage, and `execution_status=not_recorded`. |
-| `error.json` | Exception type/message, failing stage, traceback and chained causes, including HTTP status when available. |
-| `action_chunk.json` | Generated actions; absent when generation failed before this stage. This is not proof of publication or execution. |
+| `response.json`              | Received JSON, including invalid tool responses. Absent if no JSON response was obtained.                            |
+| `response.txt`               | Raw response text when JSON decoding fails in transport, such as an HTML gateway reply.                              |
+| `arguments.json`             | Parsed tool arguments, saved before motion validation.                                                               |
+| `metadata.json`              | Response ID/model, latency and token metadata when a JSON response was received.                                     |
+| `status.json`                | Call start/update time, status, stage, and `execution_status=not_recorded`.                                          |
+| `error.json`                 | Exception type/message, failing stage, traceback and chained causes, including HTTP status when available.           |
+| `action_chunk.json`          | Generated actions; absent when generation failed before this stage. This is not proof of publication or execution.   |
 
 Stages identify `request`, `response_parse`, `target_validation`,
 `interpolation`, and trace preparation/save/finalization. A transport timeout,

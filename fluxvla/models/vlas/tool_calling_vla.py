@@ -1626,8 +1626,8 @@ class ToolCallingOliVLA(ToolCallingVLA):
 
             if trace_call is not None:
                 self.trace_writer.mark_stage(trace_call, 'target_validation')
-            target = self._bound_targets(
-                current_state, arguments.get('targets'))
+            target = self._bound_targets(current_state,
+                                         arguments.get('targets'))
             if trace_call is not None:
                 self.trace_writer.mark_stage(trace_call, 'interpolation')
             actions = self._interpolate_action_chunk(current_state, target)
@@ -1635,8 +1635,8 @@ class ToolCallingOliVLA(ToolCallingVLA):
             self._record_tool_call('control_oli', call, len(actions))
             if trace_call is not None:
                 self.trace_writer.mark_stage(trace_call, 'trace_finalize')
-                self.trace_writer.finish_call(
-                    trace_call, actions.detach().cpu().numpy())
+                self.trace_writer.finish_call(trace_call,
+                                              actions.detach().cpu().numpy())
             return actions
         except BaseException as exc:
             if trace_call is not None:
@@ -1645,7 +1645,8 @@ class ToolCallingOliVLA(ToolCallingVLA):
                 except Exception as trace_error:
                     print(
                         f'[OLI_TRACE_WRITE_FAILED] {trace_error}; '
-                        f'original {type(exc).__name__} preserved', flush=True)
+                        f'original {type(exc).__name__} preserved',
+                        flush=True)
             raise
 
     def _image_content(self, images, image_names):
@@ -1700,8 +1701,8 @@ class ToolCallingOliVLA(ToolCallingVLA):
             'output_tokens': usage.get('output_tokens'),
         }
         if trace_call is not None:
-            self.trace_writer.save_response(
-                trace_call, response, self.last_response_metadata)
+            self.trace_writer.save_response(trace_call, response,
+                                            self.last_response_metadata)
         if not isinstance(response, dict):
             raise RuntimeError('OpenAI response must be an object')
         call = self._function_call(response, name)

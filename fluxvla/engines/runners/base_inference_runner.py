@@ -122,15 +122,17 @@ class BaseInferenceRunner:
         if self._use_remote:
             self._init_zmq_client(remote_inference)
         else:
-            model_cfg = (cfg.get('inference_model')
-                         if isinstance(cfg, Mapping) else
-                         getattr(cfg, 'inference_model', None))
+            model_cfg = (
+                cfg.get('inference_model') if isinstance(cfg, Mapping) else
+                getattr(cfg, 'inference_model', None))
             if ckpt_path is not None:
                 missing = [
-                    name for name, value in (
-                        ('dataset', dataset),
-                        ('denormalize_action', denormalize_action),
-                        ('cfg.inference_model', model_cfg)) if value is None
+                    name
+                    for name, value in (('dataset',
+                                         dataset), ('denormalize_action',
+                                                    denormalize_action),
+                                        ('cfg.inference_model', model_cfg))
+                    if value is None
                 ]
                 if missing:
                     raise ValueError('Checkpoint inference requires ' +
