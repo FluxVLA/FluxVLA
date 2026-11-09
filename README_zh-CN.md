@@ -584,6 +584,93 @@ huggingface-cli download limxdynamics/FluxVLAData \
 </details>
 
 <details>
+<summary><b>LLaVA-665K 原始数据：VLM SFT 与 VLA/VLM 混训</b></summary>
+
+与 LIBERO 一样，将数据放在 `./datasets` 下，所有命令从仓库根目录执行。
+配置统一读取 `./datasets/llava665k` 中的原始 JSON 和解压后的图片，
+**不需要转成 JSONL/Parquet，也不需要 `catalog.json`**。
+
+1. 下载 **665K 混合标注**，而不是旧的 150K 标注：
+
+```bash
+hf download liuhaotian/LLaVA-Instruct-150K llava_v1_5_mix665k.json \
+  --repo-type dataset --local-dir ./datasets/llava665k
+```
+
+2. 按照 [LLaVA 官方准备说明](https://github.com/haotian-liu/LLaVA/blob/c121f0432da27facab705978f83c4ada465e46fd/README.md#visual-instruction-tuning)
+   下载并解压下面的 **五类图片**。下载标注不会同时下载这些图片。
+
+| 来源          | 下载                                                                                                                                                 | 在 `./datasets/llava665k` 下的解压后目录 |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| COCO          | [train2017.zip](http://images.cocodataset.org/zips/train2017.zip)                                                                                    | `coco/train2017/`                        |
+| GQA           | [images.zip](https://downloads.cs.stanford.edu/nlp/data/gqa/images.zip)                                                                              | `gqa/images/`                            |
+| OCR-VQA       | [Download script](https://drive.google.com/drive/folders/1_GYPY5UkUy7HIcR0zq3ZCFgeZN7BAfm_?usp=sharing)                                              | `ocr_vqa/images/`                        |
+| TextVQA       | [train_val_images.zip](https://dl.fbaipublicfiles.com/textvqa/images/train_val_images.zip)                                                           | `textvqa/train_images/`                  |
+| Visual Genome | [images.zip](https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip), [images2.zip](https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip) | `vg/VG_100K/`, `vg/VG_100K_2/`           |
+
+OCR-VQA 图片按 LLaVA 约定使用 `.jpg` 文件名。保留标注里的图片相对路径，
+不要额外套一层目录。最终结构为：
+
+```text
+datasets/
+├── libero_10_no_noops_lerobotv2.1/
+└── llava665k/
+    ├── llava_v1_5_mix665k.json
+    ├── coco/train2017/
+    ├── gqa/images/
+    ├── ocr_vqa/images/
+    ├── textvqa/train_images/
+    └── vg/
+        ├── VG_100K/
+        └── VG_100K_2/
+```
+
+如果完整数据已经在其他磁盘或 OSS 挂载目录，可以建立软链接，无需重新下载或复制。
+仅在 `./datasets/llava665k` 尚不存在时执行，并将源路径替换成实际数据目录：
+
+```bash
+mkdir -p ./datasets
+ln -s /path/to/existing/llava665k ./datasets/llava665k
+```
+
+首次读取会自动在 `./datasets/.cache/vlm/` 建立小型字节索引，后续复用；
+缓存目录需要可写，原始数据可以只读。缺图或无效样本会报错/重试，
+不会自动下载、补图或修复标注。
+
+3. 根据下方的 **Checkpoint 准备**，将对应权重放入 `./checkpoints`，然后选择配置：
+
+| 训练方式              | 配置                                                                                   |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| Pi05 SFT              | [Pi05 LLaVA-665K](configs/pi05/pi05_paligemma_llava665k_full_finetune.py)              |
+| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3vl_2b_llava665k_full_finetune.py)                       |
+| RoboTwin + LLaVA-665K | [Pi05 RoboTwin](configs/pi05/pi05_paligemma_robotwin_llava665k_mixed_full_finetune.py) |
+| RoboCasa + LLaVA-665K | [Pi05 RoboCasa](configs/pi05/pi05_paligemma_robocasa_llava665k_mixed_full_finetune.py) |
+
+混训还需准备上文对应的 RoboTwin/RoboCasa 数据。例如，准备好
+`./checkpoints/pi05_base` 后，用两张 GPU 启动 Pi05 SFT：
+
+```bash
+NPROC_PER_NODE=2 bash scripts/train.sh \
+  configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
+  ./work_dirs/pi05_vlm_sft
+```
+
+**TextVQA 生成式评测**：下载
+[`TextVQA_0.5.1_val.json`](https://dl.fbaipublicfiles.com/textvqa/data/TextVQA_0.5.1_val.json)
+到 `./datasets/textvqa/`，图片复用
+`./datasets/llava665k/textvqa/train_images/`。不要将该验证标注加入 SFT 训练源。
+在上面的训练命令后添加 `--eval-after-train`，即可通过
+`eval.type='TextVQAEvalRunner'` 对比训练 checkpoint 和 base 模型的答案准确率；
+不会额外切分 LLaVA 训练数据。
+两个 Qwen 配置也支持此评测；Qwen 与纯 Pi05 SFT 统一训练 1 个完整 epoch，
+每个 epoch 结束时保存。每卡 batch size 为 4，梯度累积 2 次，双卡有效 batch size 仍为 16。
+
+输入输出、数据配比、任务调度与限制详见 [VLM 数据与训练](docs/vlm_data.md)。
+机器人动作数据仍使用现有 LeRobot pipeline。
+
+</details>
+
+<details>
 <summary><b>计算变换后的归一化统计量</b></summary>
 
 当训练数据、机器人动作语义、动作窗口长度或末尾 padding 策略发生变化时，
@@ -763,7 +850,7 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 <details>
 <summary><b>私有数据集目录结构</b></summary>
 
-若使用 fluxvla 在私有数据集上训练，请先自行准备 LeRobot Dataset v2.1 格式的数据，例如用外部工具将 ALOHA 双臂机器人采集的 HDF5 文件转换为该格式。
+使用私有数据进行机器人动作训练时，请先准备 LeRobot Dataset v2.1 格式，例如将 ALOHA 双臂机器人采集的 HDF5 文件转换为该格式。图文 SFT 则使用上文 LLaVA-665K 一节中的 JSON/JSONL pipeline。
 
 对 SARM 而言，只要补齐所需的 SARM 标注列，FluxVLA 同时兼容 LeRobot v2.1 与 v3.x 数据集。SARM 需要的元信息格式见 [docs/sarm.md](docs/sarm.md)。
 
@@ -822,6 +909,13 @@ huggingface-cli download limxdynamics/FluxVLAData --repo-type dataset --include 
 | PI05_libero              | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                          |
 | SmolVLA                  | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                      |
 
+Pi05 LLaVA SFT 或混训需要将基础权重和 tokenizer 一起下载到配置约定的目录：
+
+```bash
+hf download limxdynamics/FluxVLAEngine --include "pi05_base/*" \
+  --local-dir ./checkpoints
+```
+
 按 config 预期的目录结构下载 PI0 RoboCasa 全量数据 checkpoint：
 
 ```bash
@@ -867,8 +961,16 @@ hf download mondo-robotics/dit4dit-model \
 | 模型       | 大小 | 下载链接                                                                             |
 | ---------- | ---- | ------------------------------------------------------------------------------------ |
 | Qwen2.5-VL | 3B   | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct)                |
+| Qwen3-VL   | 2B   | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct)                  |
 | Qwen3-VL   | 30B  | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct)             |
 | SmolVLM2   | 500M | [🤗 Hugging Face](https://huggingface.co/HuggingFaceTB/SmolVLM2-500M-Video-Instruct) |
+
+Qwen3-VL-2B SFT 配置需要完整 checkpoint，包括 processor 和 tokenizer：
+
+```bash
+hf download Qwen/Qwen3-VL-2B-Instruct \
+  --local-dir ./checkpoints/Qwen3-VL-2B-Instruct
+```
 
 </details>
 
@@ -936,6 +1038,7 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 - 支持 Llama、Gemma 与 Qwen 系列 LLM 主干。
 - 支持 DINOv2、SigLIP 视觉主干。
 - 支持 PaliGemma 与 Qwen-VL VLM 主干。
+- 支持原始 LLaVA JSON/JSONL 图文 SFT，以及使用独立 transforms/collator 的 Pi05 VLA/VLM 交替训练。
 
 </details>
 
@@ -1247,6 +1350,6 @@ pip install numpy==1.26.4
 - 支持更多视觉主干网络。
 - 支持更多 VLM 主干。
 - 支持更多 VLA 方法。
-- 支持使用 VLM 数据或思维链（CoT）数据进行训练。
+- 扩展思维链（CoT）数据训练能力。
 - logger 功能将完整实现。
 - 支持 Isaac Sim。

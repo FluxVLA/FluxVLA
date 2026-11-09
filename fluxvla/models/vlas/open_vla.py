@@ -22,12 +22,13 @@ from fluxvla.engines import (VLAS, build_tokenizer_from_cfg,
                              initialize_overwatch)
 from fluxvla.engines.losses import reduce_action_bc_loss
 from .base_vla import BaseVLA
+from .causal_vlm_training import CausalVLMTrainingMixin
 
 overwatch = initialize_overwatch(__name__)
 
 
 @VLAS.register_module()
-class OpenVLA(BaseVLA):
+class OpenVLA(CausalVLMTrainingMixin, BaseVLA):
     """
     Implementation of `https://arxiv.org/abs/2406.09246`
 
@@ -148,21 +149,21 @@ class OpenVLA(BaseVLA):
             action_mask=token_mask,
             sample_weight=sample_weight)
 
-    def forward(self,
-                lang_tokens: Optional[torch.LongTensor] = None,
-                lang_masks: Optional[torch.Tensor] = None,
-                images: Optional[torch.FloatTensor] = None,
-                labels: Optional[torch.LongTensor] = None,
-                inputs_embeds: Optional[torch.FloatTensor] = None,
-                past_key_values: Optional[List[torch.FloatTensor]] = None,
-                use_cache: Optional[bool] = None,
-                output_attentions: Optional[bool] = None,
-                output_hidden_states: Optional[bool] = None,
-                return_dict: Optional[bool] = None,
-                multimodal_indices: Optional[torch.LongTensor] = None,
-                dataset_names: Optional[List[str]] = None,
-                *args,
-                **kwargs) -> Dict:
+    def forward_vla(self,
+                    lang_tokens: Optional[torch.LongTensor] = None,
+                    lang_masks: Optional[torch.Tensor] = None,
+                    images: Optional[torch.FloatTensor] = None,
+                    labels: Optional[torch.LongTensor] = None,
+                    inputs_embeds: Optional[torch.FloatTensor] = None,
+                    past_key_values: Optional[List[torch.FloatTensor]] = None,
+                    use_cache: Optional[bool] = None,
+                    output_attentions: Optional[bool] = None,
+                    output_hidden_states: Optional[bool] = None,
+                    return_dict: Optional[bool] = None,
+                    multimodal_indices: Optional[torch.LongTensor] = None,
+                    dataset_names: Optional[List[str]] = None,
+                    *args,
+                    **kwargs) -> Dict:
         """Forward pass for training the OpenVLA model.
 
         Args:

@@ -1,4 +1,8 @@
 test/test_configs
+test/test_collators/test_vlm_sft_collator.py
+test/test_datasets/test_llava_format_dataset.py
+test/test_datasets/test_vlm_annotations.py
+test/test_transforms/test_vlm_transforms.py
 test/test_models/test_llm_backbone.py::test_tiny_llm_forward_backward_and_causal_mask
 test/test_models/test_llm_backbone.py::test_tiny_llm_kv_cache_matches_full_sequence
 test/test_models/test_vision_backbone.py::test_tiny_siglip_multiview_forward_backward
@@ -14,6 +18,11 @@ test/test_models/test_minimax_vla.py
 test/test_models/test_openai_libero_rotation.py
 test/test_models/test_tool_calling_vla.py
 test/test_models/test_pi0_time_sampling.py
+test/test_models/test_vlm_training.py
+test/test_runners/test_mixed_training.py
+test/test_runners/test_mixed_data_stream.py
+test/test_runners/test_vlm_legacy_compatibility.py
+test/test_runners/test_textvqa_eval_runner.py
 test/test_runners/test_libero_openai_rotation_compatibility.py
 test/test_runners/test_robocasa_eval_output_paths.py
 test/test_runners/test_robotwin_eval_output_paths.py

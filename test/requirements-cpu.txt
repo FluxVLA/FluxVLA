@@ -7,8 +7,14 @@ mmengine==0.10.7
 opencv-python==4.11.0.86
 # Evaluation utilities import imageio; simulator and codec extras are not used.
 imageio==2.37.3
+# Exercise native video decoding and PaliGemma/TextVQA preprocessing in CI.
+av==14.2.0
+sentencepiece==0.1.99
 transformers==5.3.0
 accelerate==0.33.0
 diffusers==0.30.2
 timm==0.9.10
 einops==0.4.1
+# Import and exercise the real DDP runner, including its LoRA precision path.
+peft==0.19.1
+wandb==0.21.0

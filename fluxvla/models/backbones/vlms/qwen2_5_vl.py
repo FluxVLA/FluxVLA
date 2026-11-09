@@ -21,6 +21,7 @@ from transformers.models.qwen2_5_vl.modeling_qwen2_5_vl import \
     Qwen2_5_VLDecoderLayer
 
 from fluxvla.engines import VLM_BACKBONES
+from fluxvla.engines.losses.causal_lm import causal_lm_loss
 from fluxvla.engines.utils.fsdp_wrapping import \
     build_transformer_layer_wrap_policy
 from .hf_vlm import VLMBackbone, validate_attn_implementation
@@ -62,14 +63,45 @@ class QWen2_5VL(VLMBackbone):
     def transformer_layer_cls(self) -> Type[nn.Module]:
         return Qwen2_5_VLDecoderLayer
 
-    def forward(self,
-                images: List[torch.Tensor],
-                lang_tokens: torch.Tensor,
-                img_masks: torch.Tensor,
-                lang_masks: Optional[torch.Tensor] = None,
-                image_grid_thw: Optional[torch.LongTensor] = None,
-                *args,
-                **kwargs) -> CausalLMOutputWithPast:
+    supports_vlm_training = True
+
+    def forward(self, *args, task='vla', **kwargs):
+        if task == 'vlm':
+            return self.forward_vlm(**kwargs)
+        if task != 'vla':
+            raise ValueError(f'Unsupported Qwen task: {task}')
+        return self.forward_features(*args, **kwargs)
+
+    def forward_vlm(self,
+                    *,
+                    labels,
+                    input_ids,
+                    attention_mask=None,
+                    ignore_index=-100,
+                    **inputs):
+        """Use native multimodal fusion and return causal language loss."""
+        if labels.shape != input_ids.shape:
+            raise ValueError('VLM labels must match input_ids.')
+        if attention_mask is not None:
+            labels = labels.masked_fill(~attention_mask.bool(), ignore_index)
+        # Compute CE only in causal_lm_loss, retaining its token-sum output.
+        outputs = self.vlm(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            use_cache=False,
+            return_dict=True,
+            output_hidden_states=False,
+            **inputs)
+        return causal_lm_loss(outputs.logits, labels, ignore_index)
+
+    def forward_features(self,
+                         images: List[torch.Tensor],
+                         lang_tokens: torch.Tensor,
+                         img_masks: torch.Tensor,
+                         lang_masks: Optional[torch.Tensor] = None,
+                         image_grid_thw: Optional[torch.LongTensor] = None,
+                         *args,
+                         **kwargs) -> CausalLMOutputWithPast:
         """
         Forward pass through the QWen2_5VL model.
 

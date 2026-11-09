@@ -20,3 +20,4 @@ from .padded_language_modeling_collator import \
     PaddedCollatorForLanguageModeling  # noqa: F401, F403
 from .video_action_block_collator import \
     VideoActionBlockCollator  # noqa: F401, F403
+from .vlm_sft_collator import VLMSFTCollator  # noqa: F401

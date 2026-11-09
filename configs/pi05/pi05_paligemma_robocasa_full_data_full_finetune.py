@@ -207,6 +207,7 @@ _PI05_ROBOCASA_STATS = {
 train_seed = int(os.environ.get('PI05_TRAIN_SEED', '42'))
 eval_seed = 7
 
+# Preserve the data lookup used by existing Pi05 and inherited Pi0 runs.
 _LOCAL_ROBOCASA_DATA_ROOT = './datasets/robocasa_lerobot_V2.1'
 _SHARED_ROBOCASA_DATA_ROOT = (
     '/mnt/data/cpfs/mnt/data/yiming/fluxvla/upload_staging/'
@@ -592,8 +593,8 @@ runner = dict(
     change_key_name=False)
 
 # Evaluate all 24 RoboCasa tasks.
-# Example:
-#   conda activate fluxvla && cd /root/projects/FluxVLA
+# Example (from the repository root):
+#   conda activate fluxvla
 #   CONFIG_DIR=configs/pi05
 #   CONFIG=$CONFIG_DIR/pi05_paligemma_robocasa_full_data_full_finetune.py
 #   CKPT=work_dirs/pi05_paligemma_robocasa_full_data_full_finetune/\

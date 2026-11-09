@@ -668,6 +668,99 @@ and merged separately by domain in LeRobot v2.1 format.
 </details>
 
 <details>
+<summary><b>LLaVA-665K raw data for VLM SFT and VLA/VLM mixed training</b></summary>
+
+Like LIBERO, keep the dataset under `./datasets` and run commands from the
+repository root. The configs read the original JSON and extracted images from
+`./datasets/llava665k`. **No JSONL/Parquet conversion or `catalog.json` is required.**
+
+1. Download the **665K mixture annotation**, not the older 150K annotation:
+
+```bash
+hf download liuhaotian/LLaVA-Instruct-150K llava_v1_5_mix665k.json \
+  --repo-type dataset --local-dir ./datasets/llava665k
+```
+
+2. Download and extract **all five image sources** following the
+   [official LLaVA instructions](https://github.com/haotian-liu/LLaVA/blob/c121f0432da27facab705978f83c4ada465e46fd/README.md#visual-instruction-tuning).
+   Downloading the annotation does **not** download these images.
+
+| Source        | Download                                                                                                                                             | Extracted directory under `./datasets/llava665k` |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| COCO          | [train2017.zip](http://images.cocodataset.org/zips/train2017.zip)                                                                                    | `coco/train2017/`                                |
+| GQA           | [images.zip](https://downloads.cs.stanford.edu/nlp/data/gqa/images.zip)                                                                              | `gqa/images/`                                    |
+| OCR-VQA       | [Download script](https://drive.google.com/drive/folders/1_GYPY5UkUy7HIcR0zq3ZCFgeZN7BAfm_?usp=sharing)                                              | `ocr_vqa/images/`                                |
+| TextVQA       | [train_val_images.zip](https://dl.fbaipublicfiles.com/textvqa/images/train_val_images.zip)                                                           | `textvqa/train_images/`                          |
+| Visual Genome | [images.zip](https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip), [images2.zip](https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip) | `vg/VG_100K/`, `vg/VG_100K_2/`                   |
+
+OCR-VQA images must use `.jpg` filenames as specified by LLaVA. Preserve the
+annotation's relative image paths; do not add an extra nesting directory:
+
+```text
+datasets/
+├── libero_10_no_noops_lerobotv2.1/
+└── llava665k/
+    ├── llava_v1_5_mix665k.json
+    ├── coco/train2017/
+    ├── gqa/images/
+    ├── ocr_vqa/images/
+    ├── textvqa/train_images/
+    └── vg/
+        ├── VG_100K/
+        └── VG_100K_2/
+```
+
+If the complete dataset already exists on another disk or an OSS filesystem
+mount, use a symlink instead of downloading/copying it. Only run this when
+`./datasets/llava665k` does not already exist; replace the source path:
+
+```bash
+mkdir -p ./datasets
+ln -s /path/to/existing/llava665k ./datasets/llava665k
+```
+
+On first use, the dataset automatically builds a small byte-offset index in
+`./datasets/.cache/vlm/` and reuses it later. This cache must be writable;
+the raw data may be read-only. Missing images and invalid samples are
+reported/retried, not automatically downloaded or repaired.
+
+3. Prepare the matching weights under `./checkpoints` (see **Checkpoint
+   Preparation** below), then choose a config:
+
+| Training              | Config                                                                                 |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| Pi05 SFT              | [Pi05 LLaVA-665K](configs/pi05/pi05_paligemma_llava665k_full_finetune.py)              |
+| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3vl_2b_llava665k_full_finetune.py)                       |
+| RoboTwin + LLaVA-665K | [Pi05 RoboTwin](configs/pi05/pi05_paligemma_robotwin_llava665k_mixed_full_finetune.py) |
+| RoboCasa + LLaVA-665K | [Pi05 RoboCasa](configs/pi05/pi05_paligemma_robocasa_llava665k_mixed_full_finetune.py) |
+
+Mixed training also requires the RoboTwin/RoboCasa data described above.
+For example, after preparing `./checkpoints/pi05_base`, start Pi05 SFT on two GPUs:
+
+```bash
+NPROC_PER_NODE=2 bash scripts/train.sh \
+  configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
+  ./work_dirs/pi05_vlm_sft
+```
+
+**TextVQA generation evaluation:** download
+[`TextVQA_0.5.1_val.json`](https://dl.fbaipublicfiles.com/textvqa/data/TextVQA_0.5.1_val.json)
+to `./datasets/textvqa/`. Images are reused from
+`./datasets/llava665k/textvqa/train_images/`. Do not add these validation
+annotations to the SFT sources. Append `--eval-after-train` to the command
+above to compare the trained checkpoint and base model using
+`eval.type='TextVQAEvalRunner'`; no training-data holdout is created.
+Both Qwen configs also support this evaluation. Qwen and pure Pi05 SFT use
+one full epoch, saving at each epoch end. Per-device batch 4 and gradient
+accumulation 2 keep the effective batch size at 16 on two GPUs.
+
+See [VLM data and training](docs/vlm_data.md) for input/output contracts,
+source mixing, task scheduling and limitations. Robot-action inputs still
+use the existing LeRobot pipeline.
+
+</details>
+
+<details>
 <summary><b>Compute transformed normalization statistics</b></summary>
 
 Recompute normalization statistics whenever the training data, robot action
@@ -874,7 +967,7 @@ Before using a LeRobot v3.x SARM dataset, sanity-check the video metadata:
 <details>
 <summary><b>Private dataset directory structure</b></summary>
 
-If you train with fluxvla on private datasets, prepare your raw data (e.g., HDF5 files collected by ALOHA robots) in the LeRobot Dataset v2.1 format with your own conversion tooling before training.
+For robot action training on private datasets, prepare your raw data (e.g., HDF5 files collected by ALOHA robots) in LeRobot Dataset v2.1 format before training. Image-text SFT instead uses the JSON/JSONL pipeline described in the LLaVA-665K section above.
 
 For SARM specifically, FluxVLA supports both LeRobot v2.1 and v3.x datasets as long as the required SARM annotation columns are present. The SARM-specific metadata contract is documented in [docs/sarm.md](docs/sarm.md).
 
@@ -933,6 +1026,14 @@ For ARM and SARM workflows, you typically need a CLIP checkpoint for training / 
 | PI05_libero            | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                          |
 | SmolVLA                | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                      |
 
+For Pi05 LLaVA SFT or mixed training, download the base weights and tokenizer
+together into the directory expected by the configs:
+
+```bash
+hf download limxdynamics/FluxVLAEngine --include "pi05_base/*" \
+  --local-dir ./checkpoints
+```
+
 Download the PI0 RoboCasa full-data checkpoint while preserving the path expected by its config:
 
 ```bash
@@ -978,8 +1079,17 @@ hf download mondo-robotics/dit4dit-model \
 | Model      | Size | Download link                                                                        |
 | ---------- | ---- | ------------------------------------------------------------------------------------ |
 | Qwen2.5-VL | 3B   | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct)                |
+| Qwen3-VL   | 2B   | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct)                  |
 | Qwen3-VL   | 30B  | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct)             |
 | SmolVLM2   | 500M | [🤗 Hugging Face](https://huggingface.co/HuggingFaceTB/SmolVLM2-500M-Video-Instruct) |
+
+For Qwen3-VL-2B SFT, download the complete checkpoint, including its processor
+and tokenizer:
+
+```bash
+hf download Qwen/Qwen3-VL-2B-Instruct \
+  --local-dir ./checkpoints/Qwen3-VL-2B-Instruct
+```
 
 </details>
 
@@ -1047,6 +1157,7 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 - Supports Llama, Gemma, and Qwen-family LLM backbones.
 - Supports DINOv2 and SigLIP vision backbones.
 - Supports PaliGemma and Qwen-VL VLM backbones.
+- Supports raw LLaVA JSON/JSONL image-text SFT and alternating Pi05 VLA/VLM training, with task-specific transforms and collators.
 
 </details>
 
@@ -1364,6 +1475,6 @@ If you use FluxVLA in your research or projects, please cite the relevant works 
 - Support more vision backbone networks.
 - Support more VLM backbones.
 - Support more VLA methods.
-- Support training with VLM data or reasoning-chain-of-thought (CoT) data.
+- Extend training to reasoning-chain-of-thought (CoT) data.
 - Full implementation of the logger feature.
 - Support Isaac Sim.

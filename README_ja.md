@@ -584,6 +584,96 @@ huggingface-cli download limxdynamics/FluxVLAData \
 </details>
 
 <details>
+<summary><b>LLaVA-665K の raw データ：VLM SFT と VLA/VLM 混合学習</b></summary>
+
+LIBERO と同様にデータを `./datasets` に置き、リポジトリのルートからコマンドを実行します。
+設定は `./datasets/llava665k` の元の JSON と展開済み画像を直接読み込みます。
+**JSONL/Parquet への変換や `catalog.json` は不要です。**
+
+1. 古い 150K アノテーションではなく、**665K 混合アノテーション**を取得します：
+
+```bash
+hf download liuhaotian/LLaVA-Instruct-150K llava_v1_5_mix665k.json \
+  --repo-type dataset --local-dir ./datasets/llava665k
+```
+
+2. [LLaVA 公式の準備手順](https://github.com/haotian-liu/LLaVA/blob/c121f0432da27facab705978f83c4ada465e46fd/README.md#visual-instruction-tuning)
+   に従い、次の **5 種類の画像**をすべてダウンロードして展開します。
+   アノテーションのダウンロードには画像は含まれません。
+
+| ソース        | ダウンロード                                                                                                                                         | `./datasets/llava665k` 内の展開先 |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------- |
+| COCO          | [train2017.zip](http://images.cocodataset.org/zips/train2017.zip)                                                                                    | `coco/train2017/`                 |
+| GQA           | [images.zip](https://downloads.cs.stanford.edu/nlp/data/gqa/images.zip)                                                                              | `gqa/images/`                     |
+| OCR-VQA       | [Download script](https://drive.google.com/drive/folders/1_GYPY5UkUy7HIcR0zq3ZCFgeZN7BAfm_?usp=sharing)                                              | `ocr_vqa/images/`                 |
+| TextVQA       | [train_val_images.zip](https://dl.fbaipublicfiles.com/textvqa/images/train_val_images.zip)                                                           | `textvqa/train_images/`           |
+| Visual Genome | [images.zip](https://cs.stanford.edu/people/rak248/VG_100K_2/images.zip), [images2.zip](https://cs.stanford.edu/people/rak248/VG_100K_2/images2.zip) | `vg/VG_100K/`, `vg/VG_100K_2/`    |
+
+OCR-VQA は LLaVA の指定どおり `.jpg` のファイル名を使用します。
+画像の相対パスを維持し、余分な階層を追加しないでください。最終構成は次のとおりです：
+
+```text
+datasets/
+├── libero_10_no_noops_lerobotv2.1/
+└── llava665k/
+    ├── llava_v1_5_mix665k.json
+    ├── coco/train2017/
+    ├── gqa/images/
+    ├── ocr_vqa/images/
+    ├── textvqa/train_images/
+    └── vg/
+        ├── VG_100K/
+        └── VG_100K_2/
+```
+
+完全なデータが別のディスクや OSS マウントにある場合は、シンボリックリンクで再利用できます。
+`./datasets/llava665k` が存在しない場合にのみ、リンク元を実際のディレクトリに置き換えて実行します：
+
+```bash
+mkdir -p ./datasets
+ln -s /path/to/existing/llava665k ./datasets/llava665k
+```
+
+初回読み込み時に `./datasets/.cache/vlm/` へ小さなバイトオフセット索引を自動作成し、
+以後は再利用します。キャッシュは書き込み可能にする必要がありますが、raw データは
+読み取り専用でも構いません。画像欠損や無効なサンプルはエラー／再試行の対象となり、
+自動ダウンロードや修復は行いません。
+
+3. 下記の **Checkpoint の準備**に従い、対応する重みを `./checkpoints` に置いて設定を選びます：
+
+| 学習                  | 設定                                                                                   |
+| --------------------- | -------------------------------------------------------------------------------------- |
+| Pi05 SFT              | [Pi05 LLaVA-665K](configs/pi05/pi05_paligemma_llava665k_full_finetune.py)              |
+| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3vl_2b_llava665k_full_finetune.py)                       |
+| RoboTwin + LLaVA-665K | [Pi05 RoboTwin](configs/pi05/pi05_paligemma_robotwin_llava665k_mixed_full_finetune.py) |
+| RoboCasa + LLaVA-665K | [Pi05 RoboCasa](configs/pi05/pi05_paligemma_robocasa_llava665k_mixed_full_finetune.py) |
+
+混合学習には上記の RoboTwin/RoboCasa データも必要です。
+例えば `./checkpoints/pi05_base` を準備した後、2 GPU で Pi05 SFT を起動します：
+
+```bash
+NPROC_PER_NODE=2 bash scripts/train.sh \
+  configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
+  ./work_dirs/pi05_vlm_sft
+```
+
+**TextVQA 生成評価**：
+[`TextVQA_0.5.1_val.json`](https://dl.fbaipublicfiles.com/textvqa/data/TextVQA_0.5.1_val.json)
+を `./datasets/textvqa/` に保存し、画像は
+`./datasets/llava665k/textvqa/train_images/` を再利用します。検証用アノテーションを
+SFT の学習データに追加しないでください。上記コマンドに `--eval-after-train` を
+追加すると、`eval.type='TextVQAEvalRunner'` が学習済みモデルと base モデルを比較します。
+LLaVA 学習データの追加分割は行いません。
+両方の Qwen 設定もこの評価に対応しています。Qwen と純粋な Pi05 SFT は
+1 エポックを最後まで学習し、エポック終了時に保存します。GPU ごとのバッチサイズを 4、
+勾配累積を 2 とし、2 GPU での実効バッチサイズは 16 のままです。
+
+入出力、データ比率、タスク順序と制約は [VLM データと学習](docs/vlm_data.md)
+を参照してください。ロボット動作データは既存の LeRobot pipeline を使用します。
+
+</details>
+
+<details>
 <summary><b>変換後の正規化統計量の計算</b></summary>
 
 学習データ、ロボットのアクション定義、アクションホライズン、または終端 padding
@@ -770,7 +860,7 @@ LeRobot v3.x の SARM データセットを使う前に、動画メタデータ�
 <details>
 <summary><b>プライベートデータセットのディレクトリ構造</b></summary>
 
-fluxvla をプライベートデータセットで学習する場合は、LeRobot Dataset v2.1 形式のデータをご自身で用意してください（例：外部ツールで ALOHA ロボットが収集した HDF5 ファイルを変換）。
+プライベートデータでロボットのアクションを学習する場合は、LeRobot Dataset v2.1 形式を用意してください（例：ALOHA ロボットの HDF5 ファイルを変換）。画像・テキスト SFT では、上記 LLaVA-665K セクションの JSON/JSONL パイプラインを使用します。
 
 SARM については、必要な SARM アノテーション列が含まれていれば、FluxVLA は LeRobot v2.1 と v3.x の両方を扱えます。必要なメタデータ形式は [docs/sarm.md](docs/sarm.md) にまとめています。
 
@@ -829,6 +919,13 @@ ARM と SARM のワークフローでは、通常は学習 / 推論用の CLIP �
 | PI05_libero              | 3B     | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                          |
 | SmolVLA                  | 450M   | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                      |
 
+Pi05 LLaVA SFT／混合学習では、ベースの重みと tokenizer を設定の指定先へまとめて取得します：
+
+```bash
+hf download limxdynamics/FluxVLAEngine --include "pi05_base/*" \
+  --local-dir ./checkpoints
+```
+
 config が期待するディレクトリ構成を維持したまま PI0 の RoboCasa full-data checkpoint をダウンロードします：
 
 ```bash
@@ -872,8 +969,16 @@ hf download mondo-robotics/dit4dit-model \
 | モデル     | サイズ | ダウンロードリンク                                                                   |
 | ---------- | ------ | ------------------------------------------------------------------------------------ |
 | Qwen2.5-VL | 3B     | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen2.5-VL-3B-Instruct)                |
+| Qwen3-VL   | 2B     | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-2B-Instruct)                  |
 | Qwen3-VL   | 30B    | [🤗 Hugging Face](https://huggingface.co/Qwen/Qwen3-VL-30B-A3B-Instruct)             |
 | SmolVLM2   | 500M   | [🤗 Hugging Face](https://huggingface.co/HuggingFaceTB/SmolVLM2-500M-Video-Instruct) |
+
+Qwen3-VL-2B SFT の設定では、processor と tokenizer を含む完全な checkpoint を取得します：
+
+```bash
+hf download Qwen/Qwen3-VL-2B-Instruct \
+  --local-dir ./checkpoints/Qwen3-VL-2B-Instruct
+```
 
 </details>
 
@@ -941,6 +1046,7 @@ VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM 
 - Llama、Gemma、Qwen 系の LLM バックボーンをサポートします。
 - DINOv2、SigLIP の視覚バックボーンをサポートします。
 - PaliGemma、Qwen-VL の VLM バックボーンをサポートします。
+- 元の LLaVA JSON/JSONL による画像・テキスト SFT と、タスク別の transforms／collator を使う Pi05 VLA/VLM 交互学習に対応します。
 
 </details>
 
@@ -1252,6 +1358,6 @@ FluxVLA を研究やプロジェクトで利用した場合は、以下の文献
 - さらに多くの視覚バックボーンネットワークをサポート。
 - さらに多くの VLM バックボーンをサポート。
 - さらに多くの VLA 手法をサポート。
-- VLM データ、または推論チェーン（CoT）データを用いた学習に対応。
+- 推論チェーン（CoT）データを用いた学習を拡張。
 - logger 機能を完全実装。
 - Isaac Sim に対応。

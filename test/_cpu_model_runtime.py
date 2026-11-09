@@ -42,6 +42,8 @@ def bootstrap():
     packages = (
         'fluxvla',
         'fluxvla.datasets',
+        # Raw VLM helpers do not need the unrelated SARM/HF dataset stack.
+        'fluxvla.datasets.utils',
         'fluxvla.engines',
         'fluxvla.engines.runners',
         'fluxvla.models',
