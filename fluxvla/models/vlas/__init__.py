@@ -40,9 +40,5 @@ import_heterogeneous_runtime_symbols(
             'OpenAIOliVLA',
         ],
         'minimax_vla': ['MiniMaxLiberoVLA', 'MiniMaxRobocasaVLA'],
-        'openai_responses_vla': [
-            'OpenAIResponsesVLA', 'OpenAIResponsesOliVLA',
-            'OpenAIResponsesRobocasaVLA',
-        ],
     },
 )
