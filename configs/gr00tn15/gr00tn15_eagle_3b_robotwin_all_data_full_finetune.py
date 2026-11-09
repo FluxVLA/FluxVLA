@@ -155,8 +155,9 @@ train_dataloader = dict(
             dict(
                 type='ParquetDataset',
                 data_root_path=[
-                    'datasets/robotwin_clean_lerobotv2.1',
-                    'datasets/robotwin_randomized_lerobotv2.1',
+                    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+                    'datasets/robotwin_lerobotv2.1/'
+                    'robotwin_randomized_lerobotv2.1',
                 ],
                 transforms=[
                     dict(
@@ -242,7 +243,7 @@ eval = dict(
     task_list=_ROBOTWIN_TASK_LIST,
     eval_chunk_size=50,
     num_trials_per_task=100,
-    seed=7,
+    seed=0,
     dataset=dict(
         type='PrivateInferenceDataset',
         embodiment_id=0,

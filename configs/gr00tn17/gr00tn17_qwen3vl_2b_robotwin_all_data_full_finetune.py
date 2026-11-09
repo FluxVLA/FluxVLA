@@ -143,8 +143,8 @@ _TASK_NAMES = [
     'turn_switch',
 ]
 _DATA_PATHS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 
 _N17_MODALITY_CONFIGS = dict(
@@ -408,7 +408,7 @@ eval = dict(
     instruction_type='unseen',
     eval_chunk_size=40,
     num_trials_per_task=100,
-    seed=7,
+    seed=0,
     unnorm_key=_STATISTIC_NAME,
     mixed_precision_dtype='bf16',
     save_video=False,

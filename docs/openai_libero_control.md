@@ -1,7 +1,7 @@
 # GPT LIBERO control contract
 
 `configs/openai/gpt6_astra_libero_inference.py` and its named LIBERO suite
-configs use `OpenAIResponsesVLA`. All tasks remain selected by default.
+configs use `OpenAILiberoVLA`. All tasks remain selected by default.
 
 ## Position, rotation, and gripper
 
@@ -74,7 +74,7 @@ rotation channels through the unchanged LIBERO run loop:
 ```bash
 python -m pytest -q \
   test/test_models/test_openai_libero_rotation.py \
-  test/test_models/test_openai_responses_vla.py \
+  test/test_models/test_tool_calling_vla.py \
   test/test_runners/test_libero_openai_rotation_compatibility.py \
   test/test_models/test_openai_robocasa_wrist.py \
   test/test_configs/test_gpt6_astra_libero_config.py
@@ -85,7 +85,7 @@ prompt's planning milestones follow `max_llm_calls`.
 
 ## RoboCasa is a different action interface
 
-`OpenAIResponsesRobocasaVLA` uses `control_gr1`, not `move_to`. Each arm already
+`OpenAIRobocasaVLA` uses `control_gr1`, not `move_to`. Each arm already
 exposes seven joint deltas, ordered as shoulder pitch/roll/yaw, elbow pitch,
 then wrist yaw/roll/pitch. The last three entries of `left_arm_delta` and
 `right_arm_delta` therefore control the wrists; they are not zero-filled.

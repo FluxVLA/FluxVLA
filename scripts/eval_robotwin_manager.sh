@@ -43,7 +43,8 @@
 #   workers/<task>/eval_runs/<ckpt>/EVAL-robotwin-*/summary.json
 #
 # Rerunning with the same OUTPUT_DIR skips tasks whose worker summary is
-# complete and retries the rest.
+# complete and retries the rest. Existing worker results must match the
+# checkpoint; otherwise use a different OUTPUT_DIR.
 #
 # Extra arguments are forwarded to scripts/eval.py after --cfg-options.
 set -euo pipefail
@@ -372,6 +373,26 @@ fi
 ckpt_abs="$(readlink -f "${CKPT}")"
 ckpt_stem="$(basename "${ckpt_abs}")"
 ckpt_stem="${ckpt_stem%.*}"
+
+# Reject results from a different checkpoint before resuming.
+python - "${OUTPUT_DIR}" "${ckpt_abs}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+root, ckpt = Path(sys.argv[1]), sys.argv[2]
+paths = list(root.glob('workers/*/**/summary.json'))
+paths += list(root.glob('*/workers/*/**/summary.json'))
+for path in paths:
+    try:
+        payload = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError):
+        continue
+    if payload.get('ckpt') != ckpt:
+        raise SystemExit(
+            f'[manager] Checkpoint mismatch in {path}. '
+            'Use a different OUTPUT_DIR for a different checkpoint.')
+PY
 
 declare -A JOB_CONFIG JOB_ROOT
 TASK_QUEUE=()

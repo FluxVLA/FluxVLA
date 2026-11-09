@@ -36,7 +36,7 @@ _OPENAI_BASE_URL = (_environ.get('OPENAI_BASE_URL')
 _OPENAI_API_KEY_ENV = (_environ.get('OPENAI_API_KEY_ENV') or 'OPENAI_API_KEY')
 
 inference_model = dict(
-    type='OpenAIResponsesVLA',
+    type='OpenAILiberoVLA',
     model='gpt-6-astra',
     base_url=_OPENAI_BASE_URL,
     api_key_env=_OPENAI_API_KEY_ENV,

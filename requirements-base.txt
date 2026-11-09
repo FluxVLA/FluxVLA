@@ -29,3 +29,7 @@ tqdm-loggable==0.2
 transformers==5.3.0
 types-boto3-s3==1.38.26
 wandb==0.21.0
+
+# Optional: Megatron-Core is provided by the read-only Megatron-LM checkout.
+# Do not install or modify that checkout; set MEGATRON_ROOT/PYTHONPATH when
+# selecting MegatronTrainRunner.

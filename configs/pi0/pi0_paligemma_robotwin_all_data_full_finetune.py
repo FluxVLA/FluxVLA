@@ -40,8 +40,8 @@ Evaluation defaults to all 50 tasks in both clean and random suites.
 _PI0_CHECKPOINT = './checkpoints/pi0_base/model.safetensors'
 _PI0_TOKENIZER = 'checkpoints/pi0_base'
 _ROBOTWIN_DATA_ROOTS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 
 # Joint dims are deltas w.r.t. the current state; grippers stay absolute.
@@ -372,7 +372,7 @@ eval = dict(
     task_list=_ROBOTWIN_TASK_LIST,
     eval_chunk_size=10,
     num_trials_per_task=100,
-    seed=7,
+    seed=0,
     dataset=dict(
         type='PrivateInferenceDataset',
         img_keys=['cam_high', 'cam_left_wrist', 'cam_right_wrist'],

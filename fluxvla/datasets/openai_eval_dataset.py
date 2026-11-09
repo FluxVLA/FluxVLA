@@ -23,7 +23,7 @@ from fluxvla.engines import DATASETS
 
 @DATASETS.register_module()
 class OpenAILiberoEvalDataset:
-    """Prepare raw images and proprioception for ``OpenAIResponsesVLA``.
+    """Prepare raw images and proprioception for ``OpenAILiberoVLA``.
 
     Unlike local VLA datasets, this adapter performs no tokenization,
     normalization, tensor conversion, or CUDA transfer. The API policy owns

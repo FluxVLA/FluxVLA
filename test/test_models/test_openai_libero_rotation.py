@@ -19,14 +19,14 @@ import numpy as np
 import pytest
 from mmengine import Config
 
-from fluxvla.models.vlas.openai_responses_vla import OpenAIResponsesVLA
+from fluxvla.models.vlas.openai_vla import OpenAILiberoVLA
 from fluxvla.transforms.normalize import IdentityLiberoAction
 
 
 @pytest.mark.parametrize('axis', range(3))
 @pytest.mark.parametrize('sign', [-1, 1])
 def test_rotation_uses_native_channels_and_is_total_per_call(axis, sign):
-    model = OpenAIResponsesVLA()
+    model = OpenAILiberoVLA()
     rotation = np.zeros(3)
     rotation[axis] = sign * 0.1
     actions = model._actions_from_targets(
@@ -44,7 +44,7 @@ def test_rotation_uses_native_channels_and_is_total_per_call(axis, sign):
 
 
 def test_large_combined_rotation_keeps_axis_and_angular_speed_limit():
-    model = OpenAIResponsesVLA(action_horizon=3)
+    model = OpenAILiberoVLA(action_horizon=3)
     rotation = np.array([1., -2., 3.])
     actions = model._actions_from_targets(
         {'rotation_delta': rotation.tolist()}, np.zeros(3))[0].numpy()
@@ -57,7 +57,7 @@ def test_large_combined_rotation_keeps_axis_and_angular_speed_limit():
 
 
 def test_rotation_shares_chunk_with_translation_and_gripper_settling():
-    model = OpenAIResponsesVLA(gripper_settle_steps=8)
+    model = OpenAILiberoVLA(gripper_settle_steps=8)
     actions = model._actions_from_targets(
         {
             'x': 0.01,
@@ -119,7 +119,7 @@ def test_rotation_shares_chunk_with_translation_and_gripper_settling():
 ])
 def test_invalid_commands_are_rejected_before_simulation(targets):
     with pytest.raises(RuntimeError):
-        OpenAIResponsesVLA()._actions_from_targets(targets, np.zeros(3))
+        OpenAILiberoVLA()._actions_from_targets(targets, np.zeros(3))
 
 
 @pytest.mark.parametrize('position', [
@@ -130,7 +130,7 @@ def test_invalid_commands_are_rejected_before_simulation(targets):
 ])
 def test_invalid_robot_position_is_rejected(position):
     with pytest.raises(RuntimeError, match='eef_position'):
-        OpenAIResponsesVLA()._actions_from_targets({}, position)
+        OpenAILiberoVLA()._actions_from_targets({}, position)
 
 
 @pytest.mark.parametrize('kwargs', [
@@ -155,11 +155,11 @@ def test_invalid_robot_position_is_rejected(position):
 ])
 def test_invalid_control_config_is_rejected(kwargs):
     with pytest.raises(ValueError):
-        OpenAIResponsesVLA(**kwargs)
+        OpenAILiberoVLA(**kwargs)
 
 
 def test_predict_action_exposes_rotation_and_uses_runtime_budget(monkeypatch):
-    model = OpenAIResponsesVLA(max_llm_calls=10)
+    model = OpenAILiberoVLA(max_llm_calls=10)
     captured = {}
 
     def respond(body):
@@ -204,7 +204,7 @@ def test_predict_action_exposes_rotation_and_uses_runtime_budget(monkeypatch):
 
 @pytest.mark.parametrize('arguments', ['[]', 'null', '{}'])
 def test_malformed_tool_arguments_do_not_silently_hold(monkeypatch, arguments):
-    model = OpenAIResponsesVLA()
+    model = OpenAILiberoVLA()
     monkeypatch.setattr(
         model, '_post_json', lambda _: {
             'output': [{
@@ -224,7 +224,7 @@ def test_malformed_tool_arguments_do_not_silently_hold(monkeypatch, arguments):
 
 
 def test_rotation_outside_targets_is_not_silently_ignored(monkeypatch):
-    model = OpenAIResponsesVLA()
+    model = OpenAILiberoVLA()
     monkeypatch.setattr(
         model, '_post_json', lambda _: {
             'output': [{

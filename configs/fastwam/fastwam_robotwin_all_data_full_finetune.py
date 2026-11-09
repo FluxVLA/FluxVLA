@@ -52,8 +52,8 @@ _ACTION_NORM_TYPE = 'mean_std'
 
 # Train jointly on the merged clean + randomized RoboTwin LeRobot sets.
 _ROBOTWIN_DATA_ROOTS = [
-    'datasets/robotwin_clean_lerobotv2.1',
-    'datasets/robotwin_randomized_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
+    'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
 ]
 _STATISTIC_NAME = 'robotwin_all'
 _TEXT_PROMPT_TEMPLATE = (
@@ -356,7 +356,7 @@ eval = dict(
     instruction_type='unseen',
     eval_chunk_size=24,
     num_trials_per_task=100,
-    seed=42,
+    seed=0,
     unnorm_key=_STATISTIC_NAME,
     mixed_precision_dtype='bf16',
     save_video=False,
