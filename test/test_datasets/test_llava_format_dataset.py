@@ -165,6 +165,38 @@ def test_prompt_only_sample_is_rejected(processor):
             }]})
 
 
+@pytest.mark.parametrize('processor_type', ['qwen3_vl', 'qwen3_5'])
+def test_generation_prompt_uses_native_shapes_and_no_labels(
+        processor, tmp_path, processor_type):
+    image_path = tmp_path / 'image.png'
+    Image.new('RGB', (4, 4)).save(image_path)
+    transform = vlm_transforms.ProcessVLMSFTInputs(
+        processor_path=str(tmp_path / 'processor'),
+        processor_type=processor_type,
+        image_max_pixels=16,
+        truncation_max_length=128)
+    inputs = transform.encode_prompt('hello', [image_path])
+    assert 'labels' not in inputs
+    assert inputs['input_ids'].ndim == 2
+    assert inputs['attention_mask'].shape == inputs['input_ids'].shape
+    assert inputs['pixel_values'].shape == (4, 12)
+    assert inputs['image_grid_thw'].tolist() == [[1, 2, 2]]
+    header = processor.tokenizer.encode('<|im_start|>assistant\n')
+    assert inputs['input_ids'][0, -len(header):].tolist() == header
+    assert processor.tokenizer.convert_tokens_to_ids('answer') not in (
+        inputs['input_ids'][0].tolist())
+    answer = processor.tokenizer.encode('answer<|im_end|>')
+    assert transform.decode_answer(answer) == 'answer'
+    assert transform.eos_token_id == processor.tokenizer.eos_token_id
+    metadata = transform.generation_metadata()
+    assert metadata['processor_type'] == processor_type
+    assert metadata['image_max_pixels'] == 16
+    assert len(metadata['tokenizer_sha256']) == 64
+    transform.truncation_max_length = 2
+    with pytest.raises(ValueError, match='prompt exceeds'):
+        transform.encode_prompt('hello', [image_path])
+
+
 def test_message_roles_whitespace_and_media_validation():
     messages = vlm_transforms.build_messages_llava(conversation('image.png'))
     assert [m['role'] for m in messages

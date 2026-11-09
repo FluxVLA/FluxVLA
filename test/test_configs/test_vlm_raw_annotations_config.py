@@ -13,8 +13,8 @@ LLAVA_ROOT = Path('datasets/llava665k')
 INDEX_ROOT = Path('datasets/.cache/vlm')
 
 RAW_CONFIGS = [
-    ('vlm/qwen3_vl_2b_sft.py', 'train_dataloader'),
-    ('vlm/qwen_sft.py', 'train_dataloader'),
+    ('vlm/qwen3vl_2b_llava665k_full_finetune.py', 'train_dataloader'),
+    ('vlm/qwen_llava665k_full_finetune.py', 'train_dataloader'),
     ('pi05/pi05_paligemma_llava665k_full_finetune.py', 'train_dataloader'),
     ('pi05/pi05_paligemma_robotwin_llava665k_mixed_full_finetune.py',
      'vlm_dataloader'),
@@ -100,12 +100,61 @@ def test_qwen_environment_overrides_still_work(monkeypatch):
     monkeypatch.setenv('FLUXVLA_VLM_MEDIA', './datasets/custom')
     monkeypatch.setenv('FLUXVLA_VLM_TRAIN', './datasets/custom/train.jsonl')
     monkeypatch.setenv('FLUXVLA_VLM_VAL', './datasets/custom/val.jsonl')
-    cfg = Config.fromfile(ROOT / 'configs/vlm/qwen_sft.py')
+    monkeypatch.setenv('FLUXVLA_VLM_PROCESSOR', 'qwen3_5')
+    cfg = Config.fromfile(ROOT / 'configs/vlm/qwen_llava665k_full_finetune.py')
     assert cfg.model.vlm_backbone.model_path == './checkpoints/custom-vlm'
     assert cfg.train_dataloader.dataset.data_root_path == './datasets/custom'
     assert cfg.train_dataloader.dataset.anno_json_path.endswith('train.jsonl')
     assert cfg.eval_dataset.anno_json_path.endswith('val.jsonl')
     assert cfg.eval_dataset.index_cache_dir == './datasets/.cache/vlm'
+    assert cfg.eval.type == 'TextVQAEvalRunner'
+    assert cfg.eval.preprocessing.processor_path == './checkpoints/custom-vlm'
+    assert cfg.eval.preprocessing.processor_type == 'qwen3_5'
+    assert cfg.eval.image_root == './datasets/custom/textvqa/train_images'
+
+
+@pytest.mark.parametrize('config', [name for name, _ in RAW_CONFIGS[:2]])
+def test_qwen_training_budget_matches_pi05_llava(config):
+    cfg = Config.fromfile(ROOT / 'configs' / config)
+    baseline = Config.fromfile(
+        ROOT / 'configs/pi05/pi05_paligemma_llava665k_full_finetune.py')
+    assert cfg.runner.max_steps == baseline.runner.max_steps == 1000
+    assert cfg.runner.max_epochs is baseline.runner.max_epochs is None
+    for key in ('grad_accumulation_steps', 'save_iter_interval',
+                'max_keep_ckpts', 'optimizer', 'lr_scheduler'):
+        assert cfg.runner[key] == baseline.runner[key]
+    assert cfg.train_dataloader.per_device_batch_size == (
+        baseline.train_dataloader.per_device_batch_size)
+    assert Path(cfg.runner.metric.run_dir).name == Path(config).stem
+    assert Path(cfg.eval.checkpoint_dir).parent == Path(
+        cfg.runner.metric.run_dir)
+    assert Path(cfg.eval.run_dir).parent == Path(cfg.runner.metric.run_dir)
+
+
+@pytest.mark.parametrize('config', [name for name, _ in RAW_CONFIGS[:2]])
+def test_qwen_textvqa_is_separate_from_sft_and_matches_its_processor(config):
+    cfg = Config.fromfile(ROOT / 'configs' / config)
+    assert cfg.eval.type == 'TextVQAEvalRunner'
+    assert cfg.eval.compare_base is True
+    assert cfg.eval.max_samples is None
+    assert cfg.eval.max_new_tokens == 32
+    assert Path(cfg.eval.annotation_path) == Path(
+        'datasets/textvqa/TextVQA_0.5.1_val.json')
+    assert Path(cfg.eval.image_root) == LLAVA_ROOT / 'textvqa/train_images'
+    assert cfg.eval.annotation_path != (
+        cfg.train_dataloader.dataset.anno_json_path)
+    assert 'eval_dataset' not in cfg
+    train_processor = cfg.train_dataloader.dataset.transforms[1]
+    for key, value in cfg.eval.preprocessing.items():
+        assert train_processor[key] == value
+
+
+def test_vlm_configs_follow_model_dataset_training_mode_names():
+    assert {path.name
+            for path in (ROOT / 'configs/vlm').glob('*.py')} == {
+                'qwen3vl_2b_llava665k_full_finetune.py',
+                'qwen_llava665k_full_finetune.py',
+            }
 
 
 def test_robocasa_explicit_data_override_still_works(monkeypatch):

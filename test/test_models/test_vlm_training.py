@@ -296,3 +296,21 @@ def test_native_qwen_vlm_forward_backward_without_pretrained_weights(
         assert any(g.abs().sum() > 0 for g in grads)
     with pytest.raises(ValueError, match='train_task'):
         model.validate_training_task('mixed')
+
+    # Generation must use the same native multimodal path, including grids,
+    # without labels or the SFT loss dispatch. Compare actual greedy tokens.
+    model.eval()
+    generation_inputs = {
+        key: value
+        for key, value in inputs.items() if key != 'labels'
+    }
+    generation_inputs.update(
+        max_new_tokens=2,
+        do_sample=False,
+        eos_token_id=None,
+        pad_token_id=0,
+        suppress_tokens=[60, 61, 62, 63])
+    expected = model.vlm_backbone.vlm.generate(**generation_inputs)
+    actual = model.generate_text(**generation_inputs)
+    torch.testing.assert_close(actual, expected)
+    assert actual.shape == (1, len(ids) + 2)
