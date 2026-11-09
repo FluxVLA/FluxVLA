@@ -142,13 +142,13 @@ runner = dict(
     enable_gradient_checkpointing=True,
     enable_mixed_precision_training=True,
     fsdp_wrap_policy='model',
-    grad_accumulation_steps=8,
+    grad_accumulation_steps=2,  # 4 samples x 2 GPUs x 2 = global batch 16.
     keep_params_fp32=True,
     lr_scheduler=dict(type='linear-warmup+cosine-decay', warmup_ratio=0.03),
-    max_epochs=None,
+    max_epochs=1,
     max_grad_norm=1.0,
     max_keep_ckpts=2,
-    max_steps=1000,
+    max_steps=None,
     metric=dict(
         active_trackers=('jsonl', ),
         run_dir='work_dirs/pi05_vlm_sft',
@@ -157,7 +157,7 @@ runner = dict(
     mixed_precision_dtype='bf16',
     optimizer=dict(lr=2e-05, type='AdamW', weight_decay=0.01),
     sampler='distributed',
-    save_iter_interval=250,
+    save_epoch_interval=1,
     seed=42,
     sharding_strategy='full-shard',
     train_task='vlm',
@@ -177,7 +177,7 @@ train_dataloader = dict(
                 type='ProcessPaliGemmaVLMSFTInputs'),
         ],
         type='LLaVAFormatDataset'),
-    per_device_batch_size=1,
+    per_device_batch_size=4,
     per_device_num_workers=4)
 
 # Standalone TextVQA generation evaluation, also used by --eval-after-train.

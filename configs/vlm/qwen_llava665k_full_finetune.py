@@ -54,7 +54,7 @@ transforms = [
 ]
 
 train_dataloader = dict(
-    per_device_batch_size=1,
+    per_device_batch_size=4,
     per_device_num_workers=4,
     dataset=dict(
         type='LLaVAFormatDataset',
@@ -67,12 +67,12 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     train_task='vlm',
-    max_epochs=None,
-    max_steps=1000,  # Match the Pi05 LLaVA-665K SFT training budget.
+    max_epochs=1,  # Match one full LLaVA-665K epoch in Pi05 SFT.
+    max_steps=None,
     sharding_strategy='full-shard',
     fsdp_wrap_policy='model',
     max_grad_norm=1.0,
-    grad_accumulation_steps=8,
+    grad_accumulation_steps=2,  # 4 samples x 2 GPUs x 2 = global batch 16.
     sampler='distributed',
     # The collator masks padding by lengths. ID 0 is only filler and is
     # never supervised; it need not be the tokenizer's EOS/PAD ID.
@@ -88,7 +88,7 @@ runner = dict(
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
     keep_params_fp32=True,
-    save_iter_interval=250,
+    save_epoch_interval=1,
     max_keep_ckpts=2,
     seed=42)
 

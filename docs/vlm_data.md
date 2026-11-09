@@ -139,18 +139,28 @@ uses the same raw language pipeline with the existing RoboTwin robot dataset.
 - Both Qwen configs follow `model_llava665k_full_finetune.py` naming. The
   [configurable Qwen recipe](../configs/vlm/qwen_llava665k_full_finetune.py)
   retains the `FLUXVLA_VLM_*` environment overrides. Both Qwen recipes and
-  pure Pi05 SFT run **1,000 optimizer updates**, saving every **250 updates**
-  and retaining two checkpoints. This is a matched short-run budget, not a
-  full pass over LLaVA-665K. Their per-device batch 1 and accumulation 8 give
-  global batch 16 on two GPUs; keep the GPU count fixed for comparison.
+  pure Pi05 SFT run **one full epoch** (`max_epochs=1`, `max_steps=None`),
+  saving at each epoch end and retaining at most two checkpoints. Their
+  per-device batch **4** and accumulation **2** give global batch **16** on
+  two GPUs; keep the GPU count fixed for comparison. The runner derives the
+  optimizer/scheduler budget from the dataset size, rounded up to whole
+  updates. Increase `runner.max_epochs` for longer runs. Epoch mode uses
+  `save_epoch_interval`, not `save_iter_interval`.
+  Compared with batch 1 / accumulation 8, this performs two rather than eight
+  serial microbatches per update, but larger batches need more activation and
+  padding memory. If memory is insufficient, use batch 2 / accumulation 4 or
+  batch 1 / accumulation 8 to preserve the same effective batch size.
 - Mixed training uses `runner.train_task='mixed'`, `train_dataloader` for VLA
   and `vlm_dataloader` for VLM. The default schedule is
   `('vla', 'vla', 'vla', 'vlm')`: **one task per optimizer update**, synchronized
   across ranks. It does not concatenate VLM fields into a robot-action batch.
-- Each example uses per-device batch 1 and accumulation 8: global batch 16 on
-  two GPUs for either task. VLM gradients are normalized by supervised token
-  count; mixed VLA gradients by valid action-element count. Loss weights and
-  update ratios are separate from dataset-source repeat factors.
+  Mixed configs remain step-based (`max_steps` set, `max_epochs=None`) because
+  the two streams have independent lengths and epoch counters. They retain
+  per-device batch 1 and accumulation 8: global batch 16 on two GPUs for
+  either task.
+- VLM gradients are normalized by supervised token count; mixed VLA gradients
+  by valid action-element count. Loss weights and update ratios are separate
+  from dataset-source repeat factors.
 - Mixed updates skip task-inactive parameters entirely (including Adam
   momentum, decay and step counts). A fully text-only VLM update also skips
   vision/projector parameters; image usage is combined across all ranks and
@@ -240,12 +250,14 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
   ./work_dirs/qwen3vl_2b_llava665k_full_finetune --eval-after-train
 
 # Short connectivity check on the full model and original raw data.
-# Accumulation=1 reduces memory on shared GPUs; this is not the default batch.
+# Batch=1 / accumulation=1 is a low-memory check, not the default batch.
+# Clear max_epochs when overriding the recipe to a step-based smoke run.
 NPROC_PER_NODE=2 bash scripts/train.sh \
   configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
   ./work_dirs/pi05_textvqa_smoke --eval-after-train --cfg-options \
-  runner.max_steps=2 runner.save_iter_interval=2 \
-  runner.grad_accumulation_steps=1 train_dataloader.dataset.max_retry_times=0 \
+  runner.max_epochs=None runner.max_steps=2 runner.save_iter_interval=2 \
+  runner.grad_accumulation_steps=1 train_dataloader.per_device_batch_size=1 \
+  train_dataloader.dataset.max_retry_times=0 \
   eval.max_samples=32 eval.run_dir=./work_dirs/pi05_textvqa_smoke/textvqa
 
 # Independently evaluate a trained checkpoint (substitute its path).

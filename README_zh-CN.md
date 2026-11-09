@@ -662,8 +662,8 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
 在上面的训练命令后添加 `--eval-after-train`，即可通过
 `eval.type='TextVQAEvalRunner'` 对比训练 checkpoint 和 base 模型的答案准确率；
 不会额外切分 LLaVA 训练数据。
-两个 Qwen 配置也支持此评测；Qwen 与纯 Pi05 SFT 统一训练 1,000 次优化器更新，
-双卡有效 batch size 为 16，每 250 步保存一次。
+两个 Qwen 配置也支持此评测；Qwen 与纯 Pi05 SFT 统一训练 1 个完整 epoch，
+每个 epoch 结束时保存。每卡 batch size 为 4，梯度累积 2 次，双卡有效 batch size 仍为 16。
 
 输入输出、数据配比、任务调度与限制详见 [VLM 数据与训练](docs/vlm_data.md)。
 机器人动作数据仍使用现有 LeRobot pipeline。

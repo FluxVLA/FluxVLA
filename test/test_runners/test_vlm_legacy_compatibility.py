@@ -102,8 +102,9 @@ class _EpochDataset(Dataset):
 
 class _EpochSampler(DistributedSampler):
 
-    def __init__(self, dataset):
-        super().__init__(dataset, num_replicas=1, rank=0, shuffle=False)
+    def __init__(self, dataset, num_replicas=1):
+        super().__init__(
+            dataset, num_replicas=num_replicas, rank=0, shuffle=False)
         self.epochs = []
 
     def set_epoch(self, epoch):
@@ -134,16 +135,28 @@ def test_iterator_restart_preserves_legacy_vla_sampler_epochs(
 
 
 @pytest.mark.parametrize('training_mode', ['epoch_based', 'step_based'])
-@pytest.mark.parametrize('length,accumulation', [(5, 1), (6, 2), (5, 2),
-                                                 (3, 8)])
+@pytest.mark.parametrize('length,batch_size,accumulation,world_size', [
+    (5, 1, 1, 1),
+    (6, 1, 2, 1),
+    (5, 1, 2, 1),
+    (3, 1, 8, 1),
+    (16, 4, 2, 2),
+    (17, 4, 2, 2),
+    (33, 4, 2, 2),
+    (3, 4, 2, 2),
+])
 def test_vlm_loop_counts_each_epoch_once_even_when_accumulation_wraps(
-        training_mode, length, accumulation, tmp_path):
+        training_mode, length, batch_size, accumulation, world_size, tmp_path):
     runner = _runner('vlm')
     runner.current_epoch = 0
     runner.training_mode = training_mode
     runner.max_epochs = 3
     runner.grad_accumulation_steps = accumulation
-    runner.steps_per_epoch = math.ceil(length / accumulation)
+    runner.global_batch_size = batch_size * world_size * accumulation
+    dataset = _EpochDataset(length)
+    runner.steps_per_epoch = runner._get_steps_per_epoch(dataset)
+    assert runner.steps_per_epoch == math.ceil(length /
+                                               runner.global_batch_size)
     runner.max_steps = runner.max_epochs * runner.steps_per_epoch
     runner.save_epoch_interval = 1
     runner.save_iter_interval = runner.steps_per_epoch
@@ -172,9 +185,8 @@ def test_vlm_loop_counts_each_epoch_once_even_when_accumulation_wraps(
     runner._get_log_lr = lambda: 0.001
     runner._save_and_sync = lambda: checkpoints.append(runner.metric.
                                                        global_step)
-    dataset = _EpochDataset(length)
-    sampler = _EpochSampler(dataset)
-    loader = DataLoader(dataset, batch_size=1, sampler=sampler)
+    sampler = _EpochSampler(dataset, num_replicas=world_size)
+    loader = DataLoader(dataset, batch_size=batch_size, sampler=sampler)
 
     loop = getattr(runner, f'_run_{training_mode}')
     loop(loader, sampler, dataset)
@@ -192,3 +204,28 @@ def test_vlm_loop_counts_each_epoch_once_even_when_accumulation_wraps(
     ]
     assert sampler.epochs == dataset.epochs
     assert sorted(set(sampler.epochs)) == [0, 1, 2]
+
+
+@pytest.mark.parametrize('length', [17, 665298])
+@pytest.mark.parametrize('epochs', [1, 3])
+@pytest.mark.parametrize('world_size', [1, 2])
+def test_vlm_epoch_scheduler_uses_full_dataset_budget(length, epochs,
+                                                      world_size):
+    runner = _runner('vlm')
+    runner.max_epochs = epochs
+    runner.max_steps = None
+    runner.global_batch_size = 4 * world_size * 2
+    runner.vla = torch.nn.Linear(1, 1)
+    runner.optimizer_cfg = dict(type='AdamW', lr=2e-5, weight_decay=0.01)
+    runner.lr_scheduler_cfg = dict(
+        type='linear-warmup+cosine-decay', warmup_ratio=0.03)
+
+    runner._setup_optimizer_and_scheduler(length)
+
+    expected_steps = math.ceil(length / runner.global_batch_size) * epochs
+    assert runner.num_training_steps == expected_steps
+    assert runner.num_training_steps == (
+        runner._get_steps_per_epoch(_EpochDataset(length)) * epochs)
+    multiplier = runner.lr_scheduler.scheduler.lr_lambdas[0]
+    assert multiplier(expected_steps) == pytest.approx(0)
+    assert multiplier(int(expected_steps * 0.03)) == pytest.approx(1)

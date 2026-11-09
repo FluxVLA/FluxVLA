@@ -118,17 +118,30 @@ def test_qwen_training_budget_matches_pi05_llava(config):
     cfg = Config.fromfile(ROOT / 'configs' / config)
     baseline = Config.fromfile(
         ROOT / 'configs/pi05/pi05_paligemma_llava665k_full_finetune.py')
-    assert cfg.runner.max_steps == baseline.runner.max_steps == 1000
-    assert cfg.runner.max_epochs is baseline.runner.max_epochs is None
-    for key in ('grad_accumulation_steps', 'save_iter_interval',
-                'max_keep_ckpts', 'optimizer', 'lr_scheduler'):
+    assert cfg.runner.max_steps is baseline.runner.max_steps is None
+    assert cfg.runner.max_epochs == baseline.runner.max_epochs == 1
+    assert cfg.runner.grad_accumulation_steps == (
+        baseline.runner.grad_accumulation_steps) == 2
+    assert cfg.runner.save_epoch_interval == (
+        baseline.runner.save_epoch_interval) == 1
+    for key in ('max_keep_ckpts', 'optimizer', 'lr_scheduler'):
         assert cfg.runner[key] == baseline.runner[key]
     assert cfg.train_dataloader.per_device_batch_size == (
-        baseline.train_dataloader.per_device_batch_size)
+        baseline.train_dataloader.per_device_batch_size) == 4
+    assert (2 * cfg.train_dataloader.per_device_batch_size *
+            cfg.runner.grad_accumulation_steps) == 16
     assert Path(cfg.runner.metric.run_dir).name == Path(config).stem
     assert Path(cfg.eval.checkpoint_dir).parent == Path(
         cfg.runner.metric.run_dir)
     assert Path(cfg.eval.run_dir).parent == Path(cfg.runner.metric.run_dir)
+
+
+@pytest.mark.parametrize('config', [name for name, _ in RAW_CONFIGS[3:]])
+def test_mixed_training_keeps_explicit_step_budget(config):
+    cfg = Config.fromfile(ROOT / 'configs' / config)
+    assert cfg.runner.train_task == 'mixed'
+    assert cfg.runner.max_epochs is None
+    assert cfg.runner.max_steps > 0
 
 
 @pytest.mark.parametrize('config', [name for name, _ in RAW_CONFIGS[:2]])

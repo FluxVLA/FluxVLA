@@ -751,7 +751,8 @@ annotations to the SFT sources. Append `--eval-after-train` to the command
 above to compare the trained checkpoint and base model using
 `eval.type='TextVQAEvalRunner'`; no training-data holdout is created.
 Both Qwen configs also support this evaluation. Qwen and pure Pi05 SFT use
-the same 1,000-update budget (batch 16 on two GPUs), saving every 250 updates.
+one full epoch, saving at each epoch end. Per-device batch 4 and gradient
+accumulation 2 keep the effective batch size at 16 on two GPUs.
 
 See [VLM data and training](docs/vlm_data.md) for input/output contracts,
 source mixing, task scheduling and limitations. Robot-action inputs still
