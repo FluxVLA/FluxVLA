@@ -144,22 +144,58 @@ uses the same raw language pipeline with the existing RoboTwin robot dataset.
   two GPUs for either task. VLM gradients are normalized by supervised token
   count; mixed VLA gradients by valid action-element count. Loss weights and
   update ratios are separate from dataset-source repeat factors.
+- Mixed updates skip task-inactive parameters entirely (including Adam
+  momentum, decay and step counts). A fully text-only VLM update also skips
+  vision/projector parameters; image usage is combined across all ranks and
+  accumulated microbatches before deciding which parameters to skip.
 - All five raw-data examples use **4 workers per rank per training stream**,
   matching the existing robot configs. Mixed training on two GPUs therefore
   uses up to 16 data-loader workers (2 ranks × 2 streams × 4). Reduce workers
   for CPU/RAM-constrained machines, or set them to 0 when debugging transforms.
+- Mixed streams restart and reseed workers at each task's epoch boundary.
+  This adds worker-startup overhead but makes random crop/color augmentation
+  reproducible on resume by replaying the saved epoch/offset. Ordinary VLA
+  and pure SFT loader behavior is unchanged.
 - Pi05 is the supported mixed-training model. Models without this contract
   reject `train_task='mixed'` rather than silently ignoring the task.
 - Full mixed `.pt` checkpoints retain optimizer/scheduler state, task counters,
   data cursors and per-rank RNG state. Resume requires matching data, schedule,
   collator configs, worker counts, batch sizes, trainable parameters and world
-  size. When resuming an older run, preserve its worker counts and preprocessing
-  configuration; the new defaults are not an automatic checkpoint migration.
+  size. Mixed checkpoint contract **version 2** also fixes inactive language-tail
+  Adam updates during VLA steps. Older mixed full-resume checkpoints are rejected:
+  their optimizer/worker RNG trajectories are incompatible. Load their model
+  weights as pretrained initialization for a **new run** instead. Do not edit
+  the saved contract to bypass this check. Compatible version-2 resumes must
+  still preserve worker counts and preprocessing configuration.
   `.safetensors` is weights only, not a full resume checkpoint.
 - Optional held-out language validation uses `VLMEvaluator` and a separate
   dataset with `max_retry_times=0`. It reports teacher-forced loss and token
   accuracy, not benchmark generation scores. Mixed configs keep their existing
   robot evaluator; pure SFT does not require robot evaluation data.
+
+## Mixed-training regression checks
+
+No training data or pretrained checkpoints are needed for these checks:
+
+```bash
+CUDA_VISIBLE_DEVICES='' PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  python -m pytest --cpu-model-tests @test/cpu-tests.txt -q
+
+# Requires two CUDA GPUs and the training environment. Uses real tiny Pi05,
+# DDP/FSDP, optional activation checkpointing and two-microbatch accumulation.
+torchrun --standalone --nproc-per-node=2 \
+  test/distributed/mixed_pi05_regression.py \
+  --output ./work_dirs/mixed-regression.json
+```
+
+The CPU checks include actual random crop/color jitter replay across epochs
+with 0/2/4 workers, map-style and repeating robot datasets, and worker cleanup.
+The GPU check covers asymmetric image/text-only ranks, fully text-only updates,
+and images present only in the first accumulated microbatch. Its reference
+uses autograd's unused-parameter decisions independently of the mixed helper;
+it checks weights, exact inactive non-updates and Adam step counts. FP32 weight
+tolerances are `atol=3e-6, rtol=1e-4`. `--isolated-imports` is available only for
+minimal test environments; the default exercises production package imports.
 
 ## TextVQA generation evaluation
 

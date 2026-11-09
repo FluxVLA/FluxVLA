@@ -1,7 +1,9 @@
 # Copyright 2026 Limx Dynamics
 """Language loss and real, small Pi05 training without external checkpoints."""
 
+import copy
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -11,6 +13,7 @@ from mmengine import Config
 from fluxvla.collators.vlm_sft_collator import VLMSFTCollator
 from fluxvla.engines import build_vla_from_cfg
 from fluxvla.engines.losses.causal_lm import causal_lm_loss
+from fluxvla.engines.runners.mixed_training import MixedTraining
 from fluxvla.models.backbones.vlms.causal_vlm import CausalVLMBackbone
 from fluxvla.models.vlas.vlm_wrapper import VLMWrapper
 
@@ -135,6 +138,81 @@ def test_pi05_mixed_vla_statistics_preserve_default_loss(pi05):
     assert not pi05.llm_expert.embed_tokens.weight.requires_grad
     with pytest.raises(ValueError, match='one vla or vlm'):
         pi05(task='mixed', **inputs)
+
+
+@pytest.mark.parametrize('with_images', [False, True])
+def test_pi05_mixed_zero_slices_match_autograd_unused_parameters(
+        pi05, with_images):
+    """Real Pi05 + Adam: emulate FSDP's materialized unused flat slices.
+
+    The oracle uses autograd None, not inactive_training_parameters(), so an
+    omission in that list cannot make both implementations incorrectly pass.
+    The standalone two-GPU regression also exercises actual FSDP/DDP.
+    """
+    pi05.prepare_training_task('mixed')
+    reference = copy.deepcopy(pi05)
+    optimizer = torch.optim.AdamW(pi05.parameters(), lr=1e-3)
+    ref_optimizer = torch.optim.AdamW(reference.parameters(), lr=1e-3)
+    runner = SimpleNamespace(
+        vla=pi05,
+        optimizer=optimizer,
+        metric=SimpleNamespace(commit=lambda **kwargs: None),
+        _unwrap_vla=lambda: pi05)
+    # Only backward() is under test; no data stream or scheduling is needed.
+    mixed = MixedTraining(
+        Config(dict(train_dataloader={}, runner={})), task_schedule=('vla', ))
+    action_inputs = dict(
+        images=torch.randn(1, 3, 8, 8),
+        img_masks=torch.ones(1, 1, dtype=torch.bool),
+        lang_tokens=torch.tensor([[2, 5, 1]]),
+        lang_masks=torch.ones(1, 3, dtype=torch.bool),
+        states=torch.randn(1, 32),
+        actions=torch.randn(1, 4, 32),
+        noise=torch.randn(1, 4, 32),
+        time=torch.tensor([0.25]),
+        return_loss_statistics=True)
+    language_inputs = dict(
+        input_ids=torch.tensor([[2, 5, 6, 1]]),
+        labels=torch.tensor([[-100, 5, 6, 1]]),
+        images=torch.randn(1, 3, 8, 8))
+    if not with_images:
+        language_inputs.pop('images')
+    # Populate language-tail momentum before the first action-only step.
+    for task in ('vlm', 'vla', 'vlm', 'vla'):
+        inputs = language_inputs if task == 'vlm' else action_inputs
+        ref_optimizer.zero_grad(set_to_none=True)
+        expected = reference(task=task, **inputs)
+        expected['loss_sum'].backward()
+        count = expected['num_tokens' if task ==
+                         'vlm' else 'num_action_targets']
+        optimizer.zero_grad(set_to_none=True)
+        for parameter in pi05.parameters():
+            if parameter.requires_grad:
+                parameter.grad = torch.zeros_like(parameter)
+        mixed.active_task = task
+        mixed.backward(runner, pi05(task=task, **inputs), should_step=True)
+        for (name, actual), (_, ref) in zip(pi05.named_parameters(),
+                                            reference.named_parameters()):
+            assert (actual.grad is None) == (ref.grad is None), name
+            if ref.grad is not None:
+                ref.grad.mul_((1.0 / count.double()).to(ref.grad.dtype))
+                torch.testing.assert_close(actual.grad, ref.grad)
+        optimizer.step()
+        ref_optimizer.step()
+        for actual, ref in zip(pi05.parameters(), reference.parameters()):
+            torch.testing.assert_close(actual, ref)
+            actual_state, ref_state = (optimizer.state.get(actual, {}),
+                                       ref_optimizer.state.get(ref, {}))
+            assert actual_state.keys() == ref_state.keys()
+            for key in ref_state:
+                torch.testing.assert_close(actual_state[key], ref_state[key])
+    tail = pi05.llm_backbone.layers[-1]
+    assert optimizer.state[tail.self_attn.o_proj.weight]['step'] == 2
+    assert optimizer.state[pi05.action_in_proj.projector.weight]['step'] == 2
+    assert optimizer.state[pi05.projector.projector.weight]['step'] == (
+        4 if with_images else 2)
+    with pytest.raises(ValueError, match='optimizer step'):
+        pi05.inactive_training_parameters('mixed')
 
 
 def test_pi05_collator_pads_views_and_keeps_robot_fields_out():

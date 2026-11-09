@@ -28,6 +28,10 @@ from fluxvla.engines.utils import (build_collator_from_cfg,
                                    build_dataset_from_cfg)
 from fluxvla.engines.utils.torch_utils import worker_init_function
 
+# Version 2 fixes task-inactive Adam updates and epoch-local worker RNG.
+# Old mixed checkpoints cannot reproduce the corrected training trajectory.
+MIXED_TRAINING_CONTRACT_VERSION = 2
+
 
 def _capture_rng():
     numpy_state = np.random.get_state()
@@ -95,7 +99,10 @@ class TaskDataStream:
             generator=self.generator,
             pin_memory=torch.cuda.is_available(),
             prefetch_factor=2 if num_workers else None,
-            persistent_workers=bool(num_workers))
+            # Recreate/reseed workers each epoch, including uninterrupted
+            # runs. A restored cursor can then reproduce augmentations by
+            # replaying only that epoch, without worker RNG history.
+            persistent_workers=False)
         # Repeating robot datasets report their global size and shard in
         # __iter__; DataLoader cannot infer their per-rank epoch length.
         self.length = (
@@ -106,29 +113,33 @@ class TaskDataStream:
 
     def next(self):
         if self.offset == self.length:
+            self.close()
             self.epoch += 1
             self.offset = 0
-            self.iterator = None
-        if self.iterator is None:
-            if self.sampler is not None:
-                self.sampler.set_epoch(self.epoch)
-            set_epoch = getattr(self.loader.dataset, 'set_epoch', None)
-            if callable(set_epoch):
-                set_epoch(self.epoch)
-            self.generator.manual_seed(self.seed + self.epoch + self.rank)
-            # Replaying skipped batches must not advance the training RNG.
-            state = _capture_rng()
-            try:
-                self.iterator = iter(self.loader)
-                for _ in range(self.offset):
-                    next(self.iterator)
-            finally:
-                _restore_rng(state)
         try:
+            if self.iterator is None:
+                if self.sampler is not None:
+                    self.sampler.set_epoch(self.epoch)
+                set_epoch = getattr(self.loader.dataset, 'set_epoch', None)
+                if callable(set_epoch):
+                    set_epoch(self.epoch)
+                self.generator.manual_seed(self.seed + self.epoch + self.rank)
+                # Replaying skipped batches must not advance training RNG.
+                state = _capture_rng()
+                try:
+                    self.iterator = iter(self.loader)
+                    for _ in range(self.offset):
+                        next(self.iterator)
+                finally:
+                    _restore_rng(state)
             batch = next(self.iterator)
         except StopIteration as exc:
+            self.close()
             raise RuntimeError('Task dataset ended before its advertised '
                                'length; check distributed sharding.') from exc
+        except BaseException:
+            self.close()
+            raise
         self.offset += 1
         return batch
 
@@ -141,8 +152,16 @@ class TaskDataStream:
                 'Mixed task dataset/batch count changed on resume.')
         if not 0 <= state['offset'] <= self.length or state['epoch'] < 0:
             raise ValueError('Invalid mixed task data cursor.')
+        self.close()
         self.epoch, self.offset = state['epoch'], state['offset']
-        self.iterator = None
+
+    def close(self):
+        # Nonpersistent loaders do not retain loader._iterator. In particular,
+        # repeating datasets still have prefetched batches at our boundary.
+        iterator, self.iterator = self.iterator, None
+        shutdown = getattr(iterator, '_shutdown_workers', None)
+        if callable(shutdown):
+            shutdown()
 
 
 class MixedTraining:
@@ -219,6 +238,7 @@ class MixedTraining:
                 runner.dataset_sharding_strategy
                 if task == 'vla' else 'round_robin')
         self.contract = dict(
+            version=MIXED_TRAINING_CONTRACT_VERSION,
             sync_each_microbatch=self.sync_each_microbatch,
             data_signature=self.data_signature,
             trainable_parameters=tuple(
@@ -295,7 +315,14 @@ class MixedTraining:
             output[count_key].detach().double()
         ]
         if task == 'vlm':
-            values.append(output['num_correct'].detach().double())
+            if 'num_vision_forwards' not in output:
+                raise ValueError(
+                    'Mixed VLM output must report '
+                    'num_vision_forwards for inactive parameters.')
+            values.extend([
+                output['num_correct'].detach().double(),
+                output['num_vision_forwards'].detach().double()
+            ])
         values = torch.stack(values)
         self.totals = values if self.totals is None else self.totals + values
         output['loss_sum'].backward()
@@ -316,8 +343,10 @@ class MixedTraining:
                 parameter.grad.mul_(scale.to(parameter.grad.dtype))
         # FSDP may materialize zeros for unused slices of a flat parameter.
         # None prevents Adam momentum/decay from changing inactive heads.
+        inactive_options = (
+            dict(vision_used=totals[3].item() > 0) if task == 'vlm' else {})
         for parameter in runner._unwrap_vla().inactive_training_parameters(
-                task):
+                task, **inactive_options):
             parameter.grad = None
         raw_loss = totals[0] / totals[1]
         loss = raw_loss.to(output['loss'].dtype) * self.loss_weights[task]
@@ -354,6 +383,12 @@ class MixedTraining:
         return state
 
     def load_state_dict(self, state, global_step):
+        if (state is not None and state['contract'].get('version') !=
+                MIXED_TRAINING_CONTRACT_VERSION):
+            raise ValueError('Mixed checkpoint contract version changed: '
+                             'inactive optimizer updates and worker RNG '
+                             'are not compatible. Use pretrained weights '
+                             'for a new run, not full resume.')
         if state is None or state['contract'] != self.contract:
             raise ValueError('Mixed resume requires the same task schedule, '
                              'data, optimizer, trainable parameters, batch '
@@ -379,6 +414,5 @@ class MixedTraining:
 
     def close(self, runner):
         for stream in self.streams.values():
-            runner._shutdown_dataloader(stream.loader)
-            stream.iterator = None
+            stream.close()
         self.streams.clear()

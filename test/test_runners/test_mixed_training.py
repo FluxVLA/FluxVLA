@@ -41,7 +41,7 @@ class ToyPolicy(torch.nn.Module):
         self.shared = torch.nn.Parameter(torch.tensor(0.7))
         self.action = torch.nn.Parameter(torch.tensor(0.3))
 
-    def inactive_training_parameters(self, task):
+    def inactive_training_parameters(self, task, *, vision_used=True):
         return [self.action] if task == 'vlm' else []
 
 
@@ -69,6 +69,7 @@ def test_accumulation_uses_target_count_not_mean_of_means(task):
             loss=losses.mean(),
             loss_sum=losses.sum(),
             num_correct=torch.tensor(0),
+            num_vision_forwards=torch.tensor(0),
             **{key: torch.tensor(target.numel())})
         mixed.backward(runner, output, should_step=index == 1)
     expected = 0.5 * 2 * (0.7 - torch.tensor([1., 2., 3., 4.])).mean()
@@ -96,6 +97,7 @@ def test_vlm_step_does_not_decay_or_apply_momentum_to_action_parameters():
             loss=loss,
             loss_sum=loss,
             num_tokens=torch.tensor(1),
+            num_vision_forwards=torch.tensor(0),
             num_correct=torch.tensor(0)),
         should_step=True)
     assert model.action.grad is None
@@ -115,9 +117,51 @@ def test_no_supervised_targets_fails_before_optimizer_step():
                 loss=model.shared * 0,
                 loss_sum=model.shared * 0,
                 num_tokens=torch.tensor(0),
+                num_vision_forwards=torch.tensor(0),
                 num_correct=torch.tensor(0)),
             should_step=True)
     assert model.shared.grad is None
+
+
+@pytest.mark.parametrize('image_counts', [(0, 0), (1, 0), (0, 1)])
+def test_mixed_vision_activity_accumulates_all_microbatches(
+        monkeypatch, image_counts):
+    model = ToyPolicy()
+    runner = runner_for(model)
+    mixed = MixedTraining(configuration())
+    mixed.active_task = 'vlm'
+    decisions = []
+
+    def inactive(task, *, vision_used):
+        decisions.append(vision_used)
+        return []
+
+    monkeypatch.setattr(model, 'inactive_training_parameters', inactive)
+    for index, count in enumerate(image_counts):
+        loss = model.shared.square()
+        mixed.backward(
+            runner,
+            dict(
+                loss=loss,
+                loss_sum=loss,
+                num_tokens=torch.tensor(1),
+                num_correct=torch.tensor(0),
+                num_vision_forwards=torch.tensor(count)),
+            should_step=index == 1)
+    assert decisions == [any(image_counts)]
+
+
+def test_missing_vision_activity_fails_before_backward():
+    model = ToyPolicy()
+    mixed = MixedTraining(configuration())
+    mixed.active_task = 'vlm'
+    loss = model.shared.square()
+    with pytest.raises(ValueError, match='num_vision_forwards'):
+        mixed.backward(
+            runner_for(model),
+            dict(loss=loss, loss_sum=loss, num_tokens=torch.tensor(1)),
+            should_step=True)
+    assert model.shared.grad is None and mixed.totals is None
 
 
 def test_task_stream_replays_cursor_without_skipping_or_duplicating_batches():
@@ -186,6 +230,16 @@ def test_schedule_separate_streams_and_checkpoint_contract():
         mixed.load_state_dict(bad, global_step=4)
     with pytest.raises(ValueError, match='counters'):
         mixed.load_state_dict(state, global_step=3)
+    for version in (None, 1):
+        old = copy.deepcopy(state)
+        if version is None:
+            old['contract'].pop('version')
+        else:
+            old['contract']['version'] = version
+        with pytest.raises(ValueError, match='contract version changed'):
+            mixed.load_state_dict(old, global_step=4)
+    mixed.close(runner)
+    assert not mixed.streams
 
 
 @pytest.mark.parametrize('schedule', [(), ('vlm', ), ('vla', 'other')])

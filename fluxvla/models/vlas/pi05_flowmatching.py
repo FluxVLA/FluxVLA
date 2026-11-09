@@ -105,17 +105,32 @@ class PI05FlowMatching(PI0FlowMatching):
                 if id(parameter) not in active:
                     parameter.requires_grad_(False)
 
-    def inactive_training_parameters(self, task):
+    def inactive_training_parameters(self, task, *, vision_used=True):
         """Parameters skipped by a task, including FSDP's zero grad slices."""
         if task == 'vlm':
             active = {
                 id(p)
-                for module in (self.vision_backbone, self.projector,
+                for module in (self.vision_backbone if vision_used else None,
+                               self.projector if vision_used else None,
                                self.llm_backbone) if module is not None
                 for p in module.parameters()
             }
             return [p for p in self.parameters() if id(p) not in active]
-        return list(self.llm_expert.embed_tokens.parameters())
+        if task != 'vla':
+            raise ValueError(f'Expected a vla or vlm optimizer step: {task}')
+        # Action loss uses only the expert suffix. In the final joint layer,
+        # language K/V still feed that suffix, but the language output after
+        # attention (and its final norm) never contributes to the loss. FSDP
+        # can give these unused slices zero gradients where DDP leaves None;
+        # explicitly skip them so Adam momentum, decay and step counts agree.
+        last_layer = self.llm_backbone.layers[-1]
+        return [
+            parameter for module in (self.llm_expert.embed_tokens,
+                                     last_layer.self_attn.o_proj,
+                                     last_layer.post_attention_layernorm,
+                                     last_layer.mlp, self.llm_backbone.norm)
+            for parameter in module.parameters()
+        ]
 
     def get_vlm_fsdp_wrapping_policy(self):
         self.validate_training_task('vlm')
@@ -215,7 +230,14 @@ class PI05FlowMatching(PI0FlowMatching):
             return_dict=True)
         hidden = output.last_hidden_state[:, -tokens.shape[1]:]
         logits = F.linear(hidden, self.llm_backbone.embed_tokens.weight)
-        return causal_lm_loss(logits, labels, self.ignore_index)
+        output = causal_lm_loss(logits, labels, self.ignore_index)
+        if getattr(self, '_training_task', 'vla') == 'mixed':
+            # MixedTraining reduces this over ALL microbatches/ranks before
+            # clearing vision gradients. A text-only rank must not discard
+            # another rank's actual image gradient (or an earlier micro's).
+            output['num_vision_forwards'] = logits.new_tensor(
+                int(images is not None), dtype=torch.int64)
+        return output
 
     def _embed_vlm_prefix(self, tokens, mask, images, img_masks):
         """Share image/text embeddings and attention between SFT and decode."""
