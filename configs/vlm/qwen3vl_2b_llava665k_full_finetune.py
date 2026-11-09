@@ -15,6 +15,7 @@
 
 The dataset indexes the original JSON once; no JSONL preparation is needed.
 Run from the repository root after following the README data preparation.
+Training length matches Pi05 LLaVA SFT; TextVQA is evaluation-only.
 """
 
 model_path = './checkpoints/Qwen3-VL-2B-Instruct'
@@ -57,7 +58,7 @@ runner = dict(
     type='FSDPTrainRunner',
     train_task='vlm',
     max_epochs=None,
-    max_steps=1000,
+    max_steps=1000,  # Match the Pi05 LLaVA-665K SFT training budget.
     sharding_strategy='full-shard',
     fsdp_wrap_policy='model',
     max_grad_norm=1.0,
@@ -68,7 +69,7 @@ runner = dict(
     metric=dict(
         type='VLAMetric',
         active_trackers=('jsonl', ),
-        run_dir='work_dirs/qwen3_vl_2b_sft',
+        run_dir='work_dirs/qwen3vl_2b_llava665k_full_finetune',
         window_size=1),
     optimizer=dict(type='AdamW', lr=2e-5, weight_decay=0.01),
     lr_scheduler=dict(type='linear-warmup+cosine-decay', warmup_ratio=0.03),
@@ -79,3 +80,24 @@ runner = dict(
     save_iter_interval=250,
     max_keep_ckpts=2,
     seed=42)
+
+# Standalone TextVQA generation evaluation, also used by --eval-after-train.
+eval = dict(
+    type='TextVQAEvalRunner',
+    checkpoint_dir=runner['metric']['run_dir'] + '/checkpoints',
+    annotation_path='./datasets/textvqa/TextVQA_0.5.1_val.json',
+    image_root=media_root + '/textvqa/train_images',
+    preprocessing=dict(
+        type='ProcessVLMSFTInputs',
+        processor_path=model_path,
+        processor_type='qwen3_vl',
+        image_max_pixels=262144,
+        truncation_max_length=4096),
+    prompt_suffix='\nAnswer the question using a single word or phrase.',
+    compare_base=True,
+    max_samples=None,
+    max_new_tokens=32,
+    keep_params_fp32=True,
+    enable_mixed_precision_training=True,
+    mixed_precision_dtype='bf16',
+    run_dir=runner['metric']['run_dir'] + '/textvqa')

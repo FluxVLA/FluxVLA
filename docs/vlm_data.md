@@ -57,7 +57,7 @@ dataset = dict(
    native Hugging Face PaliGemma processor's bidirectional prompt convention.
    For native Qwen VLMs,
    use `ProcessVLMSFTInputs` with the matching `processor_path` and
-   `processor_type`, as in [the Qwen config](../configs/vlm/qwen3_vl_2b_sft.py).
+   `processor_type`, as in [the Qwen config](../configs/vlm/qwen3vl_2b_llava665k_full_finetune.py).
 4. `VLMSFTCollator` batches both Pi05 and native Qwen VLM inputs. Mixed training
    keeps a separate collator for the VLA stream. Metadata and raw conversations
    are not passed to the model. All assistant replies and their end tokens are
@@ -123,7 +123,7 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
 
 # Pure native Qwen VLM SFT.
 NPROC_PER_NODE=2 bash scripts/train.sh \
-  configs/vlm/qwen3_vl_2b_sft.py ./work_dirs/qwen3_vl_2b_sft
+  configs/vlm/qwen3vl_2b_llava665k_full_finetune.py ./work_dirs/qwen3vl_2b_llava665k_full_finetune
 
 # Pi05 robot-action and language training with separate data streams.
 NPROC_PER_NODE=2 bash scripts/train.sh \
@@ -136,6 +136,13 @@ uses the same raw language pipeline with the existing RoboTwin robot dataset.
 
 - Pure SFT uses `runner.train_task='vlm'`. Pi05 freezes unused action parameters
   but retains them in checkpoints for later policy use.
+- Both Qwen configs follow `model_llava665k_full_finetune.py` naming. The
+  [configurable Qwen recipe](../configs/vlm/qwen_llava665k_full_finetune.py)
+  retains the `FLUXVLA_VLM_*` environment overrides. Both Qwen recipes and
+  pure Pi05 SFT run **1,000 optimizer updates**, saving every **250 updates**
+  and retaining two checkpoints. This is a matched short-run budget, not a
+  full pass over LLaVA-665K. Their per-device batch 1 and accumulation 8 give
+  global batch 16 on two GPUs; keep the GPU count fixed for comparison.
 - Mixed training uses `runner.train_task='mixed'`, `train_dataloader` for VLA
   and `vlm_dataloader` for VLM. The default schedule is
   `('vla', 'vla', 'vla', 'vlm')`: **one task per optimizer update**, synchronized
@@ -200,7 +207,8 @@ minimal test environments; the default exercises production package imports.
 ## TextVQA generation evaluation
 
 The pure [Pi05 LLaVA config](../configs/pi05/pi05_paligemma_llava665k_full_finetune.py)
-sets `eval.type='TextVQAEvalRunner'`, following the original VLM branch. This
+and both [Qwen configs](../configs/vlm/qwen3vl_2b_llava665k_full_finetune.py)
+set `eval.type='TextVQAEvalRunner'`. This
 is a **generation benchmark**, not the optional training-time `VLMEvaluator`
 loss hook. All raw LLaVA training records remain in the SFT dataset: there is
 no extra train/validation split of the training annotations.
@@ -226,6 +234,11 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
   configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
   ./work_dirs/pi05_vlm_sft --eval-after-train
 
+# Qwen uses its own native processor/chat template with the same benchmark.
+NPROC_PER_NODE=2 bash scripts/train.sh \
+  configs/vlm/qwen3vl_2b_llava665k_full_finetune.py \
+  ./work_dirs/qwen3vl_2b_llava665k_full_finetune --eval-after-train
+
 # Short connectivity check on the full model and original raw data.
 # Accumulation=1 reduces memory on shared GPUs; this is not the default batch.
 NPROC_PER_NODE=2 bash scripts/train.sh \
@@ -237,12 +250,16 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
 
 # Independently evaluate a trained checkpoint (substitute its path).
 NPROC_PER_NODE=2 bash scripts/eval.sh \
-  configs/pi05/pi05_paligemma_textvqa_eval.py \
+  configs/pi05/pi05_paligemma_llava665k_full_finetune.py \
   ./work_dirs/pi05_vlm_sft/checkpoints/latest-checkpoint.safetensors
 
 # Pretrained baseline only, without needing a training checkpoint.
 NPROC_PER_NODE=2 bash scripts/eval.sh \
-  configs/pi05/pi05_paligemma_textvqa_eval.py base
+  configs/pi05/pi05_paligemma_llava665k_full_finetune.py base
+
+# Qwen base-only evaluation (use a saved checkpoint path for comparison).
+NPROC_PER_NODE=2 bash scripts/eval.sh \
+  configs/vlm/qwen3vl_2b_llava665k_full_finetune.py base
 ```
 
 - Inputs are **image + question**, plus the configured short-answer suffix.
@@ -252,11 +269,16 @@ NPROC_PER_NODE=2 bash scripts/eval.sh \
   TextVQA accuracy, not token accuracy, loss or perplexity. Scores of one to
   four matching annotators are 0.3, 0.6, 0.9 and 1.0 respectively. This is not
   the OCR-assisted LLaVA evaluation protocol.
-- By default `eval.compare_base=True` evaluates both the source Pi05 weights
+- By default `eval.compare_base=True` evaluates both the source model weights
   and the trained checkpoint on the same questions. Set it to `False` to run
   only the trained model. Trained weights load strictly with FluxVLA keys,
   without reapplying the source OpenPI mapping. `.safetensors` and full `.pt`
   exports are supported; merge LoRA adapters before using this runner.
+- Qwen selects `eval.preprocessing.type='ProcessVLMSFTInputs'`, matching its
+  training processor, image pixel limit and maximum input length. Generation
+  adds the native assistant header, disables thinking, and preserves native
+  patch/grid shapes. Its pretrained baseline comes from
+  `model.vlm_backbone.model_path`; Pi05 keeps its PaliGemma preprocessing.
 - Each GPU holds one model replica and a disjoint set of questions. No
   duplicate padding questions are scored. `eval.max_samples` limits the
   **global** number of questions; `None` evaluates all 5,000 validation

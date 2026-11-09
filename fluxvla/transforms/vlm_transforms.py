@@ -14,6 +14,7 @@
 """Composable VLM conversation and processor transforms for SFT data."""
 
 import copy
+import hashlib
 import math
 import os
 
@@ -304,6 +305,58 @@ class ProcessVLMSFTInputs:
             **self.processor_kwargs)
         processor.save_pretrained(output_dir)
 
+    def _get_processor(self):
+        if self._processor is None or self._processor_pid != os.getpid():
+            self._processor = get_processor_for_vlm(
+                self.processor_type,
+                self.processor_path,
+                image_max_pixels=self.image_max_pixels,
+                video_max_pixels=self.video_max_pixels,
+                **self.processor_kwargs)
+            self._processor_pid = os.getpid()
+        return self._processor
+
+    def encode_prompt(self, question, image_paths=()):
+        """Return native batched generation inputs, never reference answers.
+
+        Unlike SFT, append the assistant header without requiring a target.
+        Patch tensors and media grids already have their native shapes; do
+        not add an extra batch dimension to them.
+        """
+        content = [dict(type='image', image=os.fspath(p)) for p in image_paths]
+        content.append(dict(type='text', text=question))
+        output = dict(self._get_processor().apply_chat_template(
+            [dict(role='user', content=content)],
+            tokenize=True,
+            add_generation_prompt=True,
+            enable_thinking=False,
+            return_dict=True,
+            return_tensors='pt',
+            truncation=False))
+        if (self.truncation_max_length > 0 and
+                output['input_ids'].shape[-1] > self.truncation_max_length):
+            raise ValueError('VLM generation prompt exceeds max_length.')
+        return output
+
+    @property
+    def eos_token_id(self):
+        return self._get_processor().tokenizer.eos_token_id
+
+    def decode_answer(self, token_ids):
+        return self._get_processor().tokenizer.decode(
+            token_ids, skip_special_tokens=True).strip()
+
+    def generation_metadata(self):
+        tokenizer = self._get_processor().tokenizer
+        return dict(
+            processor_type=self.processor_type,
+            processor_path=self.processor_path,
+            image_max_pixels=self.image_max_pixels,
+            max_length=self.truncation_max_length,
+            enable_thinking=False,
+            tokenizer_sha256=hashlib.sha256(
+                tokenizer.backend_tokenizer.to_str().encode()).hexdigest())
+
     def __call__(self, data):
         messages = data.get('messages')
         if (not isinstance(messages, list) or not messages or not all(
@@ -313,16 +366,8 @@ class ProcessVLMSFTInputs:
             raise ValueError(
                 'ProcessVLMSFTInputs requires canonical messages; '
                 'configure BuildVLMMessages before it.')
-        if self._processor is None or self._processor_pid != os.getpid():
-            self._processor = get_processor_for_vlm(
-                self.processor_type,
-                self.processor_path,
-                image_max_pixels=self.image_max_pixels,
-                video_max_pixels=self.video_max_pixels,
-                **self.processor_kwargs)
-            self._processor_pid = os.getpid()
         output = _process_messages_for_sft(
-            self._processor,
+            self._get_processor(),
             messages,
             truncation_max_length=self.truncation_max_length,
             video_kwargs=self.video_kwargs)

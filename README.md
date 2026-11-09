@@ -730,7 +730,7 @@ reported/retried, not automatically downloaded or repaired.
 | Training              | Config                                                                                 |
 | --------------------- | -------------------------------------------------------------------------------------- |
 | Pi05 SFT              | [Pi05 LLaVA-665K](configs/pi05/pi05_paligemma_llava665k_full_finetune.py)              |
-| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3_vl_2b_sft.py)                                          |
+| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3vl_2b_llava665k_full_finetune.py)                       |
 | RoboTwin + LLaVA-665K | [Pi05 RoboTwin](configs/pi05/pi05_paligemma_robotwin_llava665k_mixed_full_finetune.py) |
 | RoboCasa + LLaVA-665K | [Pi05 RoboCasa](configs/pi05/pi05_paligemma_robocasa_llava665k_mixed_full_finetune.py) |
 
@@ -750,6 +750,8 @@ to `./datasets/textvqa/`. Images are reused from
 annotations to the SFT sources. Append `--eval-after-train` to the command
 above to compare the trained checkpoint and base model using
 `eval.type='TextVQAEvalRunner'`; no training-data holdout is created.
+Both Qwen configs also support this evaluation. Qwen and pure Pi05 SFT use
+the same 1,000-update budget (batch 16 on two GPUs), saving every 250 updates.
 
 See [VLM data and training](docs/vlm_data.md) for input/output contracts,
 source mixing, task scheduling and limitations. Robot-action inputs still

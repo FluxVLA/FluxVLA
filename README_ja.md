@@ -644,7 +644,7 @@ ln -s /path/to/existing/llava665k ./datasets/llava665k
 | 学習                  | 設定                                                                                   |
 | --------------------- | -------------------------------------------------------------------------------------- |
 | Pi05 SFT              | [Pi05 LLaVA-665K](configs/pi05/pi05_paligemma_llava665k_full_finetune.py)              |
-| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3_vl_2b_sft.py)                                          |
+| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3vl_2b_llava665k_full_finetune.py)                       |
 | RoboTwin + LLaVA-665K | [Pi05 RoboTwin](configs/pi05/pi05_paligemma_robotwin_llava665k_mixed_full_finetune.py) |
 | RoboCasa + LLaVA-665K | [Pi05 RoboCasa](configs/pi05/pi05_paligemma_robocasa_llava665k_mixed_full_finetune.py) |
 
@@ -664,6 +664,8 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
 SFT の学習データに追加しないでください。上記コマンドに `--eval-after-train` を
 追加すると、`eval.type='TextVQAEvalRunner'` が学習済みモデルと base モデルを比較します。
 LLaVA 学習データの追加分割は行いません。
+両方の Qwen 設定もこの評価に対応しています。Qwen と純粋な Pi05 SFT は
+1,000 更新（2 GPU で実効バッチ 16）に揃え、250 更新ごとに保存します。
 
 入出力、データ比率、タスク順序と制約は [VLM データと学習](docs/vlm_data.md)
 を参照してください。ロボット動作データは既存の LeRobot pipeline を使用します。

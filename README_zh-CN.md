@@ -642,7 +642,7 @@ ln -s /path/to/existing/llava665k ./datasets/llava665k
 | 训练方式              | 配置                                                                                   |
 | --------------------- | -------------------------------------------------------------------------------------- |
 | Pi05 SFT              | [Pi05 LLaVA-665K](configs/pi05/pi05_paligemma_llava665k_full_finetune.py)              |
-| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3_vl_2b_sft.py)                                          |
+| Qwen3-VL-2B SFT       | [Qwen3-VL-2B](configs/vlm/qwen3vl_2b_llava665k_full_finetune.py)                       |
 | RoboTwin + LLaVA-665K | [Pi05 RoboTwin](configs/pi05/pi05_paligemma_robotwin_llava665k_mixed_full_finetune.py) |
 | RoboCasa + LLaVA-665K | [Pi05 RoboCasa](configs/pi05/pi05_paligemma_robocasa_llava665k_mixed_full_finetune.py) |
 
@@ -662,6 +662,8 @@ NPROC_PER_NODE=2 bash scripts/train.sh \
 在上面的训练命令后添加 `--eval-after-train`，即可通过
 `eval.type='TextVQAEvalRunner'` 对比训练 checkpoint 和 base 模型的答案准确率；
 不会额外切分 LLaVA 训练数据。
+两个 Qwen 配置也支持此评测；Qwen 与纯 Pi05 SFT 统一训练 1,000 次优化器更新，
+双卡有效 batch size 为 16，每 250 步保存一次。
 
 输入输出、数据配比、任务调度与限制详见 [VLM 数据与训练](docs/vlm_data.md)。
 机器人动作数据仍使用现有 LeRobot pipeline。

@@ -13,6 +13,8 @@
 # limitations under the License.
 """A standalone VLM sharing FluxVLA's training and checkpoint contracts."""
 
+import torch
+
 from fluxvla.engines import VLAS
 from .base_vla import BaseVLA
 from .causal_vlm_training import CausalVLMTrainingMixin
@@ -52,6 +54,13 @@ class VLMWrapper(CausalVLMTrainingMixin, BaseVLA):
 
     def forward(self, *args, task='vlm', **batch):
         return super().forward(*args, task=task, **batch)
+
+    @torch.inference_mode()
+    def generate_text(self, **inputs):
+        """Generate with native multimodal inputs and the pretrained head."""
+        self.validate_training_task('vlm')
+        inputs.setdefault('use_cache', True)
+        return self.vlm_backbone.vlm.generate(**inputs)
 
     @property
     def config(self):

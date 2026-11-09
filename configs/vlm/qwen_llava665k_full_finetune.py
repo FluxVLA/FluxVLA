@@ -16,7 +16,8 @@
 Defaults use Qwen3-VL-2B and raw LLaVA-665K prepared as in the README.
 Override FLUXVLA_VLM_PATH, FLUXVLA_VLM_TRAIN and FLUXVLA_VLM_MEDIA as needed.
 Set FLUXVLA_VLM_PROCESSOR=qwen3_5 for Qwen3.5.
-Use FLUXVLA_VLM_VAL for validation.
+Use FLUXVLA_VLM_VAL for optional teacher-forced validation.
+Training length matches Pi05 LLaVA SFT; TextVQA is evaluation-only.
 The processor and model must refer to the same checkpoint/token vocabulary.
 """
 
@@ -66,7 +67,8 @@ train_dataloader = dict(
 runner = dict(
     type='FSDPTrainRunner',
     train_task='vlm',
-    max_epochs=1,
+    max_epochs=None,
+    max_steps=1000,  # Match the Pi05 LLaVA-665K SFT training budget.
     sharding_strategy='full-shard',
     fsdp_wrap_policy='model',
     max_grad_norm=1.0,
@@ -78,7 +80,7 @@ runner = dict(
     metric=dict(
         type='VLAMetric',
         active_trackers=('jsonl', ),
-        run_dir='work_dirs/vlm_sft',
+        run_dir='work_dirs/qwen_llava665k_full_finetune',
         window_size=1),
     optimizer=dict(type='AdamW', lr=2e-5, weight_decay=0.01),
     lr_scheduler=dict(type='linear-warmup+cosine-decay', warmup_ratio=0.03),
@@ -86,8 +88,8 @@ runner = dict(
     enable_mixed_precision_training=True,
     mixed_precision_dtype='bf16',
     keep_params_fp32=True,
-    save_iter_interval=500,
-    save_epoch_interval=1,
+    save_iter_interval=250,
+    max_keep_ckpts=2,
     seed=42)
 
 if val_annotations:
@@ -101,3 +103,24 @@ if val_annotations:
         seed=42)
     runner['evaluator'] = dict(
         type='VLMEvaluator', eval_every=100, batch_size=1, max_batches=100)
+
+# This generation benchmark is separate from the optional loss evaluator.
+eval = dict(
+    type='TextVQAEvalRunner',
+    checkpoint_dir=runner['metric']['run_dir'] + '/checkpoints',
+    annotation_path='./datasets/textvqa/TextVQA_0.5.1_val.json',
+    image_root=media_root + '/textvqa/train_images',
+    preprocessing=dict(
+        type='ProcessVLMSFTInputs',
+        processor_path=model_path,
+        processor_type=processor_type,
+        image_max_pixels=262144,
+        truncation_max_length=4096),
+    prompt_suffix='\nAnswer the question using a single word or phrase.',
+    compare_base=True,
+    max_samples=None,
+    max_new_tokens=32,
+    keep_params_fp32=True,
+    enable_mixed_precision_training=True,
+    mixed_precision_dtype='bf16',
+    run_dir=runner['metric']['run_dir'] + '/textvqa')

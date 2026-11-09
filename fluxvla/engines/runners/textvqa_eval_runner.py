@@ -34,6 +34,7 @@ from fluxvla.engines.utils.root import RUNNERS
 from fluxvla.evaluators.textvqa import textvqa_score
 from fluxvla.transforms.paligemma_vlm_transforms import \
     ProcessPaliGemmaVLMSFTInputs
+from fluxvla.transforms.vlm_transforms import ProcessVLMSFTInputs
 
 overwatch = initialize_overwatch(__name__)
 
@@ -97,7 +98,17 @@ class TextVQAEvalRunner:
         self.cfg = cfg
         self.annotation_path = Path(annotation_path)
         self.image_root = Path(image_root)
-        self.processor = ProcessPaliGemmaVLMSFTInputs(**preprocessing)
+        preprocessing = dict(preprocessing)
+        processor_type = preprocessing.pop('type',
+                                           'ProcessPaliGemmaVLMSFTInputs')
+        if processor_type == 'ProcessVLMSFTInputs':
+            self.processor = ProcessVLMSFTInputs(**preprocessing)
+        elif processor_type == 'ProcessPaliGemmaVLMSFTInputs':
+            self.processor = ProcessPaliGemmaVLMSFTInputs(**preprocessing)
+        else:
+            raise ValueError(
+                f'Unsupported TextVQA processor: {processor_type}')
+        self.native_inputs = processor_type == 'ProcessVLMSFTInputs'
         self.checkpoint = resolve_vlm_checkpoint(ckpt_path, checkpoint_dir)
         self.compare_base = compare_base or self.checkpoint is None
         self.run_dir = Path(run_dir)
@@ -129,6 +140,12 @@ class TextVQAEvalRunner:
         self.rows = rows[:self.max_samples]
         validate_textvqa_images(self.rows, self.image_root)
         self.model_cfg = copy.deepcopy(self.cfg.model)
+        self.base_checkpoint = self.model_cfg.get('pretrained_name_or_path')
+        backbone = self.model_cfg.get('vlm_backbone', {})
+        if (not self.base_checkpoint
+                and backbone.get('type') == 'CausalVLMBackbone'):
+            # Native HF backbones load pretrained weights in their constructor.
+            self.base_checkpoint = backbone.get('model_path')
         if self.model_cfg.get('use_lora', False):
             raise ValueError('TextVQA evaluation expects full checkpoints; '
                              'merge LoRA adapters first.')
@@ -140,13 +157,26 @@ class TextVQAEvalRunner:
         if self.keep_params_fp32 or not self.autocast:
             self.vla.float()
         if self.compare_base:
-            if not self.model_cfg.get('pretrained_name_or_path'):
+            if not self.base_checkpoint:
                 raise ValueError(
                     'Base comparison requires pretrained weights.')
             self.vla.from_pretrained()
         if not self.keep_params_fp32 and self.autocast:
             self.vla.to(dtype=self.dtype)
         self.vla.requires_grad_(False).eval().to(self.device)
+
+    def _eos_token_id(self):
+        if self.native_inputs:
+            return self.processor.eos_token_id
+        return self.processor._get_tokenizer().eos_id()
+
+    def _preprocessing_metadata(self):
+        if self.native_inputs:
+            return self.processor.generation_metadata()
+        return dict(
+            image_size=self.processor.image_size,
+            tokenizer_sha256=hashlib.sha256(
+                Path(self.processor.tokenizer_path).read_bytes()).hexdigest())
 
     def _load_checkpoint(self):
         if self.checkpoint.suffix == '.safetensors':
@@ -174,6 +204,7 @@ class TextVQAEvalRunner:
     @torch.inference_mode()
     def _evaluate(self, name):
         predictions = []
+        eos_token_id = self._eos_token_id()
         for completed, index in enumerate(
                 range(self.rank, len(self.rows), self.world_size), start=1):
             row = self.rows[index]
@@ -181,7 +212,8 @@ class TextVQAEvalRunner:
             inputs = self.processor.encode_prompt(
                 prompt, [self.image_root / f'{row["image_id"]}.jpg'])
             inputs = {
-                k: v.unsqueeze(0).to(self.device)
+                k:
+                (v if self.native_inputs else v.unsqueeze(0)).to(self.device)
                 for k, v in inputs.items()
             }
             with torch.autocast(
@@ -189,7 +221,7 @@ class TextVQAEvalRunner:
                 sequences = self.vla.generate_text(
                     **inputs,
                     max_new_tokens=self.max_new_tokens,
-                    eos_token_id=self.processor._get_tokenizer().eos_id(),
+                    eos_token_id=eos_token_id,
                     do_sample=False)
             new_ids = sequences[0, inputs['input_ids'].shape[1]:].tolist()
             prediction = self.processor.decode_answer(new_ids)
@@ -203,9 +235,8 @@ class TextVQAEvalRunner:
                     answers=row['answers'],
                     score=textvqa_score(prediction, row['answers']),
                     generated_tokens=len(new_ids),
-                    reached_token_limit=(
-                        len(new_ids) == self.max_new_tokens and new_ids[-1] !=
-                        self.processor._get_tokenizer().eos_id())))
+                    reached_token_limit=(len(new_ids) == self.max_new_tokens
+                                         and new_ids[-1] != eos_token_id)))
             if completed % 50 == 0:
                 overwatch.info(f'TextVQA {name}: rank {self.rank} completed '
                                f'{completed} questions.')
@@ -240,7 +271,7 @@ class TextVQAEvalRunner:
             task='textvqa_generation',
             created_at_utc=datetime.now(timezone.utc).isoformat(),
             checkpoint=str(self.checkpoint) if self.checkpoint else 'base',
-            base_checkpoint=self.model_cfg.get('pretrained_name_or_path'),
+            base_checkpoint=self.base_checkpoint,
             dataset=dict(
                 name='TextVQA',
                 split='val',
@@ -258,11 +289,8 @@ class TextVQAEvalRunner:
                 prompt_suffix=self.prompt_suffix,
                 decoding='greedy',
                 max_new_tokens=self.max_new_tokens,
-                image_size=self.processor.image_size,
-                tokenizer_sha256=hashlib.sha256(
-                    Path(self.processor.tokenizer_path).read_bytes()).
-                hexdigest(),
-                scoring='EvalAI normalization; leave-one-out VQA accuracy'),
+                scoring='EvalAI normalization; leave-one-out VQA accuracy',
+                **self._preprocessing_metadata()),
             precision=dict(
                 autocast=self.autocast,
                 dtype=str(self.dtype),
