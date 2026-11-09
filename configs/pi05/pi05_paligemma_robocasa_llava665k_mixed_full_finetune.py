@@ -17,11 +17,17 @@
 Both tasks use global batch 16 on two 80-GB GPUs. Each task keeps its own
 dataset, transforms and collator; no converted language annotations are needed.
 --eval-after-train evaluates RoboCasa robot success, not language loss.
+Robot data defaults to ./datasets/robocasa_lerobot_V2.1; set
+ROBOCASA_DATA_ROOT to use another location, without changing legacy recipes.
 """
+
+import os
 
 _base_ = './pi05_paligemma_robocasa_full_data_full_finetune.py'
 
 llava_root = './datasets/llava665k'
+_ROBOCASA_DATA_ROOT = os.environ.get('ROBOCASA_DATA_ROOT',
+                                     './datasets/robocasa_lerobot_V2.1')
 
 model = dict(
     freeze_llm_expert=False,
@@ -31,7 +37,15 @@ model = dict(
     vision_backbone=dict(preserve_fp32_residuals=True))
 
 # Inherit the existing 24-task robot pipeline and action/state statistics.
-train_dataloader = dict(per_device_batch_size=1, per_device_num_workers=4)
+# Keep portable defaults in this new recipe, not in the legacy VLA base.
+train_dataloader = dict(
+    per_device_batch_size=1,
+    per_device_num_workers=4,
+    dataset=dict(
+        datasets=dict(data_root_path=[
+            f'{_ROBOCASA_DATA_ROOT}/{os.path.basename(path)}'
+            for path in _base_.train_dataloader.dataset.datasets.data_root_path
+        ])))
 
 vlm_dataloader = dict(
     per_device_batch_size=1,

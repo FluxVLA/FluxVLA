@@ -27,8 +27,8 @@ The converted dataset uses a single ego-view camera and 29-dimensional robot
 vectors. Both 7D arm targets and the 3D waist target are relative to the
 current state; the two 6D Fourier-hand commands remain absolute. Statistics
 use q01/q99 quantile normalization over the resulting 16-step action chunks.
-Set ``ROBOCASA_DATA_ROOT`` when the converted LeRobot dataset is not in
-``./datasets/robocasa_lerobot_V2.1`` as described in the README.
+Set ``ROBOCASA_DATA_ROOT`` when the converted LeRobot dataset is not in one of
+the checked default locations.
 
 Expected topology: 32 H100 GPUs, for example 4 nodes x 8 GPUs. Per-device
 batch 8 without accumulation gives an effective global batch 256.
@@ -207,6 +207,16 @@ _PI05_ROBOCASA_STATS = {
 train_seed = int(os.environ.get('PI05_TRAIN_SEED', '42'))
 eval_seed = 7
 
+# Preserve the data lookup used by existing Pi05 and inherited Pi0 runs.
+_LOCAL_ROBOCASA_DATA_ROOT = './datasets/robocasa_lerobot_V2.1'
+_SHARED_ROBOCASA_DATA_ROOT = (
+    '/mnt/data/cpfs/mnt/data/yiming/fluxvla/upload_staging/'
+    'robocasa_lerobot_V2.1')
+_LOCAL_ROBOCASA_DATA_READY = os.path.isdir(
+    f'{_LOCAL_ROBOCASA_DATA_ROOT}/PnPBottleToCabinetClose/videos')
+_DEFAULT_ROBOCASA_DATA_ROOT = (
+    _LOCAL_ROBOCASA_DATA_ROOT
+    if _LOCAL_ROBOCASA_DATA_READY else _SHARED_ROBOCASA_DATA_ROOT)
 _PI05_CHECKPOINT = os.environ.get('PI05_CHECKPOINT',
                                   './checkpoints/pi05_base/model.safetensors')
 _PI05_TOKENIZER = os.environ.get('PI05_TOKENIZER', './checkpoints/pi05_base')
@@ -349,7 +359,7 @@ _ROBOCASA_STATISTIC_NAME = 'robocasa_gr1_24tasks_joint_delta'
 _ROBOCASA_JOINT_DELTA_MASK = ([True] * 7 + [False] * 6 + [True] * 7 +
                               [False] * 6 + [True] * 3)
 _ROBOCASA_DATA_ROOT = os.environ.get('ROBOCASA_DATA_ROOT',
-                                     './datasets/robocasa_lerobot_V2.1')
+                                     _DEFAULT_ROBOCASA_DATA_ROOT)
 _ROBOCASA_TASK_PREFIX = 'gr1_unified'
 _ROBOCASA_ENV_SUFFIX = '_GR1ArmsAndWaistFourierHands_Env'
 
