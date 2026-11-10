@@ -13,6 +13,7 @@
 # limitations under the License.
 import json
 import os
+from bisect import bisect_right
 from pathlib import Path
 from typing import Any, Dict, List, Union
 
@@ -22,6 +23,7 @@ from torch.utils.data import Dataset
 
 from datasets import concatenate_datasets, load_dataset
 from fluxvla.datasets.parquet_dataset import ParquetDataset
+from fluxvla.datasets.utils.subtask_annotations import build_subtask_index
 from fluxvla.engines import DATASETS, build_transform_from_cfg
 
 
@@ -128,7 +130,9 @@ class ParquetDatasetV3(ParquetDataset):
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
                  frame_sample_stride: int = 1,
-                 expose_index: bool = False) -> None:
+                 expose_index: bool = False,
+                 instruction_source: str = 'task',
+                 subtask_prefix: str = 'dense') -> None:
         """Initialize a parquet dataset backed by LeRobot v3 metadata.
 
         Args:
@@ -151,8 +155,26 @@ class ParquetDatasetV3(ParquetDataset):
                 frames should span a longer temporal window.
             expose_index (bool): Whether to expose the concatenated row index
                 to transforms for offline sample weighting.
+            instruction_source (str): ``'task'`` preserves whole-task training.
+                ``'subtask'`` uses the current frame's episode annotation as
+                ``task_description`` before prompt construction/tokenization.
+                Action windows stop at the annotated end (exclusive); repeated
+                tail actions have zero loss mask, including episode tails.
+                This mode requires window_start_idx=0 so every sample has at
+                least one supervised action, even in one-frame subtasks.
+            subtask_prefix (str): Episode metadata prefix, e.g. ``'dense'``
+                reads dense_subtask_names/start_frames/end_frames. Annotations
+                must fully cover every episode without gaps or overlaps.
         """
         Dataset.__init__(self)
+        if instruction_source not in ('task', 'subtask'):
+            raise ValueError('instruction_source must be task or subtask')
+        if instruction_source == 'subtask' and window_start_idx != 0:
+            raise ValueError('Subtask training requires window_start_idx=0')
+        if action_window_size <= 0:
+            raise ValueError('action_window_size must be positive')
+        self.instruction_source = instruction_source
+        self.subtask_prefix = subtask_prefix
         self.action_window_size = action_window_size
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
@@ -191,6 +213,10 @@ class ParquetDatasetV3(ParquetDataset):
         self.tasks = all_tasks
         self.episodes = all_episodes
         self.episodes_by_dataset = episodes_by_dataset
+        self.subtasks_by_dataset = ([
+            build_subtask_index(records, subtask_prefix)
+            for records in episodes_by_dataset
+        ] if instruction_source == 'subtask' else None)
 
         datasets = []
         dataset_sizes = []
@@ -254,6 +280,8 @@ class ParquetDatasetV3(ParquetDataset):
             Dict: Sample dictionary containing task text, actions, masks,
             metadata, and transform outputs.
         """
+        if self.instruction_source == 'subtask':
+            return self._getitem_subtask(index, dataset_statistics)
         data = self.dataset[index]
         dataset_idx = self._get_dataset_index(index)
         while True:
@@ -337,14 +365,84 @@ class ParquetDatasetV3(ParquetDataset):
             data['frame_timestamps'] = frame_timestamps
             data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
 
+        return self._transform_sample(
+            data, index, dataset_idx, actions, action_masks,
+            self._resolve_task_description(dataset_idx, data),
+            dataset_statistics)
+
+    def _getitem_subtask(self, index, dataset_statistics):
+        index = self._resolve_index(index)
+        data = self.dataset[index]
+        dataset_idx = self._get_dataset_index(index)
+        episode = int(data['episode_index'])
+        segments = self.subtasks_by_dataset[dataset_idx].get(episode)
+        if segments is None:
+            raise ValueError(
+                f'Missing subtask annotations for episode '
+                f'{episode} in {self.data_root_path[dataset_idx]}')
+        frame = int(data['frame_index'])
+        segment_index = bisect_right([s.end for s in segments], frame)
+        if frame < 0 or segment_index >= len(segments):
+            raise ValueError(f'Frame {frame} outside annotated episode '
+                             f'{episode}')
+        segment = segments[segment_index]
+        valid_length = min(self.action_window_size, segment.end - frame)
+        rows = self.dataset[index:index + valid_length]
+        # Do not silently align annotations to unordered, missing or foreign
+        # rows, including equal episode IDs in different data roots.
+        if (index + valid_length >
+                self.dataset_cumulative_sizes[dataset_idx + 1]
+                or rows['episode_index'] != [episode] * valid_length
+                or rows['frame_index'] != list(
+                    range(frame, frame + valid_length))):
+            raise ValueError(f'Non-contiguous subtask action rows for episode '
+                             f'{episode}, frame {frame}')
+        actions = np.asarray(rows[self.action_key], dtype=np.float32)
+        if self.use_delta:
+            # Match the existing frame-to-frame mode without reading the last
+            # action of a previous episode for frame zero.
+            previous = (
+                self.dataset[index - 1][self.action_key]
+                if frame > 0 else data[self.action_key])
+            actions = actions - np.concatenate(
+                [np.asarray(previous, dtype=np.float32)[None], actions[:-1]])
+        actions = np.concatenate([
+            actions,
+            np.repeat(
+                actions[-1:], self.action_window_size - valid_length, axis=0)
+        ])
+        action_masks = np.zeros(self.action_window_size, dtype=np.float32)
+        action_masks[:valid_length] = 1
+        if self.frame_window_size > 1:
+            offsets = np.arange(
+                self.frame_window_size) * self.frame_sample_stride
+            frame_masks = offsets < segment.end - frame
+            offsets = np.minimum(offsets, segment.end - frame - 1)
+            data['frame_timestamps'] = [
+                self.dataset[index + int(offset)]['timestamp']
+                for offset in offsets
+            ]
+            data['frame_masks'] = frame_masks.astype(np.float32)
+        data.update(
+            full_task_description=self._resolve_task_description(
+                dataset_idx, data),
+            subtask=segment.name,
+            subtask_index=segment_index,
+            subtask_start_frame=segment.start,
+            subtask_end_frame=segment.end)
+        return self._transform_sample(data, index, dataset_idx, actions,
+                                      action_masks, segment.name,
+                                      dataset_statistics)
+
+    def _transform_sample(self, data, index, dataset_idx, actions,
+                          action_masks, task_description, dataset_statistics):
         data['info'] = self.info[dataset_idx]
         data['stats'] = dataset_statistics[self.statistic_name]
         data['actions'] = np.array(actions, dtype=np.float32)
         data['action_masks'] = np.array(action_masks, dtype=np.float32)
         if self.expose_index:
             data['index'] = np.array(index, dtype=np.int64)
-        data['task_description'] = self._resolve_task_description(
-            dataset_idx, data)
+        data['task_description'] = task_description
         data['data_root'] = self.data_root_path[dataset_idx]
         for transform in self.transforms:
             data = transform(data)

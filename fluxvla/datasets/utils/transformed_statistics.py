@@ -37,6 +37,8 @@ from typing import Any, Iterator, Mapping, Sequence
 import numpy as np
 import pyarrow.parquet as pq
 
+from fluxvla.datasets.utils.subtask_annotations import build_subtask_index
+
 
 @dataclass(frozen=True)
 class Profile:
@@ -166,10 +168,32 @@ def _dataset_root_for_parquet(file_path: Path) -> Path:
                      f'{file_path}')
 
 
-def _iter_episodes(files: Sequence[Path], state_key: str,
-                   action_key: str) -> Iterator[tuple[np.ndarray, np.ndarray]]:
-    """Yield ordered state/action arrays one complete episode at a time."""
+def _iter_episodes(
+    files: Sequence[Path],
+    state_key: str,
+    action_key: str,
+    subtask_prefix: str | None = None
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield complete episodes, or annotated segments for subtask windows."""
     seen_episodes: set[tuple[Path, int]] = set()
+    subtasks = {}
+    if subtask_prefix is not None:
+        for root in {_dataset_root_for_parquet(file) for file in files}:
+            legacy = root / 'meta/episodes.jsonl'
+            if legacy.exists():
+                records = [
+                    json.loads(line)
+                    for line in legacy.read_text().splitlines()
+                    if line.strip()
+                ]
+            else:
+                records = [
+                    record
+                    for path in sorted((root /
+                                        'meta/episodes').rglob('*.parquet'))
+                    for record in pq.read_table(path).to_pylist()
+                ]
+            subtasks[root] = build_subtask_index(records, subtask_prefix)
     for file_path in files:
         schema_names = set(pq.ParquetFile(file_path).schema_arrow.names)
         order_key = ('frame_index' if 'frame_index' in schema_names else
@@ -211,7 +235,22 @@ def _iter_episodes(files: Sequence[Path], state_key: str,
                     f'Episode {episode_index} is split across parquet files '
                     f'under {episode_id[0]}. Merge it before computing stats.')
             seen_episodes.add(episode_id)
-            yield states[selector], actions[selector]
+            episode_states, episode_actions = states[selector], actions[
+                selector]
+            if subtask_prefix is None:
+                yield episode_states, episode_actions
+                continue
+            segments = subtasks[episode_id[0]].get(int(episode_index))
+            if segments is None:
+                raise ValueError(
+                    f'Missing subtask annotations for {episode_id}')
+            if (order_key != 'frame_index' or not np.array_equal(
+                    order_values[selector], np.arange(segments[-1].end))):
+                raise ValueError(f'Frames do not match subtask coverage for '
+                                 f'{episode_id}')
+            for segment in segments:
+                yield (episode_states[segment.start:segment.end],
+                       episode_actions[segment.start:segment.end])
 
 
 def _infer_profile(state_dim: int, state_key: str, action_key: str) -> Profile:
@@ -367,12 +406,17 @@ def compute_statistics(dataset_paths: Sequence[Path],
                        aloha_gripper_input_range: tuple[float, float]
                        | None = None,
                        statistic_name: str = 'private',
-                       temp_dir: Path | None = None) -> tuple[dict, dict]:
+                       temp_dir: Path | None = None,
+                       subtask_prefix: str | None = None) -> tuple[dict, dict]:
     """Compute transformed state/action statistics and provenance metadata."""
     if action_horizon <= 0:
         raise ValueError('action_horizon must be positive')
     if window_start_idx < 0:
         raise ValueError('window_start_idx must be non-negative')
+    if subtask_prefix is not None and (repeat_terminal
+                                       or window_start_idx != 0):
+        raise ValueError('Subtask statistics requires repeat_terminal=False '
+                         'and window_start_idx=0, matching ParquetDatasetV3')
     roots = _discover_dataset_roots(dataset_paths)
     files = _parquet_files(roots)
 
@@ -417,7 +461,8 @@ def compute_statistics(dataset_paths: Sequence[Path],
     total_states = 0
     total_actions = 0
     num_episodes = 0
-    for states, actions in _iter_episodes(files, state_key, action_key):
+    for states, actions in _iter_episodes(files, state_key, action_key,
+                                          subtask_prefix):
         if states.shape[-1] != state_dim or actions.shape[-1] != action_dim:
             raise ValueError('State/action dimensions vary across episodes.')
         total_states += len(states)
@@ -451,7 +496,8 @@ def compute_statistics(dataset_paths: Sequence[Path],
         state_offset = 0
         action_offset = 0
         for episode_number, (states, actions) in enumerate(
-                _iter_episodes(files, state_key, action_key), start=1):
+                _iter_episodes(files, state_key, action_key, subtask_prefix),
+                start=1):
             states = _apply_signs(states.astype(np.float32, copy=False), signs)
             actions = _apply_signs(
                 actions.astype(np.float32, copy=False), signs)
@@ -467,7 +513,8 @@ def compute_statistics(dataset_paths: Sequence[Path],
             action_offset += len(chunks)
             if episode_number % 25 == 0 or episode_number == num_episodes:
                 print(
-                    f'Processed {episode_number}/{num_episodes} episodes',
+                    f'Processed {episode_number}/{num_episodes} '
+                    f'{"subtasks" if subtask_prefix else "episodes"}',
                     file=sys.stderr,
                     flush=True)
         state_values.flush()
@@ -502,6 +549,14 @@ def compute_statistics(dataset_paths: Sequence[Path],
         'state_samples': total_states,
         'action_samples': total_actions,
     }
+    if subtask_prefix is not None:
+        metadata['subtask_prefix'] = subtask_prefix
+        metadata['subtask_segments'] = num_episodes
+        metadata['episodes'] = sum(
+            len(
+                set(
+                    pq.read_table(file, columns=['episode_index'])
+                    ['episode_index'].to_pylist())) for file in files)
     return result, metadata
 
 
@@ -577,13 +632,22 @@ def compute_statistics_from_dataset_config(
         'temp_dir':
         default_temp_dir,
     }
+    instruction_source = _common_source_value(source_configs,
+                                              'instruction_source', 'task')
+    if instruction_source == 'subtask':
+        defaults['subtask_prefix'] = _common_source_value(
+            source_configs, 'subtask_prefix', 'dense')
+        if defaults['repeat_terminal']:
+            raise ValueError('Subtask training masks terminal padding; '
+                             'supervise_terminal_padding must be False')
     for key, value in defaults.items():
         options.setdefault(key, value)
 
     supported = {
         'state_key', 'action_key', 'delta_mask', 'action_horizon',
         'window_start_idx', 'repeat_terminal', 'signs',
-        'aloha_gripper_input_range', 'statistic_name', 'temp_dir'
+        'aloha_gripper_input_range', 'statistic_name', 'temp_dir',
+        'subtask_prefix'
     }
     unknown = sorted(set(options) - supported)
     if unknown:
