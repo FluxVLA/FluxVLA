@@ -30,8 +30,7 @@ def _weights():
 
 @pytest.mark.parametrize('format',
                          ['pt', 'wrapped_pt', 'safetensors', 'shards'])
-@pytest.mark.parametrize('mapping', [None, {'projector': 'source'}])
-def test_checkpoint_restores_parameters_and_buffers(tmp_path, format, mapping):
+def test_checkpoint_restores_parameters_and_buffers(tmp_path, format):
     weights = _weights()
     if format == 'shards':
         path = tmp_path
@@ -48,7 +47,7 @@ def test_checkpoint_restores_parameters_and_buffers(tmp_path, format, mapping):
         torch.save({'model': weights} if format == 'wrapped_pt' else weights,
                    path)
 
-    model = _TinyVLA(pretrained_name_or_path=str(path), name_mapping=mapping)
+    model = _TinyVLA(pretrained_name_or_path=str(path))
     model.from_pretrained()
     for name, actual in model.state_dict().items():
         torch.testing.assert_close(actual, weights[name], rtol=0, atol=0)
@@ -71,7 +70,6 @@ def test_checkpoint_name_mapping_and_strict_missing_key(tmp_path):
         model.projector.weight, weights['projector.weight'], rtol=0, atol=0)
     torch.testing.assert_close(
         model.projector.bias, weights['projector.bias'], rtol=0, atol=0)
-    torch.testing.assert_close(model.scale, weights['scale'], rtol=0, atol=0)
 
     torch.save({'projector.weight': weights['projector.weight']}, path)
     model.name_mapping = None
@@ -79,29 +77,46 @@ def test_checkpoint_name_mapping_and_strict_missing_key(tmp_path):
         model.from_pretrained()
 
 
-def test_mixed_checkpoint_prefers_native_keys(tmp_path):
-    path = tmp_path / 'mixed.pt'
+@pytest.mark.parametrize('include_buffer', [False, True])
+def test_legacy_mapping_keeps_alias_priority_and_initialized_buffers(
+        tmp_path, include_buffer):
+    """A shared-loader change must not silently change old SFT starts."""
+    path = tmp_path / 'mapped.pt'
     weights = _weights()
-    torch.save(
-        {
-            'projector.weight': weights['projector.weight'],
-            'source.weight': torch.zeros_like(weights['projector.weight']),
-            'source.bias': weights['projector.bias'],
-            'source_scale': weights['scale'],
-        }, path)
+    checkpoint = {
+        'projector.weight': torch.full_like(weights['projector.weight'], 9),
+        'source.weight': weights['projector.weight'],
+        'source.bias': weights['projector.bias'],
+    }
+    if include_buffer:
+        checkpoint['scale'] = weights['scale']
+    torch.save(checkpoint, path)
     model = _TinyVLA(
         pretrained_name_or_path=str(path),
-        name_mapping={
-            'projector': 'source',
-            'scale': 'source_scale'
-        })
+        name_mapping={'projector': 'source'})
+    model.from_pretrained()
+    torch.testing.assert_close(
+        model.projector.weight, weights['projector.weight'], rtol=0, atol=0)
+    torch.testing.assert_close(model.scale, torch.tensor(0.5), rtol=0, atol=0)
+
+
+def test_legacy_loader_does_not_auto_detect_native_checkpoint(tmp_path):
+    path = tmp_path / 'native.pt'
+    torch.save(_weights(), path)
+    model = _TinyVLA(
+        pretrained_name_or_path=str(path),
+        name_mapping={'projector': 'source'})
+    with pytest.raises(ValueError, match='with mapping'):
+        model.from_pretrained()
+    # Explicit native selection restores both parameters and buffers.
+    model.name_mapping = None
     model.from_pretrained()
     for name, value in model.state_dict().items():
-        torch.testing.assert_close(value, weights[name], rtol=0, atol=0)
+        torch.testing.assert_close(value, _weights()[name], rtol=0, atol=0)
 
 
 @pytest.mark.parametrize('fault', ['missing', 'shape', 'unexpected'])
-def test_native_checkpoint_remains_strict_with_mapping(tmp_path, fault):
+def test_explicit_native_checkpoint_remains_strict(tmp_path, fault):
     path = tmp_path / 'bad.pt'
     weights = _weights()
     if fault == 'missing':
@@ -111,19 +126,17 @@ def test_native_checkpoint_remains_strict_with_mapping(tmp_path, fault):
     else:
         weights['value_head.weight'] = torch.zeros(1)
     torch.save(weights, path)
-    model = _TinyVLA(
-        pretrained_name_or_path=str(path),
-        name_mapping={'projector': 'source'})
-    with pytest.raises((RuntimeError, ValueError)):
+    model = _TinyVLA(pretrained_name_or_path=str(path), name_mapping=None)
+    with pytest.raises(RuntimeError):
         model.from_pretrained()
 
 
-def test_native_mapping_honors_pretrained_skip_prefixes(tmp_path):
+def test_explicit_native_loading_honors_skip_prefixes(tmp_path):
     path = tmp_path / 'policy.pt'
     torch.save(_weights(), path)
     model = _TinyVLA(
         pretrained_name_or_path=str(path),
-        name_mapping={'projector': 'source'},
+        name_mapping=None,
         pretrained_skip_prefixes=['projector.'])
     before = model.projector.weight.detach().clone()
     model.from_pretrained()

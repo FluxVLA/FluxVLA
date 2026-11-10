@@ -125,10 +125,13 @@ python scripts/rl_export.py /path/to/global_step_N /path/to/policy.pt
 The export removes only `value_head.*`, preserving policy parameter names,
 buffers and dtypes. It leaves the training checkpoint intact. Set the normal
 FluxVLA config's `model.pretrained_name_or_path` to `policy.pt` and
-`model.strict_mapping=True`. The original `model.name_mapping` can remain:
-native Flux names take precedence, and upstream names use the mapping when
-there is no exact match. Missing weights and shape mismatches still fail
-strict loading. An unexported RL actor includes the critic and is not a
+`model.strict_mapping=True`, and explicitly set `model.name_mapping=None`
+(or the equivalent field in the inference model config). Exports already
+use native Flux names; do not retain the mapping for the upstream SFT
+checkpoint. The shared loader keeps its legacy mapping semantics so existing
+SFT experiments are unchanged. RL builders separately use `load_sft_weights`
+to resolve native and upstream names and restore persistent buffers. Missing
+weights and shape mismatches still fail strict native loading. An unexported RL actor includes the critic and is not a
 strictly compatible checkpoint for a standard VLA model.
 
 Use the model architecture, normalization statistics, tokenizer, action

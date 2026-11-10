@@ -17,8 +17,8 @@ export_policy = _module.export_policy
 
 @pytest.mark.parametrize('wrapper', [None, 'model', 'state_dict'])
 @pytest.mark.parametrize('use_directory', [True, False])
-def test_rl_export_loads_with_original_mapping(tmp_path, wrapper,
-                                               use_directory):
+def test_rl_export_loads_with_explicit_native_mapping(tmp_path, wrapper,
+                                                      use_directory):
     step = tmp_path / 'global_step_10'
     checkpoint = step / 'actor/model_state_dict/full_weights.pt'
     checkpoint.parent.mkdir(parents=True)
@@ -34,9 +34,7 @@ def test_rl_export_loads_with_original_mapping(tmp_path, wrapper,
     for name, value in exported.items():
         assert value.dtype == state[name].dtype
         torch.testing.assert_close(value, state[name], rtol=0, atol=0)
-    model = _TinyVLA(
-        pretrained_name_or_path=str(output),
-        name_mapping={'projector': 'upstream_projector'})
+    model = _TinyVLA(pretrained_name_or_path=str(output), name_mapping=None)
     model.from_pretrained()
     torch.testing.assert_close(
         model(torch.ones(1, 3)), torch.tensor([[4.0, 26.0]]), rtol=0, atol=0)
@@ -146,7 +144,10 @@ def test_pi05_export_preserves_eval_actions(tmp_path, dtype, openpi_rl):
         torch.save(policy.state_dict(), checkpoint)
         exported = tmp_path / 'policy.pt'
         export_policy(checkpoint, exported)
-        model = build_vla_from_cfg(cfg).float().eval()
+        # Exported tensors use Flux names: explicitly select native loading.
+        native_cfg = cfg.deepcopy()
+        native_cfg.name_mapping = None
+        model = build_vla_from_cfg(native_cfg).float().eval()
         model.pretrained_name_or_path = str(exported)
         model.from_pretrained()
         for name, value in model.state_dict().items():
