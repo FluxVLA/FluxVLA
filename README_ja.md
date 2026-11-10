@@ -109,6 +109,8 @@ RoboTwin 公式スクリプトを使用し、Clean（Easy）と Random（Hard）
 
 ## 📢 最新情報
 
+**\[2026/11/10\]** 🔥 FluxVLA は [RLinf](https://github.com/RLinf/RLinf) を同期 PPO/GAE 強化学習バックエンドとして統合しました。PI0.5 の LIBERO-10 と RoboTwin、SmolVLA の LIBERO-10 での RL 学習に対応します。インストール、学習、評価、チェックポイント再開、エクスポートは [RLinf 統合ガイド](docs/rlinf.md) を参照してください。
+
 **\[2026/10/27\]** 🔥 RoboTwin 評価に対応しました。
 
 **\[2026/10/24\]** 🔥 FluxVLA は、Anthropic 互換の Messages API、および OpenAI 互換の Chat Completions と Responses API を介した、LIBERO と RoboCasa GR1 での MiniMax M3.1 Flash 評価に対応しました。
@@ -169,11 +171,25 @@ RoboTwin 公式スクリプトを使用し、Clean（Easy）と Random（Hard）
 conda create -n fluxvla python=3.10 -y
 conda activate fluxvla
 
-# モードを 1 つ選択：sim-only、real-only、または full。
+# モードを 1 つ選択：real-only、sim-only、rlinf-only、または all。
 bash scripts/install_env.sh sim-only
 # bash scripts/install_env.sh real-only
-# bash scripts/install_env.sh full
 ```
+
+RL モードには、FluxVLA で検証済みのリビジョンに固定した公式
+[RLinf](https://github.com/RLinf/RLinf) ソースが必要です：
+
+```bash
+git clone https://github.com/RLinf/RLinf.git src/RLinf
+git -C src/RLinf checkout --detach 88988ad5999619953b18d10b15bea1d3a6e1cfce
+export RLINF_ROOT="$PWD/src/RLinf"
+
+bash scripts/install_env.sh rlinf-only --profile cu128
+# 実機、シミュレーション、RL の依存関係をまとめて入れる場合：
+# bash scripts/install_env.sh all --profile cu128
+```
+
+`rlinf-only` はモデル依存関係、RLinf、Ray をインストールし、デフォルトではシミュレータやアセットを含みません。`all` は実機、シミュレーション、RL の全依存関係をインストールします。`RLINF_ROOT` と `cu128` が必要なのは、この 2 つの RL モードだけです。互換性のため、`full`（モード省略時のデフォルト）は引き続き実機 + シミュレーションのみで、RLinf を含みません。`sim` / `real` は従来の別名として維持し、`fluxvla-all` は `all` の別名です。シミュレータ準備と学習コマンドは [RLinf 統合ガイド](docs/rlinf.md) を参照してください。
 
 <details>
 <summary><b>インストーラで問題がある場合：モードと CUDA profile の選択を確認</b></summary>

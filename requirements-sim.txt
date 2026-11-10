@@ -28,3 +28,4 @@ transforms3d==0.4.2
 trimesh==4.4.3
 warp-lang==1.12.0
 yourdfpy==0.0.60
+zarr<3

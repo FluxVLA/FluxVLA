@@ -121,6 +121,8 @@ The supplied configs use `unseen` instructions. Scores are success rates (%);
 
 ## 📢 Latest News
 
+**\[2026/11/10\]** 🔥 FluxVLA now integrates [RLinf](https://github.com/RLinf/RLinf) for synchronous PPO/GAE reinforcement learning, with PI0.5 support on LIBERO-10 and RoboTwin and SmolVLA support on LIBERO-10. See the [RLinf integration guide](docs/rlinf.md) for installation, training, evaluation, checkpoint resume, and export workflows.
+
 **\[2026/10/27\]** 🔥 RoboTwin evaluation is now supported.
 
 **\[2026/10/24\]** 🔥 FluxVLA now supports MiniMax M3.1 Flash evaluation on LIBERO and RoboCasa GR1 through Anthropic-compatible Messages and OpenAI-compatible Chat Completions and Responses APIs.
@@ -184,11 +186,31 @@ Choose one of the following installation paths:
 conda create -n fluxvla python=3.10 -y
 conda activate fluxvla
 
-# Choose one mode: sim-only, real-only, or full.
+# Choose one mode: real-only, sim-only, rlinf-only, or all.
 bash scripts/install_env.sh sim-only
 # bash scripts/install_env.sh real-only
-# bash scripts/install_env.sh full
 ```
+
+RL modes require the official [RLinf](https://github.com/RLinf/RLinf) source
+checkout at the revision validated by FluxVLA:
+
+```bash
+git clone https://github.com/RLinf/RLinf.git src/RLinf
+git -C src/RLinf checkout --detach 88988ad5999619953b18d10b15bea1d3a6e1cfce
+export RLINF_ROOT="$PWD/src/RLinf"
+
+bash scripts/install_env.sh rlinf-only --profile cu128
+# Or install real-robot, simulation, and RL dependencies together:
+# bash scripts/install_env.sh all --profile cu128
+```
+
+`rlinf-only` installs model dependencies, RLinf and Ray without simulators or
+assets by default; `all` combines real-robot, simulation and RL dependencies.
+Only these RL modes require `RLINF_ROOT` and `cu128`. For backward compatibility,
+`full` (also the default when no mode is supplied) still means real + sim,
+without RLinf. `sim` / `real` remain aliases; `fluxvla-all` is an alias for
+`all`. See the [RLinf integration guide](docs/rlinf.md) for simulator setup and
+training commands.
 
 <details>
 <summary><b>If the installer has issues: check modes and CUDA profile selection</b></summary>

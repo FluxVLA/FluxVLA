@@ -383,13 +383,18 @@ class PI05FlowMatching(PI0FlowMatching):
         # encoding with sensitivity in the range [0, 1]
         if self.openpi_fp32_flow:
             with self._disable_autocast(noisy_actions):
+                # RL parity opts into OpenPI's FP64 frequency grid. Keep the
+                # original FP32 grid for existing openpi_fp32_flow recipes.
+                time_dtype = (
+                    torch.float64
+                    if self.openpi_rl_numerics else torch.float32)
                 time_emb = create_sinusoidal_pos_embedding(
-                    timestep.float(),
+                    timestep if self.openpi_rl_numerics else timestep.float(),
                     self.proj_width,
                     min_period=4e-3,
                     max_period=4.0,
                     device=device,
-                    dtype=torch.float32)
+                    dtype=time_dtype).float()
                 action_emb = self.action_in_proj(noisy_actions.float())
                 time_emb = F.silu(self.time_mlp_in(time_emb))
                 time_emb = F.silu(self.time_mlp_out(time_emb))

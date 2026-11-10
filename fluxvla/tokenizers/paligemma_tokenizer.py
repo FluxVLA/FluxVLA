@@ -33,6 +33,8 @@ class PaligemmaTokenizer:
     extract actions from the tokenized output.
 
     Args:
+        preserve_prompt_format (bool): Encode structured prompts unchanged,
+            without adding a trailing newline. Defaults to False.
         model_path (str): Path to the PaliGemma tokenizer model.
             Defaults to "gs://big_vision/paligemma_tokenizer.model".
     """
@@ -41,6 +43,7 @@ class PaligemmaTokenizer:
             self,
             download_path: str = 'gs://big_vision/paligemma_tokenizer.model',
             model_path: str = None,
+            preserve_prompt_format: bool = False,
             *args,
             **kwargs):
 
@@ -53,6 +56,7 @@ class PaligemmaTokenizer:
                 path = path / 'tokenizer.model'
             download_path = path.as_posix()
 
+        self.preserve_prompt_format = bool(preserve_prompt_format)
         path = maybe_download(download_path, gs={'token': 'anon'})
         with path.open('rb') as f:
             self._tokenizer = sentencepiece.SentencePieceProcessor(
@@ -75,9 +79,12 @@ class PaligemmaTokenizer:
             tuple[np.ndarray, np.ndarray]: A tuple containing:
                 - tokens (np.ndarray): The tokenized sequence.
         """
-        cleaned_text = prompt.strip().replace('_', ' ').replace('\n', ' ')
-        tokens = self._tokenizer.encode(
-            cleaned_text, add_bos=True) + self._tokenizer.encode('\n')
+        if self.preserve_prompt_format:
+            tokens = self._tokenizer.encode(prompt, add_bos=True)
+        else:
+            cleaned_text = prompt.strip().replace('_', ' ').replace('\n', ' ')
+            tokens = self._tokenizer.encode(
+                cleaned_text, add_bos=True) + self._tokenizer.encode('\n')
 
         token_mask = [True] * len(tokens)
         return dict(input_ids=tokens, attention_mask=token_mask)
@@ -104,6 +111,7 @@ class PaligemmaTokenizer:
         # 2. optional: save some meta information (for later loading)
         config = {
             'tokenizer_class': 'PaligemmaTokenizer',
+            'preserve_prompt_format': self.preserve_prompt_format,
             'spm_file': 'tokenizer.model'
         }
         with (save_dir / 'tokenizer_config.json').open(

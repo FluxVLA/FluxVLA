@@ -15,6 +15,7 @@
 from typing import Callable, Dict, Tuple
 
 import torch
+import torch.nn.functional as F
 from timm.models.vision_transformer import Block, VisionTransformer
 
 from fluxvla.engines import VISION_BACKBONES
@@ -33,8 +34,13 @@ class SigLIPViTBackbone(VisionBackbone):
     Args:
         vision_backbone_id (str): Identifier string for the backbone.
         pretrained_cfg (Dict): Configuration for loading the pretrained model.
+        openpi_stem_fp32 (bool): Use FP32 patch/position embeddings without
+            changing the encoder's normalization or the input memory layout.
         preserve_fp32_residuals (bool): Preserve FP32 encoder inputs with FP32
             parameters. Defaults to False for legacy recipe parity.
+        openpi_rl_numerics (bool): With ``openpi_stem_fp32``, additionally use
+            channels-last stem inputs and autocast-dtype OpenPI LayerNorms.
+            Opt-in for RL parity; defaults to False for existing SFT recipes.
     """
 
     def __init__(self,
@@ -42,10 +48,12 @@ class SigLIPViTBackbone(VisionBackbone):
                  vision_config: Dict = None,
                  pretrained_cfg: Dict = None,
                  openpi_stem_fp32: bool = False,
-                 preserve_fp32_residuals: bool = False) -> None:
+                 preserve_fp32_residuals: bool = False,
+                 openpi_rl_numerics: bool = False) -> None:
         super().__init__(vision_backbone_id)
         self.openpi_stem_fp32 = bool(openpi_stem_fp32)
         self.preserve_fp32_residuals = bool(preserve_fp32_residuals)
+        self.openpi_rl_numerics = bool(openpi_rl_numerics)
         vision_cls = VISION_BACKBONE_CONFIGS[vision_backbone_id]['model_cls']
         if pretrained_cfg is None:
             assert vision_config is not None, 'vision_cfg must be provided if pretrained_cfg is specified'  # noqa: E501
@@ -56,13 +64,18 @@ class SigLIPViTBackbone(VisionBackbone):
             pretrained_cfg = dict(pretrained_cfg)
             pretrained_cfg.setdefault('trust_remote_code', True)
             self.vision = vision_cls.from_pretrained(**pretrained_cfg)
+        if self.openpi_stem_fp32 and self.openpi_rl_numerics:
+            _install_openpi_layer_norms(self.vision)
 
     def _forward_openpi_stem(self, pixel_values: torch.Tensor) -> torch.Tensor:
         """Run patch extraction and positional embedding in FP32."""
         vision_model = self.vision.vision_model
         with torch.autocast(
                 device_type=pixel_values.device.type, enabled=False):
-            hidden_states = vision_model.embeddings(pixel_values.float())
+            pixels = pixel_values.float()
+            if self.openpi_rl_numerics:
+                pixels = pixels.contiguous(memory_format=torch.channels_last)
+            hidden_states = vision_model.embeddings(pixels)
 
         if (not self.preserve_fp32_residuals
                 and torch.is_autocast_enabled(pixel_values.device.type)):
@@ -149,3 +162,32 @@ class SigLIPViTBackbone(VisionBackbone):
 
         token_embeddings = torch.cat(token_embeddings, dim=1)
         return token_embeddings
+
+
+class OpenPILayerNorm(torch.nn.LayerNorm):
+    """OpenPI encoder/output normalization, separate from FP32 stem math.
+
+    Autocast controls computation dtype; master parameters remain unchanged.
+    The FP32 embedding path alone does not supply this LayerNorm behavior.
+    """
+
+    def forward(self, inputs):
+        dtype = torch.get_autocast_dtype(
+            inputs.device.type) if torch.is_autocast_enabled(
+                inputs.device.type) else inputs.dtype
+        with torch.autocast(device_type=inputs.device.type, enabled=False):
+            return F.layer_norm(
+                inputs.to(dtype), self.normalized_shape, self.weight.to(dtype),
+                self.bias.to(dtype), self.eps)
+
+
+def _install_openpi_layer_norms(module):
+    for name, child in tuple(module.named_children()):
+        if isinstance(child, torch.nn.LayerNorm):
+            replacement = OpenPILayerNorm(child.normalized_shape, child.eps,
+                                          child.elementwise_affine)
+            replacement.weight = child.weight
+            replacement.bias = child.bias
+            setattr(module, name, replacement)
+        else:
+            _install_openpi_layer_norms(child)

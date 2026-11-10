@@ -75,3 +75,71 @@ def test_checkpoint_name_mapping_and_strict_missing_key(tmp_path):
     model.name_mapping = None
     with pytest.raises(RuntimeError, match='Missing key'):
         model.from_pretrained()
+
+
+@pytest.mark.parametrize('include_buffer', [False, True])
+def test_legacy_mapping_keeps_alias_priority_and_initialized_buffers(
+        tmp_path, include_buffer):
+    """A shared-loader change must not silently change old SFT starts."""
+    path = tmp_path / 'mapped.pt'
+    weights = _weights()
+    checkpoint = {
+        'projector.weight': torch.full_like(weights['projector.weight'], 9),
+        'source.weight': weights['projector.weight'],
+        'source.bias': weights['projector.bias'],
+    }
+    if include_buffer:
+        checkpoint['scale'] = weights['scale']
+    torch.save(checkpoint, path)
+    model = _TinyVLA(
+        pretrained_name_or_path=str(path),
+        name_mapping={'projector': 'source'})
+    model.from_pretrained()
+    torch.testing.assert_close(
+        model.projector.weight, weights['projector.weight'], rtol=0, atol=0)
+    torch.testing.assert_close(model.scale, torch.tensor(0.5), rtol=0, atol=0)
+
+
+def test_legacy_loader_does_not_auto_detect_native_checkpoint(tmp_path):
+    path = tmp_path / 'native.pt'
+    torch.save(_weights(), path)
+    model = _TinyVLA(
+        pretrained_name_or_path=str(path),
+        name_mapping={'projector': 'source'})
+    with pytest.raises(ValueError, match='with mapping'):
+        model.from_pretrained()
+    # Explicit native selection restores both parameters and buffers.
+    model.name_mapping = None
+    model.from_pretrained()
+    for name, value in model.state_dict().items():
+        torch.testing.assert_close(value, _weights()[name], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize('fault', ['missing', 'shape', 'unexpected'])
+def test_explicit_native_checkpoint_remains_strict(tmp_path, fault):
+    path = tmp_path / 'bad.pt'
+    weights = _weights()
+    if fault == 'missing':
+        weights.pop('projector.bias')
+    elif fault == 'shape':
+        weights['projector.weight'] = torch.zeros(1)
+    else:
+        weights['value_head.weight'] = torch.zeros(1)
+    torch.save(weights, path)
+    model = _TinyVLA(pretrained_name_or_path=str(path), name_mapping=None)
+    with pytest.raises(RuntimeError):
+        model.from_pretrained()
+
+
+def test_explicit_native_loading_honors_skip_prefixes(tmp_path):
+    path = tmp_path / 'policy.pt'
+    torch.save(_weights(), path)
+    model = _TinyVLA(
+        pretrained_name_or_path=str(path),
+        name_mapping=None,
+        pretrained_skip_prefixes=['projector.'])
+    before = model.projector.weight.detach().clone()
+    model.from_pretrained()
+    torch.testing.assert_close(model.projector.weight, before, rtol=0, atol=0)
+    torch.testing.assert_close(
+        model.scale, _weights()['scale'], rtol=0, atol=0)

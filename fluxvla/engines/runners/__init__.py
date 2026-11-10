@@ -34,6 +34,12 @@ except ImportError as exc:
     if not is_heterogeneous_torch_distributed_error(exc):
         raise
 
+try:
+    from .rlinf_train_runner import RLinfTrainRunner  # noqa: F401, F403
+except ImportError as exc:
+    if exc.name != 'rlinf':
+        raise
+
 from .oli_inference_runner import OliInferenceRunner  # noqa: F401, F403
 from .oli_rtc_inference_runner import OliRTCInferenceRunner  # noqa: F401, F403
 from .rebot_dual_inference_runner import \
