@@ -31,6 +31,7 @@ from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
+from fluxvla.policies import ActionChunkProcessor
 from ..utils.root import RUNNERS
 from .base_eval_runner import BaseEvalRunner
 
@@ -85,6 +86,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
             result files are mirrored to
             ``<result_output_dir>/robocasa/gpu{gpu_id}_task{task_id}_results.json``.
         result_gpu_id: GPU id written to mirrored result filenames.
+        policy: Optional policy configuration. Defaults to VLAPolicy, which
+            preserves direct dataset -> VLA -> denormalization evaluation.
+        observation_adapter: Optional environment-side observation enrichment;
+            models receive its output, never the simulator object.
     """
 
     def __init__(self,
@@ -125,6 +130,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
 
+        super().__init__(**kwargs)
         self.set_common_eval_attrs(cfg, seed, ckpt_path, model_family,
                                    mixed_precision_dtype,
                                    enable_mixed_precision_training)
@@ -346,6 +352,18 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
         self._active_denorm = self.denormalize_action
 
+        self.setup_policy(
+            default=True,
+            vla=self.vla,
+            input_processor=self.dataset,
+            output_processor=ActionChunkProcessor(self.denormalize_action,
+                                                  self.eval_chunk_size,
+                                                  self.unnorm_key),
+            unnorm_key=self.unnorm_key,
+            mixed_precision_dtype=self.mixed_precision_dtype,
+            enable_mixed_precision=(self.enable_mixed_precision_training
+                                    and model_build_device != 'cpu'))
+
     @staticmethod
     def _normalize_seed(seed: int) -> int:
         return int(seed) % np.iinfo(np.uint32).max
@@ -355,30 +373,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         if isinstance(value, str):
             return value.strip().lower() in ('1', 'true', 'yes', 'y', 'on')
         return bool(value)
-
-    def _get_action_stats_horizon(self) -> Optional[int]:
-        getter = getattr(self._active_denorm, 'get_action_stats_horizon', None)
-        return getter() if callable(getter) else None
-
-    @staticmethod
-    def _validate_action_horizons(eval_chunk_size: int,
-                                  model_output_horizon: int,
-                                  action_stats_horizon: Optional[int]) -> None:
-        if eval_chunk_size > model_output_horizon:
-            raise ValueError(
-                f'eval_chunk_size={eval_chunk_size} exceeds model output '
-                f'horizon={model_output_horizon}. Regenerating action '
-                'statistics alone cannot make the model produce additional '
-                'actions. Reduce eval_chunk_size, or increase the model '
-                'action_horizon and retrain/adapt the checkpoint.')
-        if (action_stats_horizon is not None
-                and eval_chunk_size > action_stats_horizon):
-            raise ValueError(
-                f'eval_chunk_size={eval_chunk_size} exceeds action '
-                f'statistics horizon={action_stats_horizon}, while model '
-                f'output horizon={model_output_horizon} is sufficient. '
-                'Regenerate horizon-dependent action statistics with at least '
-                f'{eval_chunk_size} rows before executing this chunk.')
 
     @staticmethod
     def _validate_action_keys(
@@ -448,11 +442,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
     def _seed_python_numpy_torch(seed: int) -> None:
         random.seed(seed)
         np.random.seed(seed)
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-
-    @staticmethod
-    def _seed_torch(seed: int) -> None:
         torch.manual_seed(seed)
         torch.cuda.manual_seed_all(seed)
 
@@ -932,6 +921,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 task_desc = obs.get('annotation.human.coarse_action', '')
                 overwatch.info(f'Task desc: {task_desc}')
                 log_file.write(f'Task desc: {task_desc}\n')
+                self.reset_policy(
+                    task_desc,
+                    output_processor=ActionChunkProcessor(
+                        self._active_denorm, self.eval_chunk_size,
+                        self.unnorm_key))
 
                 # Evaluation loop.
                 success = False
@@ -948,112 +942,35 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     record_observation(obs, t)
 
                 while t < self.max_episode_steps:
-                    # Build input dict for the dataset transform pipeline.
-                    obs['task_description'] = task_desc
-                    obs['is_new_episode'] = (t == 0)
-                    batch, _ = self.dataset(obs)
-                    debug_info = getattr(self.dataset, 'last_debug', {})
+                    try:
+                        output = self.step_policy(
+                            obs,
+                            t,
+                            environment=env,
+                            policy_seed=(self._action_seed(local_id, t)
+                                         if self.deterministic_action_sampling
+                                         else None))
+                    except Exception:
+                        env.close()
+                        log_file.close()
+                        raise
+                    if output.metadata or output.status != 'ready':
+                        message = 'Policy: ' + json.dumps(
+                            output.event(), ensure_ascii=False)
+                        overwatch.info(message)
+                        log_file.write(message + '\n')
                     if t == 0:
-                        state_arr = (
-                            batch['states'].detach().float().cpu().numpy()
-                            if 'states' in batch else None)
-                        prompt_preview = (
-                            debug_info.get('text') or debug_info.get('prompt')
-                            or '')
-                        overwatch.info(
-                            f'Prompt preview: {prompt_preview[:240]}')
-                        log_file.write(
-                            f'Prompt preview: {prompt_preview[:240]}\n')
-                        if state_arr is not None:
-                            state_min = format(state_arr.min(), '.6g')
-                            state_max = format(state_arr.max(), '.6g')
-                            overwatch.info(f'State range: min={state_min}, '
-                                           f'max={state_max}')
-                            log_file.write(f'State range: min={state_min}, '
-                                           f'max={state_max}\n')
-                    batch['unnorm_key'] = self.unnorm_key
+                        for message in output.diagnostics:
+                            overwatch.info(message)
+                            log_file.write(message + '\n')
+                    if output.status != 'ready':
+                        # Expected stops still produce failure artifacts.
+                        # Only environment feedback can mark a success.
+                        break
 
-                    # Model inference.
-                    if self.deterministic_action_sampling:
-                        self._seed_torch(self._action_seed(local_id, t))
-                    with torch.autocast(
-                            'cuda',
-                            dtype=self.mixed_precision_dtype,
-                            enabled=(self.enable_mixed_precision_training
-                                     and self.model_build_device != 'cpu')):
-                        with torch.no_grad():
-                            actions = self.vla.predict_action(**batch)
-
-                    # actions shape: (1, model_horizon, action_dim)
-                    if actions.ndim == 3:
-                        if actions.shape[0] != 1:
-                            raise ValueError(
-                                'RoboCasa evaluation requires action batch '
-                                f'size 1, got shape {tuple(actions.shape)}.')
-                        model_output_horizon = int(actions.shape[1])
-                    elif actions.ndim == 2:
-                        if actions.shape[0] != 1:
-                            raise ValueError(
-                                'RoboCasa single-action output requires batch '
-                                f'size 1, got shape {tuple(actions.shape)}.')
-                        model_output_horizon = 1
-                    else:
-                        raise ValueError(
-                            'Expected predicted actions with shape [1, T, D] '
-                            f'or [1, D], got {tuple(actions.shape)}.')
-
-                    action_stats_horizon = self._get_action_stats_horizon()
-                    self._validate_action_horizons(
-                        self.eval_chunk_size,
-                        model_output_horizon,
-                        action_stats_horizon,
-                    )
-                    # (1, H, D) or (1, D) -> (H, D), float32 NumPy.
-                    if actions.ndim == 3:
-                        actions = actions[0, :self.eval_chunk_size, :]
-                    else:
-                        actions = actions[0, None, :]
-                    actions = actions.detach().float().cpu().numpy()
-
-                    if t == 0:
-                        action_min = format(actions.min(), '.6g')
-                        action_max = format(actions.max(), '.6g')
-                        action_mean = format(actions.mean(), '.6g')
-                        overwatch.info(f'Normalized action chunk: '
-                                       f'min={action_min}, '
-                                       f'max={action_max}, '
-                                       f'mean={action_mean}')
-                        log_file.write(f'Normalized action chunk: '
-                                       f'min={action_min}, '
-                                       f'max={action_max}, '
-                                       f'mean={action_mean}\n')
-
-                    raw_state = getattr(self.dataset, 'last_raw_state', None)
-
-                    # Execute one action chunk. Horizon-dependent statistics
-                    # are indexed relative to this newly predicted chunk.
-                    for chunk_index, action in enumerate(actions):
-                        denorm_input = dict(
-                            action=action,
-                            action_horizon_index=chunk_index,
-                            task_suite_name=self.unnorm_key,
-                        )
-                        if raw_state is not None:
-                            # Every delta in the chunk is relative to the same
-                            # state snapshot used for this policy prediction.
-                            denorm_input['state'] = raw_state
-                        action_denormed = self._active_denorm(denorm_input)
-
-                        if t == 0:
-                            denorm_min = format(action_denormed.min(), '.6g')
-                            denorm_max = format(action_denormed.max(), '.6g')
-                            overwatch.info(f'Denorm action: '
-                                           f'min={denorm_min}, '
-                                           f'max={denorm_max}')
-                            log_file.write(f'Denorm action: '
-                                           f'min={denorm_min}, '
-                                           f'max={denorm_max}\n')
-
+                    # Native commands: do not denormalize a second time.
+                    chunk_start = t
+                    for action_denormed in output.actions:
                         # Split 29D action into RoboCasa's dict action format.
                         action_dict = {}
                         for key, (start, end) in self.action_keys.items():
@@ -1082,7 +999,10 @@ class RobocasaEvalRunner(BaseEvalRunner):
                             break
                         if terminated or truncated:
                             break
+                        if t >= self.max_episode_steps:
+                            break
 
+                    self.acknowledge_policy(t - chunk_start)
                     if success or terminated or truncated:
                         break
 

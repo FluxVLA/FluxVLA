@@ -27,6 +27,8 @@ from .base_inference_runner import BaseInferenceRunner
 class RebotDualInferenceRunner(BaseInferenceRunner):
     """Run the reBot 14-D observation and joint-command loop."""
 
+    policy_execution_ack = True
+
     def __init__(self,
                  prepare_pose=None,
                  async_execution=False,
@@ -124,7 +126,7 @@ class RebotDualInferenceRunner(BaseInferenceRunner):
         """Execute a 14-D action chunk synchronously or asynchronously."""
         del rate
         if self.disable_puppet_arm:
-            return
+            return 0
         actions = np.asarray(actions)
         if actions.ndim != 2 or actions.shape[1] < 14:
             raise ValueError(
@@ -141,7 +143,7 @@ class RebotDualInferenceRunner(BaseInferenceRunner):
             if self.execute_horizon is not None:
                 actions = actions[:self.execute_horizon]
 
-        self.ros_operator.execute_trajectory(
+        published = self.ros_operator.execute_trajectory(
             arm_trajectories={
                 'left': actions[:, :7],
                 'right': actions[:, 7:14],
@@ -151,6 +153,7 @@ class RebotDualInferenceRunner(BaseInferenceRunner):
 
         if self.async_execution and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
+        return published
 
     def cleanup(self):
         """Stop an active trajectory before base runner cleanup."""

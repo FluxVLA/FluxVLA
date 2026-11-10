@@ -146,6 +146,20 @@ def build_from_cfg(
         return obj
 
 
+def build_policy_from_cfg(cfg, default_args=None):
+    """Build an online policy; runtime models/processors can be injected."""
+    import fluxvla.policies  # noqa: F401
+    from .root import POLICIES
+    return build_from_cfg(cfg, POLICIES, default_args)
+
+
+def build_observation_adapter_from_cfg(cfg):
+    """Build an environment-side adapter, separate from model preprocessing."""
+    import fluxvla.engines.observation_adapters  # noqa: F401
+    from .root import OBSERVATION_ADAPTERS
+    return build_from_cfg(cfg, OBSERVATION_ADAPTERS)
+
+
 def build_tokenizer_from_cfg(
     cfg: Union[dict, ConfigDict, Config],
     default_args: Optional[Union[dict, 'ConfigDict', 'Config']] = None

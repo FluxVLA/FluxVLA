@@ -20,8 +20,10 @@ from .builder import build_head_from_cfg  # noqa: F401, F403
 from .builder import build_llm_backbone_from_cfg  # noqa: F401, F403
 from .builder import build_lr_scheduler_from_cfg  # noqa: F401, F403
 from .builder import build_metric_from_cfg  # noqa: F401, F403
+from .builder import build_observation_adapter_from_cfg  # noqa: F401, F403
 from .builder import build_operator_from_cfg  # noqa: F401, F403
 from .builder import build_optimizer_from_cfg  # noqa: F401, F403
+from .builder import build_policy_from_cfg  # noqa: F401, F403
 from .builder import build_processor_from_cfg  # noqa: F401, F403
 from .builder import build_projector_from_cfg  # noqa: F401, F403
 from .builder import build_runner_from_cfg  # noqa: F401, F403
@@ -41,9 +43,11 @@ from .root import HEADS  # noqa: F401, F403
 from .root import LLM_BACKBONES  # noqa: F401, F403
 from .root import LR_SCHEDULERS  # noqa: F401, F403
 from .root import METRICS  # noqa: F401, F403
+from .root import OBSERVATION_ADAPTERS  # noqa: F401, F403
 from .root import OPERATORS  # noqa: F401, F403
 from .root import OPTIMIZERS  # noqa: F401, F403
 from .root import PLANNERS  # noqa: F401, F403
+from .root import POLICIES  # noqa: F401, F403
 from .root import PROCESSORS  # noqa: F401, F403
 from .root import PROJECTORS  # noqa: F401, F403
 from .root import RUNNERS  # noqa: F401, F403
