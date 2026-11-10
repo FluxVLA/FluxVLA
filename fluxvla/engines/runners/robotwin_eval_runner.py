@@ -39,6 +39,7 @@ from fluxvla.engines.utils.name_map import str_to_dtype
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils.root import RUNNERS
 from .base_eval_runner import BaseEvalRunner
+from .policy_runner import PolicyRunnerMixin
 
 overwatch = initialize_overwatch(__name__)
 
@@ -143,7 +144,7 @@ def _inject_checkpoint_tokenizer(dataset: Dict, ckpt_path: str) -> None:
             tokenizer['model_path'] = tokenizer_path.as_posix()
 
 
-class LocalFluxVLAPolicy:
+class LocalFluxVLAPolicy(PolicyRunnerMixin):
     """Adapt a config-built FluxVLA model to the RoboTwin policy hooks.
 
     The model architecture comes from ``cfg.inference_model`` (or
@@ -181,11 +182,15 @@ class LocalFluxVLAPolicy:
                  enable_mixed_precision_training: bool = True,
                  norm_stats_path: Optional[str] = None,
                  max_episode_steps: Optional[int] = None,
-                 enable_model_dtype_cast: bool = False) -> None:
+                 enable_model_dtype_cast: bool = False,
+                 **policy_options) -> None:
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
 
+        self.configure_policy(**policy_options)
+        self._policy_goal = None
+        self._policy_observation_id = 0
         self.ckpt_path = Path(ckpt_path).expanduser().resolve()
         if not self.ckpt_path.is_file():
             raise FileNotFoundError(
@@ -232,9 +237,54 @@ class LocalFluxVLAPolicy:
         else:
             self.vla.to(self.device)
 
-    def predict(self, observation: Dict[str, Any],
-                instruction: str) -> np.ndarray:
+        self.setup_policy(
+            vla=self.vla,
+            input_processor=self._policy_inputs,
+            output_processor=self._policy_actions,
+            unnorm_key=self.unnorm_key,
+            mixed_precision_dtype=self.mixed_precision_dtype,
+            enable_mixed_precision=(self.enable_mixed_precision_training
+                                    and self.device.type == 'cuda'))
+
+    def _policy_inputs(self, observation):
+        batch = self.dataset(observation)
+        if isinstance(batch, tuple):
+            batch = batch[0]
+        return {
+            key:
+            value.to(self.device) if isinstance(value, torch.Tensor) else value
+            for key, value in batch.items()
+        }
+
+    def _policy_actions(self, raw_actions, *, raw_state=None):
+        inputs = dict(action=raw_actions.float().cpu().numpy())
+        state = getattr(self.dataset, 'last_raw_state', None)
+        if state is not None:
+            inputs['state'] = state
+        return _validate_actions(
+            self.denormalize_action(inputs), self.eval_chunk_size), []
+
+    def predict(self,
+                observation: Dict[str, Any],
+                instruction: str,
+                *,
+                environment=None) -> np.ndarray:
         """Predict one denormalized action chunk for a RoboTwin observation."""
+        if getattr(self, 'policy', None) is not None:
+            if self._policy_goal != instruction:
+                self.reset_policy(instruction)
+                self._policy_goal = instruction
+                self._policy_observation_id = 0
+            output = self.step_policy(
+                _build_observation(observation, instruction),
+                self._policy_observation_id,
+                environment=environment)
+            self._policy_observation_id += 1
+            if output.metadata or output.status != 'ready':
+                overwatch.info('Policy: ' +
+                               json.dumps(output.event(), ensure_ascii=False))
+            return (output.actions if output.status == 'ready' else np.empty(
+                (0, 14), dtype=np.float32))
         # Build input dict for the dataset transform pipeline.
         batch = self.dataset(_build_observation(observation, instruction))
         if isinstance(batch, tuple):
@@ -265,6 +315,9 @@ class LocalFluxVLAPolicy:
 
     def reset(self) -> None:
         """Reset model-side episode state when the model supports it."""
+        self._policy_goal = None
+        self._policy_observation_id = 0
+        self.last_policy_output = None
         reset = getattr(self.vla, 'reset', None)
         if callable(reset):
             reset()
@@ -274,6 +327,7 @@ class LocalFluxVLAPolicy:
         vla = getattr(self, 'vla', None)
         if vla is not None:
             vla.cpu()
+        self.release_policy()
         self.vla = None
         self.dataset = None
         self.denormalize_action = None
@@ -312,6 +366,10 @@ def get_model(usr_args: Dict[str, Any]) -> LocalFluxVLAPolicy:
             denormalize_action if denormalize_action is not None else
             eval_cfg.get('denormalize_action'))
 
+    eval_cfg = getattr(cfg, 'eval', None) or {}
+    policy_cfg = usr_args.get('policy', eval_cfg.get('policy'))
+    adapter_cfg = usr_args.get('observation_adapter',
+                               eval_cfg.get('observation_adapter'))
     eval_chunk_size = usr_args.get('eval_chunk_size', 32)
 
     # Rebuild only when the checkpoint or inference settings change.
@@ -325,6 +383,8 @@ def get_model(usr_args: Dict[str, Any]) -> LocalFluxVLAPolicy:
         usr_args.get('norm_stats_path') or '',
         usr_args.get('max_episode_steps'),
         usr_args.get('enable_model_dtype_cast', False),
+        repr(policy_cfg),
+        repr(adapter_cfg),
     )
     if _ACTIVE_POLICY is not None and _ACTIVE_KEY != key:
         close_model()
@@ -342,6 +402,8 @@ def get_model(usr_args: Dict[str, Any]) -> LocalFluxVLAPolicy:
             norm_stats_path=usr_args.get('norm_stats_path'),
             max_episode_steps=key[7],
             enable_model_dtype_cast=key[8],
+            policy=policy_cfg,
+            observation_adapter=adapter_cfg,
         )
         _ACTIVE_KEY = key
     return _ACTIVE_POLICY
@@ -352,12 +414,25 @@ def eval(task_env: Any, model: LocalFluxVLAPolicy,
     """Predict and execute one action chunk in RoboTwin."""
     if model.max_episode_steps is not None:
         task_env.step_lim = min(task_env.step_lim, model.max_episode_steps)
-    actions = model.predict(observation, task_env.get_instruction())
+    if getattr(model, 'policy', None) is not None:
+        actions = model.predict(
+            observation, task_env.get_instruction(), environment=task_env)
+        if model.last_policy_output.status != 'ready':
+            # End the upstream loop as an ordinary failed rollout, not an
+            # exception or an endless series of empty action chunks.
+            task_env.step_lim = task_env.take_action_cnt
+            return
+    else:
+        actions = model.predict(observation, task_env.get_instruction())
+    executed_steps = 0
     for action in actions:
         if (task_env.eval_success
                 or task_env.take_action_cnt >= task_env.step_lim):
             break
         task_env.take_action(action, action_type='qpos')
+        executed_steps += 1
+    if getattr(model, 'policy', None) is not None:
+        model.acknowledge_policy(executed_steps)
 
 
 def reset_model(model: LocalFluxVLAPolicy) -> None:
@@ -485,6 +560,7 @@ class RobotwinEvalRunner(BaseEvalRunner):
                  eval_shard_strategy: str = 'task',
                  max_episode_steps: Optional[int] = None,
                  **kwargs) -> None:
+        super().__init__(**kwargs)
         # Manager workers run as plain single-process python, where overwatch
         # is the pure logger without ``local_rank``.
         local_rank = getattr(overwatch, 'local_rank', None)
@@ -609,6 +685,14 @@ class RobotwinEvalRunner(BaseEvalRunner):
             root = Path(ckpt_path).resolve().parent.parent
         return root / 'eval_runs' / cls._build_ckpt_tag(ckpt_path)
 
+    def _policy_fingerprint(self):
+        options = (getattr(self, 'policy_config', None),
+                   getattr(self, 'observation_adapter_config', None))
+        if options == (None, None):
+            return None
+        payload = json.dumps(options, sort_keys=True, default=repr)
+        return hashlib.sha256(payload.encode()).hexdigest()
+
     def _resolve_run_dir(self) -> str:
         """Reuse the newest matching unfinished run, or create a new run."""
         ckpt_root = self._build_ckpt_root(self.ckpt_path,
@@ -631,7 +715,9 @@ class RobotwinEvalRunner(BaseEvalRunner):
                 except (OSError, json.JSONDecodeError):
                     continue
                 same_config = (
-                    payload['ckpt'] == self.ckpt_path
+                    payload.get('policy_fingerprint')
+                    == self._policy_fingerprint()
+                    and payload['ckpt'] == self.ckpt_path
                     and payload.get('task_suite_name') == self.task_suite_name
                     and payload['trials_per_task'] == self.num_trials_per_task
                     and payload.get('max_episode_steps')
@@ -660,6 +746,8 @@ class RobotwinEvalRunner(BaseEvalRunner):
         """``usr_args`` fields consumed by the module-level policy."""
         return {
             '_fluxvla_cfg': self.cfg,
+            'policy': self.policy_config,
+            'observation_adapter': self.observation_adapter_config,
             'dataset': self.dataset_cfg,
             'denormalize_action': self.denormalize_action_cfg,
             'ckpt_path': self.ckpt_path,
@@ -873,6 +961,7 @@ class RobotwinEvalRunner(BaseEvalRunner):
             'ckpt_setting': self._upstream_checkpoint_label(),
             'policy_name': self.POLICY_MODULE,
             'instruction_type': self.instruction_type,
+            'policy_fingerprint': self._policy_fingerprint(),
             'seed': self.seed,
             'test_num': self.num_trials_per_task,
         })

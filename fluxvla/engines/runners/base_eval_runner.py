@@ -16,23 +16,30 @@
 import copy
 import os
 from pathlib import Path
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import torch
 
 from fluxvla.engines.utils import initialize_overwatch
 from fluxvla.engines.utils.name_map import str_to_dtype
+from .policy_runner import PolicyRunnerMixin
 
 overwatch = initialize_overwatch(__name__)
 
 
-class BaseEvalRunner:
-    """Common helper mixin for environment evaluation runners.
+class BaseEvalRunner(PolicyRunnerMixin):
+    """Shared model utilities and policy lifecycle for environment evaluation.
 
-    This base class intentionally keeps the task-specific evaluation loops in
-    their concrete runners. It only centralizes small, side-effect-free helpers
-    that are shared by LIBERO and RoboCasa evaluation code.
+    Environment stepping and action formats remain in concrete adapters.
+    ``policy`` and ``observation_adapter`` are forwarded by subclasses via
+    ``super().__init__(**kwargs)``; planner internals never enter the runner.
     """
+
+    def __init__(self,
+                 policy: Optional[Dict] = None,
+                 observation_adapter: Optional[Dict] = None,
+                 **kwargs):
+        self.configure_policy(policy, observation_adapter)
 
     @staticmethod
     def build_eval_vla(cfg: Dict):

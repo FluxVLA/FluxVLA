@@ -43,6 +43,8 @@ class AlohaInferenceRunner(BaseInferenceRunner):
             Defaults to None.
     """
 
+    policy_execution_ack = True
+
     def __init__(self,
                  gripper_threshold: float = 0.05,
                  prepare_pose: List[float] = None,
@@ -251,7 +253,7 @@ class AlohaInferenceRunner(BaseInferenceRunner):
         In async mode, skips steps that elapsed during inference.
         """
         if self.disable_puppet_arm:
-            return
+            return 0
 
         ctx = self._action_ctx
 
@@ -264,7 +266,7 @@ class AlohaInferenceRunner(BaseInferenceRunner):
             if self.execute_horizon is not None:
                 actions = actions[:self.execute_horizon]
 
-        self.ros_operator.execute_trajectory(
+        published = self.ros_operator.execute_trajectory(
             actions[:, :7],
             actions[:, 7:14],
             dt=self.dt,
@@ -273,6 +275,7 @@ class AlohaInferenceRunner(BaseInferenceRunner):
 
         if self.async_execution and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
+        return published
 
     def cleanup(self):
         """Clean up resources."""
