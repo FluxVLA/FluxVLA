@@ -48,7 +48,8 @@ _MINIMAX_ANTHROPIC_BASE_URL = (
 _MINIMAX_API_KEY_ENV = _environ.get('MINIMAX_API_KEY_ENV') or None
 
 inference_model = dict(
-    type='MiniMaxRobocasaVLA',
+    type='MiniMaxVLA',
+    embodiment='robocasa',
     model='MiniMax-M3.1-Flash',
     region=_MINIMAX_REGION,
     api_protocol='anthropic',
@@ -132,7 +133,7 @@ eval = dict(
     },
     requires_dataset_stats=False,
     dataset=dict(
-        type='OpenAIRobocasaEvalDataset',
+        type='ToolCallingRobocasaDataset',
         img_keys=['video.ego_view_bg_crop_pad_res256_freq20'],
         resize_size=512,
     ),

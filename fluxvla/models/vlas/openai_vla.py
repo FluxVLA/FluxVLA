@@ -26,8 +26,10 @@ from fluxvla.engines import VLAS
 from .tool_calling_vla import DEFAULT_LIBERO_SYSTEM_PROMPT  # noqa: F401
 from .tool_calling_vla import DEFAULT_OLI_SYSTEM_PROMPT  # noqa: F401
 from .tool_calling_vla import DEFAULT_ROBOCASA_SYSTEM_PROMPT  # noqa: F401
-from .tool_calling_vla import (ToolCallingOliVLA, ToolCallingRobocasaVLA,
-                               ToolCallingVLA)
+from .tool_calling_vla import (LiberoToolPolicy, OliToolPolicy,
+                               RobocasaToolPolicy, _HostedToolCallingVLA)
+
+__all__ = ['OpenAIVLA']
 
 
 class OpenAIResponsesProtocolMixin:
@@ -37,11 +39,9 @@ class OpenAIResponsesProtocolMixin:
                  model: str = 'gpt-6-astra',
                  base_url: str = 'https://api.openai.com/v1',
                  api_key_env: str = 'OPENAI_API_KEY',
-                 *args,
                  **kwargs) -> None:
-        # Positional arguments after these three retain their original order
-        # in the LIBERO/RoboCasa constructor, including each task's defaults.
-        super().__init__(model, base_url, api_key_env, *args, **kwargs)
+        super().__init__(
+            model=model, base_url=base_url, api_key_env=api_key_env, **kwargs)
 
     def _request_body(self) -> Dict[str, Any]:
         body = {
@@ -70,7 +70,7 @@ class OpenAIResponsesProtocolMixin:
             headers={
                 'Authorization': f'Bearer {api_key}',
                 'Content-Type': 'application/json',
-                'User-Agent': 'FluxVLA/OpenAILiberoVLA',
+                'User-Agent': 'FluxVLA/OpenAIVLA',
             },
             method='POST')
         for attempt in range(self.max_retries + 1):
@@ -93,16 +93,28 @@ class OpenAIResponsesProtocolMixin:
         raise AssertionError('unreachable')
 
 
-@VLAS.register_module()
-class OpenAILiberoVLA(OpenAIResponsesProtocolMixin, ToolCallingVLA):
-    """LIBERO tool-calling policy backed by the OpenAI Responses API."""
+class _OpenAILiberoPolicy(OpenAIResponsesProtocolMixin, LiberoToolPolicy):
+    """Internal OpenAI transport binding for LIBERO actions."""
+
+
+class _OpenAIRobocasaPolicy(OpenAIResponsesProtocolMixin, RobocasaToolPolicy):
+    """Internal OpenAI transport binding for RoboCasa actions."""
+
+
+class _OpenAIOliPolicy(OpenAIResponsesProtocolMixin, OliToolPolicy):
+    """Internal OpenAI transport binding for OLI keypoint actions."""
 
 
 @VLAS.register_module()
-class OpenAIRobocasaVLA(OpenAIResponsesProtocolMixin, ToolCallingRobocasaVLA):
-    """RoboCasa GR1 tool-calling policy backed by the OpenAI Responses API."""
+class OpenAIVLA(_HostedToolCallingVLA):
+    """OpenAI-hosted VLA with a configurable robot policy adapter.
 
+    ``embodiment`` selects the internal action adapter; callers always use the
+    provider-level :meth:`predict_action` interface.
+    """
 
-@VLAS.register_module()
-class OpenAIOliVLA(OpenAIResponsesProtocolMixin, ToolCallingOliVLA):
-    """OLI keypoint policy backed by the OpenAI Responses API."""
+    POLICY_TYPES = {
+        'libero': _OpenAILiberoPolicy,
+        'robocasa': _OpenAIRobocasaPolicy,
+        'oli': _OpenAIOliPolicy,
+    }

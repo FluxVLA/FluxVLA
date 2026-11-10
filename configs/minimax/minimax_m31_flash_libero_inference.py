@@ -48,7 +48,8 @@ _MINIMAX_ANTHROPIC_BASE_URL = (
 _MINIMAX_API_KEY_ENV = _environ.get('MINIMAX_API_KEY_ENV') or None
 
 inference_model = dict(
-    type='MiniMaxLiberoVLA',
+    type='MiniMaxVLA',
+    embodiment='libero',
     model='MiniMax-M3.1-Flash',
     region=_MINIMAX_REGION,
     api_protocol='anthropic',
@@ -106,7 +107,7 @@ eval = dict(
     norm_stats_path=None,
     requires_dataset_stats=False,
     dataset=dict(
-        type='OpenAILiberoEvalDataset',
+        type='ToolCallingLiberoDataset',
         img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
         resize_size=512,
     ),

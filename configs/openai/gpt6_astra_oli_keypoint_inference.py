@@ -10,7 +10,8 @@ _OPENAI_BASE_URL = (_environ.get('OPENAI_BASE_URL')
 _OPENAI_API_KEY_ENV = _environ.get('OPENAI_API_KEY_ENV') or 'OPENAI_API_KEY'
 
 inference_model = dict(
-    type='OpenAIOliVLA',
+    type='OpenAIVLA',
+    embodiment='oli',
     model='gpt-6-astra',
     base_url=_OPENAI_BASE_URL,
     api_key_env=_OPENAI_API_KEY_ENV,
@@ -78,7 +79,7 @@ inference = dict(
     enable_mixed_precision=False,
     camera_names=['head', 'left_wrist', 'right_wrist'],
     dataset=dict(
-        type='OpenAIOliInferenceDataset',
+        type='ToolCallingOliDataset',
         image_names=['head', 'left_wrist', 'right_wrist'],
     ),
     denormalize_action=dict(

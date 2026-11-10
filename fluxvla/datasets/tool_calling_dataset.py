@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Raw observation adapters for API-hosted simulator and robot policies."""
+"""Provider-neutral observation adapters for hosted tool-calling VLAs."""
 
 from typing import Any, Dict, List
 
@@ -22,12 +22,11 @@ from fluxvla.engines import DATASETS
 
 
 @DATASETS.register_module()
-class OpenAILiberoEvalDataset:
-    """Prepare raw images and proprioception for ``OpenAILiberoVLA``.
+class ToolCallingLiberoDataset:
+    """Prepare raw LIBERO observations for a hosted VLA.
 
-    Unlike local VLA datasets, this adapter performs no tokenization,
-    normalization, tensor conversion, or CUDA transfer. The API policy owns
-    image encoding and returns native LIBERO control actions.
+    Images and proprioception remain on CPU. The selected robot policy adapter
+    owns image encoding and returns native LIBERO control actions.
     """
 
     def __init__(self,
@@ -76,8 +75,8 @@ class OpenAILiberoEvalDataset:
 
 
 @DATASETS.register_module()
-class OpenAIOliInferenceDataset:
-    """Prepare named OLI observations for ``OpenAIOliVLA``."""
+class ToolCallingOliDataset:
+    """Prepare named OLI observations for a hosted keypoint policy."""
 
     _KEYPOINT_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
                        'right_wrist')
@@ -100,13 +99,8 @@ class OpenAIOliInferenceDataset:
 
 
 @DATASETS.register_module()
-class OpenAIRobocasaEvalDataset:
-    """Prepare native RoboCasa observations for an API-hosted policy.
-
-    The adapter deliberately keeps images and robot state on CPU. The remote
-    policy owns image encoding and returns actions in the native 29D GR1
-    action order used by :class:`RobocasaEvalRunner`.
-    """
+class ToolCallingRobocasaDataset:
+    """Prepare native RoboCasa observations for a hosted VLA."""
 
     _STATE_KEYS = (
         'state.left_arm',

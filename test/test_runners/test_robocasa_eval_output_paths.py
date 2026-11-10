@@ -69,8 +69,9 @@ def test_robocasa_runner_builds_without_checkpoint_or_stats(monkeypatch):
     runner.run_setup()
 
     assert runner.ckpt_path is None
-    assert runner.vla.__class__.__name__ == 'OpenAIRobocasaVLA'
-    assert runner.dataset.__class__.__name__ == 'OpenAIRobocasaEvalDataset'
+    assert runner.vla.__class__.__name__ == 'OpenAIVLA'
+    assert runner.vla.embodiment == 'robocasa'
+    assert runner.dataset.__class__.__name__ == 'ToolCallingRobocasaDataset'
     assert runner.denormalize_action.__class__.__name__ == \
         'IdentityRobocasaAction'
     assert next(runner.vla.buffers()).device.type == 'cpu'

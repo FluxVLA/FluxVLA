@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Provider-independent tool-calling policies for robot evaluation.
+"""Provider-independent tool-calling robot policies.
 
 Observation history and normalized replies use Responses-shaped dictionaries
 internally. Provider subclasses own wire-format conversion, authentication and
@@ -98,7 +98,71 @@ Use only the camera images and reported robot state; do not assume hidden
 simulator metadata."""
 
 
-class ToolCallingVLA(nn.Module):
+class _HostedToolCallingVLA(nn.Module):
+    """One provider-facing VLA with a selectable robot policy adapter.
+
+    Evaluation and inference runners only depend on
+    ``predict_action(**batch) -> Tensor[B, T, action_dim]``. Provider modules
+    supply the concrete policy implementations through ``POLICY_TYPES``;
+    choosing LIBERO, RoboCasa, or OLI is configuration rather than a distinct
+    public VLA type.
+
+    The wrapped policies remain inference-only because hosted foundation
+    models have no local trainable weights or checkpoint to load.
+    """
+
+    POLICY_TYPES: Dict[str, type] = {}
+
+    def __init__(self, embodiment: str, **policy_kwargs) -> None:
+        super().__init__()
+        embodiment = str(embodiment).strip().lower()
+        if embodiment not in self.POLICY_TYPES:
+            choices = ', '.join(sorted(self.POLICY_TYPES))
+            raise ValueError(f'Unsupported {type(self).__name__} embodiment '
+                             f'{embodiment!r}; expected one of: {choices}.')
+        self.embodiment = embodiment
+        self._policy = self.POLICY_TYPES[embodiment](**policy_kwargs)
+
+    def __getattr__(self, name: str):
+        """Expose policy diagnostics without duplicating its public surface."""
+        try:
+            return super().__getattr__(name)
+        except AttributeError as exc:
+            policy = self._modules.get('_policy')
+            if policy is not None and hasattr(policy, name):
+                return getattr(policy, name)
+            raise exc
+
+    def __setattr__(self, name: str, value) -> None:
+        """Forward existing policy settings while preserving ``nn.Module``."""
+        modules = self.__dict__.get('_modules')
+        policy = modules.get('_policy') if modules is not None else None
+        if (name not in {'_policy', 'embodiment', 'training'}
+                and policy is not None and hasattr(policy, name)):
+            setattr(policy, name, value)
+            return
+        super().__setattr__(name, value)
+
+    def forward(self, *args, **kwargs):
+        del args, kwargs
+        raise RuntimeError(f'{type(self).__name__} is inference-only.')
+
+    @torch.inference_mode()
+    def predict_action(self, **batch) -> torch.Tensor:
+        """Return the same action-tensor contract as local VLA policies."""
+        return self._policy.predict_action(**batch)
+
+    def get_fsdp_wrapping_policy(self):
+        return None
+
+    def freeze_backbones(self) -> None:
+        return
+
+    def from_pretrained(self) -> None:
+        return
+
+
+class LiberoToolPolicy(nn.Module):
     """Shared inference-only LIBERO policy driven by tool calls.
 
     The model emits a high-level absolute Cartesian ``move_to`` tool call.
@@ -656,7 +720,7 @@ class ToolCallingVLA(nn.Module):
         return actions
 
 
-class ToolCallingRobocasaVLA(ToolCallingVLA):
+class RobocasaToolPolicy(LiberoToolPolicy):
     """Shared tool-calling policy for RoboCasa GR1 evaluation.
 
     The API emits bounded joint deltas plus discrete hand commands. They are
@@ -819,8 +883,8 @@ class ToolCallingRobocasaVLA(ToolCallingVLA):
                      max_delta: float, bounds) -> np.ndarray:
         if key not in command:
             return current.copy()
-        delta = ToolCallingRobocasaVLA._joint_vector(command[key],
-                                                     current.shape[0], key)
+        delta = RobocasaToolPolicy._joint_vector(command[key],
+                                                 current.shape[0], key)
         target = current + np.clip(delta, -max_delta, max_delta)
         bounds_array = np.asarray(bounds, dtype=np.float64)
         if bounds_array.ndim == 1:
@@ -1073,7 +1137,7 @@ the next observation to verify the result. Include a short note explaining the
 visible evidence and requested motion."""
 
 
-class ToolCallingOliVLA(ToolCallingVLA):
+class OliToolPolicy(LiberoToolPolicy):
     """Checkpoint-free GPT controller for OLI's keypoint action wire."""
 
     KEYPOINT_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
