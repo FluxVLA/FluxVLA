@@ -97,7 +97,7 @@ def bootstrap():
         # importing unrelated training runners or parquet datasets.
         'models.vlas.openai_vla',
         'models.vlas.minimax_vla',
-        'datasets.openai_eval_dataset',
+        'datasets.tool_calling_dataset',
         'transforms.normalize',
         'transforms.robocasa_transforms',
         'engines.runners.libero_eval_runner',

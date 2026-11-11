@@ -20,10 +20,10 @@ import numpy as np
 import pytest
 import torch
 
-from fluxvla.datasets.openai_eval_dataset import OpenAILiberoEvalDataset
+from fluxvla.datasets.tool_calling_dataset import ToolCallingLiberoDataset
 from fluxvla.engines.runners import libero_eval_runner as module
 from fluxvla.engines.runners.libero_eval_runner import LiberoEvalRunner
-from fluxvla.models.vlas.openai_vla import OpenAILiberoVLA
+from fluxvla.models.vlas.openai_vla import OpenAIVLA
 from fluxvla.transforms.normalize import IdentityLiberoAction
 
 
@@ -74,10 +74,10 @@ def test_existing_runner_delivers_rotation_without_special_handling(
     for name in ('broadcast_object_list', 'all_reduce', 'barrier'):
         monkeypatch.setattr(module.dist, name, lambda *args, **kwargs: None)
 
-    model = OpenAILiberoVLA(action_horizon=8)
+    model = OpenAIVLA(embodiment='libero', action_horizon=8)
     rotation = np.eye(3)[axis] * sign * 0.2
     monkeypatch.setattr(
-        model, '_post_json', lambda _: {
+        model._policy, '_post_json', lambda _: {
             'output': [{
                 'type':
                 'function_call',
@@ -124,7 +124,7 @@ def test_existing_runner_delivers_rotation_without_special_handling(
         save_failed_rollout_videos=False,
         save_multi_view_rollout_videos=False,
         rollout_dir=None,
-        dataset=OpenAILiberoEvalDataset(resize_size=16),
+        dataset=ToolCallingLiberoDataset(resize_size=16),
         denormalize_action=IdentityLiberoAction(),
         vla=model,
     )

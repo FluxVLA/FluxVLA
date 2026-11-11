@@ -26,12 +26,29 @@ import torch
 from mmengine import Config
 
 from fluxvla.engines import build_vla_from_cfg
-from fluxvla.models.vlas.minimax_vla import (MiniMaxLiberoVLA,
-                                             MiniMaxRobocasaVLA)
-from fluxvla.models.vlas.openai_vla import OpenAILiberoVLA, OpenAIRobocasaVLA
+from fluxvla.models.vlas.minimax_vla import MiniMaxVLA
+from fluxvla.models.vlas.openai_vla import OpenAIVLA
 
 ROOT = Path(__file__).resolve().parents[2]
 PROTOCOLS = ('anthropic', 'chat_completions', 'responses')
+
+
+def minimax_libero(**kwargs):
+    return MiniMaxVLA(embodiment='libero', **kwargs)
+
+
+def minimax_robocasa(**kwargs):
+    return MiniMaxVLA(embodiment='robocasa', **kwargs)
+
+
+def openai_libero(**kwargs):
+    return OpenAIVLA(embodiment='libero', **kwargs)
+
+
+def openai_robocasa(**kwargs):
+    return OpenAIVLA(embodiment='robocasa', **kwargs)
+
+
 MOVES = [
     {
         'targets': {
@@ -249,10 +266,10 @@ def image_blocks(content):
 
 @pytest.mark.parametrize('protocol', PROTOCOLS)
 def test_libero_actions_match_openai_responses_policy(monkeypatch, protocol):
-    model = MiniMaxLiberoVLA(api_protocol=protocol)
+    model = minimax_libero(api_protocol=protocol)
     _, actions = run_minimax(monkeypatch, model, 'move_to', MOVES,
                              libero_inputs)
-    expected = run_reference(monkeypatch, OpenAILiberoVLA(), 'move_to', MOVES,
+    expected = run_reference(monkeypatch, openai_libero(), 'move_to', MOVES,
                              libero_inputs)
 
     for got, want in zip(actions, expected):
@@ -264,7 +281,7 @@ def test_libero_actions_match_openai_responses_policy(monkeypatch, protocol):
 
 
 def test_anthropic_request_merges_turns_and_replays_thinking(monkeypatch):
-    model = MiniMaxLiberoVLA(image_horizon=1)
+    model = minimax_libero(image_horizon=1)
     transport, _ = run_minimax(monkeypatch, model, 'move_to', MOVES,
                                libero_inputs)
     first, second = transport.requests
@@ -273,7 +290,7 @@ def test_anthropic_request_merges_turns_and_replays_thinking(monkeypatch):
     assert first['headers'] == {
         'Authorization': 'Bearer test-key',
         'Content-Type': 'application/json',
-        'User-Agent': 'FluxVLA/MiniMaxLiberoVLA',
+        'User-Agent': 'FluxVLA/MiniMaxVLA',
     }
     body = first['body']
     assert body['model'] == 'MiniMax-M3.1-Flash'
@@ -326,7 +343,7 @@ def test_anthropic_request_merges_turns_and_replays_thinking(monkeypatch):
 
 
 def test_chat_completions_request_replays_reasoning_content(monkeypatch):
-    model = MiniMaxLiberoVLA(api_protocol='chat_completions')
+    model = minimax_libero(api_protocol='chat_completions')
     transport, _ = run_minimax(monkeypatch, model, 'move_to', MOVES,
                                libero_inputs)
     first, second = transport.requests
@@ -335,7 +352,7 @@ def test_chat_completions_request_replays_reasoning_content(monkeypatch):
     assert first['headers'] == {
         'Authorization': 'Bearer test-key',
         'Content-Type': 'application/json',
-        'User-Agent': 'FluxVLA/MiniMaxLiberoVLA',
+        'User-Agent': 'FluxVLA/MiniMaxVLA',
     }
     body = first['body']
     assert body['tools'] == [{
@@ -375,7 +392,7 @@ def test_chat_completions_request_replays_reasoning_content(monkeypatch):
 
 
 def test_responses_request_replays_reasoning_items(monkeypatch):
-    model = MiniMaxLiberoVLA(api_protocol='responses')
+    model = minimax_libero(api_protocol='responses')
     transport, _ = run_minimax(monkeypatch, model, 'move_to', MOVES,
                                libero_inputs)
     first, second = transport.requests
@@ -405,7 +422,7 @@ def test_responses_request_replays_reasoning_items(monkeypatch):
 
 
 def test_required_tool_choice_is_opt_in_for_chat_completions(monkeypatch):
-    model = MiniMaxLiberoVLA(
+    model = minimax_libero(
         api_protocol='chat_completions', tool_choice='required')
     transport, _ = run_minimax(monkeypatch, model, 'move_to', MOVES[:1],
                                libero_inputs)
@@ -415,11 +432,11 @@ def test_required_tool_choice_is_opt_in_for_chat_completions(monkeypatch):
 @pytest.mark.parametrize('protocol', ['anthropic', 'responses'])
 def test_required_tool_choice_is_rejected_where_undocumented(protocol):
     with pytest.raises(ValueError, match="only accepts tool_choice='auto'"):
-        MiniMaxLiberoVLA(api_protocol=protocol, tool_choice='required')
+        minimax_libero(api_protocol=protocol, tool_choice='required')
 
 
 def test_assistant_replay_can_be_disabled(monkeypatch):
-    model = MiniMaxLiberoVLA(replay_assistant_turns=False)
+    model = minimax_libero(replay_assistant_turns=False)
     transport, _ = run_minimax(monkeypatch, model, 'move_to', MOVES,
                                libero_inputs)
     assert transport.requests[1]['body']['messages'][1]['content'] == [{
@@ -435,7 +452,7 @@ def test_assistant_replay_can_be_disabled(monkeypatch):
 
 
 def test_new_episode_drops_stored_assistant_turns(monkeypatch):
-    model = MiniMaxLiberoVLA()
+    model = minimax_libero()
     run_minimax(monkeypatch, model, 'move_to', MOVES[:1], libero_inputs)
     assert model._assistant_turns
     model._reset_episode('another task')
@@ -457,7 +474,7 @@ def test_new_episode_drops_stored_assistant_turns(monkeypatch):
 def test_reply_without_action_stops_generation_after_one_retry(
         monkeypatch, content):
     monkeypatch.setenv('MINIMAX_CN_API_KEY', 'test-key')
-    model = MiniMaxLiberoVLA()
+    model = minimax_libero()
     reply = {'content': content, 'stop_reason': 'end_turn'}
     transport = FakeTransport([reply, reply])
     monkeypatch.setattr(model, '_http_post', transport)
@@ -479,8 +496,8 @@ def test_reply_without_action_stops_generation_after_one_retry(
 
 
 @pytest.mark.parametrize('cls, tool, commands, inputs_fn', [
-    (MiniMaxLiberoVLA, 'move_to', MOVES, libero_inputs),
-    (MiniMaxRobocasaVLA, 'control_gr1', GR1_COMMANDS, robocasa_inputs),
+    (minimax_libero, 'move_to', MOVES, libero_inputs),
+    (minimax_robocasa, 'control_gr1', GR1_COMMANDS, robocasa_inputs),
 ])
 def test_end_turn_recovery_preserves_actions_and_history(
         monkeypatch, cls, tool, commands, inputs_fn):
@@ -535,7 +552,7 @@ def test_end_turn_recovery_preserves_actions_and_history(
 
 
 def test_end_turn_at_call_budget_does_not_retry(monkeypatch):
-    model = MiniMaxLiberoVLA(max_llm_calls=1)
+    model = minimax_libero(max_llm_calls=1)
     monkeypatch.setenv(model.api_key_env, 'test-key')
     transport = FakeTransport([{
         'content': [{
@@ -553,8 +570,8 @@ def test_end_turn_at_call_budget_does_not_retry(monkeypatch):
 
 
 @pytest.mark.parametrize('cls, tool, commands, inputs_fn', [
-    (MiniMaxLiberoVLA, 'move_to', MOVES, libero_inputs),
-    (MiniMaxRobocasaVLA, 'control_gr1', GR1_COMMANDS, robocasa_inputs),
+    (minimax_libero, 'move_to', MOVES, libero_inputs),
+    (minimax_robocasa, 'control_gr1', GR1_COMMANDS, robocasa_inputs),
 ])
 def test_stopped_policy_preserves_control_state_and_resets_next_episode(
         monkeypatch, cls, tool, commands, inputs_fn):
@@ -604,8 +621,8 @@ def test_stopped_policy_preserves_control_state_and_resets_next_episode(
 
 
 @pytest.mark.parametrize('cls, inputs_fn', [
-    (OpenAILiberoVLA, libero_inputs),
-    (OpenAIRobocasaVLA, robocasa_inputs),
+    (openai_libero, libero_inputs),
+    (openai_robocasa, robocasa_inputs),
 ])
 def test_openai_empty_responses_remain_errors(monkeypatch, cls, inputs_fn):
     model = cls()
@@ -735,7 +752,7 @@ def test_libero_runner_finishes_failed_episode_and_runs_next(
 def test_thinking_truncation_points_to_max_output_tokens(
         monkeypatch, protocol, reply):
     monkeypatch.setenv('MINIMAX_CN_API_KEY', 'test-key')
-    model = MiniMaxLiberoVLA(api_protocol=protocol)
+    model = minimax_libero(api_protocol=protocol)
     monkeypatch.setattr(model, '_http_post', FakeTransport([reply]))
     with pytest.raises(RuntimeError, match='max_output_tokens'):
         model.predict_action(**libero_inputs(0))
@@ -761,7 +778,7 @@ def test_thinking_truncation_points_to_max_output_tokens(
 ])
 def test_content_filter_is_reported(monkeypatch, protocol, reply):
     monkeypatch.setenv('MINIMAX_CN_API_KEY', 'test-key')
-    model = MiniMaxLiberoVLA(api_protocol=protocol)
+    model = minimax_libero(api_protocol=protocol)
     monkeypatch.setattr(model, '_http_post', FakeTransport([reply]))
     with pytest.raises(RuntimeError, match='content_filter'):
         model.predict_action(**libero_inputs(0))
@@ -769,7 +786,7 @@ def test_content_filter_is_reported(monkeypatch, protocol, reply):
 
 def test_minimax_error_payload_is_not_treated_as_empty_reply(monkeypatch):
     monkeypatch.setenv('MINIMAX_CN_API_KEY', 'test-key')
-    model = MiniMaxLiberoVLA()
+    model = minimax_libero()
     monkeypatch.setattr(
         model, '_http_post',
         FakeTransport([{
@@ -814,7 +831,7 @@ def test_transport_retries_http_errors_and_sends_documented_auth(monkeypatch):
     monkeypatch.setenv('MINIMAX_CN_API_KEY', 'test-key')
     reply = native_reply('anthropic', 'call_0', 'move_to', MOVES[0])
     requests = fake_urlopen(monkeypatch, [429, 529, reply])
-    model = MiniMaxLiberoVLA(max_retries=2, request_timeout=7.0)
+    model = minimax_libero(max_retries=2, request_timeout=7.0)
 
     actions = model.predict_action(**libero_inputs(0))
     assert actions.shape[0] == 1 and len(requests) == 3
@@ -844,7 +861,7 @@ def test_transport_retries_retryable_base_resp_codes(monkeypatch):
         }
     }
     requests = fake_urlopen(monkeypatch, [rate_limited, reply])
-    model = MiniMaxLiberoVLA(api_protocol='chat_completions')
+    model = minimax_libero(api_protocol='chat_completions')
     model.predict_action(**libero_inputs(0))
     assert len(requests) == 2
     assert requests[-1][0].full_url == (
@@ -872,7 +889,7 @@ def test_transport_retries_retryable_base_resp_codes(monkeypatch):
 def test_missing_api_key_names_region_and_variable(monkeypatch, region, env):
     monkeypatch.delenv(env, raising=False)
     with pytest.raises(RuntimeError, match=f"'{region}' API key.*'{env}'"):
-        MiniMaxLiberoVLA(region=region).predict_action(**libero_inputs(0))
+        minimax_libero(region=region).predict_action(**libero_inputs(0))
 
 
 @pytest.mark.parametrize('region, other_env', [
@@ -885,7 +902,7 @@ def test_no_cross_region_or_generic_key_fallback(monkeypatch, region,
         monkeypatch.delenv(env, raising=False)
     monkeypatch.setenv(other_env, 'other-region-key')
     monkeypatch.setenv('MINIMAX_API_KEY', 'generic-key')
-    model = MiniMaxLiberoVLA(region=region)
+    model = minimax_libero(region=region)
     transport = FakeTransport([])
     monkeypatch.setattr(model, '_http_post', transport)
     with pytest.raises(RuntimeError, match=f"'{region}' API key"):
@@ -905,7 +922,7 @@ def resolved_endpoints(model):
     return model.base_url, model.anthropic_base_url, model.api_key_env
 
 
-@pytest.mark.parametrize('cls', [MiniMaxLiberoVLA, MiniMaxRobocasaVLA])
+@pytest.mark.parametrize('cls', [minimax_libero, minimax_robocasa])
 @pytest.mark.parametrize('region', sorted(REGION_DEFAULTS))
 def test_region_selects_endpoints_and_key_variable(cls, region):
     model = cls(region=region)
@@ -920,7 +937,7 @@ def test_region_selects_endpoints_and_key_variable(cls, region):
 ])
 def test_intl_requests_use_intl_endpoint_and_key(monkeypatch, protocol, url):
     monkeypatch.setenv('MINIMAX_CN_API_KEY', 'cn-key')
-    model = MiniMaxLiberoVLA(region='intl', api_protocol=protocol)
+    model = minimax_libero(region='intl', api_protocol=protocol)
     monkeypatch.setenv('MINIMAX_INTL_API_KEY', 'intl-key')
     transport = FakeTransport(
         [native_reply(protocol, 'call_0', 'move_to', MOVES[0])])
@@ -932,7 +949,7 @@ def test_intl_requests_use_intl_endpoint_and_key(monkeypatch, protocol, url):
 
 
 def test_explicit_endpoints_and_key_variable_override_region():
-    model = MiniMaxLiberoVLA(
+    model = minimax_libero(
         region='intl',
         base_url='https://gateway.example/v1/',
         anthropic_base_url='https://gateway.example/anthropic/',
@@ -962,13 +979,13 @@ def test_explicit_endpoints_and_key_variable_override_region():
 ])
 def test_other_region_endpoint_or_key_is_rejected(kwargs):
     with pytest.raises(ValueError, match='set region='):
-        MiniMaxLiberoVLA(**kwargs)
+        minimax_libero(**kwargs)
 
 
 @pytest.mark.parametrize('region', ['CN', 'global', 'us', ''])
 def test_unknown_region_is_rejected(region):
     with pytest.raises(ValueError, match='region must be one of'):
-        MiniMaxLiberoVLA(region=region)
+        minimax_libero(region=region)
 
 
 @pytest.mark.parametrize('kwargs', [
@@ -991,10 +1008,10 @@ def test_unknown_region_is_rejected(region):
 ])
 def test_invalid_protocol_options_are_rejected(kwargs):
     with pytest.raises(ValueError):
-        MiniMaxLiberoVLA(**kwargs)
+        minimax_libero(**kwargs)
 
 
-@pytest.mark.parametrize('cls', [MiniMaxLiberoVLA, MiniMaxRobocasaVLA])
+@pytest.mark.parametrize('cls', [minimax_libero, minimax_robocasa])
 def test_constructor_defaults_and_base_passthrough(cls):
     model = cls(action_horizon=3, device='cpu', torch_dtype=None)
     assert model.model == 'MiniMax-M3.1-Flash'
@@ -1011,20 +1028,20 @@ def test_constructor_defaults_and_base_passthrough(cls):
 
 
 def test_robocasa_constructor_keeps_robocasa_signature():
-    model = MiniMaxRobocasaVLA(max_arm_joint_delta=0.2)
+    model = minimax_robocasa(max_arm_joint_delta=0.2)
     assert model.max_arm_joint_delta == 0.2
     assert model.max_llm_calls == 90
     assert model.tools[0]['name'] == 'control_gr1'
     with pytest.raises(TypeError):
-        MiniMaxRobocasaVLA(workspace_bounds=[[0, 1], [0, 1], [0, 1]])
+        minimax_robocasa(workspace_bounds=[[0, 1], [0, 1], [0, 1]])
 
 
 @pytest.mark.parametrize('protocol', PROTOCOLS)
 def test_robocasa_actions_match_openai_responses_policy(monkeypatch, protocol):
-    model = MiniMaxRobocasaVLA(api_protocol=protocol)
+    model = minimax_robocasa(api_protocol=protocol)
     transport, actions = run_minimax(monkeypatch, model, 'control_gr1',
                                      GR1_COMMANDS, robocasa_inputs)
-    expected = run_reference(monkeypatch, OpenAIRobocasaVLA(), 'control_gr1',
+    expected = run_reference(monkeypatch, openai_robocasa(), 'control_gr1',
                              GR1_COMMANDS, robocasa_inputs)
 
     for got, want in zip(actions, expected):
@@ -1092,20 +1109,22 @@ def test_libero_configs_build_without_network(monkeypatch, name):
     suite, keeps_hints = LIBERO_CONFIGS[name]
     cfg = load_config(monkeypatch, name)
 
-    assert cfg.inference_model.type == 'MiniMaxLiberoVLA'
+    assert cfg.inference_model.type == 'MiniMaxVLA'
+    assert cfg.inference_model.embodiment == 'libero'
     assert_minimax_defaults(cfg.inference_model)
     assert cfg.eval.type == 'LiberoEvalRunner'
     assert cfg.eval.task_suite_name == suite
     assert cfg.eval.task_ids is None
     assert cfg.eval.model_family == 'minimax-m3.1-flash'
     assert cfg.eval.requires_dataset_stats is False
-    assert cfg.eval.dataset.type == 'OpenAILiberoEvalDataset'
+    assert cfg.eval.dataset.type == 'ToolCallingLiberoDataset'
     assert cfg.eval.denormalize_action.type == 'IdentityLiberoAction'
     assert cfg.inference_model.action_horizon == cfg.eval.eval_chunk_size
     assert bool(cfg.inference_model.task_visual_hints) == keeps_hints
 
     model = build_eval_model(cfg)
-    assert isinstance(model, MiniMaxLiberoVLA)
+    assert isinstance(model, MiniMaxVLA)
+    assert model.embodiment == 'libero'
     assert resolved_endpoints(model) == REGION_DEFAULTS['cn']
     assert model.tools[0]['name'] == 'move_to'
 
@@ -1118,18 +1137,20 @@ def test_robocasa_config_builds_without_network(monkeypatch):
         ROOT / 'configs/openai/gpt6_astra_robocasa_inference.py',
         lazy_import=False)
 
-    assert cfg.inference_model.type == 'MiniMaxRobocasaVLA'
+    assert cfg.inference_model.type == 'MiniMaxVLA'
+    assert cfg.inference_model.embodiment == 'robocasa'
     assert_minimax_defaults(cfg.inference_model)
     assert cfg.eval.type == 'RobocasaEvalRunner'
     assert cfg.eval.model_family == 'minimax-m3.1-flash'
-    assert cfg.eval.dataset.type == 'OpenAIRobocasaEvalDataset'
+    assert cfg.eval.dataset.type == 'ToolCallingRobocasaDataset'
     assert cfg.eval.task_list == reference.eval.task_list
     assert cfg.eval.action_keys == reference.eval.action_keys
     assert (cfg.inference_model.action_horizon == cfg.eval.eval_chunk_size ==
             reference.eval.eval_chunk_size)
 
     model = build_eval_model(cfg)
-    assert isinstance(model, MiniMaxRobocasaVLA)
+    assert isinstance(model, MiniMaxVLA)
+    assert model.embodiment == 'robocasa'
     assert resolved_endpoints(model) == REGION_DEFAULTS['cn']
     assert model.tools[0]['name'] == 'control_gr1'
 

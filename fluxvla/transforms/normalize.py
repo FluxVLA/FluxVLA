@@ -104,6 +104,27 @@ class IdentityLiberoAction:
 
 
 @TRANSFORMS.register_module()
+class IdentityAction:
+    """Return native actions without dataset-stat denormalization."""
+
+    def __init__(self,
+                 norm_stats=None,
+                 action_dim: int = None,
+                 clip: bool = False) -> None:
+        del norm_stats
+        self.action_dim = None if action_dim is None else int(action_dim)
+        self.clip = bool(clip)
+
+    def __call__(self, data: Dict) -> np.ndarray:
+        action = np.asarray(data['action'], dtype=np.float32)
+        if self.action_dim is not None:
+            action = action[..., :self.action_dim]
+        if self.clip:
+            action = np.clip(action, -1.0, 1.0)
+        return action
+
+
+@TRANSFORMS.register_module()
 class DenormalizeLiberoAction:
     """Denormalize the data using provided statistics.
     This transform reverses the normalization done using

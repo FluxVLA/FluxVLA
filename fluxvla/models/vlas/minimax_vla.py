@@ -33,7 +33,10 @@ from typing import Any, Dict, List, Optional
 from urllib.parse import urlsplit
 
 from fluxvla.engines import VLAS, initialize_overwatch
-from .tool_calling_vla import ToolCallingRobocasaVLA, ToolCallingVLA
+from .tool_calling_vla import (LiberoToolPolicy, RobocasaToolPolicy,
+                               _HostedToolCallingVLA)
+
+__all__ = ['MiniMaxVLA']
 
 overwatch = initialize_overwatch(__name__)
 
@@ -63,7 +66,7 @@ _RETRYABLE_STATUS_CODES = (1001, 1002, 1013)
 
 
 class MiniMaxProtocolMixin:
-    """Serve an :class:`ToolCallingVLA` policy over MiniMax protocols.
+    """Serve a tool-calling robot policy over MiniMax protocols.
 
     The policy history stays in Responses format, so observation building,
     image compaction, tool-call validation and action conversion are all
@@ -403,7 +406,7 @@ class MiniMaxProtocolMixin:
         headers = {
             'Authorization': f'Bearer {api_key}',
             'Content-Type': 'application/json',
-            'User-Agent': f'FluxVLA/{type(self).__name__}',
+            'User-Agent': 'FluxVLA/MiniMaxVLA',
         }
         if self.api_protocol == 'anthropic':
             start = time.monotonic()
@@ -604,19 +607,27 @@ class MiniMaxProtocolMixin:
         return raw
 
 
-@VLAS.register_module()
-class MiniMaxLiberoVLA(MiniMaxProtocolMixin, ToolCallingVLA):
-    """Checkpoint-free MiniMax policy emitting LIBERO ``move_to`` calls.
+class _MiniMaxLiberoPolicy(MiniMaxProtocolMixin, LiberoToolPolicy):
+    """Internal MiniMax transport binding for LIBERO actions.
 
-    Accepts every :class:`ToolCallingVLA` argument plus the protocol
+    Accepts every :class:`LiberoToolPolicy` argument plus the protocol
     options of :class:`MiniMaxProtocolMixin`.
     """
 
 
-@VLAS.register_module()
-class MiniMaxRobocasaVLA(MiniMaxProtocolMixin, ToolCallingRobocasaVLA):
-    """Checkpoint-free MiniMax policy emitting RoboCasa ``control_gr1`` calls.
+class _MiniMaxRobocasaPolicy(MiniMaxProtocolMixin, RobocasaToolPolicy):
+    """Internal MiniMax transport binding for RoboCasa actions.
 
-    Accepts every :class:`ToolCallingRobocasaVLA` argument plus the
+    Accepts every :class:`RobocasaToolPolicy` argument plus the
     protocol options of :class:`MiniMaxProtocolMixin`.
     """
+
+
+@VLAS.register_module()
+class MiniMaxVLA(_HostedToolCallingVLA):
+    """MiniMax-hosted VLA with a configurable robot policy adapter."""
+
+    POLICY_TYPES = {
+        'libero': _MiniMaxLiberoPolicy,
+        'robocasa': _MiniMaxRobocasaPolicy,
+    }

@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import signal
+import sys
 import time
 import unicodedata
 from collections import deque
@@ -34,15 +35,16 @@ class _ShutdownRequested(Exception):
 class OliInferenceRunner(BaseInferenceRunner):
     """Runner for Oli whole-body (loco-manipulation) inference.
 
-    Supports one or two cameras and either the legacy 33-dim state/42-dim
-    action hand-open/closed representation or the MROS 43-dim state/52-dim
-    individual-finger representation. Each predicted action step is sent to
+    Supports the legacy joint action layouts and complete named Cartesian
+    keypoint targets. State input independently selects flat joints plus hands
+    or named keypoint features. Each predicted action step is sent to
     ``OliOperator`` with time-based control.
 
     No RTC, interpolation, async execution, or done-driven prompt switching.
-    Interactive execution selects a prompt ID and a positive execution count;
-    one execution corresponds to one predicted action chunk (optionally
-    truncated by ``execute_horizon``).
+    Interactive execution selects a configured prompt (or, when enabled, a
+    custom instruction) and a positive execution count. One execution
+    corresponds to one predicted action chunk (optionally truncated by
+    ``execute_horizon``).
     """
 
     def __init__(self,
@@ -55,11 +57,13 @@ class OliInferenceRunner(BaseInferenceRunner):
                  prepare_pose_duration_sec: float = 5.0,
                  prepare_pose_prompt_id: str = None,
                  *args,
+                 allow_custom_instruction: bool = False,
                  **kwargs):
         self.execute_horizon = execute_horizon
         self.interactive = bool(interactive)
         self.default_prompt_id = default_prompt_id
         self.default_execution_count = int(default_execution_count)
+        self.allow_custom_instruction = bool(allow_custom_instruction)
         self.apply_jpeg_compression = bool(apply_jpeg_compression)
         self.prepare_pose = (None if prepare_pose is None else np.asarray(
             prepare_pose, dtype=np.float64))
@@ -133,6 +137,7 @@ class OliInferenceRunner(BaseInferenceRunner):
         self._dt = 1.0 / self.publish_rate
         self._selected_prompt_id = self.default_prompt_id
         self._selected_execution_count = self.default_execution_count
+        self._last_instruction = None
 
         signal.signal(signal.SIGINT, self._signal_handler)
 
@@ -161,8 +166,10 @@ class OliInferenceRunner(BaseInferenceRunner):
         return unicodedata.normalize('NFKC', value).strip()
 
     def _get_user_task_instruction(self, default_instruction: str):
-        """Select a prompt ID and the number of action chunks to execute."""
+        """Select a configured prompt or enter a custom instruction."""
         del default_instruction
+        if not self._running:
+            return []
         if not self.interactive:
             prompt_id = self.default_prompt_id
             self._selected_prompt_id = prompt_id
@@ -174,13 +181,24 @@ class OliInferenceRunner(BaseInferenceRunner):
         prepare_hint = (
             f'; {self.prepare_pose_prompt_id} moves to prepare pose'
             if self.prepare_pose_prompt_id is not None else '')
+        input_label = ('Prompt ID or instruction'
+                       if self.allow_custom_instruction else 'Prompt ID')
+        repeat_commands = [
+            command for command in ('r', 'repeat')
+            if command not in self.task_descriptions
+            and command != self.prepare_pose_prompt_id
+        ]
+        repeat_hint = (f'{"/".join(repeat_commands)} to repeat, '
+                       if repeat_commands else '')
         while self._running:
             try:
-                value = input(f'Prompt ID [{self.default_prompt_id}] '
+                value = input(f'{input_label} [{self.default_prompt_id}] '
                               f'(available: {prompt_ids}{prepare_hint}; '
-                              'q to quit): ')
+                              f'{repeat_hint}q to quit): ')
             except (EOFError, KeyboardInterrupt):
                 self._running = False
+                return []
+            if not self._running:
                 return []
             prompt_id = self._normalize_input(value)
             if prompt_id.lower() in {'q', 'quit', 'exit'}:
@@ -193,6 +211,19 @@ class OliInferenceRunner(BaseInferenceRunner):
                 print('[prepare] Oli prepare pose reached.', flush=True)
                 continue
             if prompt_id in self.task_descriptions:
+                description = self._get_task_description(prompt_id)
+                break
+            # Keep existing configured IDs ahead of the new shortcut.
+            if prompt_id.lower() in {'r', 'repeat'}:
+                if self._last_instruction is None:
+                    print('No previous instruction to repeat.', flush=True)
+                    continue
+                description = self._last_instruction
+                prompt_id = 'repeat'
+                break
+            if self.allow_custom_instruction:
+                description = prompt_id
+                prompt_id = 'custom'
                 break
             print(
                 f'Unknown prompt ID {prompt_id!r}; available IDs: '
@@ -206,6 +237,8 @@ class OliInferenceRunner(BaseInferenceRunner):
                     f'(default: {self.default_execution_count}, q to quit): ')
             except (EOFError, KeyboardInterrupt):
                 self._running = False
+                return []
+            if not self._running:
                 return []
             value = self._normalize_input(value)
             if value.lower() in {'q', 'quit', 'exit'}:
@@ -226,14 +259,29 @@ class OliInferenceRunner(BaseInferenceRunner):
                 continue
             break
 
+        if not self._running:
+            return []
         self._selected_prompt_id = prompt_id
         self._selected_execution_count = execution_count
-        description = self._get_task_description(prompt_id)
+        self._last_instruction = description
         print(
             f'[prompt] id={prompt_id} executions={execution_count} '
             f'description={description!r}',
             flush=True)
         return [description] * execution_count
+
+    def run_setup(self):
+        """Release the operator if device setup or a remote ping fails."""
+        try:
+            return super().run_setup()
+        except BaseException:
+            try:
+                self.cleanup()
+            except Exception as exc:
+                print(f'[OLI_CLEANUP_FAILED] {exc}; '
+                      'preserving setup error',
+                      flush=True)
+            raise
 
     def run(self, initial_instruction='pour water into the cup'):
         """Main inference loop using time-based rate control.
@@ -255,6 +303,15 @@ class OliInferenceRunner(BaseInferenceRunner):
                     self._run_continuous()
             except _ShutdownRequested:
                 pass
+            finally:
+                error_in_flight = sys.exc_info()[0] is not None
+                try:
+                    self.cleanup()
+                except Exception as exc:
+                    if not error_in_flight:
+                        raise
+                    overwatch.error(f'[OLI_CLEANUP_FAILED] {exc}; '
+                                    'preserving original error')
 
     def _infer_and_execute_chunk(self, instruction):
         """Predict and execute one action chunk, preserving its context."""
@@ -344,15 +401,8 @@ class OliInferenceRunner(BaseInferenceRunner):
         """Update the observation window with the latest sensor data.
 
         Returns:
-            Dict: Latest observation with ``qpos`` and configured images.
+            Dict: Latest named or joint state with configured images.
         """
-        if self.observation_window is None:
-            self.observation_window = deque(maxlen=2)
-            dummy_obs = {'qpos': None}
-            for camera_name in self.camera_names:
-                dummy_obs[camera_name] = None
-            self.observation_window.append(dummy_obs)
-
         result = self.get_ros_observation()
         if result is None:
             # Shutdown requested while waiting for the first observation.
@@ -365,12 +415,20 @@ class OliInferenceRunner(BaseInferenceRunner):
                 f'OliOperator returned {len(images)} image(s), but '
                 f'camera_names={self.camera_names}')
 
-        observation = {'qpos': state}
+        if isinstance(state, dict):
+            observation = dict(state)
+        else:
+            observation = {'qpos': state}
         for camera_name, image in zip(self.camera_names, images):
             if self.apply_jpeg_compression:
                 bgr = image[:, :, ::-1]
                 image = self._apply_jpeg_compression(bgr)[:, :, ::-1].copy()
             observation[camera_name] = image
+        if self.observation_window is None:
+            self.observation_window = deque(maxlen=2)
+            self.observation_window.append(
+                {name: None
+                 for name in observation})
         self.observation_window.append(observation)
         return self.observation_window[-1]
 
@@ -381,11 +439,23 @@ class OliInferenceRunner(BaseInferenceRunner):
             return 0
         if self.execute_horizon is not None:
             actions = actions[:self.execute_horizon]
+        # The operator knows the active joint/keypoint and hand contracts.
+        # Validate every point before sending any prefix of this chunk.
+        validator = getattr(self.ros_operator, 'validate_action_chunk', None)
+        if validator is not None:
+            validator(actions)
         sent_steps = 0
         for action in actions:
             if not self._running:
                 break
-            self.ros_operator.send_action(action)
+            try:
+                self.ros_operator.send_action(action)
+            except Exception:
+                print(
+                    f'[OLI_EXECUTION_FAILED] step={sent_steps}; '
+                    f'completed_send_calls={sent_steps}',
+                    flush=True)
+                raise
             sent_steps += 1
             time.sleep(self._dt)
         return sent_steps
@@ -411,8 +481,17 @@ class OliInferenceRunner(BaseInferenceRunner):
         """Clean up resources."""
         print('Cleaning up OliInferenceRunner')
         self._running = False
-        if hasattr(self.ros_operator, 'stop_trajectory'):
-            self.ros_operator.stop_trajectory()
-        if hasattr(self.ros_operator, 'close'):
-            self.ros_operator.close()
-        super().cleanup()
+        first_error = None
+        for cleanup in (getattr(self.ros_operator, 'stop_trajectory',
+                                None), getattr(self.ros_operator, 'close',
+                                               None), super().cleanup):
+            if cleanup is None:
+                continue
+            try:
+                cleanup()
+            except Exception as exc:
+                if first_error is None:
+                    first_error = exc
+                print(f'[OLI_CLEANUP_FAILED] {exc}', flush=True)
+        if first_error is not None:
+            raise first_error

@@ -36,7 +36,8 @@ _OPENAI_BASE_URL = (_environ.get('OPENAI_BASE_URL')
 _OPENAI_API_KEY_ENV = (_environ.get('OPENAI_API_KEY_ENV') or 'OPENAI_API_KEY')
 
 inference_model = dict(
-    type='OpenAILiberoVLA',
+    type='OpenAIVLA',
+    embodiment='libero',
     model='gpt-6-astra',
     base_url=_OPENAI_BASE_URL,
     api_key_env=_OPENAI_API_KEY_ENV,
@@ -100,7 +101,7 @@ eval = dict(
     norm_stats_path=None,
     requires_dataset_stats=False,
     dataset=dict(
-        type='OpenAILiberoEvalDataset',
+        type='ToolCallingLiberoDataset',
         img_keys=['agentview_image', 'robot0_eye_in_hand_image'],
         resize_size=512,
     ),

@@ -33,7 +33,8 @@ _OPENAI_BASE_URL = (_environ.get('OPENAI_BASE_URL')
 _OPENAI_API_KEY_ENV = (_environ.get('OPENAI_API_KEY_ENV') or 'OPENAI_API_KEY')
 
 inference_model = dict(
-    type='OpenAIRobocasaVLA',
+    type='OpenAIVLA',
+    embodiment='robocasa',
     model='gpt-6-astra',
     base_url=_OPENAI_BASE_URL,
     api_key_env=_OPENAI_API_KEY_ENV,
@@ -108,7 +109,7 @@ eval = dict(
     },
     requires_dataset_stats=False,
     dataset=dict(
-        type='OpenAIRobocasaEvalDataset',
+        type='ToolCallingRobocasaDataset',
         img_keys=['video.ego_view_bg_crop_pad_res256_freq20'],
         resize_size=512,
     ),

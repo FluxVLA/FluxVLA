@@ -1,7 +1,9 @@
 # GPT LIBERO control contract
 
 `configs/openai/gpt6_astra_libero_inference.py` and its named LIBERO suite
-configs use `OpenAILiberoVLA`. All tasks remain selected by default.
+configs use `OpenAIVLA` with `embodiment='libero'`. All tasks remain selected
+by default. See [the hosted VLA migration guide](hosted_vla_migration.md) for
+updating saved configs and direct Python calls.
 
 ## Position, rotation, and gripper
 
@@ -51,33 +53,22 @@ The fix is confined to the API policy and its config. The existing shared
 LIBERO runner already forwards all seven action channels, including rotation;
 it does not need modification. Neither shared evaluation runner is changed.
 
-## Offline simulator diagnostic (no API key or paid requests)
+## Offline contract tests (no API key or paid requests)
 
-From the repository root in the FluxVLA environment:
-
-```bash
-MUJOCO_GL=egl python tools/check_openai_libero_control.py
-```
-
-This feeds scripted Responses tool outputs through the actual dataset,
-policy parser, chunk adapter, action transform, and real LIBERO physics. It
-checks positive/negative rotation about all three axes, XYZ translation,
-gripper signs, and a zero-rotation baseline on task 0 / trial 0. Each case
-resets the same initial state. The fresh `work_dirs/diagnostics/libero-control-*`
-directory contains `report.json` and `rotation_smoke.mp4` (external + wrist
-views). This is a controller smoke test, **not a GPT task-success evaluation**.
+From the repository root in the configured CPU test environment, run the
+existing regression tests below. They use synthetic inputs and mocked API
+responses; they do not execute LIBERO physics or certify task success.
 
 Regression tests also cover malformed/non-finite commands, rotation omitted
 or combined with translation, per-call angular limits, and delivery of the
 rotation channels through the unchanged LIBERO run loop:
 
 ```bash
-python -m pytest -q \
+python -m pytest --cpu-model-tests -q \
   test/test_models/test_openai_libero_rotation.py \
   test/test_models/test_tool_calling_vla.py \
   test/test_runners/test_libero_openai_rotation_compatibility.py \
-  test/test_models/test_openai_robocasa_wrist.py \
-  test/test_configs/test_gpt6_astra_libero_config.py
+  test/test_models/test_minimax_vla.py
 ```
 
 Invalid LIBERO tool fields are rejected rather than silently ignored. The
@@ -85,7 +76,7 @@ prompt's planning milestones follow `max_llm_calls`.
 
 ## RoboCasa is a different action interface
 
-`OpenAIRobocasaVLA` uses `control_gr1`, not `move_to`. Each arm already
+`OpenAIVLA(embodiment='robocasa')` uses `control_gr1`, not `move_to`. Each arm already
 exposes seven joint deltas, ordered as shoulder pitch/roll/yaw, elbow pitch,
 then wrist yaw/roll/pitch. The last three entries of `left_arm_delta` and
 `right_arm_delta` therefore control the wrists; they are not zero-filled.

@@ -11,7 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Raw simulator observation adapters for API-hosted policies."""
+"""Provider-neutral observation adapters for hosted tool-calling VLAs."""
 
 from typing import Any, Dict, List
 
@@ -22,12 +22,11 @@ from fluxvla.engines import DATASETS
 
 
 @DATASETS.register_module()
-class OpenAILiberoEvalDataset:
-    """Prepare raw images and proprioception for ``OpenAILiberoVLA``.
+class ToolCallingLiberoDataset:
+    """Prepare raw LIBERO observations for a hosted VLA.
 
-    Unlike local VLA datasets, this adapter performs no tokenization,
-    normalization, tensor conversion, or CUDA transfer. The API policy owns
-    image encoding and returns native LIBERO control actions.
+    Images and proprioception remain on CPU. The selected robot policy adapter
+    owns image encoding and returns native LIBERO control actions.
     """
 
     def __init__(self,
@@ -76,13 +75,32 @@ class OpenAILiberoEvalDataset:
 
 
 @DATASETS.register_module()
-class OpenAIRobocasaEvalDataset:
-    """Prepare native RoboCasa observations for an API-hosted policy.
+class ToolCallingOliDataset:
+    """Prepare named OLI observations for a hosted keypoint policy."""
 
-    The adapter deliberately keeps images and robot state on CPU. The remote
-    policy owns image encoding and returns actions in the native 29D GR1
-    action order used by :class:`RobocasaEvalRunner`.
-    """
+    _KEYPOINT_NAMES = ('head', 'left_foot', 'right_foot', 'left_wrist',
+                       'right_wrist')
+
+    def __init__(self, image_names: List[str] = None) -> None:
+        self.image_names = image_names or ['head', 'left_wrist', 'right_wrist']
+
+    def __call__(self, inputs: Dict[str, Any]):
+        return {
+            'images': [inputs[name] for name in self.image_names],
+            'image_names': list(self.image_names),
+            'task_description': inputs['task_description'],
+            'poses': {
+                name: np.asarray(inputs[f'{name}_pose']).copy()
+                for name in self._KEYPOINT_NAMES
+            },
+            'base_pose': np.asarray(inputs['base_pose']).copy(),
+            'hands': np.asarray(inputs['hands']).copy(),
+        }
+
+
+@DATASETS.register_module()
+class ToolCallingRobocasaDataset:
+    """Prepare native RoboCasa observations for a hosted VLA."""
 
     _STATE_KEYS = (
         'state.left_arm',
