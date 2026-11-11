@@ -238,6 +238,24 @@ def test_inference_waits_for_fresh_observations(monkeypatch, tmp_path,
     assert runner.last_policy_output.status == 'succeeded'
 
 
+def test_inference_honors_agent_completion_without_publishing(
+        monkeypatch, tmp_path, fake_ros):
+    from fluxvla.policies.vla_policy import PolicyOutput
+
+    runner, model, inputs, _ = make_inference(monkeypatch, tmp_path)
+    output = PolicyOutput(
+        status='completed',
+        metadata=dict(planning=dict(reason='agent_visual_completion')))
+    choose = Mock(return_value=output)
+    monkeypatch.setattr(runner.policy, 'step', choose)
+    runner._run_episode(TASK)
+    assert choose.call_count == runner.captures == 1
+    assert runner.last_policy_output is output
+    assert not runner.published and not model.calls and not inputs.calls
+    assert runner.policy._pending_horizon is None
+    assert runner.ros_operator.stop_trajectory.called
+
+
 def test_inference_discards_stale_prediction(monkeypatch, tmp_path, fake_ros):
     from fluxvla.engines.runners import base_inference_runner
     runner, model, _, _ = make_inference(monkeypatch, tmp_path)

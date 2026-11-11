@@ -29,8 +29,12 @@ class SubtaskController:
         self.catalog = catalog
         self.planner = planner
         self.monitor = monitor
-        self.goal_conditions = validate_conditions(goal_conditions,
-                                                   'goal_conditions')
+        # Explicitly unmonitored controllers may decide completion themselves.
+        # Never treat an absent predicate set as verified success.
+        self.goal_conditions = (
+            {} if goal_conditions is None and monitor is None
+            and not catalog.predicate_keys else validate_conditions(
+                goal_conditions, 'goal_conditions'))
         self.keys = catalog.predicate_keys | set(self.goal_conditions)
         descriptions = getattr(monitor, 'descriptions', None)
         if descriptions is not None and self.keys - descriptions.keys():
@@ -63,7 +67,8 @@ class SubtaskController:
             instruction=self.active.instruction if status == 'ready' else None,
             reason=reason)
         if status in {
-                'succeeded', 'blocked', 'failed', 'timeout', 'cancelled'
+                'succeeded', 'completed', 'blocked', 'failed', 'timeout',
+                'cancelled'
         }:
             self.terminal = event
         return copy.deepcopy(event)
@@ -92,7 +97,9 @@ class SubtaskController:
                 ValueError('Observation id must strictly increase'))
         self.last_observation_id = observation_id
         try:
-            facts = self.monitor.observe(observation, self.keys)
+            facts = (
+                self.monitor.observe(observation, self.keys)
+                if self.monitor is not None else {})
             if (not isinstance(facts, dict) or set(facts) != self.keys or any(
                     v is not None and type(v) is not bool
                     for v in facts.values())):
@@ -106,7 +113,7 @@ class SubtaskController:
         return event
 
     def _step_with_facts(self, observation, facts):
-        if matches(self.goal_conditions, facts):
+        if self.goal_conditions and matches(self.goal_conditions, facts):
             self.goal_streak += 1
             if self.goal_streak >= self.stable_observations:
                 return self._event('succeeded', reason='goal_verified')
