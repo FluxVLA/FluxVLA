@@ -1,4 +1,4 @@
-"""Stateless, multi-node ZMQ inference service for FluxThemis."""
+"""ZMQ inference: stateless replicas or one serial, in-process policy."""
 
 from __future__ import annotations
 import copy
@@ -20,8 +20,8 @@ from typing import Any
 
 import numpy as np
 
-from .serving_runner import (build_serving_runner_from_config, config_get,
-                             get_server_config, require_mapping,
+from .serving_runner import (PolicyStop, build_serving_runner_from_config,
+                             config_get, get_server_config, require_mapping,
                              resolve_checkpoint_path,
                              resolve_report_config_path,
                              resolve_report_result_root)
@@ -64,12 +64,19 @@ class FluxVLAInferenceServer:
                  max_pending_requests: int = 128,
                  request_timeout_s: float = 120.0,
                  startup_timeout_s: float = 900.0,
-                 deployment_id: str | None = None) -> None:
+                 deployment_id: str | None = None,
+                 server_mode: str = 'stateless') -> None:
         self.frontend_bind = _endpoint(frontend_bind, 'frontend_bind')
         self.backend_bind = _endpoint(backend_bind, 'backend_bind')
         self.evaluation_report_writer = evaluation_report_writer
         self.expected_workers = _positive_int(expected_workers,
                                               'expected_workers')
+        if server_mode not in {'stateless', 'stateful'}:
+            raise ValueError('server_mode must be stateless or stateful')
+        if server_mode == 'stateful' and self.expected_workers != 1:
+            raise ValueError(
+                'Stateful policy serving requires one model worker')
+        self.server_mode = server_mode
         self.max_pending_requests = _positive_int(max_pending_requests,
                                                   'max_pending_requests')
         self.request_timeout_s = _positive_float(request_timeout_s,
@@ -175,7 +182,7 @@ class FluxVLAInferenceServer:
         payload = {
             'status': self.status,
             'deployment_id': self.deployment_id,
-            'server_mode': 'stateless',
+            'server_mode': self.server_mode,
             'evaluation_reporting': self.evaluation_report_writer is not None,
             'workers_ready': self.ready_workers,
             'workers_expected': self.expected_workers,
@@ -230,6 +237,12 @@ class FluxVLAInferenceServer:
         body = decode_frame(payload)
         if not isinstance(body, Mapping):
             raise TypeError('report_event payload must be a mapping')
+        if (self.server_mode == 'stateful'
+                and header.get('event_type') == 'run_start'
+                and body.get('parallel_workers', 1) != 1):
+            raise ValueError(
+                'Stateful policy serving requires one simulator '
+                'worker; concurrent episode streams are unsupported')
         result = self.evaluation_report_writer.process_event(
             event_type=_required_string(header, 'event_type'),
             request_id=_required_string(header, 'request_id'),
@@ -467,6 +480,23 @@ class FluxVLAInferenceServer:
         signal.signal(signal.SIGINT, stop)
 
 
+def _encode_prediction_payload(prediction, metadata) -> bytes:
+    """Encode policy stops as successful RPCs without an action field."""
+    if isinstance(prediction, PolicyStop):
+        safe_metadata = copy.deepcopy(metadata)
+        if isinstance(safe_metadata.get('planning'), Mapping):
+            safe_metadata['planning']['reason'] = prediction.reason
+        return encode_frame(
+            dict(
+                policy_stop=dict(
+                    status=prediction.status, reason=prediction.reason),
+                metadata=safe_metadata))
+    return encode_frame(
+        dict(
+            actions=np.asarray(prediction, dtype=np.float32),
+            metadata=metadata))
+
+
 def run_model_worker(config_path: str,
                      ckpt_path: str,
                      backend_endpoint: str,
@@ -533,12 +563,11 @@ def run_model_worker(config_path: str,
             observation = decode_frame(payload)
             if not isinstance(observation, Mapping):
                 raise TypeError('prediction payload must be a mapping')
-            actions, inference_time_s = runner.predict_action(
+            prediction, inference_time_s = runner.predict_action(
                 observation,
                 unnorm_key=str(header.get('unnorm_key', '')),
                 policy_seed=_required_int(header, 'policy_seed'),
             )
-            actions = np.asarray(actions, dtype=np.float32)
             backend.send_multipart([
                 encode_header(
                     'predict_result',
@@ -546,7 +575,9 @@ def run_model_worker(config_path: str,
                     request_id=request_id,
                     inference_time_s=float(inference_time_s),
                 ),
-                encode_frame({'actions': actions}),
+                _encode_prediction_payload(
+                    prediction, getattr(runner, 'last_prediction_metadata',
+                                        {})),
             ])
         except Exception as exc:
             print(
@@ -642,6 +673,15 @@ def launch_server_task(*,
                        deployment_id: str | None = None) -> None:
     """Run one torchrun model worker and the rank-zero inference server."""
     world_size = _positive_int(world_size, 'world_size')
+    # Fail before loading weights or starting the router. Multiple stateless
+    # replicas remain supported; stateful policies are a single debug stream.
+    from mmengine import Config
+    config = Config.fromfile(config_path)
+    if cfg_options:
+        config.merge_from_dict(dict(cfg_options))
+    mode = get_server_config(config.themis).get('mode', 'stateless')
+    if mode == 'stateful' and world_size != 1:
+        raise ValueError('Stateful policy serving requires one model worker')
     if isinstance(rank, bool) or not isinstance(rank, int):
         raise TypeError('rank must be an integer')
     if rank < 0 or rank >= world_size:
@@ -755,6 +795,7 @@ def _server_process_main(*, config_path: str, ckpt_path: str,
         request_timeout_s=request_timeout_s,
         startup_timeout_s=startup_timeout_s,
         deployment_id=deployment_id,
+        server_mode=get_server_config(cfg.themis).get('mode', 'stateless'),
     )
     server.run()
 

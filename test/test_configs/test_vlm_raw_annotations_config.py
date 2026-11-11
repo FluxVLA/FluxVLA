@@ -165,6 +165,7 @@ def test_qwen_textvqa_is_separate_from_sft_and_matches_its_processor(config):
 def test_vlm_configs_follow_model_dataset_training_mode_names():
     assert {path.name
             for path in (ROOT / 'configs/vlm').glob('*.py')} == {
+                'qwen3_5_4b_robodojo_subtask_full_finetune.py',
                 'qwen3vl_2b_llava665k_full_finetune.py',
                 'qwen_llava665k_full_finetune.py',
             }

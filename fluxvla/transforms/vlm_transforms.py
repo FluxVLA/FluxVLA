@@ -170,7 +170,8 @@ def _mask_labels_for_sft(input_ids, tokenizer):
 def _process_messages_for_sft(processor,
                               messages,
                               truncation_max_length=0,
-                              video_kwargs=None):
+                              video_kwargs=None,
+                              enable_thinking=None):
     # Decoding replaces video paths with frame arrays. Keep the canonical
     # messages immutable so transforms/metadata never retain decoded videos.
     messages = copy.deepcopy(messages)
@@ -193,6 +194,8 @@ def _process_messages_for_sft(processor,
         media_kwargs = dict(do_sample_frames=False, video_metadata=metadata)
     # Tokenize with visuals intact. Blind tokenizer truncation can remove
     # image tokens without removing their corresponding patches/grids.
+    template_kwargs = ({} if enable_thinking is None else dict(
+        enable_thinking=enable_thinking))
     processed = dict(
         processor.apply_chat_template(
             messages,
@@ -201,6 +204,7 @@ def _process_messages_for_sft(processor,
             return_dict=True,
             return_tensors='pt',
             truncation=False,
+            **template_kwargs,
             **media_kwargs))
     tokens = processed['input_ids']
     if truncation_max_length > 0 and tokens.shape[-1] > truncation_max_length:
@@ -259,6 +263,10 @@ class ProcessVLMSFTInputs:
     the dataset is completely independent of those choices. Processor state
     is loaded lazily per worker and excluded from spawn/pickle state. Raw
     metadata is preserved; VLMSFTCollator selects only model input tensors.
+
+    ``enable_thinking=None`` preserves the checkpoint's SFT template default
+    and the existing non-thinking generation path. Set False explicitly for
+    direct-answer SFT; True enables thinking for both SFT and generation.
     """
 
     def __init__(self,
@@ -270,7 +278,8 @@ class ProcessVLMSFTInputs:
                  video_fps=None,
                  video_max_frames=32,
                  truncation_max_length=0,
-                 processor_kwargs=None):
+                 processor_kwargs=None,
+                 enable_thinking=None):
         if not processor_path:
             raise ValueError('ProcessVLMSFTInputs requires processor_path.')
         if processor_type not in ('qwen3_vl', 'qwen3_5'):
@@ -287,6 +296,9 @@ class ProcessVLMSFTInputs:
                                                   video_max_frames)
         self.truncation_max_length = truncation_max_length
         self.processor_kwargs = dict(processor_kwargs or {})
+        if enable_thinking is not None and type(enable_thinking) is not bool:
+            raise ValueError('enable_thinking must be bool or None')
+        self.enable_thinking = enable_thinking
         self._processor = None
         self._processor_pid = None
 
@@ -329,7 +341,7 @@ class ProcessVLMSFTInputs:
             [dict(role='user', content=content)],
             tokenize=True,
             add_generation_prompt=True,
-            enable_thinking=False,
+            enable_thinking=self.enable_thinking or False,
             return_dict=True,
             return_tensors='pt',
             truncation=False))
@@ -353,7 +365,7 @@ class ProcessVLMSFTInputs:
             processor_path=self.processor_path,
             image_max_pixels=self.image_max_pixels,
             max_length=self.truncation_max_length,
-            enable_thinking=False,
+            enable_thinking=self.enable_thinking or False,
             tokenizer_sha256=hashlib.sha256(
                 tokenizer.backend_tokenizer.to_str().encode()).hexdigest())
 
@@ -370,7 +382,8 @@ class ProcessVLMSFTInputs:
             self._get_processor(),
             messages,
             truncation_max_length=self.truncation_max_length,
-            video_kwargs=self.video_kwargs)
+            video_kwargs=self.video_kwargs,
+            enable_thinking=self.enable_thinking)
         # Only language tensors have a batch dimension; a single media grid
         # must remain (1, 3), not (3,).
         for key in ('input_ids', 'attention_mask', 'labels',

@@ -90,12 +90,23 @@ class OpenAIResponsesClient:
         for key, url in _camera_data_urls(self.image_keys, observation,
                                           self.max_image_size):
             content.extend([
-                dict(type='input_text', text=f'Camera: {key}'),
+                dict(type='input_text', text=f'CURRENT camera: {key}'),
                 dict(
                     type='input_image',
                     image_url=url,
                     detail=self.image_detail),
             ])
+        reference = observation.get('_initial_images')
+        if reference is not None:
+            for key, url in _camera_data_urls(self.image_keys, reference,
+                                              self.max_image_size):
+                content.extend([
+                    dict(type='input_text', text=f'INITIAL camera: {key}'),
+                    dict(
+                        type='input_image',
+                        image_url=url,
+                        detail=self.image_detail),
+                ])
         return content
 
     def _post_json(self, body):

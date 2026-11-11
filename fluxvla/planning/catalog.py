@@ -159,18 +159,27 @@ class SkillCatalog:
         return self.candidates.get(choice)
 
 
-def choice_schema(choices):
+def choice_schema(choices, *, with_evidence=False):
     """The model only selects an id; the catalog constructs the full JSON."""
-    return dict(
+    schema = dict(
         type='object',
         properties={'choice': dict(type='string', enum=list(choices))},
         required=['choice'],
         additionalProperties=False)
+    if with_evidence:
+        schema['properties']['evidence'] = dict(type='string')
+        schema['required'].append('evidence')
+    return schema
 
 
-def validate_choice(value, choices):
-    if (type(value) is not dict or set(value) != {'choice'}
+def validate_choice(value, choices, *, with_evidence=False):
+    fields = {'choice', 'evidence'} if with_evidence else {'choice'}
+    if (type(value) is not dict or set(value) != fields
             or type(value['choice']) is not str
             or value['choice'] not in choices):
         raise ValueError('Planner must return exactly one allowed choice')
+    if with_evidence and (not isinstance(value['evidence'], str)
+                          or not value['evidence'].strip()
+                          or len(value['evidence']) > 1024):
+        raise ValueError('Planner evidence must be 1-1024 characters')
     return value['choice']

@@ -5,7 +5,9 @@ import copy
 
 from fluxvla.engines.utils.builder import build_from_cfg
 from fluxvla.engines.utils.root import PLANNERS, POLICIES, TASK_MONITORS
-from fluxvla.planning import SkillCatalog, SubtaskController
+from fluxvla.planning import (SkillCatalog, SubtaskController,
+                              TrainingSubtaskCatalog,
+                              TrainingSubtaskController)
 from .vla_policy import PolicyOutput, VLAPolicy
 
 
@@ -22,20 +24,30 @@ class HierarchicalPolicy(VLAPolicy):
     """
 
     def __init__(self,
-                 skill_catalog,
-                 planner,
-                 monitor,
-                 goal_conditions,
+                 skill_catalog=None,
+                 planner=None,
+                 monitor=None,
+                 goal_conditions=None,
                  instruction_prefix='',
                  stable_observations=1,
                  max_rejections=1,
+                 subtask_source=None,
+                 replan_every_chunks=1,
+                 max_episode_chunks=70,
+                 max_control_replans=0,
+                 max_episode_control_replans=12,
+                 completion_requirements=None,
+                 completion_guidance='',
+                 completion_mode='environment',
+                 planner_image_keys=(),
                  **kwargs):
         super().__init__(**kwargs)
         if not isinstance(instruction_prefix, str):
             raise ValueError('instruction_prefix must be a string')
         self.instruction_prefix = instruction_prefix
-        self.controller = SubtaskController(
-            catalog=SkillCatalog(**skill_catalog),
+        if (skill_catalog is None) == (subtask_source is None):
+            raise ValueError('Choose skill_catalog OR subtask_source')
+        settings = dict(
             planner=(build_from_cfg(planner, PLANNERS) if isinstance(
                 planner, dict) else planner),
             monitor=(build_from_cfg(monitor, TASK_MONITORS) if isinstance(
@@ -43,6 +55,23 @@ class HierarchicalPolicy(VLAPolicy):
             goal_conditions=goal_conditions,
             stable_observations=stable_observations,
             max_rejections=max_rejections)
+        if subtask_source is None:
+            if completion_mode != 'environment':
+                raise ValueError('Agent completion requires subtask_source')
+            self.controller = SubtaskController(
+                catalog=SkillCatalog(**skill_catalog), **settings)
+        else:
+            self.controller = TrainingSubtaskController(
+                catalog=TrainingSubtaskCatalog(**subtask_source),
+                replan_every_chunks=replan_every_chunks,
+                max_episode_chunks=max_episode_chunks,
+                max_control_replans=max_control_replans,
+                max_episode_control_replans=max_episode_control_replans,
+                completion_requirements=completion_requirements,
+                completion_guidance=completion_guidance,
+                completion_mode=completion_mode,
+                planner_image_keys=planner_image_keys,
+                **settings)
         self._pending_version = None
 
     def reset(self, goal, *, output_processor=None):
@@ -56,15 +85,21 @@ class HierarchicalPolicy(VLAPolicy):
         self._check_ready()
         # Both backends and the VLA process this same observation snapshot.
         observation = copy.deepcopy(observation)
+        if getattr(self.controller, 'completion_mode', None) == 'agent':
+            # Simulator truth must not enter planning or policy metadata.
+            observation.pop('predicates', None)
         event = self.controller.step(observation, observation_id)
         active = self.controller.active
         metadata = dict(planning=event)
         if active is not None:
             metadata['subtask'] = dict(
-                active.describe(),
-                completion=copy.deepcopy(active.completion),
-                executed_chunks=self.controller.chunks,
-                max_chunks=active.max_chunks)
+                active.describe(), executed_chunks=self.controller.chunks)
+            if isinstance(self.controller, TrainingSubtaskController):
+                metadata['subtask']['completion_verified'] = False
+            else:
+                metadata['subtask'].update(
+                    completion=copy.deepcopy(active.completion),
+                    max_chunks=active.max_chunks)
         if 'predicates' in observation:
             metadata['predicates'] = copy.deepcopy(observation['predicates'])
         if event['status'] != 'ready':

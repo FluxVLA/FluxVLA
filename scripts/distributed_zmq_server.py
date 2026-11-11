@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Launch a single- or multi-node stateless FluxVLA ZMQ server."""
+"""Launch FluxVLA ZMQ model replicas or a single in-process policy server."""
 
 from __future__ import annotations
 import argparse
@@ -32,7 +32,7 @@ def parse_args(argv=None):
     from mmengine import DictAction
 
     parser = argparse.ArgumentParser(
-        description='Launch the stateless FluxVLA ZMQ inference service.')
+        description='Launch the FluxVLA ZMQ inference service.')
     parser.add_argument('--config', required=True)
     parser.add_argument('--ckpt-path', default=None)
     networking = parser.add_argument_group('advanced networking')

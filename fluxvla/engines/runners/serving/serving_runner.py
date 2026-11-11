@@ -8,6 +8,7 @@ import random
 import time
 from collections.abc import Mapping
 from contextlib import nullcontext
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -15,12 +16,26 @@ import numpy as np
 import torch
 
 from ...utils.root import RUNNERS
+from ..policy_runner import PolicyModelAdapter, PolicyRunnerMixin
 
 _MISSING = object()
 
 
+@dataclass(frozen=True)
+class PolicyStop:
+    """A non-executing policy result, not an inference/server exception.
+
+    ``completed`` is agent-declared completion, not simulator verification.
+    Themis records both separately, saves artifacts and advances to the next
+    job without executing more actions or vetoing the agent's stop.
+    """
+
+    status: str
+    reason: str
+
+
 @RUNNERS.register_module()
-class FluxVLAServingRunner:
+class FluxVLAServingRunner(PolicyRunnerMixin):
     """Own model preprocessing, inference, and action denormalization."""
 
     def __init__(self,
@@ -34,7 +49,9 @@ class FluxVLAServingRunner:
                  model_outputs_environment_actions: bool = False,
                  denormalize_context: Mapping[str, Any] | None = None,
                  denormalize_per_action: bool = False,
-                 expected_unnorm_key: str = '') -> None:
+                 expected_unnorm_key: str = '',
+                 policy: Mapping[str, Any] | None = None,
+                 observation_adapter: Mapping[str, Any] | None = None) -> None:
         if not callable(dataset):
             raise TypeError('FluxVLA server dataset must be callable')
         if (not model_outputs_environment_actions
@@ -82,10 +99,143 @@ class FluxVLAServingRunner:
             self.vla.to(device=self.device, dtype=self.mixed_precision_dtype)
         else:
             self.vla.to(self.device)
+        self.configure_policy(policy, observation_adapter)
+        self._episode_id = None
+        self._sequence = 0
+        self._observation_id = None
+        self._policy_seed = None
+        self._policy_unnorm_key = None
+        self._episode_failed = False
+        self.last_prediction_metadata = {}
+        self.setup_policy(
+            vla=PolicyModelAdapter(self._policy_predict),
+            input_processor=lambda observation: dict(observation=observation),
+            output_processor=lambda actions, **_: (actions, []),
+            unnorm_key=expected_unnorm_key,
+            # The callback below retains the serving runner's own precision,
+            # device, preprocessing and denormalization (exactly once).
+            enable_mixed_precision=False)
 
-    def predict_action(self, observation: Mapping[str, Any], unnorm_key: str,
-                       policy_seed: int) -> tuple[np.ndarray, float]:
-        """Process one self-contained request and return ``[T, A]`` actions."""
+    def predict_action(
+            self, observation: Mapping[str, Any], unnorm_key: str,
+            policy_seed: int) -> tuple[np.ndarray | PolicyStop, float]:
+        """Predict directly, or plan then predict in this SAME process.
+
+        Policy mode accepts one serial episode stream. A new episode must
+        start at sequence 1 / observation 0. Interleaved or replayed requests
+        fail rather than resetting another episode's controller silently.
+        """
+        self.last_prediction_metadata = {}
+        if self.policy is None:
+            return self._predict_vla_action(observation, unnorm_key,
+                                            policy_seed)
+        if not isinstance(observation, Mapping):
+            raise TypeError('observation must be a mapping')
+        data = dict(observation)
+        context = data.pop('policy_context', None)
+        if not isinstance(context, Mapping):
+            raise ValueError('Policy serving requires policy_context; enable '
+                             'FluxVLAPolicyClient.send_policy_context')
+        episode_id = context.get('episode_id')
+        sequence = context.get('sequence')
+        observation_id = context.get('observation_id')
+        if not isinstance(episode_id, str) or not episode_id.strip():
+            raise ValueError('policy_context.episode_id must be nonempty')
+        if type(sequence) is not int or sequence < 1:
+            raise ValueError('policy_context.sequence must be positive')
+        if type(observation_id) is not int or observation_id < 0:
+            raise ValueError(
+                'policy_context.observation_id must be nonnegative')
+        if (unnorm_key and self.expected_unnorm_key
+                and unnorm_key != self.expected_unnorm_key):
+            raise ValueError('Policy request normalization key changed')
+        unnorm_key = unnorm_key or self.expected_unnorm_key
+        goal = data.get('task_description')
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError('Policy request needs the whole task description')
+        if episode_id != self._episode_id:
+            if sequence != 1 or observation_id != 0:
+                raise ValueError('New episodes must start at sequence 1 / '
+                                 'observation 0; interleaving is unsupported')
+            self.reset_policy(goal)
+            self._episode_id = episode_id
+            self._sequence = 0
+            self._observation_id = 0
+            self._policy_seed = policy_seed
+            self._policy_unnorm_key = unnorm_key
+            self._episode_failed = False
+            print(f'[FluxVLA][policy] episode reset: {episode_id}', flush=True)
+        else:
+            if self._episode_failed:
+                raise RuntimeError(
+                    'Policy episode failed; start a new episode')
+            if goal != self.policy.goal or policy_seed != self._policy_seed:
+                raise ValueError('Policy goal/seed changed within an episode')
+            if unnorm_key != self._policy_unnorm_key:
+                raise ValueError(
+                    'Policy normalization changed within an episode')
+            if sequence != self._sequence + 1:
+                raise ValueError(
+                    'Policy request sequence must increase by one')
+            executed = observation_id - self._observation_id
+            if executed <= 0:
+                raise ValueError('Missing actual execution acknowledgment')
+            self.acknowledge_policy(executed)
+        self._sequence = sequence
+        self._observation_id = observation_id
+        started = time.perf_counter()
+        print(f'[FluxVLA][policy] step={observation_id} planning', flush=True)
+        try:
+            result = self.step_policy(
+                data, observation_id, policy_seed=policy_seed)
+            self.last_prediction_metadata = dict(result.metadata)
+            if result.status != 'ready':
+                if result.status not in {
+                        'blocked', 'failed', 'waiting', 'rejected',
+                        'succeeded', 'timeout', 'cancelled', 'completed'
+                } or result.actions is not None:
+                    raise ValueError('Invalid non-executing policy result')
+                # Preserve the event for debugging, but expose only known
+                # controller reasons, never arbitrary provider error text.
+                planning = result.metadata.get('planning', {})
+                reason = planning.get('reason')
+                if reason not in ('goal_not_verified', 'goal_state_unknown',
+                                  'goal_verified', 'confirming_goal',
+                                  'confirming_subtask',
+                                  'subtask_state_unknown',
+                                  'episode_chunk_budget_exhausted',
+                                  'subtask_chunk_budget_exhausted',
+                                  'finish_verification_exhausted',
+                                  'planner_recovery_exhausted',
+                                  'control_replan_budget_exhausted',
+                                  'agent_visual_completion',
+                                  'planner_cannot_progress'):
+                    reason = 'planner_error'
+                self._episode_failed = True
+                print(
+                    f'[FluxVLA][policy] episode stopped: {result.status} '
+                    f'(reason={reason}); no actions issued',
+                    flush=True)
+                return PolicyStop(result.status, reason), \
+                    time.perf_counter() - started
+            return result.actions, time.perf_counter() - started
+        except Exception:
+            self._episode_failed = True
+            raise
+
+    def _policy_predict(self, observation, **_):
+        print(
+            '[FluxVLA][policy] selected subtask: '
+            f'{observation["task_description"]}',
+            flush=True)
+        actions, _ = self._predict_vla_action(observation,
+                                              self._policy_unnorm_key,
+                                              self._policy_seed)
+        print('[FluxVLA][policy] VLA action chunk ready', flush=True)
+        return actions
+
+    def _predict_vla_action(self, observation, unnorm_key, policy_seed):
+        """Unchanged VLA preprocessing/precision/action contract."""
         if not isinstance(observation, Mapping):
             raise TypeError('observation must be a mapping')
         if (unnorm_key and self.expected_unnorm_key
@@ -263,6 +413,15 @@ def build_serving_runner_from_config(
                          '`inference`')
     section_cfg = require_mapping(
         config_get(cfg, section_name, _MISSING), f'config.{section_name}')
+    policy_options = {
+        key: section_cfg[key]
+        for key in ('policy', 'observation_adapter')
+        if section_cfg.get(key) is not None
+    }
+    if bool(policy_options) != (server_cfg.get('mode') == 'stateful'):
+        raise ValueError(
+            'Policy serving requires themis.server.mode=stateful; '
+            'plain VLA serving remains stateless')
     dataset_cfg = copy.deepcopy(
         require_mapping(
             section_cfg.get('dataset', _MISSING),
@@ -349,6 +508,7 @@ def build_serving_runner_from_config(
             denormalize_per_action=server_cfg.get('denormalize_per_action',
                                                   False),
             expected_unnorm_key=str(transport.get('unnorm_key', '')),
+            **policy_options,
         ))
 
 
@@ -356,8 +516,8 @@ def get_server_config(themis_cfg: Mapping[str, Any]) -> dict[str, Any]:
     """Return the required transport-neutral server configuration."""
     server_cfg = dict(
         require_mapping(themis_cfg.get('server', _MISSING), 'themis.server'))
-    if server_cfg.get('mode', 'stateless') != 'stateless':
-        raise ValueError('themis.server.mode must be `stateless`')
+    if server_cfg.get('mode', 'stateless') not in {'stateless', 'stateful'}:
+        raise ValueError('themis.server.mode must be stateless or stateful')
     return server_cfg
 
 
