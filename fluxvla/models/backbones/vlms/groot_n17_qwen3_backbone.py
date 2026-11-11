@@ -144,7 +144,7 @@ class GrootN17Qwen3Backbone(Qwen3VL):
         return (input_ids[:, first_valid_column:],
                 attention_mask[:, first_valid_column:])
 
-    def forward(
+    def forward_features(
         self,
         vl_input: Optional[Mapping[str, torch.Tensor]] = None,
         images: Optional[torch.Tensor] = None,

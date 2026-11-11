@@ -26,11 +26,18 @@ from .fluxbisim_base_inference_runner import \
     BaseInferenceRunnerSim  # noqa: F401, F403
 from .franka_inference_runner import FrankaInferenceRunner  # noqa: F401, F403
 from .serving.serving_runner import FluxVLAServingRunner  # noqa: F401, F403
+from .textvqa_eval_runner import TextVQAEvalRunner  # noqa: F401, F403
 
 try:
     from .fsdp_train_runner import FSDPTrainRunner  # noqa: F401, F403
 except ImportError as exc:
     if not is_heterogeneous_torch_distributed_error(exc):
+        raise
+
+try:
+    from .rlinf_train_runner import RLinfTrainRunner  # noqa: F401, F403
+except ImportError as exc:
+    if exc.name != 'rlinf':
         raise
 
 from .oli_inference_runner import OliInferenceRunner  # noqa: F401, F403

@@ -69,7 +69,7 @@ def _normalize_rotation_matrices(matrices: np.ndarray) -> np.ndarray:
 def _matrix_to_rot6d(matrix: np.ndarray) -> np.ndarray:
     matrix = np.asarray(matrix, dtype=np.float32)
     if matrix.shape[-2:] != (3, 3):
-        raise ValueError(f'rotation matrix must end with [3,3], got '
+        raise ValueError('rotation matrix must end with [3,3], got '
                          f'{matrix.shape}')
     return matrix[..., :, :2].swapaxes(-1, -2).reshape(*matrix.shape[:-2], 6)
 
@@ -90,7 +90,7 @@ def _rot6d_to_matrix(rot6d: np.ndarray) -> np.ndarray:
 def _matrix_to_axisangle(matrix: np.ndarray) -> np.ndarray:
     matrix = np.asarray(matrix, dtype=np.float32)
     if matrix.shape[-2:] != (3, 3):
-        raise ValueError(f'rotation matrix must end with [3,3], got '
+        raise ValueError('rotation matrix must end with [3,3], got '
                          f'{matrix.shape}')
 
     original_shape = matrix.shape[:-2]
@@ -220,13 +220,18 @@ class ProcessLiberoActions(RelativeActions):
 
 @TRANSFORMS.register_module()
 class JointSignTransform:
-    """Apply configured joint-axis signs to state and/or action vectors."""
+    """Apply configured joint-axis signs to state and/or action vectors.
+
+    ``input_dtype`` controls arithmetic precision and defaults to FP32.
+    """
 
     def __init__(self,
                  signs: List[float],
                  state_key: Optional[str] = 'states',
-                 action_key: Optional[str] = 'actions') -> None:
-        signs = np.asarray(signs, dtype=np.float32)
+                 action_key: Optional[str] = 'actions',
+                 input_dtype: str = 'float32') -> None:
+        self.input_dtype = np.dtype(input_dtype)
+        signs = np.asarray(signs, dtype=self.input_dtype)
         if signs.ndim != 1 or not np.all(np.isin(signs, (-1.0, 1.0))):
             raise ValueError('signs must be a one-dimensional list of +/-1.')
         self.signs = signs
@@ -237,7 +242,7 @@ class JointSignTransform:
         for key in (self.state_key, self.action_key):
             if key is None or key not in data:
                 continue
-            values = np.asarray(data[key], dtype=np.float32)
+            values = np.asarray(data[key], dtype=self.input_dtype)
             if values.shape[-1] != self.signs.shape[0]:
                 raise ValueError(
                     f'JointSignTransform expected {self.signs.shape[0]} '
@@ -266,8 +271,8 @@ def _validate_range(value, name):
     return tuple(map(float, value))
 
 
-def _standardize_aloha_grippers(value, gripper_range):
-    value = np.asarray(value, dtype=np.float32).copy()
+def _standardize_aloha_grippers(value, gripper_range, dtype=np.float32):
+    value = np.asarray(value, dtype=dtype).copy()
     if gripper_range is not None:
         low, high = gripper_range
         value[..., _ALOHA_GRIPPER_INDICES] = _normalize_range(
@@ -304,14 +309,14 @@ def _aloha_gripper_from_angular_inv(value):
     return value - 0.5476
 
 
-def _aloha_state_gripper_to_pi(state):
-    state = np.asarray(state, dtype=np.float32).copy()
+def _aloha_state_gripper_to_pi(state, dtype=np.float32):
+    state = np.asarray(state, dtype=dtype).copy()
     state[..., [6, 13]] = _aloha_gripper_to_angular(state[..., [6, 13]])
     return state
 
 
-def _aloha_action_gripper_to_pi(action):
-    action = np.asarray(action, dtype=np.float32).copy()
+def _aloha_action_gripper_to_pi(action, dtype=np.float32):
+    action = np.asarray(action, dtype=dtype).copy()
     action[..., [6, 13]] = _aloha_gripper_from_angular_inv(action[...,
                                                                   [6, 13]])
     return action
@@ -329,6 +334,8 @@ class OpenPIAlohaGripperCoordinates:
 
     ``gripper_input_range`` first maps hardware units linearly to the ALOHA
     ``[0, 1]`` contract. Values are not clipped.
+    ``input_dtype`` defaults to FP32; FP64 preserves precision for state
+    tokenization pipelines that discretize the converted coordinates.
 
     Joint signs, relative actions, and normalization deliberately remain in
     the generic ``JointSignTransform``, ``RelativeActions``, and
@@ -338,14 +345,17 @@ class OpenPIAlohaGripperCoordinates:
     def __init__(self,
                  adapt_to_pi: bool = True,
                  gripper_input_range=None,
+                 input_dtype: str = 'float32',
                  *args,
                  **kwargs):
         self.adapt_to_pi = adapt_to_pi
+        self.input_dtype = np.dtype(input_dtype)
         self.gripper_input_range = _validate_range(gripper_input_range,
                                                    'gripper_input_range')
 
     def _standardize_grippers(self, value):
-        return _standardize_aloha_grippers(value, self.gripper_input_range)
+        return _standardize_aloha_grippers(value, self.gripper_input_range,
+                                           self.input_dtype)
 
     def __call__(self, data: Dict) -> Dict:
         states = self._standardize_grippers(data['states'])
@@ -354,7 +364,7 @@ class OpenPIAlohaGripperCoordinates:
                 'OpenPIAlohaGripperCoordinates expects 14-dimensional '
                 f'states, got {states.shape}.')
         if self.adapt_to_pi:
-            states = _aloha_state_gripper_to_pi(states)
+            states = _aloha_state_gripper_to_pi(states, self.input_dtype)
         data['states'] = states
 
         if 'actions' not in data:
@@ -366,7 +376,7 @@ class OpenPIAlohaGripperCoordinates:
                 'OpenPIAlohaGripperCoordinates expects 14-dimensional '
                 f'actions, got {actions.shape}.')
         if self.adapt_to_pi:
-            actions = _aloha_action_gripper_to_pi(actions)
+            actions = _aloha_action_gripper_to_pi(actions, self.input_dtype)
         data['actions'] = actions
         return data
 

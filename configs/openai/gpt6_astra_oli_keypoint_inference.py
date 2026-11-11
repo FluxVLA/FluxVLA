@@ -9,6 +9,10 @@ _OPENAI_BASE_URL = (_environ.get('OPENAI_BASE_URL')
                     or 'https://api.openai.com/v1').rstrip('/')
 _OPENAI_API_KEY_ENV = _environ.get('OPENAI_API_KEY_ENV') or 'OPENAI_API_KEY'
 
+# OpenAIVLA selects the Responses protocol, not a specific model provider.
+# MiniMax-M3.1-Flash was tested with https://api.minimax.cn/v1: switch the
+# endpoint, API key and model together. The OLI adapter stays unchanged.
+# See docs/openai_oli_control.md for the example and validation scope.
 inference_model = dict(
     type='OpenAIVLA',
     embodiment='oli',

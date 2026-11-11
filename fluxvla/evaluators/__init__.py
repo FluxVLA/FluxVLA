@@ -13,3 +13,4 @@
 # limitations under the License.
 
 from .evaluator_policies import *  # noqa: F401, F403
+from .vlm_evaluator import VLMEvaluator  # noqa: F401

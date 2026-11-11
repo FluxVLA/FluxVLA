@@ -79,6 +79,10 @@ class PI0FlowMatching(BaseVLA):
             are cast to BF16 at the model boundary.
         preserve_fp32_residuals (bool): Keep Gemma inputs in FP32 when its
             parameters are FP32. Defaults to False for legacy recipe parity.
+        openpi_rl_numerics (bool): With ``openpi_fp32_flow``, also round RoPE
+            frequencies through BF16, enable FP32 AdaRMS projections and
+            build PI0.5 timestep embeddings in FP64. Defaults to False so
+            existing SFT recipes retain their original numerical path.
         **kwargs: Additional keyword arguments for model configuration.
     """
 
@@ -123,6 +127,8 @@ class PI0FlowMatching(BaseVLA):
                  openpi_fp32_flow: bool = False,
                  rtc_training_config: Optional[Dict] = None,
                  preserve_fp32_residuals: bool = False,
+                 pretrained_skip_prefixes: Optional[List[str]] = None,
+                 openpi_rl_numerics: bool = False,
                  **kwargs):
         super(PI0FlowMatching, self).__init__(
             vision_backbone=vision_backbone,
@@ -131,6 +137,7 @@ class PI0FlowMatching(BaseVLA):
             projector=projector,
             vla_head=vla_head,
             pretrained_name_or_path=pretrained_name_or_path,
+            pretrained_skip_prefixes=pretrained_skip_prefixes,
             enable_mixed_precision_training=enable_mixed_precision_training,
             freeze_vision_backbone=freeze_vision_backbone,
             freeze_llm_backbone=freeze_llm_backbone,
@@ -201,6 +208,18 @@ class PI0FlowMatching(BaseVLA):
         self.time_beta_beta = float(time_beta_beta)
         self.openpi_fp32_flow = bool(openpi_fp32_flow)
         self.preserve_fp32_residuals = bool(preserve_fp32_residuals)
+        self.openpi_rl_numerics = bool(openpi_rl_numerics)
+        if self.openpi_fp32_flow and self.openpi_rl_numerics:
+            for gemma in (self.llm_backbone, self.llm_expert):
+                with torch.no_grad():
+                    rotary = gemma.rotary_emb
+                    for name in ('inv_freq', 'original_inv_freq'):
+                        buffer = getattr(rotary, name, None)
+                        if buffer is not None:
+                            buffer.copy_(buffer.bfloat16().to(buffer.dtype))
+                for module in gemma.modules():
+                    if hasattr(module, 'adarms_fp32'):
+                        module.adarms_fp32 = True
         self.rtc_training_config = rtc_training_config
 
     @staticmethod
@@ -756,13 +775,15 @@ class PI0FlowMatching(BaseVLA):
         v_t, u_t = self._select_flow_loss_dimensions(v_t, u_t)
         losses = F.mse_loss(u_t, v_t, reduction='none')
         sample_weight = kwarg.get('sample_weight')
+        statistics = kwarg.get('return_loss_statistics', False)
         loss = reduce_action_bc_loss(
-            losses, action_mask=action_masks, sample_weight=sample_weight)
+            losses,
+            action_mask=action_masks,
+            sample_weight=sample_weight,
+            return_statistics=statistics)
 
-        return_dict = dict(
-            predictions=v_t,
-            loss=loss,
-        )
+        return_dict = dict(predictions=v_t)
+        return_dict.update(loss if statistics else dict(loss=loss))
         return return_dict
 
     def _predict_action_plain(self, x_t, denoise, bsize, dt, device):

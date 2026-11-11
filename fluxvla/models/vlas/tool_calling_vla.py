@@ -143,6 +143,19 @@ class _HostedToolCallingVLA(nn.Module):
             return
         super().__setattr__(name, value)
 
+    def __delattr__(self, name: str) -> None:
+        """Remove forwarded overrides while preserving module ownership."""
+        owned = (
+            name in self.__dict__
+            or name in self.__dict__.get('_parameters', {})
+            or name in self.__dict__.get('_buffers', {})
+            or name in self.__dict__.get('_modules', {}))
+        policy = self.__dict__.get('_modules', {}).get('_policy')
+        if not owned and policy is not None and hasattr(policy, name):
+            delattr(policy, name)
+            return
+        super().__delattr__(name)
+
     def forward(self, *args, **kwargs):
         del args, kwargs
         raise RuntimeError(f'{type(self).__name__} is inference-only.')

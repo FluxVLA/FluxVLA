@@ -15,6 +15,7 @@
 
 set -euo pipefail
 
+# Preserve the original no-argument install (real + sim, without RLinf).
 ENV_MODE="full"
 PROFILE="auto"
 DRY_RUN=0
@@ -94,22 +95,30 @@ FLUXVLA_ROBOTWIN_REF="${FLUXVLA_ROBOTWIN_REF:-c3ddfa8b97d5519efa828b075999bd0006
 usage() {
   cat <<'EOF'
 Usage:
-  bash scripts/install_env.sh [sim-only|real-only|full] [options]
+  bash scripts/install_env.sh [real-only|sim-only|rlinf-only|all] [options]
 
 Environment modes:
-  sim-only   Install training + simulation dependencies.
-  real-only  Install training + real-robot / remote inference dependencies.
-  full       Install all dependencies. Default.
+  real-only   Install FluxVLA training + real-robot / remote inference dependencies.
+  sim-only    Install FluxVLA training + simulation dependencies.
+  rlinf-only  Install FluxVLA model runtime (including PyAV / FlashAttention),
+              RLinf and Ray;
+              exclude heavyweight simulators and assets.
+  all         Install FluxVLA, simulation, real-robot dependencies, RLinf and Ray.
 
-Aliases:
-  sim        Same as sim-only.
-  real       Same as real-only.
+Compatibility modes / aliases:
+  full        Install real + sim dependencies, without RLinf. Default when omitted.
+  real        Same as real-only.
+  sim         Same as sim-only.
+  fluxvla-all  Same as all.
+
+Only rlinf-only / all require RLINF_ROOT and cu128 (PyTorch 2.8).
 
 Options:
   --profile auto|cu124|cu128  GPU profile. auto prefers the current CUDA
                               toolkit / nvcc version: CUDA >= 12.8 selects
                               cu128, otherwise cu124. Driver CUDA and GPU
                               generation are fallback signals only.
+                              RL profiles require cu128 (PyTorch 2.8).
   --dry-run                   Print commands without executing them.
   --skip-av                   Skip av installation.
   --skip-flash-attn           Skip FlashAttention wheel installation.
@@ -117,7 +126,7 @@ Options:
   --skip-build-tools          Skip cmake/ninja preflight check.
   --skip-egl-setup            Skip LIBERO / MuJoCo EGL system setup.
   --with-robocasa             Install RoboCasa source checkouts even in
-                              real-only mode.
+                              real-only / rlinf-only mode.
   --skip-robocasa             Skip Isaac-GR00T / RoboCasa GR1 source checkout
                               installation.
   --with-robocasa-assets      Force RoboCasa tabletop simulator asset download
@@ -133,6 +142,8 @@ Options:
 Environment variables:
   PYTHON              Python executable to use. Default: $CONDA_PREFIX/bin/python
                       when available, otherwise python.
+  RLINF_ROOT          RLinf source checkout containing the rlinf package.
+                      Required only for rlinf-only / all (including fluxvla-all).
   PIP_INDEX_MODE      pip index selection mode when PIP_INDEX_URLS is not set.
                       auto: use your pip config if it defines an index;
                       otherwise probe PyPI and mirrors by response time.
@@ -207,7 +218,7 @@ Environment variables:
   FLASH_ATTN_CUDA_TAG Override the auto-detected CUDA wheel tag, e.g. cu12.
   FLUXVLA_WHEEL_CACHE Directory for cached release wheels. Default:
                       ~/.cache/fluxvla/wheels.
-  FLUXVLA_EGL_SETUP   LIBERO / MuJoCo EGL setup mode for sim/full installs.
+  FLUXVLA_EGL_SETUP   LIBERO / MuJoCo EGL setup for sim-only / all / full installs.
                       auto: probe EGL first, then try system setup if needed.
                       always: run the EGL check strictly and fail if broken.
                       never: skip EGL setup. Default: auto.
@@ -218,7 +229,8 @@ Environment variables:
                       Space-separated apt packages for EGL / OSMesa setup.
   FLUXVLA_ROBOCASA_INSTALL
                       RoboCasa source checkout mode: auto, always, or never.
-                      auto installs for sim-only/full and skips real-only.
+                      auto installs for sim-only / all / full and skips
+                      real-only / rlinf-only.
                       Default: auto.
   FLUXVLA_ROBOCASA_SRC_ROOT
                       Directory containing RoboCasa source checkouts. Default:
@@ -296,7 +308,9 @@ Environment variables:
 Examples:
   conda activate fluxvla
   bash scripts/install_env.sh sim-only
-  bash scripts/install_env.sh real-only --profile cu128
+  bash scripts/install_env.sh real-only --profile cu124
+  RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh rlinf-only --profile cu128
+  RLINF_ROOT=/path/to/RLinf bash scripts/install_env.sh all --profile cu128
   bash scripts/install_env.sh full --dry-run
   PIP_INDEX_CANDIDATES="https://mirrors.aliyun.com/pypi/simple https://mirrors.cloud.tencent.com/pypi/simple https://repo.huaweicloud.com/repository/pypi/simple https://pypi.tuna.tsinghua.edu.cn/simple https://mirrors.bfsu.edu.cn/pypi/web/simple https://pypi.org/simple" bash scripts/install_env.sh full
   FLUXVLA_EGL_SETUP=always bash scripts/install_env.sh sim-only
@@ -340,16 +354,20 @@ run_conda_with_timeout() {
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    sim|sim-only)
-      ENV_MODE="sim-only"
-      shift
-      ;;
     real|real-only)
       ENV_MODE="real-only"
       shift
       ;;
-    full)
-      ENV_MODE="full"
+    sim|sim-only)
+      ENV_MODE="sim-only"
+      shift
+      ;;
+    all|fluxvla-all)
+      ENV_MODE="all"
+      shift
+      ;;
+    full|rlinf-only)
+      ENV_MODE="$1"
       shift
       ;;
     --profile)
@@ -646,7 +664,15 @@ check_cuda_profile_compatibility() {
 }
 
 needs_sim_runtime() {
-  [[ "${ENV_MODE}" == "sim-only" || "${ENV_MODE}" == "full" ]]
+  [[ "${ENV_MODE}" == "sim-only" || "${ENV_MODE}" == "all" || "${ENV_MODE}" == "full" ]]
+}
+
+needs_real_runtime() {
+  [[ "${ENV_MODE}" == "real-only" || "${ENV_MODE}" == "all" || "${ENV_MODE}" == "full" ]]
+}
+
+needs_rlinf_runtime() {
+  [[ "${ENV_MODE}" == "rlinf-only" || "${ENV_MODE}" == "all" ]]
 }
 
 needs_robotwin_runtime() {
@@ -1737,20 +1763,24 @@ PY
 install_requirements() {
   pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-base.txt"
 
-  case "${ENV_MODE}" in
-    sim-only)
-      pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-sim.txt"
-      ;;
-    real-only)
-      pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-real.txt"
-      check_ros_python_runtime
-      ;;
-    full)
-      pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-sim.txt"
-      pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-real.txt"
-      check_ros_python_runtime
-      ;;
-  esac
+  if needs_sim_runtime; then
+    pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-sim.txt"
+  fi
+  if needs_real_runtime; then
+    pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-real.txt"
+    check_ros_python_runtime
+  fi
+}
+
+install_rlinf_core() {
+  local rlinf_root="${RLINF_ROOT:-}"
+  if [[ -z "${rlinf_root}" || ! -d "${rlinf_root}/rlinf" ]]; then
+    echo "Error: set RLINF_ROOT to an RLinf source checkout." >&2
+    return 1
+  fi
+  # Apply RL pins after the VLA requirements (notably Hydra 1.3.2 rather than
+  # sim-only's legacy 1.2.0), and resolve core dependencies with those same pins.
+  pip_install_with_mirrors -r "${PROJECT_ROOT}/requirements-rlinf.txt" -e "${rlinf_root}"
 }
 
 install_robotwin_curobo() {
@@ -2148,7 +2178,9 @@ download_via_proxy() {
   local url
   for url in "${urls[@]}"; do
     echo "  fetching: ${url}" >&2
-    if download_file_to_cache "${url}" "${out}"; then
+    # This function is used in command substitution: stdout must be the path,
+    # not aria2c's progress/status output, which would become a pip argument.
+    if download_file_to_cache "${url}" "${out}" >&2; then
       if ! downloaded_wheel_is_valid "${out}"; then
         echo "  downloaded file is not a valid wheel: ${out}" >&2
         rm -f "${out}" "${out}.aria2"
@@ -2446,6 +2478,16 @@ main() {
 
   local selected names caps cuda_versions
   selected="$(resolve_profile)"
+  if needs_rlinf_runtime; then
+    if [[ "${selected}" != "cu128" ]]; then
+      echo "Error: ${ENV_MODE} requires --profile cu128 (PyTorch 2.8); cu124 is unsupported for RLinf." >&2
+      return 1
+    fi
+    if [[ -z "${RLINF_ROOT:-}" || ! -d "${RLINF_ROOT}/rlinf" ]]; then
+      echo "Error: set RLINF_ROOT to an RLinf source checkout before installing ${ENV_MODE}." >&2
+      return 1
+    fi
+  fi
   names="$(detect_gpu_names)"
   caps="$(detect_compute_caps)"
   cuda_versions="$(detect_cuda_versions | sort -Vu | tr '\n' ' ')"
@@ -2485,20 +2527,27 @@ main() {
     echo "RoboTwin cuRobo rebuild: disabled"
   fi
 
+  check_cuda_profile_compatibility "${selected}"
   ensure_build_tools
   ensure_pip
-  check_cuda_profile_compatibility "${selected}"
   install_torch "${selected}"
   verify_torch_install "${selected}"
+  # PyAV is imported by the shared transforms, including in rlinf-only mode.
   install_av
   install_requirements
-  install_ffmpeg_runtime
-  install_torchcodec "${selected}"
+  if needs_rlinf_runtime; then
+    install_rlinf_core
+  fi
+  if [[ "${ENV_MODE}" != "rlinf-only" ]]; then
+    install_ffmpeg_runtime
+    install_torchcodec "${selected}"
+  fi
   install_robotwin_curobo "${selected}"
   provision_robotwin_checkout
   verify_robotwin_checkout
   install_robocasa_sources
   configure_libero_egl_runtime
+  # Eagle/RADIO is imported by the model registry and requires FlashAttention.
   install_flash_attn "${selected}"
   install_project
   verify_project_import

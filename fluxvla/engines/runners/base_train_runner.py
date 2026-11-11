@@ -103,11 +103,26 @@ class BaseTrainRunner(ABC):
                  seed: Optional[int] = None,
                  evaluator: Optional[Dict] = None,
                  tokenizer: Optional[Dict] = None,
-                 resume_from: Optional[str] = None):
+                 resume_from: Optional[str] = None,
+                 train_task: str = 'vla',
+                 mixed_training: Optional[Dict] = None):
         from ..utils.builder import (build_collator_from_cfg,
                                      build_metric_from_cfg, build_vla_from_cfg)
 
         configure_deterministic_training(deterministic_algorithms)
+        if train_task not in ('vla', 'vlm', 'mixed'):
+            raise ValueError('runner.train_task must be vla, vlm or mixed.')
+        self.train_task = train_task
+        self._vlm_step_totals = None
+        self._mixed_training = None
+        if train_task == 'mixed':
+            from .mixed_training import MixedTraining
+            if max_steps is None or max_epochs is not None:
+                raise ValueError('Mixed training requires max_steps and '
+                                 'max_epochs=None.')
+            self._mixed_training = MixedTraining(cfg, **(mixed_training or {}))
+        elif mixed_training is not None:
+            raise ValueError('mixed_training requires train_task="mixed".')
 
         per_device_batch_size = cfg.train_dataloader.per_device_batch_size
         grad_accumulation_steps = int(grad_accumulation_steps)
@@ -132,6 +147,11 @@ class BaseTrainRunner(ABC):
         self.training_mode = 'step_based' if max_steps is not None else 'epoch_based'  # noqa: E501
 
         self.vla = build_vla_from_cfg(cfg.model)
+        if train_task in ('vlm', 'mixed') and keep_params_fp32:
+            # Promote before from_pretrained: Pi05 initializes RMSNorm in
+            # BF16, which would otherwise round the source FP32 weights.
+            self.vla.float()
+        self.vla.validate_training_task(train_task)
         self.all_module_keys = self.vla.all_module_keys
         if self.vla.llm_backbone is not None:
             self.llm_transformer_layer_cls = self.vla.llm_backbone.transformer_layer_cls  # noqa: E501
@@ -210,6 +230,63 @@ class BaseTrainRunner(ABC):
     def _unwrap_vla(self) -> torch.nn.Module:
         """Return the model underneath a distributed wrapper."""
         return self.vla.module if hasattr(self.vla, 'module') else self.vla
+
+    def _prepare_training_task(self):
+        self.vla.prepare_training_task(self.train_task)
+        if not any(p.requires_grad for p in self.vla.parameters()):
+            raise ValueError(f'No trainable parameters for {self.train_task}; '
+                             'check the backbone freezing configuration.')
+
+    def _finish_vlm_accumulation(self, output):
+        """Normalize averaged distributed gradients by global target count.
+
+        Each backward uses a token *sum*. DDP/FSDP average gradients across
+        ranks; undo that average and divide once by the total target count
+        across the accumulation window, before clipping or optimizer.step.
+        """
+        totals = self._vlm_step_totals
+        world_size = 1
+        if dist.is_available() and dist.is_initialized():
+            dist.all_reduce(totals)
+            world_size = dist.get_world_size()
+        self._vlm_step_totals = None
+        if totals[1].item() == 0:
+            self.optimizer.zero_grad()
+            raise ValueError('VLM optimizer step has no supervised tokens.')
+        scale = world_size / totals[1]
+        for parameter in self.vla.parameters():
+            if parameter.grad is not None:
+                parameter.grad.mul_(scale.to(parameter.grad.dtype))
+        loss = (totals[0] / totals[1]).to(output['loss'].dtype)
+        self.metric.commit(
+            loss=loss,
+            vlm_loss=loss,
+            token_accuracy=(totals[2] / totals[1]).float(),
+            supervised_tokens=totals[1].float())
+        return loss
+
+    def _save_vlm_assets(self, dataset):
+        if self.train_task not in ('vlm',
+                                   'mixed') or not overwatch.is_rank_zero():
+            return
+        asset_dir = Path(self.metric.run_dir) / 'vlm_assets'
+        asset_dir.mkdir(parents=True, exist_ok=True)
+        model = self._unwrap_vla()
+        backbone = model.vlm_backbone
+        native = (
+            backbone.vlm if backbone is not None else getattr(
+                model.llm_backbone, 'llm', model.llm_backbone))
+        native.config.save_pretrained(asset_dir)
+        if getattr(native, 'generation_config', None) is not None:
+            native.generation_config.save_pretrained(asset_dir)
+        for transform in getattr(dataset, 'transforms', []):
+            save_assets = getattr(transform, 'save_pretrained', None)
+            if callable(save_assets):
+                save_assets(asset_dir)
+        if self.tokenizer is not None:
+            tokenizer = getattr(self.tokenizer, 'tokenizer', self.tokenizer)
+            if callable(getattr(tokenizer, 'save_pretrained', None)):
+                tokenizer.save_pretrained(asset_dir)
 
     def can_run_training_eval(self) -> bool:
         """Return whether the underlying VLA exposes a training-eval hook."""
@@ -360,6 +437,8 @@ class BaseTrainRunner(ABC):
 
     def cleanup(self) -> None:
         """Release training resources before launching evaluation."""
+        if self._mixed_training is not None:
+            self._mixed_training.close(self)
         self._shutdown_dataloader(self._active_dataloader)
         self._active_dataloader = None
 
@@ -460,6 +539,17 @@ class BaseTrainRunner(ABC):
                 f'Resuming training from checkpoint: {self.resume_from}')
         checkpoint_info = torch.load(
             self.resume_from, map_location='cpu', weights_only=True)
+        mixed = getattr(self, '_mixed_training', None)
+        if mixed is not None:
+            required = {
+                'model', 'optimizer_state_dict', 'scheduler_state_dict'
+            }
+            if not required.issubset(checkpoint_info):
+                raise ValueError('Mixed resume needs a complete training '
+                                 'checkpoint, including optimizer/scheduler.')
+            mixed.load_state_dict(
+                checkpoint_info.get('mixed_training'),
+                checkpoint_info.get('global_step', 0))
 
         # Restore model state (delegated to subclasses for FSDP/DDP-specific
         # handling)
@@ -492,12 +582,17 @@ class BaseTrainRunner(ABC):
                 success = self._load_optimizer_state(
                     checkpoint_optimizer_state)
                 if not success:
+                    if mixed is not None:
+                        raise RuntimeError('Cannot restore mixed optimizer.')
                     if overwatch.is_rank_zero():
                         overwatch.warning(
                             'Failed to load optimizer state. '
                             'Training will continue with fresh optimizer '
                             'state.')
             except Exception as e:
+                if mixed is not None:
+                    raise RuntimeError(
+                        'Cannot restore mixed optimizer.') from e
                 if overwatch.is_rank_zero():
                     overwatch.warning(
                         f'Error loading optimizer state: {e}. '
@@ -507,7 +602,8 @@ class BaseTrainRunner(ABC):
                 self._current_checkpoint_info = None
                 # Ensure all ranks synchronize even if loading failed
                 # This prevents deadlock if some ranks succeed and others fail
-                dist.barrier()
+                if dist.is_initialized():
+                    dist.barrier()
 
         # Restore scheduler state
         if ('scheduler_state_dict' in checkpoint_info
@@ -518,13 +614,17 @@ class BaseTrainRunner(ABC):
                 if overwatch.is_rank_zero():
                     overwatch.info('Scheduler state restored from checkpoint')
             except Exception as e:
+                if mixed is not None:
+                    raise RuntimeError(
+                        'Cannot restore mixed scheduler.') from e
                 overwatch.warning(f'Failed to load scheduler state: {e}')
 
         if overwatch.is_rank_zero():
             overwatch.info(
                 f'Resumed training from step {self.metric.global_step}, '
                 f'epoch {self.current_epoch}')
-        dist.barrier()
+        if dist.is_initialized():
+            dist.barrier()
 
     def _initialize_ema_parameters(self) -> None:
         """Create FP32/local-shard EMA buffers from current parameters."""
@@ -690,6 +790,9 @@ class BaseTrainRunner(ABC):
 
     def run(self, vla_dataset, eval_dataset=None) -> None:
         """Train the VLA model."""
+        if self._mixed_training is not None:
+            return self._mixed_training.run(self, vla_dataset, eval_dataset)
+        self._save_vlm_assets(vla_dataset)
         self._configure_dataset_sharding(vla_dataset)
         training_eval_dataset = (
             vla_dataset if eval_dataset is None else eval_dataset)
@@ -768,7 +871,7 @@ class BaseTrainRunner(ABC):
                 f'or "blockwise", got {strategy!r}.')
 
     def _next_batch(self, dataloader, dataloader_iter, sampler):
-        """Fetch a micro-batch, restarting the epoch if the iterator ends."""
+        """Fetch a micro-batch, restarting the iterator if it ends."""
         while True:
             if dataloader_iter is None:
                 self._set_dataloader_epoch(dataloader, sampler)
@@ -777,7 +880,13 @@ class BaseTrainRunner(ABC):
             try:
                 return next(dataloader_iter), dataloader_iter
             except StopIteration:
-                self.current_epoch += 1
+                # Preserve legacy VLA iterator/sampler epoch semantics.
+                # Only VLM with a known step budget lets the outer loop
+                # own this counter: filling its last accumulation window
+                # can restart a finite loader, but must not count the same
+                # epoch twice and end training early.
+                if self.train_task != 'vlm' or not self.steps_per_epoch:
+                    self.current_epoch += 1
                 dataloader_iter = None
 
     def _set_dataloader_epoch(self, dataloader, sampler) -> None:
@@ -797,6 +906,8 @@ class BaseTrainRunner(ABC):
     def _run_accumulated_training_step(self, dataloader, dataloader_iter,
                                        sampler):
         """Run one optimizer step made of one or more micro-batches."""
+        if self._mixed_training is not None:
+            return self._mixed_training.step(self), dataloader_iter
         losses = []
         for micro_step in range(self.grad_accumulation_steps):
             batch, dataloader_iter = self._next_batch(dataloader,
@@ -808,7 +919,9 @@ class BaseTrainRunner(ABC):
             with self._grad_sync_context(should_sync=should_step):
                 loss = self._training_step(batch, should_step=should_step)
             losses.append(loss.detach())
-        mean_loss = torch.stack(losses).mean()
+        mean_loss = (
+            losses[-1]
+            if self.train_task == 'vlm' else torch.stack(losses).mean())
         return float(mean_loss.item()), dataloader_iter
 
     def _grad_sync_context(self, should_sync: bool):
@@ -853,7 +966,12 @@ class BaseTrainRunner(ABC):
                     global_step=self.metric.global_step + 1,
                     epoch=self.current_epoch,
                     lr=self._get_log_lr())
-                progress.set_description(self.metric.push(), refresh=False)
+                if self._mixed_training is not None:
+                    status = self.metric.push(
+                        extra_metrics=self._mixed_training.step_metrics)
+                else:
+                    status = self.metric.push()
+                progress.set_description(status, refresh=False)
                 progress.update()
                 if (self.evaluator is not None
                         and self.evaluator.should_run(self)):
@@ -1025,6 +1143,10 @@ class BaseTrainRunner(ABC):
 
     def _training_step(self, batch, should_step: bool = True) -> torch.Tensor:
         """Execute single training step: forward, backward, optimize."""
+        mixed = self._mixed_training
+        task = mixed.active_task if mixed is not None else self.train_task
+        if task not in ('vla', 'vlm'):
+            raise ValueError('Select a task before a mixed training step.')
         self.lr_scheduler.prepare_step(self)
         # OpenPI keeps observations/actions and master parameters in FP32.
         # Autocast is responsible only for BF16 transformer compute.
@@ -1040,12 +1162,33 @@ class BaseTrainRunner(ABC):
                 'cuda',
                 dtype=self.mixed_precision_dtype,
                 enabled=self.enable_mixed_precision_training):
-            output: CausalLMOutputWithPast = self.vla(**batch)
+            if mixed is not None and task == 'vla':
+                output = self.vla(
+                    task='vla', return_loss_statistics=True, **batch)
+            else:
+                output: CausalLMOutputWithPast = (
+                    self.vla(task='vlm', **batch)
+                    if task == 'vlm' else self.vla(**batch))
             loss = output['loss']
             loss_metrics = self._collect_output_loss_metrics(output)
 
-        self.metric.commit(loss=loss, **loss_metrics)
-        (loss / self.grad_accumulation_steps).backward()
+        if mixed is not None:
+            loss = mixed.backward(self, output, should_step)
+        elif self.train_task == 'vlm':
+            totals = torch.stack([
+                output[key].detach().double()
+                for key in ('loss_sum', 'num_tokens', 'num_correct')
+            ])
+            if self._vlm_step_totals is None:
+                self._vlm_step_totals = totals
+            else:
+                self._vlm_step_totals += totals
+            output['loss_sum'].backward()
+            if should_step:
+                loss = self._finish_vlm_accumulation(output)
+        else:
+            self.metric.commit(loss=loss, **loss_metrics)
+            (loss / self.grad_accumulation_steps).backward()
 
         # Commit per-dataset metrics
         if overwatch.is_rank_zero() and all(k in output for k in [
@@ -1065,6 +1208,8 @@ class BaseTrainRunner(ABC):
         try:
             self.optimizer.step()
         except RuntimeError as e:
+            if mixed is not None:
+                raise
             if 'size' in str(e).lower() or 'shape' in str(e).lower():
                 self._reinit_optimizer()
                 self.optimizer.step()

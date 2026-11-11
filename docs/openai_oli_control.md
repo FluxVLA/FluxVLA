@@ -1,4 +1,4 @@
-# GPT-6 OLI keypoint control
+# OLI keypoint control through the Responses API
 
 This integration has two independent layers.
 
@@ -35,7 +35,7 @@ state. Checkpoint preprocessing selects the fields declared by its modality.
 The final twelve keypoint action values are published in their original order,
 followed by the configured force levels.
 
-The GPT policy requests absolute `xyz_m` positions and pairs of semantic
+The OLI policy requests absolute `xyz_m` positions and pairs of semantic
 direction vectors. Key-body targets use the robot-base frame; base targets use
 the fixed command-world frame. The adapter converts a base target to per-step
 body-frame x/y and yaw increments, absolute height, and absolute pitch/roll,
@@ -48,11 +48,15 @@ fingers they are 45-D and 66-D; with binary hands they are 35-D and 56-D.
 while feet and base height are filled from the current keypoint state. `full`
 supplies all five key-body poses, the full base action, and hands.
 
-## GPT-6 policy
+## Hosted OLI policy
 
-`OpenAIOliVLA` reuses main's Responses API implementation. It sends
+Saved configs and direct callers should follow the
+[hosted VLA migration guide](hosted_vla_migration.md).
+
+`OpenAIVLA(embodiment='oli')` combines the Responses API transport with the
+shared OLI policy. It sends
 the available RGB views, all five key-body poses, base pose, and a summary of
-the 12-D finger state to GPT-6. The base input combines accumulated command
+the 12-D finger state to the configured model (GPT-6 by default). The base input combines accumulated command
 x/y/yaw with measured height/pitch/roll; head, wrist, and foot input poses are
 absolute in the robot-base frame. Orientation uses semantic direction pairs:
 wrist finger direction and palm-facing normal, head gaze and up directions,
@@ -75,7 +79,7 @@ Orientation fields are `finger_direction_in_base` and
 orientation; omit both to hold it. Hands use six native channels per side.
 The policy converts these absolute requests into the existing 66-D contract.
 
-Every GPT command is constrained before it reaches MROS:
+Every model command is constrained before it reaches MROS:
 
 - wrist displacement is limited to 8 cm per call;
 - head displacement is limited to 5 cm per call by the provided config
@@ -125,7 +129,7 @@ python scripts/inference.py \
 ```
 
 Live mode must be enabled explicitly. The runner's execution count controls
-the number of GPT action chunks:
+the number of model action chunks:
 
 ```bash
 python scripts/inference.py \
@@ -136,6 +140,49 @@ python scripts/inference.py \
 
 Run these commands in the configured FluxVLA environment. The default config
 now sets `disable_puppet_arm=True`; observation-only still calls the model API.
+
+### Switching to MiniMax
+
+`OpenAIVLA` is the Responses protocol entry point, not a restriction to OpenAI
+models. MiniMax's China endpoint, `https://api.minimax.cn/v1`, with
+`MiniMax-M3.1-Flash` was tested on 2026-11-10 using this same OLI adapter.
+Change the **endpoint, API key and model name** together; no new model class
+or config file is needed for this tested path. A provider advertising only
+Chat Completions compatibility is not sufficient: this transport calls
+`/responses` and requires image inputs, function calls and multi-turn tool
+history.
+
+Load the MiniMax China key into `MINIMAX_CN_API_KEY` from your local secret
+store, then reuse the existing config:
+
+```bash
+export OPENAI_BASE_URL='https://api.minimax.cn/v1'
+export OPENAI_API_KEY_ENV='MINIMAX_CN_API_KEY'
+python scripts/inference.py \
+  --config configs/openai/gpt6_astra_oli_keypoint_inference.py \
+  --cfg-options inference_model.model=MiniMax-M3.1-Flash \
+  inference_model.max_output_tokens=4096 \
+  inference.disable_puppet_arm=True
+```
+
+The key variable's name is configurable; using `OPENAI_API_KEY` with a
+MiniMax key also works when the endpoint points to the matching MiniMax
+service. Keys issued for different services or regions are not
+interchangeable. The 4096-token cap is the tested output budget, not an OLI
+protocol requirement. Keep `type='OpenAIVLA'` and `embodiment='oli'` for this
+example; the separate `MiniMaxVLA` entry point currently registers only
+LIBERO and RoboCasa policies.
+
+Validation covered two real API turns with changing synthetic images,
+`control_oli` calls, preserved history, trace output and valid 90-by-66 hold
+actions. Robot runs also exercised this endpoint, but an incomplete head
+orientation later caused target validation to fail. API compatibility does
+not establish that every generated motion target is valid or that a full
+robot task has passed. Supply both orientation directions together or omit
+both; the tool schema currently leaves them optional individually, while
+runtime validation rejects an incomplete pair before returning any action
+chunk. The observation-only example above still requires complete live
+observations; it disables action publication, not sensor collection.
 
 ## Diagnosing a stopped run
 

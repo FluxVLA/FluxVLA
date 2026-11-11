@@ -16,6 +16,8 @@ from .attach_rabc_weight import AttachRABCWeight  # noqa: F401, F403
 from .fast_tokenizer import FASTTokenizer  # noqa: F401, F403
 from .modality_state_action import *  # noqa: F401, F403
 from .normalize import *  # noqa: F401, F403
+from .paligemma_vlm_transforms import \
+    ProcessPaliGemmaVLMSFTInputs  # noqa: F401
 from .prompters import *  # noqa: F401, F403
 from .qwen_vl_action_inputs import *  # noqa: F401, F403
 from .robocasa_transforms import (  # noqa: F401, F403
@@ -28,3 +30,4 @@ from .transform_images import *  # noqa: F401, F403
 from .transform_inputs import *  # noqa: F401, F403
 from .transform_prompts import *  # noqa: F401, F403
 from .video_action_transforms import *  # noqa: F401, F403
+from .vlm_transforms import BuildVLMMessages, ProcessVLMSFTInputs  # noqa: F401
