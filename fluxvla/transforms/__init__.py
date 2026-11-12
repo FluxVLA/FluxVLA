@@ -28,6 +28,7 @@ from .transform_actions import *  # noqa: F401, F403
 from .transform_cosmos3 import *  # noqa: F401, F403
 from .transform_images import *  # noqa: F401, F403
 from .transform_inputs import *  # noqa: F401, F403
+from .lingbot_vla_v2 import LingBotPad55D, LingBotRobotSchemaPack  # noqa: F401
 from .transform_prompts import *  # noqa: F401, F403
 from .video_action_transforms import *  # noqa: F401, F403
 from .vlm_transforms import BuildVLMMessages, ProcessVLMSFTInputs  # noqa: F401

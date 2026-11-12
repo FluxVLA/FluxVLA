@@ -13,6 +13,7 @@
 # limitations under the License.
 
 import math
+import re
 from typing import Dict, Optional
 
 from torch.optim import AdamW
@@ -53,7 +54,8 @@ class BaseLRSchedulerPolicy:
     def _get_param_lr(self, runner, name: str) -> float:
         optimizer_cfg = runner.optimizer_cfg
         paramwise_lr = optimizer_cfg.get('paramwise_learning_rate', {})
-        if not paramwise_lr:
+        regex_lr = optimizer_cfg.get('paramwise_learning_rate_regex', {})
+        if not paramwise_lr and not regex_lr:
             return float(optimizer_cfg['lr'])
 
         canonical_name = self._canonicalize_param_name(name)
@@ -64,23 +66,27 @@ class BaseLRSchedulerPolicy:
                     and len(prefix) > matched_len):
                 matched_lr = float(lr)
                 matched_len = len(prefix)
+        for pattern, lr in regex_lr.items():
+            if re.search(pattern, canonical_name) is not None:
+                matched_lr = float(lr)
         return matched_lr
 
     def build_param_groups(self, runner, weight_decay=None):
         optimizer_cfg = runner.optimizer_cfg
         paramwise_lr = optimizer_cfg.get('paramwise_learning_rate', {})
+        regex_lr = optimizer_cfg.get('paramwise_learning_rate_regex', {})
         exclude_1d = optimizer_cfg.get('exclude_1d_from_weight_decay', True)
         weight_decay_all_params = optimizer_cfg.get('weight_decay_all_params',
                                                     False)
         decay_all_params = weight_decay_all_params or not exclude_1d
         if weight_decay is None:
             weight_decay = optimizer_cfg.get('weight_decay')
-        if not paramwise_lr and weight_decay is None:
+        if not paramwise_lr and not regex_lr and weight_decay is None:
             return [
                 param for param in runner.vla.parameters()
                 if param.requires_grad
             ]
-        if not paramwise_lr and decay_all_params:
+        if not paramwise_lr and not regex_lr and decay_all_params:
             return [{
                 'params': [
                     param for param in runner.vla.parameters()
@@ -89,7 +95,7 @@ class BaseLRSchedulerPolicy:
                 'weight_decay':
                 weight_decay,
             }]
-        if not paramwise_lr:
+        if not paramwise_lr and not regex_lr:
             decay, no_decay = [], []
             for name, param in runner.vla.named_parameters():
                 if not param.requires_grad:
@@ -131,6 +137,7 @@ class BaseLRSchedulerPolicy:
         optimizer_cfg = runner.optimizer_cfg
         optimizer_kwargs = dict(optimizer_cfg)
         optimizer_kwargs.pop('paramwise_learning_rate', None)
+        optimizer_kwargs.pop('paramwise_learning_rate_regex', None)
         optimizer_kwargs.pop('weight_decay_all_params', None)
         optimizer_kwargs.pop('weight_decay', None)
         optimizer_kwargs.pop('exclude_1d_from_weight_decay', None)
@@ -294,8 +301,6 @@ class LinearWarmupCosineDecayLRScheduler(BaseLRSchedulerPolicy):
         else:
             scheduler = get_cosine_schedule_with_warmup(
                 optimizer, warmup_steps, num_training_steps)
-        for param_group in optimizer.param_groups:
-            param_group['lr'] = 0.0
         return scheduler
 
 
