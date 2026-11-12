@@ -46,7 +46,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch import Tensor
 
-from megatron.core.tensor_parallel.layers import (
+from ..tensor_parallel.layers import (
     ColumnParallelLinear,
     RowParallelLinear,
 )

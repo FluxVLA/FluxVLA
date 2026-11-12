@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-export PYTHONPATH="${ROOT}/src:${ROOT}:${MEGATRON_ROOT:-/ceph/teamGolden/andyzeng/VLA/Megatron-LM}:${PYTHONPATH:-}"
+VLA_ROOT=${VLA_ROOT:-/ceph/teamGolden/andyzeng/VLA}
+export PYTHONPATH="${VLA_ROOT}/pi05_training/src:${ROOT}:${MEGATRON_ROOT:-${VLA_ROOT}/Megatron-LM}:${PYTHONPATH:-}"
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 
 python -m torch.distributed.run --nproc_per_node="${NPROC_PER_NODE:-1}" \

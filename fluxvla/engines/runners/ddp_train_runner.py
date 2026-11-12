@@ -495,6 +495,7 @@ class DDPTrainRunner(BaseTrainRunner):
                 'model': model_state_dict,
                 'global_step': global_step,
                 'epoch': epoch,
+                'data_state': self._data_state_dict(),
             }
             if mixed_state is not None:
                 checkpoint_dict['mixed_training'] = mixed_state

@@ -98,11 +98,22 @@ def main() -> None:
     raw_state = torch.tensor(row["observation.state"], dtype=torch.float32)
     raw_actions = actions
     sample = {
-        "images": [_decode_image(row[key]) for key in IMAGE_KEYS],
+        # Official VLADataset applies torchvision Resize((img_size, img_size))
+        # before the Qwen processor; RoboTwin frames are 4:3, so relying on
+        # the processor's aspect-ratio-preserving pixel budget yields a
+        # different [H, W] grid and a different action-expert sequence.
+        "images": [
+            _decode_image(row[key]).resize((256, 256), Image.Resampling.BILINEAR)
+            for key in IMAGE_KEYS
+        ],
         "state": _normalize_robotwin(raw_state, norm_stats, "observation.state"),
         "actions": _normalize_robotwin(raw_actions, norm_stats, "action"),
     }
-    sample = LingBotQwen3VLImageTransform(str(args.tokenizer))(sample)
+    # Official RobotWin production config sets img_size=256 and yields a
+    # Qwen3-VL grid of [1, 16, 16] per view.  Keep replay preprocessing on
+    # that contract; the transform default (224) is intended for other VLA
+    # recipes and silently changes the action-expert token sequence.
+    sample = LingBotQwen3VLImageTransform(str(args.tokenizer), image_size=256)(sample)
     # The normalizer already emits the native 55D layout.  Keep this call for
     # validation/padding compatibility with older invocations.
     sample = LingBotPad55D()(sample)

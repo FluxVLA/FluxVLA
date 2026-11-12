@@ -961,6 +961,15 @@ class PI0IterableDataset:
             return
 
         self._ensure_tokenizer()
+        # Match the reference-loader compatibility switch above.  The online
+        # temporal dataset imports LeRobot lazily through temporal_dataset, so
+        # its cached dataset_metadata symbol must be patched before that import.
+        if os.environ.get("PI05_ALLOW_LEGACY_V21") == "1":
+            import lerobot.datasets.dataset_metadata as _metadata
+            import lerobot.datasets.utils as _utils
+
+            _metadata.check_version_compatibility = lambda *args, **kwargs: None
+            _utils.check_version_compatibility = lambda *args, **kwargs: None
         if self.subtask_captions_path:
             import pandas as pd
 
@@ -984,7 +993,7 @@ class PI0IterableDataset:
         # Resolve dataset FPS: explicit override > info.json > fallback 30Hz
         fps = self.dataset_fps
         if fps is None and self.dataset_root is not None:
-            import json, os
+            import json
             info_path = os.path.join(self.dataset_root, "meta", "info.json")
             if os.path.isfile(info_path):
                 with open(info_path) as f:
@@ -1000,7 +1009,7 @@ class PI0IterableDataset:
 
         # Load normalization stats (MEAN_STD for state/action, matching pi05_training)
         if self.normalize and self.dataset_root is not None:
-            import json, os
+            import json
             stats_path = os.path.join(self.dataset_root, "meta", "stats.json")
             if os.path.isfile(stats_path):
                 with open(stats_path) as f:

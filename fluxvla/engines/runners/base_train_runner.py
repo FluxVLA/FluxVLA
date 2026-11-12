@@ -72,9 +72,11 @@ class BaseTrainRunner(ABC):
             Defaults to True.
         mixed_precision_dtype (str, optional): Data type for mixed
             precision training. Defaults to 'bf16'.
+        batch_dtype (str, optional): Explicit dtype for floating model inputs.
+            When omitted, the legacy parameter-policy-derived dtype is used.
         keep_params_fp32 (bool, optional): Keep model parameters and floating
-            batch inputs in FP32 while autocast controls compute precision.
-            Defaults to False.
+            batch inputs in FP32 by default while autocast controls compute
+            precision. ``batch_dtype`` can override the input side.
         deterministic_algorithms (bool, optional): Require deterministic
             PyTorch/CUDA kernels, including SDPA backward. Defaults to False.
         dataset_sharding_strategy (str, optional): Dataset sharding strategy.
@@ -102,6 +104,7 @@ class BaseTrainRunner(ABC):
                  enable_forward_autocast: Optional[bool] = None,
                  reduce_in_full_precision: bool = True,
                  mixed_precision_dtype: str = 'bf16',
+                 batch_dtype: Optional[str] = None,
                  keep_params_fp32: bool = False,
                  grad_accumulation_steps: int = 1,
                  deterministic_algorithms: bool = False,
@@ -186,6 +189,8 @@ class BaseTrainRunner(ABC):
             if enable_forward_autocast is None else bool(enable_forward_autocast))
         self.reduce_in_full_precision = reduce_in_full_precision
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
+        self.batch_dtype = (
+            None if batch_dtype is None else str_to_dtype(batch_dtype))
         self.keep_params_fp32 = bool(keep_params_fp32)
         self.deterministic_algorithms = bool(deterministic_algorithms)
         self.per_device_batch_size = per_device_batch_size
@@ -212,6 +217,11 @@ class BaseTrainRunner(ABC):
 
         # Initialize training state
         self.current_epoch = 0
+        # Number of micro-batches already consumed in ``current_epoch``.
+        # Persisting this cursor is required for sampler-exact resume; epoch
+        # alone is insufficient when a checkpoint is taken mid-epoch.
+        self._sampler_batch_offset = 0
+        self._dataloader_generator = None
         self.steps_per_epoch = None  # Determined at runtime
         # Accumulate losses for checkpoint interval averaging
         self._loss_accumulator = []
@@ -584,6 +594,14 @@ class BaseTrainRunner(ABC):
             self.metric.global_step = checkpoint_info['global_step']
         if 'epoch' in checkpoint_info:
             self.current_epoch = checkpoint_info['epoch']
+        data_state = checkpoint_info.get('data_state')
+        if isinstance(data_state, dict):
+            self._sampler_batch_offset = int(data_state.get('batch_offset', 0))
+            generator_state = data_state.get('generator_state')
+            if (generator_state is not None
+                    and self._dataloader_generator is not None):
+                self._dataloader_generator.set_state(generator_state)
+            self._restore_rng_states(data_state.get('rng_states'))
 
         # Restore optimizer state (delegated to subclasses)
         # Store checkpoint_info as instance variable for subclasses to access
@@ -727,7 +745,48 @@ class BaseTrainRunner(ABC):
 
         generator = torch.Generator()
         generator.manual_seed(int(seed) + self._data_parallel_rank())
+        self._dataloader_generator = generator
         return generator
+
+    def _data_state_dict(self) -> dict:
+        """Return sampler cursor and loader RNG state for checkpointing."""
+        state = {'batch_offset': int(self._sampler_batch_offset)}
+        if self._dataloader_generator is not None:
+            state['generator_state'] = self._dataloader_generator.get_state()
+        return state
+
+    def _capture_rng_states(self):
+        """Gather per-rank torch RNG states for exact checkpoint resume.
+
+        Model code may sample dropout/noise independently on every rank.  A
+        resumed process has re-created the model and therefore cannot rely on
+        its freshly seeded RNG stream matching the stream after the previous
+        optimizer step.
+        """
+        local = {
+            'torch': torch.get_rng_state(),
+            'cuda': (torch.cuda.get_rng_state_all()
+                     if torch.cuda.is_available() else None),
+        }
+        if dist.is_available() and dist.is_initialized():
+            gathered = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
+            dist.gather_object(local, gathered, dst=0)
+            return gathered
+        return [local]
+
+    def _restore_rng_states(self, states):
+        """Restore the current rank's torch RNG stream from a checkpoint."""
+        if not isinstance(states, (list, tuple)):
+            return
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        if rank >= len(states) or not isinstance(states[rank], dict):
+            return
+        state = states[rank]
+        if isinstance(state.get('torch'), torch.Tensor):
+            torch.set_rng_state(state['torch'])
+        cuda_state = state.get('cuda')
+        if torch.cuda.is_available() and isinstance(cuda_state, (list, tuple)):
+            torch.cuda.set_rng_state_all(cuda_state)
 
     @staticmethod
     def _tensor_for_safetensors(tensor):
@@ -798,6 +857,7 @@ class BaseTrainRunner(ABC):
         self.lr_scheduler = build_lr_scheduler_from_cfg(scheduler_cfg)
         self.lr_scheduler_policy_type = scheduler_cfg['type']
         self.optimizer, self.lr_scheduler = self.lr_scheduler.build(self)
+        self._write_optimizer_group_trace()
 
     def _get_log_lr(self) -> float:
         if hasattr(self.lr_scheduler, 'get_log_lr'):
@@ -823,7 +883,11 @@ class BaseTrainRunner(ABC):
             vla_dataset,
             num_replicas=self._data_parallel_world_size(),
             rank=self._data_parallel_rank(),
-            shuffle=True,
+            shuffle=not bool(getattr(vla_dataset, "deterministic_order", False)),
+            # PyTorch defaults this to zero.  The native LingBot sampler uses
+            # the training seed, so leaving the default silently changes the
+            # sample trajectory even when all model/RNG settings match.
+            seed=0 if self.seed is None else self.seed,
             drop_last=False) if self.sampler == 'distributed' else None
 
         use_workers = self.per_device_num_workers > 0
@@ -906,9 +970,23 @@ class BaseTrainRunner(ABC):
             if dataloader_iter is None:
                 self._set_dataloader_epoch(dataloader, sampler)
                 dataloader_iter = iter(dataloader)
+                # Rebuild the iterator at the saved position.  The cursor is
+                # measured in batches yielded by this rank's sampler.
+                for _ in range(self._sampler_batch_offset):
+                    try:
+                        next(dataloader_iter)
+                    except StopIteration:
+                        self.current_epoch += 1
+                        self._sampler_batch_offset = 0
+                        dataloader_iter = None
+                        break
+                if dataloader_iter is None:
+                    continue
 
             try:
-                return next(dataloader_iter), dataloader_iter
+                batch = next(dataloader_iter)
+                self._sampler_batch_offset += 1
+                return batch, dataloader_iter
             except StopIteration:
                 # Preserve legacy VLA iterator/sampler epoch semantics.
                 # Only VLM with a known step budget lets the outer loop
@@ -917,6 +995,7 @@ class BaseTrainRunner(ABC):
                 # epoch twice and end training early.
                 if self.train_task != 'vlm' or not self.steps_per_epoch:
                     self.current_epoch += 1
+                self._sampler_batch_offset = 0
                 dataloader_iter = None
 
     def _set_dataloader_epoch(self, dataloader, sampler) -> None:
@@ -1007,16 +1086,31 @@ class BaseTrainRunner(ABC):
                         and self.evaluator.should_run(self)):
                     self.evaluator.run(self, training_eval_dataset)
 
-                # Save checkpoint
-                if self._should_save_step_checkpoint():
-                    self._save_and_sync()
-
                 # For infinite dataloaders: check epoch boundary by step count
                 if (self.steps_per_epoch
                         and epoch_step_count >= self.steps_per_epoch):
                     self.current_epoch += 1
+                    self._sampler_batch_offset = 0
                     epoch_step_count = 0
                     dataloader_iter = None
+
+                # Save after advancing the data cursor.  A checkpoint records
+                # the position of the *next* batch, so resume follows the
+                # same epoch/cursor semantics as uninterrupted training.
+                if self._should_save_step_checkpoint():
+                    self._save_and_sync()
+
+                # Parity runs must preserve the production scheduler horizon;
+                # changing max_steps for a short diagnostic also changes LR.
+                # Stop only after the requested update and trace have landed.
+                parity_stop = os.environ.get("FLUXVLA_PARITY_STOP_AFTER_STEP")
+                if (parity_stop is not None
+                        and self.metric.global_step >= int(parity_stop)):
+                    if overwatch.is_rank_zero():
+                        overwatch.info(
+                            "Parity diagnostic stopped after global step "
+                            f"{self.metric.global_step}.")
+                    break
 
         return self._get_checkpoint_path()
 
@@ -1042,6 +1136,10 @@ class BaseTrainRunner(ABC):
                 f'global_step={self.metric.global_step} and '
                 f'steps_per_epoch={self.steps_per_epoch}.')
         self.current_epoch = expected_epoch
+        # Checkpoints written before the cursor-ordering fix may contain a
+        # non-zero offset from the previous epoch.  Once the epoch is derived
+        # from global_step, that stale offset must not be applied again.
+        self._sampler_batch_offset = 0
         if hasattr(self.metric, 'epoch'):
             self.metric.epoch = expected_epoch
 
@@ -1101,6 +1199,7 @@ class BaseTrainRunner(ABC):
 
                 # Epoch completed
                 self.current_epoch += 1
+                self._sampler_batch_offset = 0
                 epoch_pbar.update()
 
                 # Save checkpoint at epoch end
@@ -1190,9 +1289,12 @@ class BaseTrainRunner(ABC):
         self._write_batch_identity_trace(batch)
         # OpenPI keeps observations/actions and master parameters in FP32.
         # Autocast is responsible only for BF16 transformer compute.
-        batch_dtype = (
-            self.mixed_precision_dtype if self.enable_mixed_precision_training
-            and not self.keep_params_fp32 else torch.float32)
+        batch_dtype = self.batch_dtype
+        if batch_dtype is None:
+            batch_dtype = (
+                self.mixed_precision_dtype
+                if self.enable_mixed_precision_training
+                and not self.keep_params_fp32 else torch.float32)
         batch = self._prepare_batch(batch, self.device_id, batch_dtype)
         batch = self._prepare_model_training_batch(batch)
         if ('sample_weight' in batch
@@ -1258,6 +1360,11 @@ class BaseTrainRunner(ABC):
         clip_coefficient = None
         capture_clip = os.environ.get("FLUXVLA_PARAM_TRACE") == "1"
         if grad_norm is not None:
+            # FSDP2 returns a replicated DTensor whose local shard is not the
+            # reportable global norm. All ranks must materialize it before
+            # logging or deriving diagnostic clip coefficients.
+            if hasattr(grad_norm, "full_tensor"):
+                grad_norm = grad_norm.full_tensor()
             grad_norm_value = torch.as_tensor(
                 grad_norm, device=loss.device, dtype=torch.float32)
             if capture_clip and self.max_grad_norm is not None:
@@ -1266,8 +1373,7 @@ class BaseTrainRunner(ABC):
                     float(self.max_grad_norm)
                     / (float(grad_norm_value.detach().item()) + 1e-6),
                 )
-            self.metric.commit(grad_norm=torch.as_tensor(
-                grad_norm, device=loss.device, dtype=torch.float32))
+            self.metric.commit(grad_norm=grad_norm_value)
             if clip_coefficient is not None:
                 self.metric.commit(
                     clip_coefficient=loss.new_tensor(clip_coefficient))
@@ -1431,7 +1537,7 @@ class BaseTrainRunner(ABC):
             os.environ.get("FLUXVLA_BATCH_TRACE_DIR", "work_dirs"))
         trace_dir.mkdir(parents=True, exist_ok=True)
         identity = {}
-        for key in ("index", "episode_index", "current_index", "frame_index",
+        for key in ("sample_index", "index", "episode_index", "current_index", "frame_index",
                     "timestamp"):
             value = batch.get(key)
             if isinstance(value, torch.Tensor):
@@ -1464,11 +1570,29 @@ class BaseTrainRunner(ABC):
         path = root / f"rank{rank}.jsonl"
         path.parent.mkdir(parents=True, exist_ok=True)
         step = int(self.metric.global_step) + 1
+        target_step = int(os.environ.get("FLUXVLA_PARAM_TRACE_STEP", "0"))
+        if target_step and step != target_step:
+            return
         snapshots = getattr(self, "_alignment_param_snapshots", None)
         if snapshots is None:
             snapshots = self._alignment_param_snapshots = {}
         rows = []
         tensor_trace_root = os.environ.get("FLUXVLA_OPTIMIZER_TENSOR_TRACE_DIR")
+        materialize_full = os.environ.get("FLUXVLA_PARAM_TRACE_FULL") == "1"
+        summary_only = os.environ.get("FLUXVLA_PARAM_SUMMARY_ONLY") == "1"
+
+        def trace_value(value):
+            """Materialize selected DTensors only for explicit parity tracing."""
+            if value is None:
+                return None
+            if materialize_full and hasattr(value, "full_tensor"):
+                value = value.full_tensor()
+            elif hasattr(value, "to_local"):
+                # Avoid perturbing clipping with diagnostic collectives. Paired
+                # FSDP runs compare the same rank-local shard.
+                value = value.to_local()
+            return value.detach().float()
+
         tensor_snapshots = getattr(self, "_alignment_optimizer_tensor_snapshots", None)
         if tensor_snapshots is None:
             tensor_snapshots = self._alignment_optimizer_tensor_snapshots = {}
@@ -1479,15 +1603,21 @@ class BaseTrainRunner(ABC):
                 continue
             grad = parameter.grad
             state = self.optimizer.state.get(parameter, {})
+            parameter_trace = trace_value(parameter)
+            grad_trace = trace_value(grad)
             row = {
                 "step": step,
                 "phase": phase,
                 "name": canonical,
                 "shape": list(parameter.shape),
                 "dtype": str(parameter.dtype),
-                "parameter_norm": float(parameter.detach().float().norm().item()),
-                "grad_norm": None if grad is None else float(grad.detach().float().norm().item()),
-                "grad_mean": None if grad is None else float(grad.detach().float().mean().item()),
+                "parameter_norm": float(parameter_trace.norm().item()),
+                "parameter_sum": float(parameter_trace.sum().item()),
+                "parameter_abs_max": float(parameter_trace.abs().max().item()),
+                "grad_norm": None if grad_trace is None else float(grad_trace.norm().item()),
+                "grad_mean": None if grad_trace is None else float(grad_trace.mean().item()),
+                "grad_sum": None if grad_trace is None else float(grad_trace.sum().item()),
+                "grad_abs_max": None if grad_trace is None else float(grad_trace.abs().max().item()),
                 "tp_sharded": bool(
                     getattr(parameter, "tensor_model_parallel", False)
                     or getattr(parameter, "_tp_sharded", False)
@@ -1497,19 +1627,41 @@ class BaseTrainRunner(ABC):
                 # Keep the selected tensors on-device only for the interval
                 # between pre-clip and post-update. This is diagnostic-only
                 # and avoids changing the normal training memory footprint.
-                snapshots[canonical] = parameter.detach().float().clone()
+                if not summary_only:
+                    snapshots[canonical] = parameter_trace.clone()
                 if tensor_trace_root:
                     tensor_snapshots[canonical] = {
-                        "parameter_before": parameter.detach().float().cpu().clone(),
+                        "parameter_before": parameter_trace.cpu().clone(),
                         "raw_grad": None
-                        if grad is None
-                        else grad.detach().float().cpu().clone(),
+                        if grad_trace is None else grad_trace.cpu().clone(),
                     }
+                    for state_name in ("exp_avg", "exp_avg_sq"):
+                        value = state.get(state_name)
+                        if isinstance(value, torch.Tensor):
+                            tensor_snapshots[canonical][f"{state_name}_before"] = (
+                                trace_value(value).cpu().clone()
+                            )
             elif phase == "post_update":
                 previous = snapshots.pop(canonical, None)
+                parameter_bf16 = parameter_trace.to(torch.bfloat16).float()
+                parameter_bf16_bits = (
+                    parameter_bf16.to(torch.bfloat16)
+                    .contiguous()
+                    .view(torch.int16)
+                    .to(torch.int64)
+                    .bitwise_and(0xFFFF)
+                )
+                row.update({
+                    "parameter_bf16_norm": float(parameter_bf16.norm().item()),
+                    "parameter_bf16_sum": float(parameter_bf16.sum().item()),
+                    "parameter_bf16_abs_max": float(
+                        parameter_bf16.abs().max().item()),
+                    "parameter_bf16_bits_sum": int(
+                        parameter_bf16_bits.sum().item()),
+                })
                 row["parameter_delta_norm"] = (
                     None if previous is None else float(
-                        (parameter.detach().float() - previous).norm().item())
+                        (parameter_trace - previous).norm().item())
                 )
                 if tensor_trace_root:
                     tensor_snapshot = tensor_snapshots.pop(canonical, {})
@@ -1520,8 +1672,8 @@ class BaseTrainRunner(ABC):
                             "master_shape": list(parameter.shape),
                             "post_clip_grad": None
                             if grad is None
-                            else grad.detach().float().cpu().clone(),
-                            "parameter_after": parameter.detach().float().cpu().clone(),
+                            else grad_trace.cpu().clone(),
+                            "parameter_after": parameter_trace.cpu().clone(),
                             "exp_avg": None,
                             "exp_avg_sq": None,
                         }
@@ -1529,14 +1681,21 @@ class BaseTrainRunner(ABC):
                     for state_name in ("exp_avg", "exp_avg_sq"):
                         value = state.get(state_name)
                         if isinstance(value, torch.Tensor):
-                            tensor_snapshot[state_name] = value.detach().float().cpu().clone()
+                            tensor_snapshot[state_name] = trace_value(value).cpu().clone()
                     tensor_rows.append(tensor_snapshot)
             row["clip_coefficient"] = getattr(
                 self, "_alignment_clip_coefficient", None)
             for state_name in ("exp_avg", "exp_avg_sq"):
                 value = state.get(state_name)
+                state_trace = trace_value(value)
                 row[f"{state_name}_norm"] = (
-                    None if value is None else float(value.detach().float().norm().item())
+                    None if state_trace is None else float(state_trace.norm().item())
+                )
+                row[f"{state_name}_sum"] = (
+                    None if state_trace is None else float(state_trace.sum().item())
+                )
+                row[f"{state_name}_abs_max"] = (
+                    None if state_trace is None else float(state_trace.abs().max().item())
                 )
             rows.append(row)
         with path.open("a", encoding="utf-8") as stream:
@@ -1617,11 +1776,62 @@ class BaseTrainRunner(ABC):
             overwatch.warning('Optimizer state mismatch. Reinitializing.')
         last_lrs = self.lr_scheduler.get_last_lr()
         self.optimizer = self.lr_scheduler.build_optimizer(self)
+        self._write_optimizer_group_trace()
         for group, lr in zip(self.optimizer.param_groups, last_lrs):
             group['lr'] = lr
         self.lr_scheduler.bind_optimizer(self.optimizer)
         self.lr_scheduler.prepare_step(self)
         self.optimizer_state_loaded = False
+
+    def _write_optimizer_group_trace(self) -> None:
+        """Write opt-in optimizer group membership for parity debugging.
+
+        This is intentionally a metadata-only diagnostic.  It records the
+        effective LR/weight decay and parameter names after FSDP wrapping, so
+        expert-LR regexes can be checked without materializing optimizer
+        tensors or changing the training path.
+        """
+        if os.environ.get("FLUXVLA_OPTIMIZER_GROUP_TRACE") != "1":
+            return
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+            return
+        root = Path(
+            os.environ.get(
+                "FLUXVLA_OPTIMIZER_GROUP_TRACE_DIR",
+                "work_dirs/optimizer_trace",
+            ))
+        root.mkdir(parents=True, exist_ok=True)
+        names_by_id = {
+            id(parameter): name.removeprefix("module.").replace(
+                "._fsdp_wrapped_module.", ".")
+            for name, parameter in self.vla.named_parameters()
+        }
+        groups = []
+        for index, group in enumerate(self.optimizer.param_groups):
+            names = [
+                names_by_id.get(id(parameter), "<unnamed>")
+                for parameter in group["params"]
+            ]
+            expert_names = [name for name in names if ".mlp.experts." in name]
+            groups.append({
+                "group": index,
+                "lr": float(group["lr"]),
+                "weight_decay": float(group.get("weight_decay", 0.0)),
+                "betas": [float(value) for value in group.get("betas", ())],
+                "eps": float(group.get("eps", 0.0)),
+                "parameter_count": len(names),
+                "expert_parameter_count": len(expert_names),
+                "parameter_names": names,
+            })
+        payload = {
+            "backend": "fsdp",
+            "world_size": (
+                dist.get_world_size()
+                if dist.is_available() and dist.is_initialized() else 1),
+            "groups": groups,
+        }
+        (root / "optimizer_groups.json").write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
     def _save_and_sync(self, loss_value: float = None):
         """Save checkpoint and synchronize.

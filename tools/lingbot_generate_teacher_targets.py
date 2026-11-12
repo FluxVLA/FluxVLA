@@ -106,15 +106,15 @@ def main() -> None:
     current = current.to(device=device, non_blocking=True)
     future = future.to(device=device, non_blocking=True)
 
-    from fluxvla.models.vlas.lingbot_vla_v2 import (
-        _install_native_import_shims,
-        _install_transformers_compat,
-    )
+    # This command is an explicitly offline preprocessing tool.  The official
+    # implementation is allowed here as a read-only teacher provider, while
+    # FluxVLA training never imports it.  Keep the boundary explicit by using
+    # the source tree directly instead of a runtime import shim.
+    from fluxvla.models.vlas.lingbot_vla_v2 import _install_transformers_compat
 
     source_root = str(args.source_root.resolve())
     sys.path.insert(0, source_root)
     _install_transformers_compat()
-    _install_native_import_shims(source_root)
     from lingbotvla.models.vla.vision_models.module_utils import (
         build_depth_model,
         build_video_model,

@@ -19,8 +19,7 @@ from fluxvla.models.vlas.lingbot_vla_v2 import LingBotVLAV2
 
 
 ROOT = Path("/ceph/teamGolden/andyzeng/VLA")
-SHARED_ROOT = Path("/ceph/teamGolden/sjkang/rl/rlinf_adapt")
-CHECKPOINT = SHARED_ROOT / "weights/lingbot-vla-v2-6b-robotwin/checkpoints/global_step_50000/hf_ckpt"
+CHECKPOINT = ROOT / "models/lingbot-vla-v2-6b"
 
 
 def _build_batch(device: torch.device) -> dict[str, torch.Tensor]:
@@ -59,10 +58,9 @@ def main() -> None:
     torch.manual_seed(7 + rank)
 
     model = LingBotVLAV2(
-        source_root=str(ROOT / "lingbot-vla-v2"),
-        tokenizer_path=str(SHARED_ROOT / "weights/Qwen3-VL-4B-Instruct"),
+        tokenizer_path=str(ROOT / "models/Qwen3-VL-4B-Instruct"),
         pretrained_name_or_path=str(CHECKPOINT),
-        native_config_path=str(ROOT / "lingbot-vla-v2/golden_artifacts/robotwin_reduced.yaml"),
+        native_config_path=str(ROOT / "FluxVLA/work_dirs/robotwin_reduced_v2.yaml"),
     )
     model.from_pretrained()
     model.to(device=device, dtype=torch.bfloat16)
