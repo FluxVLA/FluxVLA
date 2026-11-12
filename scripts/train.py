@@ -362,8 +362,9 @@ def _resolve_train_seed(cfg):
     return None
 
 
-def _set_rank_training_seed(seed):
-    rank_seed = int(seed) + overwatch.rank()
+def _set_rank_training_seed(seed, data_parallel_rank=None):
+    rank = overwatch.rank() if data_parallel_rank is None else data_parallel_rank
+    rank_seed = int(seed) + int(rank)
     random.seed(rank_seed)
     np.random.seed(rank_seed)
     torch.manual_seed(rank_seed)
@@ -463,7 +464,8 @@ def train(args, cfg):
     runner = build_runner_from_cfg(cfg.runner)  # noqa: F841
     runner.run_setup(n_train_examples=len(dataset))
     if seed is not None:
-        rank_seed = _set_rank_training_seed(seed)
+        rank_seed = _set_rank_training_seed(
+            seed, data_parallel_rank=runner._data_parallel_rank())
         if overwatch.is_rank_zero():
             overwatch.info('Training RNG reset after model setup; '
                            f'rank-local base seed is {rank_seed}.')

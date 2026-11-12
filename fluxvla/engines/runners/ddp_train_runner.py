@@ -178,6 +178,16 @@ class DDPTrainRunner(BaseTrainRunner):
                              'set static_graph=False.')
         self.static_graph = (
             train_task == 'vla' if static_graph is None else static_graph)
+        # Current PyTorch DDP reducer can assert on repeated backward passes
+        # when static-graph mode is combined with gradient accumulation.
+        # Preserve the optimization for the common single-backward case while
+        # automatically selecting the compatible mode for accumulation.
+        if self.static_graph and grad_accumulation_steps > 1:
+            if overwatch.is_rank_zero():
+                overwatch.warning(
+                    'Disabling DDP static_graph because gradient accumulation '
+                    'requires multiple backward passes per optimizer step.')
+            self.static_graph = False
         self.distributed_state = overwatch.distributed_state
         self.recent_losses = deque(maxlen=self.grad_accumulation_steps)
 
@@ -229,6 +239,15 @@ class DDPTrainRunner(BaseTrainRunner):
         else:
             self.vla = self.vla.to(target_device)
 
+    def _prepare_backend_before_device_move(self) -> bool:
+        """Whether a backend should transform the CPU checkpoint first.
+
+        Native TP providers can replace full-size Linear modules while the
+        checkpoint is still on CPU.  This avoids a transient allocation of
+        both the replicated model and its TP shards on every GPU.
+        """
+        return bool(getattr(self, "prepare_backend_on_cpu", False))
+
     def _apply_lora(self) -> None:
         # Use configured lora_alpha, default to lora_rank if not specified.
         lora_alpha = getattr(self.cfg.model, 'lora_alpha',
@@ -270,13 +289,28 @@ class DDPTrainRunner(BaseTrainRunner):
             # LIBERO results: create adapters and bind optimizer before the
             # mixed-precision device move, then move the full PEFT-wrapped
             # model together.
-            self._setup_optimizer_and_scheduler(n_train_examples)
+            prepare_backend = getattr(self, '_prepare_backend_model', None)
+            if prepare_backend is None:
+                self._setup_optimizer_and_scheduler(n_train_examples)
+            elif self._prepare_backend_before_device_move():
+                prepare_backend()
             self._move_vla_to_device(target_device)
+            if prepare_backend is not None and not self._prepare_backend_before_device_move():
+                prepare_backend()
+            if prepare_backend is not None:
+                self._setup_optimizer_and_scheduler(n_train_examples)
         else:
-            self._move_vla_to_device(target_device)
             if use_lora:
                 self._apply_lora()
 
+            prepare_backend = getattr(self, '_prepare_backend_model', None)
+            prepare_on_cpu = (prepare_backend is not None
+                              and self._prepare_backend_before_device_move())
+            if prepare_on_cpu:
+                prepare_backend()
+            self._move_vla_to_device(target_device)
+            if prepare_backend is not None and not prepare_on_cpu:
+                prepare_backend()
             self._prepare_training_task()
 
             # Setup optimizer and scheduler using base class method.
@@ -348,6 +382,7 @@ class DDPTrainRunner(BaseTrainRunner):
         self.vla = DDP(
             self.vla,
             device_ids=[device_id],
+            process_group=getattr(self, 'ddp_process_group', None),
             find_unused_parameters=True,
             gradient_as_bucket_view=True,
             static_graph=self.static_graph)
@@ -372,7 +407,7 @@ class DDPTrainRunner(BaseTrainRunner):
         """Clip gradient norm for DDP model."""
         if self.max_grad_norm is None:
             return
-        torch.nn.utils.clip_grad_norm_(
+        return torch.nn.utils.clip_grad_norm_(
             self.vla.parameters(), max_norm=self.max_grad_norm)
 
     def save_checkpoint(
@@ -460,6 +495,7 @@ class DDPTrainRunner(BaseTrainRunner):
                 'model': model_state_dict,
                 'global_step': global_step,
                 'epoch': epoch,
+                'data_state': self._data_state_dict(),
             }
             if mixed_state is not None:
                 checkpoint_dict['mixed_training'] = mixed_state

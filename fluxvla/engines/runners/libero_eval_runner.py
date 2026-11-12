@@ -130,6 +130,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         save_multi_view_rollout_videos (bool): Whether replay videos include
             all configured image views. When false, only the first replay view
             is saved.
+        save_action_traces (bool): Whether to save normalized actions,
+            denormalized actions, rewards, and end-effector states as JSONL.
         rollout_dir (str): Optional directory for rollout videos. Relative
             paths are resolved under the active video root.
         run_id_suffix (str): Optional suffix appended to the eval run id.
@@ -364,6 +366,18 @@ class LiberoEvalRunner(BaseEvalRunner):
         return self.save_rollout_videos or (self.save_failed_rollout_videos
                                             and not bool(success))
 
+    def _write_action_trace(self, rows: list, task_id: int,
+                            trial_id: int) -> None:
+        if not self.save_action_traces:
+            return
+        trace_root = self.result_output_dir or self.run_dir
+        trace_dir = os.path.join(trace_root, self.task_suite_name, 'traces')
+        os.makedirs(trace_dir, exist_ok=True)
+        trace_path = os.path.join(
+            trace_dir, f'task{task_id}_trial{trial_id}.jsonl')
+        with open(trace_path, 'w', encoding='utf-8') as stream:
+            stream.writelines(json.dumps(row) + '\n' for row in rows)
+
     def _get_replay_img_keys(self) -> list:
         """Find eval image keys used for lightweight replay frames."""
         img_keys = getattr(self.dataset, 'img_keys', None)
@@ -435,6 +449,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                  save_rollout_videos: bool = True,
                  save_failed_rollout_videos: bool = False,
                  save_multi_view_rollout_videos: bool = False,
+                 save_action_traces: bool = False,
                  rollout_dir: str = None,
                  run_id_suffix: str = None,
                  output_dir: str = None,
@@ -539,6 +554,7 @@ class LiberoEvalRunner(BaseEvalRunner):
         self.save_rollout_videos = save_rollout_videos
         self.save_failed_rollout_videos = save_failed_rollout_videos
         self.save_multi_view_rollout_videos = save_multi_view_rollout_videos
+        self.save_action_traces = save_action_traces
         self.rollout_dir = rollout_dir
         self.run_id_suffix = run_id_suffix
         self.output_dir = (
@@ -754,6 +770,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 # Setup
                 t = 0
                 replay_images = []
+                action_trace = []
                 next_batch = None
 
                 overwatch.info(f'Starting episode {trial_id+1}...')
@@ -826,6 +843,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                             f'Unexpected action shape: {actions.shape}'
                         actions = actions[0, None, :].float().cpu().numpy()
                     for action in actions:
+                        eef_before = obs.get('robot0_eef_pos')
+                        gripper_before = obs.get('robot0_gripper_qpos')
                         inputs = dict(
                             action=action,
                             task_suite_name=self.task_suite_name,
@@ -839,6 +858,27 @@ class LiberoEvalRunner(BaseEvalRunner):
                                                       None)
                         if callable(after_eval_env_step):
                             after_eval_env_step(action)
+                        if self.save_action_traces:
+                            action_trace.append({
+                                'step': t,
+                                'normalized_action': action.tolist(),
+                                'denormalized_action':
+                                action_denormed.tolist(),
+                                'eef_position_before':
+                                None if eef_before is None else
+                                eef_before.tolist(),
+                                'eef_position_after':
+                                None if obs.get('robot0_eef_pos') is None else
+                                obs['robot0_eef_pos'].tolist(),
+                                'gripper_before':
+                                None if gripper_before is None else
+                                gripper_before.tolist(),
+                                'gripper_after':
+                                None if obs.get('robot0_gripper_qpos') is None
+                                else obs['robot0_gripper_qpos'].tolist(),
+                                'reward': float(reward),
+                                'done': bool(done),
+                            })
                         if done:
                             total_successes += 1
                             rank_success_count += 1
@@ -870,6 +910,7 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_episodes[task_id] += 1.0
                 task_durations[task_id] += episode_duration
                 trial_success_grid[task_id, trial_id] = float(bool(done))
+                self._write_action_trace(action_trace, task_id, trial_id)
                 if self._should_save_rollout_video(done):
                     # Keep videos with the summary/logs for this exact run,
                     # matching the standard checkpoint-eval layout:

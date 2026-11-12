@@ -17,6 +17,8 @@ from .balanced_dataset_wrapper import *  # noqa: F401, F403
 from .dataset_wrapper import *  # noqa: F401, F403
 from .language_chunk_parquet_dataset import *  # noqa: F401, F403
 from .llava_format_dataset import LLaVAFormatDataset  # noqa: F401
+from .lingbot_teacher_cache import *  # noqa: F401, F403
+from .lingbot_vla_v2 import *  # noqa: F401, F403
 from .parquet_dataset import *  # noqa: F401, F403
 from .parquet_dataset_v3 import *  # noqa: F401, F403
 from .robodojo_dataset import *  # noqa: F401, F403

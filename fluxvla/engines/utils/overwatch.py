@@ -320,6 +320,11 @@ class PureOverwatch:
         """
         return 1
 
+    @staticmethod
+    def local_rank() -> int:
+        """Return launcher-provided local rank when available."""
+        return int(os.environ.get('LOCAL_RANK', 0))
+
 
 def initialize_overwatch(
         name: str) -> Union[DistributedOverwatch, PureOverwatch]:
