@@ -2,4 +2,7 @@
 
 _base_ = ['./pi05_paligemma_libero_10_mcore.py']
 
-runner = dict(distributed_optimizer=True)
+runner = dict(
+    distributed_optimizer=True,
+    optimizer_bucket_cap_mb=25,
+)

@@ -14,6 +14,7 @@
 
 import json
 import math
+import os
 from collections import defaultdict
 from typing import Dict, Iterator, List, Literal, Optional, Union
 
@@ -219,6 +220,11 @@ class DistributedRepeatingDataset(IterableDataset):
         if statistics_overrides is not None:
             self._apply_configured_statistics_overrides(statistics_overrides)
 
+        # Optional deterministic replay for cross-topology numerical checks.
+        # Keep this out of the config so ordinary training remains unchanged.
+        self.replay_indices = self._parse_replay_indices(
+            os.environ.get("FLUXVLA_REPLAY_INDICES"))
+
         # Get the rank and world size from the overwatch
         self.rank = overwatch.rank()
         self.world_size = overwatch.world_size()
@@ -260,6 +266,41 @@ class DistributedRepeatingDataset(IterableDataset):
         else:
             raise ValueError('`strategy` must be either "round_robin" or '
                              f'"blockwise", got {strategy!r}.')
+
+    def _parse_replay_indices(self, value: Optional[str]) -> Optional[List[int]]:
+        """Parse and validate an opt-in comma/whitespace separated index list."""
+        if value is None or not value.strip():
+            return None
+        tokens = value.replace(",", " ").split()
+        try:
+            indices = [int(token) for token in tokens]
+        except ValueError as exc:
+            raise ValueError(
+                "FLUXVLA_REPLAY_INDICES must contain integer indices") from exc
+        if any(index < 0 or index >= self.total_len for index in indices):
+            raise ValueError(
+                f"FLUXVLA_REPLAY_INDICES contains an index outside [0, "
+                f"{self.total_len})")
+        if not indices:
+            raise ValueError("FLUXVLA_REPLAY_INDICES must not be empty")
+        return indices
+
+    def set_distributed_context(self, rank: int, world_size: int) -> None:
+        """Set the data-parallel shard independently of global model ranks.
+
+        MCore process groups are initialized after dataset construction.  A TP
+        rank must therefore replace the eager global rank cached above with
+        its data-parallel rank before a DataLoader iterator is created.
+        """
+        rank = int(rank)
+        world_size = int(world_size)
+        if world_size <= 0:
+            raise ValueError("`world_size` must be positive.")
+        if rank < 0 or rank >= world_size:
+            raise ValueError(
+                f"rank must be in [0, {world_size}), got {rank}.")
+        self.rank = rank
+        self.world_size = world_size
 
     def _apply_statistics_overrides(self, statistics: Dict,
                                     overrides: Dict) -> None:
@@ -681,6 +722,7 @@ class DistributedRepeatingDataset(IterableDataset):
         shared_epoch = getattr(self, '_runner_epoch', None)
         runner_epoch = (-1
                         if shared_epoch is None else int(shared_epoch.item()))
+        sharding_strategy = getattr(self, '_sharding_strategy', 'round_robin')
 
         while True:
             if runner_epoch >= 0:
@@ -690,17 +732,22 @@ class DistributedRepeatingDataset(IterableDataset):
             if runner_epoch < 0 and self.reshuffle_each_epoch:
                 self._epoch += 1
 
-            if self._sharding_strategy == 'round_robin':
+            if self.replay_indices is not None:
+                indices = np.asarray(self.replay_indices, dtype=np.int64)
+                total_world = self.world_size * num_workers
+                total_rank = self.rank * num_workers + worker_id
+                shard = indices[total_rank::total_world].tolist()
+            elif sharding_strategy == 'round_robin':
                 indices = self._get_round_robin_indices(epoch)
                 shard = self._get_round_robin_shard(indices, worker_id,
                                                     num_workers)
-            elif self._sharding_strategy == 'blockwise':
+            elif sharding_strategy == 'blockwise':
                 indices = self._get_blockwise_indices(epoch)
                 shard = self._get_blockwise_shard(indices, worker_id,
                                                   num_workers)
             else:
                 raise RuntimeError('Unsupported dataset sharding strategy: '
-                                   f'{self._sharding_strategy!r}.')
+                                   f'{sharding_strategy!r}.')
 
             for idx in shard:
                 yield self._get_item_from_global_idx(idx)

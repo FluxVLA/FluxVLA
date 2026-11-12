@@ -1,5 +1,9 @@
-"""Megatron-Core native model providers for FluxVLA."""
+"""Native Megatron-Core backend contracts and model recipes.
 
-from .pi05_provider import MCorePI05ModelProvider, build_pi05_mcore_provider
+Import a concrete recipe, such as ``fluxvla.mcore.pi05.recipe.PI05_SPEC``,
+instead of importing a model through this package root.
+"""
 
-__all__ = ["MCorePI05ModelProvider", "build_pi05_mcore_provider"]
+from .contracts import MCoreModelSpec
+
+__all__ = ["MCoreModelSpec"]
