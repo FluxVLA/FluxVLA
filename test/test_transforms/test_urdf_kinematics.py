@@ -18,9 +18,11 @@ from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import torch
 from scipy.spatial.transform import Rotation
 
 from fluxvla.engines.runners import robotwin_eval_runner
+from fluxvla.policies.eval_io import RobotwinInferenceIO
 from fluxvla.transforms.normalize import (DenormalizePrivateAction,
                                           NormalizeStatesAndActions)
 from fluxvla.transforms.transform_actions import (AbsoluteActions,
@@ -138,9 +140,17 @@ def test_normalized_prediction_to_qpos_execution():
             dict(item, stats=_identity_stats()['private']))
     padded = np.pad(normalized['actions'], ((0, 0), (0, 18)))
     stages = _denormalize_chain()
-    # The eval runner passes only the executed prefix through the chain.
-    result = robotwin_eval_runner._run_denormalize(
-        stages, dict(action=padded[None, :2], state=q))
+    # The assembled predictor passes only the executed prefix through IK.
+    io = RobotwinInferenceIO(
+        vla=None,
+        dataset=None,
+        denormalize_action=stages,
+        execute_horizon=2,
+        unnorm_key='private',
+        mixed_precision_dtype=torch.bfloat16,
+        enable_mixed_precision=False,
+        device=torch.device('cpu'))
+    result, _ = io.process_actions(torch.from_numpy(padded[None]), raw_state=q)
     assert result.shape == (2, 14)
     assert stages[-1].ik_failures == 0
     np.testing.assert_allclose(
@@ -157,14 +167,21 @@ def test_normalized_prediction_to_qpos_execution():
         get_instruction=lambda: 'test',
         take_action=lambda action, action_type: commands.append(
             (action, action_type)))
-    model = SimpleNamespace(max_episode_steps=None, predict=lambda *_: result)
+    acknowledged = []
+    model = SimpleNamespace(
+        max_episode_steps=None,
+        predict=lambda *_, **__: result,
+        last_output=SimpleNamespace(status='ready'),
+        acknowledge=acknowledged.append)
     robotwin_eval_runner.eval(env, model, {})
     assert len(commands) == 2
     assert all(kind == 'qpos' for _, kind in commands)
+    assert acknowledged == [2]
     # A single-step [1, 32] prediction is squeezed to [14] by
     # DenormalizePrivateAction; the chain must still yield a [1, 14] chunk.
-    single = robotwin_eval_runner._run_denormalize(
-        _denormalize_chain(), dict(action=padded[:1], state=q))
+    io.execute_horizon = 1
+    io.denormalize_action = _denormalize_chain()
+    single, _ = io.process_actions(torch.from_numpy(padded[:1]), raw_state=q)
     assert single.shape == (1, 14)
     np.testing.assert_allclose(single, result[:1], atol=1e-5)
 

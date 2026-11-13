@@ -31,7 +31,6 @@ from safetensors.torch import load_file
 
 from fluxvla.engines.utils import initialize_overwatch
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
-from fluxvla.policies import ActionChunkProcessor
 from ..utils.root import RUNNERS
 from .base_eval_runner import BaseEvalRunner
 
@@ -86,11 +85,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
             result files are mirrored to
             ``<result_output_dir>/robocasa/gpu{gpu_id}_task{task_id}_results.json``.
         result_gpu_id: GPU id written to mirrored result filenames.
-        policy: Optional policy configuration. Defaults to VLAPolicy, which
+        predictor: Externally assembled inference runtime, which
             preserves direct dataset -> VLA -> denormalization evaluation.
-        observation_adapter: Optional environment-side observation enrichment;
-            models receive its output, never the simulator object.
     """
+
+    inference_backend = 'robocasa'
 
     def __init__(self,
                  cfg: Dict,
@@ -349,20 +348,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
         elif data_stat_path is not None and os.path.isfile(data_stat_path):
             with open(data_stat_path, 'r') as f:
                 self.vla.norm_stats = json.load(f)
-
-        self._active_denorm = self.denormalize_action
-
-        self.setup_policy(
-            default=True,
-            vla=self.vla,
-            input_processor=self.dataset,
-            output_processor=ActionChunkProcessor(self.denormalize_action,
-                                                  self.eval_chunk_size,
-                                                  self.unnorm_key),
-            unnorm_key=self.unnorm_key,
-            mixed_precision_dtype=self.mixed_precision_dtype,
-            enable_mixed_precision=(self.enable_mixed_precision_training
-                                    and model_build_device != 'cpu'))
 
     @staticmethod
     def _normalize_seed(seed: int) -> int:
@@ -797,6 +782,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
 
     def run(self):
         """Run the RoboCasa evaluation loop."""
+        predictor = self.require_predictor()
         import gymnasium as gym
 
         from fluxvla.engines.utils.eval_utils import check_robosuite_runtime
@@ -901,19 +887,6 @@ class RobocasaEvalRunner(BaseEvalRunner):
                     obs, info = env.reset()
                 log_file.write(f'Episode seed: {episode_seed}\n')
 
-                # In grouped mode, switch stats, denormalizer, and
-                # vla.norm_stats per task.
-                if self.grouped_norm_stats:
-                    gname = self.norm_stats_group_names[task_id]
-                    self.dataset.set_active_stats_blob(
-                        self._stats_full_by_group[gname][self.unnorm_key])
-                    self._active_denorm = self._denorm_by_group[gname]
-                    self.vla.norm_stats = self._stats_full_by_group[gname]
-                else:
-                    if hasattr(self.dataset, 'set_active_stats_blob'):
-                        self.dataset.set_active_stats_blob(None)
-                    self._active_denorm = self.denormalize_action
-
                 # Keep the task description identical to the training text from
                 # tasks.jsonl. Do not split prefixes such as
                 # "unlocked_waist: ..."; otherwise the prompt distribution
@@ -921,11 +894,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                 task_desc = obs.get('annotation.human.coarse_action', '')
                 overwatch.info(f'Task desc: {task_desc}')
                 log_file.write(f'Task desc: {task_desc}\n')
-                self.reset_policy(
-                    task_desc,
-                    output_processor=ActionChunkProcessor(
-                        self._active_denorm, self.eval_chunk_size,
-                        self.unnorm_key))
+                predictor.reset(task_desc, task_index=task_id)
 
                 # Evaluation loop.
                 success = False
@@ -936,14 +905,11 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         replay_images.append(frame)
                 t = 0
                 episode_start = time.time()
-                record_observation = getattr(self.dataset,
-                                             'record_observation', None)
-                if record_observation is not None:
-                    record_observation(obs, t)
+                predictor.observe(obs, t)
 
                 while t < self.max_episode_steps:
                     try:
-                        output = self.step_policy(
+                        output = predictor.predict_action(
                             obs,
                             t,
                             environment=env,
@@ -992,8 +958,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                                 replay_images.append(frame)
 
                         t += 1
-                        if record_observation is not None:
-                            record_observation(obs, t)
+                        predictor.observe(obs, t)
                         if info.get('success', False):
                             success = True
                             break
@@ -1002,7 +967,7 @@ class RobocasaEvalRunner(BaseEvalRunner):
                         if t >= self.max_episode_steps:
                             break
 
-                    self.acknowledge_policy(t - chunk_start)
+                    predictor.acknowledge(t - chunk_start)
                     if success or terminated or truncated:
                         break
 

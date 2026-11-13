@@ -14,8 +14,11 @@
 """Chained denormalization stages in the RoboTwin evaluation runner."""
 
 import numpy as np
+import pytest
+import torch
 
 from fluxvla.engines.runners.robotwin_eval_runner import _run_denormalize
+from fluxvla.policies.eval_io import RobotwinInferenceIO
 
 
 def test_array_stage_output_is_returned_or_rewrapped_for_later_stages():
@@ -45,7 +48,7 @@ def test_array_stage_output_is_returned_or_rewrapped_for_later_stages():
 
 def test_single_step_array_output_keeps_chunk_dimension():
     # DenormalizePrivateAction squeezes a [1, D] prediction to [D]; the chain
-    # must hand later stages (and _validate_actions) a [1, D] chunk.
+    # must hand later stages (and the action validator) a [1, D] chunk.
     seen = []
 
     def squeeze(data):
@@ -59,3 +62,46 @@ def test_single_step_array_output_keeps_chunk_dimension():
     assert out.shape == (1, 3)
     _run_denormalize([squeeze, record], dict(action=np.arange(3.0)[None]))
     assert seen == [(1, 3)]
+
+
+@pytest.mark.parametrize('container', ['single', 'list', 'tuple'])
+@pytest.mark.parametrize('horizon', [1, 2])
+def test_predictor_preserves_denormalization_chain_and_prefix(
+        container, horizon):
+    seen = []
+    state = np.ones(14, dtype=np.float32)
+
+    def denormalize(data):
+        seen.append(np.asarray(data['action']).shape)
+        np.testing.assert_array_equal(data['state'], state)
+        return np.asarray(data['action'])[0].squeeze() + 10
+
+    def add_state(data):
+        seen.append(np.asarray(data['action']).shape)
+        data['action'] += data['state']
+        return data
+
+    stages = denormalize
+    if container == 'list':
+        stages = [denormalize, add_state]
+    elif container == 'tuple':
+        stages = (denormalize, add_state)
+    io = RobotwinInferenceIO(
+        vla=None,
+        dataset=None,
+        denormalize_action=stages,
+        execute_horizon=horizon,
+        unnorm_key='private',
+        mixed_precision_dtype=torch.bfloat16,
+        enable_mixed_precision=False,
+        device=torch.device('cpu'))
+    actions = torch.arange(4 * 14, dtype=torch.float32).reshape(1, 4, 14)
+    native, _ = io.process_actions(actions, raw_state=state)
+    offset = 10 if container == 'single' else 11
+    np.testing.assert_array_equal(native,
+                                  actions[0, :horizon].numpy() + offset)
+    assert native.shape == (horizon, 14)
+    assert native.dtype == np.float32
+    assert seen[0] == (1, horizon, 14)
+    if container != 'single':
+        assert seen[1] == (horizon, 14)

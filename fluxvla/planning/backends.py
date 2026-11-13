@@ -75,6 +75,7 @@ class _StructuredSubtaskPlanner:
     In agent mode, request_finish is a visual completion declaration, not a
     request for simulator verification. Existing configurations retain the
     legacy environment mode. blocked means no suitable capability, not done.
+    Disabled mode removes both stop controls from the response schema.
     """
 
     client_type = None
@@ -86,14 +87,16 @@ class _StructuredSubtaskPlanner:
         if type(allow_request_finish) is not bool:
             raise ValueError('allow_request_finish must be a boolean')
         self.allow_request_finish = allow_request_finish
-        if completion_mode not in {'environment', 'agent'}:
-            raise ValueError('completion_mode must be environment or agent')
+        if completion_mode not in {'environment', 'agent', 'disabled'}:
+            raise ValueError('Invalid planner completion_mode')
         if completion_mode == 'agent' and not allow_request_finish:
             raise ValueError('Agent completion requires request_finish')
+        if completion_mode == 'disabled' and allow_request_finish:
+            raise ValueError('Disabled completion forbids request_finish')
         self.completion_mode = completion_mode
         self.client = self.client_type(**client)
-        if completion_mode == 'agent' and not self.client.image_keys:
-            raise ValueError('Agent completion requires camera image_keys')
+        if completion_mode != 'environment' and not self.client.image_keys:
+            raise ValueError('Camera-only planning requires image_keys')
         self.reset()
 
     def reset(self):
@@ -101,7 +104,8 @@ class _StructuredSubtaskPlanner:
 
     def choose(self, *, goal, observation, facts, candidates, history,
                feedback):
-        controls = ['blocked']
+        disabled = self.completion_mode == 'disabled'
+        controls = [] if disabled else ['blocked']
         if self.allow_request_finish:
             controls.insert(0, 'request_finish')
         ids = [c['choice'] for c in candidates] + controls
@@ -113,17 +117,19 @@ class _StructuredSubtaskPlanner:
             feedback=feedback,
             controls=controls)
         agent = self.completion_mode == 'agent'
-        if agent:
+        if agent or disabled:
             if facts:
-                raise ValueError('Agent mode must not receive predicate facts')
+                raise ValueError('Camera-only mode must not receive predicate '
+                                 'facts')
             # Also defend direct backend callers: only owned image references
             # and an explicit feedback allowlist may enter the model request.
             observation = _planner_camera_observation(self.client.image_keys,
                                                       observation)
-            if self._initial_images is None:
-                self._initial_images = copy.deepcopy(observation)
-            observation['_initial_images'] = copy.deepcopy(
-                self._initial_images)
+            if agent:
+                if self._initial_images is None:
+                    self._initial_images = copy.deepcopy(observation)
+                observation['_initial_images'] = copy.deepcopy(
+                    self._initial_images)
             payload.pop('facts')
             payload['feedback'] = {
                 k: copy.deepcopy(feedback[k])
@@ -180,12 +186,20 @@ class _StructuredSubtaskPlanner:
                 'Only the environment can end this rollout. While it is '
                 'running, select a candidate whose action is still needed '
                 'and supported by the current observation. ')
-        system += ('Select blocked if no available capability can safely '
-                   'make progress, not merely because you think you are done. '
-                   'After cannot_progress_reconsider, reassess the same '
-                   'images and feedback; no action or time has advanced. '
-                   'Never invent an unsupported recovery skill or assume '
-                   'replanning itself has satisfied an unmet condition.')
+        if disabled:
+            system += (
+                'Completion and stop decisions are disabled. Return only a '
+                'listed candidate ID, never request_finish or blocked. '
+                'Do not invent a recovery action or select an unsupported '
+                'instruction merely to keep moving. ')
+        else:
+            system += (
+                'Select blocked if no available capability can safely '
+                'make progress, not merely because you think you are done. '
+                'After cannot_progress_reconsider, reassess the same '
+                'images and feedback; no action or time has advanced. '
+                'Never invent an unsupported recovery skill or assume '
+                'replanning itself has satisfied an unmet condition.')
         result = self.client.generate(system, payload, observation,
                                       choice_schema(ids, with_evidence=agent))
         validate_choice(result, ids, with_evidence=agent)
