@@ -1,22 +1,13 @@
 # Copyright 2026 Limx Dynamics
-"""Shared policy lifecycle for evaluation and synchronous inference runners."""
+"""Compatibility policy lifecycle for synchronous deployment and serving."""
 
-from collections.abc import Mapping
 from typing import Dict, Optional
 
 from fluxvla.engines.utils import (build_observation_adapter_from_cfg,
                                    build_policy_from_cfg)
-
-
-def _copy_options(value):
-    """Copy config containers, not already loaded planner/model objects."""
-    if isinstance(value, Mapping):
-        return {key: _copy_options(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_copy_options(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_copy_options(item) for item in value)
-    return value
+# Compatibility exports for synchronous/serving callers. Native evaluation
+# constructs predictors through the external evaluation factory instead.
+from fluxvla.policies.runtime import POLICY_UNSET, resolve_policy_options
 
 
 class PolicyModelAdapter:
@@ -34,17 +25,24 @@ class PolicyModelAdapter:
 class PolicyRunnerMixin:
     """One lifecycle, independent of environment and action representation.
 
-    Concrete runners only supply input/output processors and execute native
-    actions. Configuration is accepted by BaseEvalRunner/BaseInferenceRunner,
-    not repeated by every environment/robot subclass. A legacy runner can
-    leave policy support opt-in while migrating its old inference path.
+    Native evaluation uses externally assembled ActionPredictor instances.
+    This mixin preserves synchronous deployment and serving compatibility;
+    robot subclasses need not repeat configuration resolution.
     """
 
     def configure_policy(self,
-                         policy: Optional[Dict] = None,
-                         observation_adapter: Optional[Dict] = None):
-        self.policy_config = _copy_options(policy)
-        self.observation_adapter_config = _copy_options(observation_adapter)
+                         policy: Optional[Dict] = POLICY_UNSET,
+                         observation_adapter: Optional[Dict] = POLICY_UNSET,
+                         *,
+                         cfg=None,
+                         section=None):
+        options = resolve_policy_options(
+            cfg,
+            section,
+            overrides=dict(
+                policy=policy, observation_adapter=observation_adapter))
+        self.policy_config = options['policy']
+        self.observation_adapter_config = options['observation_adapter']
         self.policy = None
         self.observation_adapter = None
         self.last_policy_output = None

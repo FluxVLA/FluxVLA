@@ -74,6 +74,12 @@ class HierarchicalPolicy(VLAPolicy):
                 **settings)
         self._pending_version = None
 
+    @property
+    def supports_per_request_inference(self):
+        """Independent snapshots may select actions, never declare a stop."""
+        return (isinstance(self.controller, TrainingSubtaskController)
+                and self.controller.completion_mode == 'disabled')
+
     def reset(self, goal, *, output_processor=None):
         if not isinstance(goal, str) or not goal.strip():
             raise ValueError('Hierarchical episodes require a nonempty goal')
@@ -85,7 +91,8 @@ class HierarchicalPolicy(VLAPolicy):
         self._check_ready()
         # Both backends and the VLA process this same observation snapshot.
         observation = copy.deepcopy(observation)
-        if getattr(self.controller, 'completion_mode', None) == 'agent':
+        if getattr(self.controller, 'completion_mode',
+                   None) in {'agent', 'disabled'}:
             # Simulator truth must not enter planning or policy metadata.
             observation.pop('predicates', None)
         event = self.controller.step(observation, observation_id)

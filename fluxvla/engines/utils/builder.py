@@ -367,6 +367,11 @@ def build_runner_from_cfg(
         nn.Module: A built nn.Module.
     """
     from .root import RUNNERS
+    target = cfg.get('type', (default_args or {}).get('type'))
+    runner_cls = RUNNERS.get(target) if isinstance(target, str) else target
+    if getattr(runner_cls, 'inference_backend', None) is not None:
+        from fluxvla.engines.evaluation_runtime import build_native_eval_runner
+        return build_native_eval_runner(cfg, default_args)
     return build_from_cfg(cfg, RUNNERS, default_args)
 
 

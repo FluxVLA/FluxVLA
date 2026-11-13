@@ -34,7 +34,7 @@ from safetensors.torch import load_file
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils import build_operator_from_cfg, initialize_overwatch
 from ..utils.name_map import str_to_dtype
-from .policy_runner import PolicyModelAdapter, PolicyRunnerMixin
+from .policy_runner import POLICY_UNSET, PolicyModelAdapter, PolicyRunnerMixin
 
 overwatch = initialize_overwatch(__name__)
 
@@ -85,8 +85,9 @@ class BaseInferenceRunner(PolicyRunnerMixin):
             model loading is skipped and inference is delegated to a ZMQ
             server.  Keys: ``server_host``, ``server_port``, ``timeout_s``,
             ``serializer``, ``compress``, ``enable_profiling``.
-        policy (Dict): Optional policy, shared with BaseEvalRunner. Uses the
-            legacy path when neither policy nor adapter is set.
+        policy (Dict): Optional policy override. If omitted, inherits from
+            cfg.inference then cfg.policy. Explicit None disables it. Uses
+            the legacy path when neither policy nor adapter is set.
         observation_adapter (Dict): Optional observation enrichment. Receives
             the raw snapshot and ROS operator; returns data, not an operator.
         policy_max_observation_age_s (float): Maximum elapsed time between
@@ -121,8 +122,8 @@ class BaseInferenceRunner(PolicyRunnerMixin):
                  enable_mixed_precision: bool = True,
                  keep_params_fp32: bool = False,
                  remote_inference: Dict = None,
-                 policy: Optional[Dict] = None,
-                 observation_adapter: Optional[Dict] = None,
+                 policy: Optional[Dict] = POLICY_UNSET,
+                 observation_adapter: Optional[Dict] = POLICY_UNSET,
                  policy_max_observation_age_s: float = 10.0,
                  policy_poll_interval_s: float = 0.1,
                  **kwargs):
@@ -130,7 +131,8 @@ class BaseInferenceRunner(PolicyRunnerMixin):
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
 
-        self.configure_policy(policy, observation_adapter)
+        self.configure_policy(
+            policy, observation_adapter, cfg=cfg, section='inference')
         self.ckpt_path = ckpt_path
         self._use_remote = remote_inference is not None
         self.use_robot_base = use_robot_base

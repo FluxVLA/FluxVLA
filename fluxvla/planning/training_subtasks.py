@@ -147,6 +147,8 @@ class TrainingSubtaskController(SubtaskController):
     The planner sees the active instruction and executed history, and may
     continue it. Agent mode declares visual completion without any environment
     predicates; it is kept distinct from externally verified success.
+    Disabled mode only selects candidate instructions, with no completion
+    predicates or planner stop controls. Backend errors still fail closed.
     """
 
     def __init__(self,
@@ -164,17 +166,19 @@ class TrainingSubtaskController(SubtaskController):
                  completion_guidance='',
                  completion_mode='environment',
                  planner_image_keys=()):
-        if completion_mode not in {'environment', 'agent'}:
-            raise ValueError('completion_mode must be environment or agent')
+        if completion_mode not in {'environment', 'agent', 'disabled'}:
+            raise ValueError('Invalid controller completion_mode')
         self.completion_mode = completion_mode
         self.planner_image_keys = _validate_image_keys(planner_image_keys)
-        if completion_mode == 'agent':
+        if completion_mode != 'environment':
             if (monitor is not None or goal_conditions is not None
                     or completion_requirements):
-                raise ValueError('Agent mode forbids environment monitors, '
+                raise ValueError('Camera-only mode forbids environment '
+                                 'monitors, '
                                  'goal predicates and measured requirements')
             if not self.planner_image_keys:
-                raise ValueError('Agent mode requires planner_image_keys')
+                raise ValueError(
+                    'Camera-only mode requires planner_image_keys')
         elif not goal_conditions:
             raise ValueError('Environment mode requires goal_conditions')
         planner_mode = getattr(planner, 'completion_mode', completion_mode)
@@ -255,15 +259,18 @@ class TrainingSubtaskController(SubtaskController):
     def _step_with_facts(self, observation, facts):
         self.planning_attempts = []
         agent = self.completion_mode == 'agent'
-        if agent:
+        disabled = self.completion_mode == 'disabled'
+        visual_only = agent or disabled
+        if visual_only:
             observation = _planner_camera_observation(self.planner_image_keys,
                                                       observation)
             facts = {}
+        if agent:
             self.completion_decision = dict(
                 source='agent_visual', agent_success=None)
         # Diagnostics explain missing requirements; they never replace the
         # native terminal predicate. Replans below reuse this SAME snapshot.
-        self.completion_verification = {} if agent else dict(
+        self.completion_verification = {} if visual_only else dict(
             verified=matches(self.goal_conditions, facts),
             goal_conditions=copy.deepcopy(self.goal_conditions),
             requirements={
@@ -279,13 +286,13 @@ class TrainingSubtaskController(SubtaskController):
         if not self.catalog.candidates:
             raise ValueError(
                 'Reset with a known training task before planning')
-        if not agent and matches(self.goal_conditions, facts):
+        if not visual_only and matches(self.goal_conditions, facts):
             self.goal_streak += 1
             if self.goal_streak >= self.stable_observations:
                 return self._event('succeeded', reason='goal_verified')
             return self._event('waiting', reason='confirming_goal')
         self.goal_streak = 0
-        if not agent and has_unknown(self.goal_conditions, facts):
+        if not visual_only and has_unknown(self.goal_conditions, facts):
             return self._event('waiting', reason='goal_state_unknown')
         if self.total_chunks >= self.max_episode_chunks:
             return self._event(
@@ -294,7 +301,9 @@ class TrainingSubtaskController(SubtaskController):
             return self._event('ready', self.active.decision('continue'))
 
         available = self.catalog.available(facts)
-        choices = [c.choice for c in available] + ['request_finish', 'blocked']
+        choices = [c.choice for c in available]
+        if not disabled:
+            choices += ['request_finish', 'blocked']
         feedback = dict(
             self.feedback,
             selection_mode='literal_training_annotations',

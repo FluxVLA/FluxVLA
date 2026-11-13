@@ -16,30 +16,42 @@
 import copy
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 import torch
 
 from fluxvla.engines.utils import initialize_overwatch
 from fluxvla.engines.utils.name_map import str_to_dtype
-from .policy_runner import PolicyRunnerMixin
 
 overwatch = initialize_overwatch(__name__)
 
 
-class BaseEvalRunner(PolicyRunnerMixin):
-    """Shared model utilities and policy lifecycle for environment evaluation.
+class BaseEvalRunner:
+    """Evaluation consumes an assembled predictor, never planner configs."""
 
-    Environment stepping and action formats remain in concrete adapters.
-    ``policy`` and ``observation_adapter`` are forwarded by subclasses via
-    ``super().__init__(**kwargs)``; planner internals never enter the runner.
-    """
+    def __init__(self, predictor=None, **kwargs):
+        if 'policy' in kwargs or 'observation_adapter' in kwargs:
+            raise TypeError('Build configured evaluation through '
+                            'build_runner_from_cfg(), or inject a predictor '
+                            'instance; runners do not construct policies.')
+        self.predictor = predictor
 
-    def __init__(self,
-                 policy: Optional[Dict] = None,
-                 observation_adapter: Optional[Dict] = None,
-                 **kwargs):
-        self.configure_policy(policy, observation_adapter)
+    def require_predictor(self):
+        if self.predictor is None:
+            raise RuntimeError('An assembled predictor is required; use '
+                               'build_runner_from_cfg() or inject predictor.')
+        return self.predictor
+
+    def close_predictor(self):
+        if getattr(self, 'predictor', None) is not None:
+            self.predictor.close()
+            self.predictor = None
+
+    def cleanup(self):
+        self.close_predictor()
+        self.vla = None
+        self.dataset = None
+        self.denormalize_action = None
 
     @staticmethod
     def build_eval_vla(cfg: Dict):

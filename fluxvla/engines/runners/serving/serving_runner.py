@@ -16,9 +16,22 @@ import numpy as np
 import torch
 
 from ...utils.root import RUNNERS
-from ..policy_runner import PolicyModelAdapter, PolicyRunnerMixin
+from ..policy_runner import (PolicyModelAdapter, PolicyRunnerMixin,
+                             resolve_policy_options)
 
 _MISSING = object()
+
+
+def _validate_policy_execution(policy, adapter, execution):
+    if execution not in {'episode', 'per_request'}:
+        raise ValueError('policy_execution must be episode or per_request')
+    if execution == 'per_request' and (
+            not isinstance(policy, Mapping)
+            or policy.get('type') != 'HierarchicalPolicy'
+            or policy.get('completion_mode') != 'disabled'
+            or adapter is not None):
+        raise ValueError('per_request requires HierarchicalPolicy with '
+                         'completion_mode=disabled and no observation_adapter')
 
 
 @dataclass(frozen=True)
@@ -51,7 +64,11 @@ class FluxVLAServingRunner(PolicyRunnerMixin):
                  denormalize_per_action: bool = False,
                  expected_unnorm_key: str = '',
                  policy: Mapping[str, Any] | None = None,
-                 observation_adapter: Mapping[str, Any] | None = None) -> None:
+                 observation_adapter: Mapping[str, Any] | None = None,
+                 policy_execution: str = 'episode') -> None:
+        _validate_policy_execution(policy, observation_adapter,
+                                   policy_execution)
+        self.policy_execution = policy_execution
         if not callable(dataset):
             raise TypeError('FluxVLA server dataset must be callable')
         if (not model_outputs_environment_actions
@@ -115,6 +132,9 @@ class FluxVLAServingRunner(PolicyRunnerMixin):
             # The callback below retains the serving runner's own precision,
             # device, preprocessing and denormalization (exactly once).
             enable_mixed_precision=False)
+        if (policy_execution == 'per_request' and not getattr(
+                self.policy, 'supports_per_request_inference', False)):
+            raise ValueError('Policy does not support per-request inference')
 
     def predict_action(
             self, observation: Mapping[str, Any], unnorm_key: str,
@@ -129,6 +149,9 @@ class FluxVLAServingRunner(PolicyRunnerMixin):
         if self.policy is None:
             return self._predict_vla_action(observation, unnorm_key,
                                             policy_seed)
+        if self.policy_execution == 'per_request':
+            return self._predict_policy_request(observation, unnorm_key,
+                                                policy_seed)
         if not isinstance(observation, Mapping):
             raise TypeError('observation must be a mapping')
         data = dict(observation)
@@ -222,6 +245,40 @@ class FluxVLAServingRunner(PolicyRunnerMixin):
         except Exception:
             self._episode_failed = True
             raise
+
+    def _predict_policy_request(self, observation, unnorm_key, policy_seed):
+        """Standard action-only RPC; no episode history or simulated ACKs.
+
+        Each snapshot gets a fresh planner/controller lifecycle, so any
+        stateless replica can handle it. Weights and candidate vocabulary
+        remain loaded. Errors stay errors; never replace them with actions
+        or send PolicyStop to a client that only accepts action arrays.
+        """
+        if not isinstance(observation, Mapping):
+            raise TypeError('observation must be a mapping')
+        goal = observation.get('task_description')
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError('Policy request needs the whole task description')
+        if (unnorm_key and self.expected_unnorm_key
+                and unnorm_key != self.expected_unnorm_key):
+            raise ValueError('Policy request normalization key changed')
+        self.reset_policy(goal)
+        self._policy_seed = policy_seed
+        self._policy_unnorm_key = unnorm_key or self.expected_unnorm_key
+        started = time.perf_counter()
+        try:
+            result = self.step_policy(observation, 0, policy_seed=policy_seed)
+            self.last_prediction_metadata = dict(result.metadata)
+            self.last_prediction_metadata['policy_execution'] = 'per_request'
+            if result.status != 'ready' or result.actions is None:
+                raise RuntimeError('Action-only planner did not produce a '
+                                   'valid candidate; no actions issued')
+            return result.actions, time.perf_counter() - started
+        finally:
+            # No actions are claimed to have executed. Clear pending state
+            # even when a backend fails; the next request is independent.
+            self.reset_policy(goal)
+            self._policy_seed = self._policy_unnorm_key = None
 
     def _policy_predict(self, observation, **_):
         print(
@@ -413,15 +470,21 @@ def build_serving_runner_from_config(
                          '`inference`')
     section_cfg = require_mapping(
         config_get(cfg, section_name, _MISSING), f'config.{section_name}')
-    policy_options = {
-        key: section_cfg[key]
-        for key in ('policy', 'observation_adapter')
-        if section_cfg.get(key) is not None
-    }
-    if bool(policy_options) != (server_cfg.get('mode') == 'stateful'):
+    runner_cfg = copy.deepcopy(
+        require_mapping(
+            server_cfg.get('runner', _MISSING), 'themis.server.runner'))
+    policy_options = resolve_policy_options(
+        cfg, section_name, overrides=runner_cfg)
+    execution = runner_cfg.get('policy_execution', 'episode')
+    _validate_policy_execution(policy_options['policy'],
+                               policy_options['observation_adapter'],
+                               execution)
+    policy_requested = any(v is not None for v in policy_options.values())
+    needs_stateful = policy_requested and execution == 'episode'
+    if needs_stateful != (server_cfg.get('mode') == 'stateful'):
         raise ValueError(
-            'Policy serving requires themis.server.mode=stateful; '
-            'plain VLA serving remains stateless')
+            'Episode policy serving requires themis.server.mode=stateful; '
+            'plain VLA and per_request policies require stateless')
     dataset_cfg = copy.deepcopy(
         require_mapping(
             section_cfg.get('dataset', _MISSING),
@@ -488,9 +551,6 @@ def build_serving_runner_from_config(
     dtype_name = server_cfg.get('mixed_precision_dtype', 'bf16')
     from fluxvla.engines import build_runner_from_cfg
 
-    runner_cfg = copy.deepcopy(
-        require_mapping(
-            server_cfg.get('runner', _MISSING), 'themis.server.runner'))
     return build_runner_from_cfg(
         runner_cfg,
         default_args=dict(
