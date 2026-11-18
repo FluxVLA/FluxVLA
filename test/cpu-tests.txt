@@ -28,3 +28,7 @@ test/test_runners/test_robocasa_eval_output_paths.py
 test/test_runners/test_robotwin_eval_output_paths.py
 test/test_datasets/test_dataset_wrapper.py
 test/test_runners/test_eval_episode_store.py
+test/test_datasets/test_eef_so3_actions.py
+test/test_datasets/test_robotwin_eef.py
+test/test_datasets/test_transformed_auto_statistics.py
+test/test_transforms/test_eef_transforms.py

@@ -256,7 +256,8 @@ class LocalFluxVLAPolicy:
         # Denormalize to raw joint positions. Delta-action recipes add the
         # current raw state back, so pass it through when the dataset
         # exposes it (the RoboCasa convention).
-        denorm_input = dict(action=raw_actions.float().cpu().numpy())
+        raw_actions = raw_actions.float().cpu().numpy()
+        denorm_input = dict(action=raw_actions[..., :self.eval_chunk_size, :])
         raw_state = getattr(self.dataset, 'last_raw_state', None)
         if raw_state is not None:
             denorm_input['state'] = raw_state
