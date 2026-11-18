@@ -25,6 +25,7 @@ runner = dict(
     only_eval=False,
     val_check_interval=-1,
     save_interval=50,
+    export_native_policy=True,
     resume_dir=None,
     ckpt_path=None)
 algorithm = dict(

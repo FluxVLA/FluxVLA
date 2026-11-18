@@ -13,6 +13,43 @@ from .pi05_rl_builder import _deep_update, load_sft_weights
 from .smolvla_rl_policy import FluxSmolVLARLPolicy
 
 
+def resolve_sft_artifacts(checkpoint_path, *, norm_stats_path=None,
+                          tokenizer_path=None):
+    """Use the SFT checkpoint's preprocessing artifacts, never PI0.5 defaults."""
+    checkpoint = Path(checkpoint_path).expanduser().resolve()
+    parent = checkpoint if checkpoint.is_dir() else checkpoint.parent
+    roots = [parent, parent.parent]
+
+    if norm_stats_path is not None:
+        stats_path = Path(norm_stats_path).expanduser().resolve()
+    else:
+        stats_path = next((root / 'dataset_statistics.json' for root in roots
+                           if (root / 'dataset_statistics.json').is_file()),
+                          None)
+    if stats_path is None or not stats_path.is_file():
+        raise FileNotFoundError(
+            'SmolVLA PPO requires the SFT checkpoint\'s '
+            'dataset_statistics.json. Place it beside the checkpoint or '
+            'above checkpoints/, or set simulator.norm_stats_path. '
+            'PI0.5 statistics cannot be used as a default.')
+
+    if tokenizer_path is not None:
+        tokenizer = Path(tokenizer_path).expanduser().resolve()
+    else:
+        tokenizer = next((root / 'tokenizer' for root in roots
+                          if (root / 'tokenizer').is_dir()), None)
+        if tokenizer is None:
+            tokenizer = next((root for root in roots
+                              if (root / 'tokenizer_config.json').is_file()),
+                             None)
+    if tokenizer is None or not tokenizer.is_dir():
+        raise FileNotFoundError(
+            'SmolVLA PPO requires the SFT checkpoint\'s tokenizer directory. '
+            'Place tokenizer/ beside the checkpoint or above checkpoints/, '
+            'or set simulator.tokenizer_path.')
+    return stats_path, tokenizer
+
+
 def build_smolvla_policy(cfg, torch_dtype=None):
     """RLinf ModelBuilder for the Flux-native SmolVLA policy."""
     if cfg.model_type != 'fluxvla_smolvla':
@@ -25,6 +62,9 @@ def build_smolvla_policy(cfg, torch_dtype=None):
     if not path.exists():
         raise FileNotFoundError(f'Initial SFT checkpoint not found: {path}')
     options = cfg.fluxvla
+    stats_path, tokenizer_path = resolve_sft_artifacts(
+        path, norm_stats_path=options.get('norm_stats_path'),
+        tokenizer_path=options.get('tokenizer_path'))
     for key in ('joint_logprob', 'is_lora'):
         if cfg.get(key, False):
             raise ValueError(f'FluxVLA PPO does not support {key}=True')
@@ -52,14 +92,11 @@ def build_smolvla_policy(cfg, torch_dtype=None):
     adapter_cfg = copy.deepcopy(dict(options.observation_adapter))
     if adapter_cfg.get('type') != 'LiberoRLAdapter':
         raise ValueError('SmolVLA RL currently supports LiberoRLAdapter only')
-    stats = None
-    if options.get('norm_stats_path'):
-        with Path(options.norm_stats_path).expanduser().open(
-                encoding='utf-8') as stream:
-            stats = json.load(stream)
+    with stats_path.open(encoding='utf-8') as stream:
+        stats = json.load(stream)
     adapter_cfg.setdefault('flux_cfg', flux_cfg)
     adapter_cfg.setdefault('norm_stats', stats)
-    adapter_cfg.setdefault('tokenizer_path', options.get('tokenizer_path'))
+    adapter_cfg.setdefault('tokenizer_path', str(tokenizer_path))
     observation = build_processor_from_cfg(adapter_cfg)
 
     dtype_name = options.get('compute_dtype', 'bf16')

@@ -584,7 +584,8 @@ class LiberoEvalRunner(BaseEvalRunner):
 
         if self.enable_mixed_precision_training:
             self.vla.to(
-                device=self.device_id, dtype=self.mixed_precision_dtype)
+                device=self.device_id,
+                dtype=self.model_build_dtype or self.mixed_precision_dtype)
         else:
             self.vla.cuda(self.device_id)
 
@@ -646,7 +647,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         run_timestamp = (
             time.strftime('%Y_%m_%d-%H_%M_%S') if rank == 0 else None)
         run_timestamp_holder = [run_timestamp]
-        dist.broadcast_object_list(run_timestamp_holder, src=0)
+        if world_size > 1:
+            dist.broadcast_object_list(run_timestamp_holder, src=0)
         run_timestamp = run_timestamp_holder[0]
         run_id = self._build_run_id(
             self.task_suite_name,
@@ -936,16 +938,17 @@ class LiberoEvalRunner(BaseEvalRunner):
         global_episodes = total_episodes.clone()
         global_successes = total_successes.clone()
         task_start_times = torch.tensor(task_start_times, device=cuda_dev)
-        dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
-        dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
         # Each (task, trial) is run by exactly one rank under the configured
         # sharding, so MAX recovers that rank's 0/1 outcome (unrun cells stay
         # ``-1``); MIN recovers the earliest per-task start time.
-        dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
-        dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
+        if world_size > 1:
+            dist.all_reduce(global_episodes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(global_successes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_successes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_episodes, op=dist.ReduceOp.SUM)
+            dist.all_reduce(task_durations, op=dist.ReduceOp.SUM)
+            dist.all_reduce(trial_success_grid, op=dist.ReduceOp.MAX)
+            dist.all_reduce(task_start_times, op=dist.ReduceOp.MIN)
         global_episode_count = int(global_episodes[0].item())
         global_success_count = int(global_successes[0].item())
         global_success_rate = (
@@ -986,7 +989,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                                                  trial_success_grid.cpu(),
                                                  task_start_times.cpu())
         log_file.close()
-        dist.barrier()
+        if world_size > 1:
+            dist.barrier()
         return
 
     @staticmethod
