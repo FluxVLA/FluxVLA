@@ -20,6 +20,12 @@ from fluxvla.engines.runners.base_inference_runner import BaseInferenceRunner
 from fluxvla.engines.runners.libero_eval_runner import LiberoEvalRunner
 from fluxvla.engines.runners.robocasa_eval_runner import RobocasaEvalRunner
 from fluxvla.engines.runners.robotwin_eval_runner import RobotwinEvalRunner
+from fluxvla.engines.utils import build_runner_from_cfg
+from fluxvla.policies import VLAPolicy
+from fluxvla.policies.eval_io import RobocasaInferenceIO
+from fluxvla.policies.runtime import (build_action_predictor,
+                                      predictor_fingerprint,
+                                      resolve_policy_options)
 
 ROOT = Path(__file__).resolve().parents[2]
 TASK = 'put the cup in the drawer and close it'
@@ -28,8 +34,8 @@ CAMERA = 'video.ego_view_bg_crop_pad_res256_freq20'
 
 def policy_config(max_chunks=1, choices=('skill_0000', )):
     cfg = copy.deepcopy(
-        Config.fromfile(
-            ROOT / 'configs/hierarchical/robocasa_pi05_gpt6.py').eval.policy)
+        Config.fromfile(ROOT /
+                        'configs/hierarchical/robocasa_pi05_gpt6.py').policy)
     cfg.planner = dict(type='ScriptedSubtaskPlanner', choices=list(choices))
     for skill in cfg.skill_catalog.skills:
         skill.max_chunks = max_chunks
@@ -157,25 +163,30 @@ def make_inference(monkeypatch,
     return runner, model, inputs, denorm_calls
 
 
-def test_policy_configuration_lives_in_bases():
-    for base in (BaseEvalRunner, BaseInferenceRunner):
-        assert 'policy' in inspect.signature(base).parameters
-        assert 'observation_adapter' in inspect.signature(base).parameters
-    for runner in (RobocasaEvalRunner, LiberoEvalRunner, RobotwinEvalRunner):
+def test_eval_runners_consume_predictors_not_policy_configs():
+    assert 'predictor' in inspect.signature(BaseEvalRunner).parameters
+    for runner in (BaseEvalRunner, RobocasaEvalRunner, LiberoEvalRunner,
+                   RobotwinEvalRunner):
         assert 'policy' not in inspect.signature(runner).parameters
         assert 'observation_adapter' not in inspect.signature(
             runner).parameters
-        assert runner.step_policy is BaseEvalRunner.step_policy
-    assert BaseInferenceRunner.step_policy is BaseEvalRunner.step_policy
+        assert not hasattr(runner, 'setup_policy')
+    for key in ('policy', 'observation_adapter'):
+        with pytest.raises(TypeError, match='inject a predictor'):
+            BaseEvalRunner(**{key: {}})
+    # Native robot inference retains its own shared policy composition path.
+    assert 'policy' in inspect.signature(BaseInferenceRunner).parameters
+    assert 'observation_adapter' in inspect.signature(
+        BaseInferenceRunner).parameters
 
 
-def test_base_config_does_not_copy_initialized_backend():
+def test_config_resolution_does_not_copy_initialized_backend():
     backend = Model()
     config = dict(type='HierarchicalPolicy', planner=backend, options=[1])
-    runner = BaseEvalRunner(policy=config)
-    assert runner.policy_config['planner'] is backend
+    options = resolve_policy_options(overrides=dict(policy=config))
+    assert options['policy']['planner'] is backend
     config['options'].append(2)
-    assert runner.policy_config['options'] == [1]
+    assert options['policy']['options'] == [1]
 
 
 @pytest.mark.parametrize('remote', [False, True])
@@ -375,28 +386,30 @@ def test_libero_full_loop_preserves_hooks_and_normalization(
         module, '_get_libero_benchmark', lambda: SimpleNamespace(
             get_benchmark_dict=lambda: {'libero_spatial': lambda: suite}))
     monkeypatch.setattr(module, 'get_libero_env', lambda *a, **k: (env, TASK))
-    runner = LiberoEvalRunner(
-        cfg=Config(dict(model=dict(type='Fake'))),
-        seed=7,
-        ckpt_path=None,
-        model_family='fake',
-        task_suite_name='libero_spatial',
-        dataset={},
-        denormalize_action={},
-        requires_dataset_stats=False,
-        eval_chunk_size=2,
-        num_steps_wait=2,
-        max_steps=8,
-        num_trials_per_task=1,
-        num_inference_steps=7,
-        inference_seed=13,
-        norm_stats_key='custom-stats',
-        save_rollout_videos=False,
-        output_dir=str(tmp_path),
-        model_build_device='cpu',
-        enable_mixed_precision_training=False,
-        policy=policy_config(1, ('skill_0000',
-                                 'skill_0001')) if hierarchical else None)
+    runner = build_runner_from_cfg(
+        dict(
+            type=LiberoEvalRunner,
+            cfg=Config(dict(model=dict(type='Fake'))),
+            seed=7,
+            ckpt_path=None,
+            model_family='fake',
+            task_suite_name='libero_spatial',
+            dataset={},
+            denormalize_action={},
+            requires_dataset_stats=False,
+            eval_chunk_size=2,
+            num_steps_wait=2,
+            max_steps=8,
+            num_trials_per_task=1,
+            num_inference_steps=7,
+            inference_seed=13,
+            norm_stats_key='custom-stats',
+            save_rollout_videos=False,
+            output_dir=str(tmp_path),
+            model_build_device='cpu',
+            enable_mixed_precision_training=False,
+            policy=policy_config(1, ('skill_0000',
+                                     'skill_0001')) if hierarchical else None))
     runner.run()
     assert env.closed
     assert (Path(runner.run_dir) / 'summary.txt').is_file()
@@ -413,14 +426,14 @@ def test_libero_full_loop_preserves_hooks_and_normalization(
         assert inputs.calls[0]['task_description'].endswith('pick up the cup')
         assert inputs.calls[1]['task_description'].endswith(
             'place the cup into the drawer')
-        assert runner.last_policy_output.status == 'failed'
-        assert runner.policy._pending_horizon is None
+        assert runner.predictor.last_output.status == 'failed'
+        assert runner.predictor.backend._pending_horizon is None
     else:
-        assert runner.policy is None
+        assert type(runner.predictor.backend) is VLAPolicy
         assert len(env.actions) == 10
         assert all(c['task_description'] == TASK for c in inputs.calls)
     runner.cleanup()
-    assert runner.policy is None
+    assert runner.predictor is None
 
 
 def test_robotwin_hooks_execute_acknowledge_and_stop(monkeypatch, tmp_path):
@@ -480,10 +493,10 @@ def test_robotwin_hooks_execute_acknowledge_and_stop(monkeypatch, tmp_path):
     module.reset_model(runtime)
     module.eval(environment, runtime, obs)
     assert len(taken) == 2
-    assert runtime.policy.controller.chunks == 1
+    assert runtime.predictor.backend.controller.chunks == 1
     np.testing.assert_array_equal(taken[0], np.arange(14) + 10)
     module.eval(environment, runtime, obs)
-    assert runtime.last_policy_output.status == 'failed'
+    assert runtime.last_output.status == 'failed'
     assert environment.step_lim == environment.take_action_cnt == 2
     assert len(model.calls) == 1
     module.reset_model(runtime)
@@ -491,7 +504,7 @@ def test_robotwin_hooks_execute_acknowledge_and_stop(monkeypatch, tmp_path):
     module.eval(environment, runtime, obs)
     assert len(model.calls) == 2
     module.close_model()
-    assert runtime.policy is None and module._ACTIVE_POLICY is None
+    assert runtime.predictor is None and module._ACTIVE_POLICY is None
 
 
 @pytest.mark.parametrize('operator_kind', ['base', 'aloha'])
@@ -517,7 +530,7 @@ def test_synchronous_operators_report_partial_publication(
 
 def test_robotwin_resume_does_not_mix_baseline_and_policy(tmp_path):
     runner = object.__new__(RobotwinEvalRunner)
-    runner.configure_policy()
+    runner.predictor = SimpleNamespace(fingerprint=None)
     runner.ckpt_path = str(tmp_path / 'step-10.pt')
     runner.result_output_dir = str(tmp_path)
     runner.resume = True
@@ -545,17 +558,19 @@ def test_robotwin_resume_does_not_mix_baseline_and_policy(tmp_path):
     summary = previous / 'summary.json'
     summary.write_text(json.dumps(payload))
     assert runner._resolve_run_dir() == str(previous)
-    runner.configure_policy(policy_config())
+    runner.predictor.fingerprint = predictor_fingerprint(
+        dict(policy=policy_config()))
     assert runner._resolve_run_dir() != str(previous)
     payload['policy_fingerprint'] = runner._policy_fingerprint()
     summary.write_text(json.dumps(payload))
     assert runner._resolve_run_dir() == str(previous)
-    runner.configure_policy(policy_config(max_chunks=2))
+    runner.predictor.fingerprint = predictor_fingerprint(
+        dict(policy=policy_config(max_chunks=2)))
     assert runner._resolve_run_dir() != str(previous)
 
 
 def test_adapter_only_uses_default_policy_without_leaking_environment():
-    model, inputs = Model(), Inputs()
+    model, inputs = Model(batched=True), Inputs()
     env = object()
 
     class Adapter:
@@ -564,15 +579,23 @@ def test_adapter_only_uses_default_policy_without_leaking_environment():
             assert context is env
             return dict(obs, predicates={'observed': True})
 
-    runner = BaseEvalRunner(observation_adapter=dict(type=Adapter))
-    runner.setup_policy(
+    io = RobocasaInferenceIO(
         vla=model,
-        input_processor=inputs,
-        output_processor=lambda value, **_: (value.numpy(), []),
+        dataset=inputs,
+        denormalize_action=lambda data: data['action'],
+        execute_horizon=2,
+        unnorm_key='',
+        mixed_precision_dtype=torch.float32,
         enable_mixed_precision=False)
-    runner.reset_policy(TASK)
-    result = runner.step_policy(observation(), 0, environment=env)
+    predictor = build_action_predictor(
+        io, observation_adapter=dict(type=Adapter))
+    runner = BaseEvalRunner(predictor=predictor)
+    assert runner.require_predictor() is predictor
+    predictor.reset(TASK)
+    result = predictor.predict_action(observation(), 0, environment=env)
     assert result.status == 'ready'
     assert 'predicates' not in inputs.calls[0]
     assert len(model.calls) == 1
-    runner.acknowledge_policy(1)
+    predictor.acknowledge(1)
+    runner.cleanup()
+    assert runner.predictor is None

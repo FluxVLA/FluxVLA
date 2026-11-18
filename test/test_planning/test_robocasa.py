@@ -14,7 +14,7 @@ from mmengine import Config
 
 from fluxvla.engines.observation_adapters import \
     RobocasaDrawerObservationAdapter
-from fluxvla.engines.utils import build_policy_from_cfg
+from fluxvla.engines.utils import build_policy_from_cfg, build_runner_from_cfg
 from fluxvla.policies import ActionChunkProcessor, VLAPolicy
 
 CONFIG = (
@@ -78,7 +78,7 @@ class FakeDenormalizer:
 
 
 def policy_config(choices=('skill_0000', ), max_chunks=60):
-    cfg = copy.deepcopy(Config.fromfile(CONFIG).eval.policy)
+    cfg = copy.deepcopy(Config.fromfile(CONFIG).policy)
     cfg.planner = dict(type='ScriptedSubtaskPlanner', choices=list(choices))
     for skill in cfg.skill_catalog.skills:
         skill.max_chunks = max_chunks
@@ -135,16 +135,16 @@ def test_config_uses_pi05_checkpoint_assets(monkeypatch):
                      if t.type == 'ProcessPrompts')
     assert tokenizer.model_path == '/tmp/pi05-run/tokenizer'
     assert 'planning' not in cfg.eval
-    assert cfg.eval.policy.type == 'HierarchicalPolicy'
-    assert cfg.eval.policy.planner.model == 'test-gpt'
-    assert cfg.eval.policy.monitor.type == 'ObservationPredicateMonitor'
-    assert cfg.eval.observation_adapter.type == \
+    assert cfg.policy.type == 'HierarchicalPolicy'
+    assert cfg.policy.planner.model == 'test-gpt'
+    assert cfg.policy.monitor.type == 'ObservationPredicateMonitor'
+    assert cfg.observation_adapter.type == \
         'RobocasaDrawerObservationAdapter'
     assert cfg.eval.action_keys['action.left_hand'] == (7, 13)
     assert cfg.eval.denormalize_action.action_dim == 29
     assert cfg.eval.eval_chunk_size == 8
     assert cfg.eval.max_episode_steps == 720
-    assert [s.max_chunks for s in cfg.eval.policy.skill_catalog.skills] == \
+    assert [s.max_chunks for s in cfg.policy.skill_catalog.skills] == \
         [60, 60, 60]
 
 
@@ -446,26 +446,28 @@ def test_runner_execution_and_artifacts(monkeypatch, tmp_path, mode):
                     inside=mode == 'unverified_success',
                     closed=mode == 'unverified_success')['predicates'])
 
-    runner = RobocasaEvalRunner(
-        cfg=Config(dict(model=dict(type='Fake'))),
-        seed=7,
-        ckpt_path=None,
-        model_family='fake',
-        task_list=['Fake/PnPCupToDrawerClose'],
-        dataset={},
-        denormalize_action={},
-        eval_chunk_size=2,
-        max_episode_steps=3,
-        num_trials_per_task=1,
-        model_build_device='cpu',
-        action_keys={'arm': [0, 2]},
-        requires_dataset_stats=False,
-        output_dir=str(tmp_path),
-        rollout_video_key=CAMERA,
-        policy=(policy_config(
-            max_chunks=1) if mode in ('budget_failure',
-                                      'unverified_success') else None),
-        observation_adapter=dict(type=Adapter))
+    runner = build_runner_from_cfg(
+        dict(
+            type=RobocasaEvalRunner,
+            cfg=Config(dict(model=dict(type='Fake'))),
+            seed=7,
+            ckpt_path=None,
+            model_family='fake',
+            task_list=['Fake/PnPCupToDrawerClose'],
+            dataset={},
+            denormalize_action={},
+            eval_chunk_size=2,
+            max_episode_steps=3,
+            num_trials_per_task=1,
+            model_build_device='cpu',
+            action_keys={'arm': [0, 2]},
+            requires_dataset_stats=False,
+            output_dir=str(tmp_path),
+            rollout_video_key=CAMERA,
+            policy=(policy_config(
+                max_chunks=1) if mode in ('budget_failure',
+                                          'unverified_success') else None),
+            observation_adapter=dict(type=Adapter)))
     runner.run()
     expected_steps = {
         'baseline': 3,
@@ -479,9 +481,9 @@ def test_runner_execution_and_artifacts(monkeypatch, tmp_path, mode):
     assert len(frames) == expected_steps + 1
     if expected_steps:
         np.testing.assert_array_equal(env.actions[0]['arm'], [10, 21])
-        assert runner.policy._pending_horizon is None
+        assert runner.predictor.backend._pending_horizon is None
     if mode == 'baseline':
-        assert type(runner.policy) is VLAPolicy
+        assert type(runner.predictor.backend) is VLAPolicy
     root = Path(runner.run_dir)
     summary = json.loads((root / 'summary.json').read_text())
     assert summary['overall']['total_episodes'] == 1
