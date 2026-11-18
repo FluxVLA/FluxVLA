@@ -115,8 +115,9 @@ class BaseEvalRunner:
         self.model_family = model_family
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
         self.enable_mixed_precision_training = enable_mixed_precision_training
-        self.device_id = overwatch.local_rank()
-        self.distributed_state = overwatch.distributed_state
+        local_rank = getattr(overwatch, 'local_rank', None)
+        self.device_id = local_rank() if callable(local_rank) else 0
+        self.distributed_state = getattr(overwatch, 'distributed_state', None)
 
     def update_model_norm_stats(self, norm_stats: Dict[str, Any]) -> None:
         """Attach normalization statistics to the wrapped VLA model."""

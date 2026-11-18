@@ -480,6 +480,8 @@ class LiberoParquetEvalDataset:
         transforms (List[Dict]): List of transform configs applied in order.
         num_padding_imgs (int): Number of zero image slots appended per step.
         img_buffer_len (int): Number of recent image frames kept for eval.
+        state_dtype (str): State tensor dtype; FP32 exports without autocast
+            can select ``float32``. Defaults to ``bfloat16``.
     """
 
     def __init__(self,
@@ -489,7 +491,8 @@ class LiberoParquetEvalDataset:
                  norm_stats_key: str,
                  num_padding_imgs: int = 0,
                  img_buffer_len: int = 1,
-                 extra_tensor_keys: Optional[List[str]] = None) -> None:
+                 extra_tensor_keys: Optional[List[str]] = None,
+                 state_dtype: str = 'bfloat16') -> None:
 
         # Build image/token transforms (parquet-style sequential list)
         self.transforms = [build_transform_from_cfg(t) for t in transforms]
@@ -499,6 +502,9 @@ class LiberoParquetEvalDataset:
         assert img_buffer_len >= 1, 'img_buffer_len must be >= 1'
         self.img_buffer_len = img_buffer_len
         self.extra_tensor_keys = extra_tensor_keys or []
+        if state_dtype not in ('bfloat16', 'float32'):
+            raise ValueError('state_dtype must be bfloat16 or float32')
+        self.state_dtype = getattr(torch, state_dtype)
         self.img_buffer = None
         self.img_mask_buffer = None
         self.img_buffer_updates = 0
@@ -608,7 +614,7 @@ class LiberoParquetEvalDataset:
 
         if 'states' in data:
             batch['states'] = torch.from_numpy(
-                data['states']).bfloat16().cuda().unsqueeze(0)
+                data['states']).to(self.state_dtype).cuda().unsqueeze(0)
         if 'embodiment_ids' in data:
             batch['embodiment_ids'] = torch.from_numpy(
                 data['embodiment_ids']).int().cuda().unsqueeze(0)

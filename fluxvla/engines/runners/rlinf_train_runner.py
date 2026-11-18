@@ -131,6 +131,14 @@ class RLinfTrainRunner:
                 raise ValueError('Expected LIBERO-10 or RoboTwin')
         if not Path(cfg.actor.model.model_path).expanduser().exists():
             raise FileNotFoundError('Initial SFT checkpoint does not exist')
+        if model_type == 'fluxvla_smolvla':
+            from fluxvla.models.vlas.smolvla_rl_builder import \
+                resolve_sft_artifacts
+            options = cfg.actor.model.fluxvla
+            resolve_sft_artifacts(
+                cfg.actor.model.model_path,
+                norm_stats_path=options.get('norm_stats_path'),
+                tokenizer_path=options.get('tokenizer_path'))
         if cfg.runner.resume_dir and not Path(
                 cfg.runner.resume_dir).expanduser().is_dir():
             raise FileNotFoundError(
@@ -183,7 +191,7 @@ class RLinfTrainRunner:
             from rlinf.runners.embodied_eval_runner import EmbodiedEvalRunner
             runner = EmbodiedEvalRunner(cfg=cfg, **groups)
         else:
-            from rlinf.runners.embodied_runner import EmbodiedRunner
-            runner = EmbodiedRunner(cfg=cfg, **groups)
+            from .rlinf_checkpoint_runner import FluxEmbodiedRunner
+            runner = FluxEmbodiedRunner(cfg=cfg, **groups)
         runner.init_workers()
         return runner.run()
