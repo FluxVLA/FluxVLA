@@ -6,14 +6,9 @@ migrated into FluxVLA.
 """
 
 _base_ = ["./lingbot_vla_v2_robotwin_dense_finetune.py"]
-
-_ROOT = "/ceph/teamGolden/andyzeng/VLA"
-_DATA = "/ceph/teamGolden/datasets/huggingface/lerobot/lingbot_beat_block_hammer_reduced"
+import os  # noqa: E402
 
 model = dict(
-    native_config_path=f"{_ROOT}/lingbot_runs/reduced_beat_block_hammer/lingbotvla_cli.yaml",
-    pretrained_name_or_path=f"{_ROOT}/models/lingbot-vla-v2-6b",
-    tokenizer_path=f"{_ROOT}/models/Qwen3-VL-4B-Instruct",
     action_fp32=False,
     attention_implementation="eager",
     vit_attn_implementation="eager",
@@ -24,16 +19,18 @@ model = dict(
 
 train_dataloader = dict(
     per_device_batch_size=1,
-    per_device_num_workers=0,
+    # Tune with real video/processor workloads; zero remains the parity default.
+    per_device_num_workers=int(os.getenv("LINGBOT_NUM_WORKERS", "0")),
     dataset=dict(
         _delete_=True,
-        type="LingBotOnlineDataset",
-        data_path=_DATA,
-        norm_stats_path=(
-            f"{_ROOT}/FluxVLA/fluxvla/datasets/lingbot_vla_v2/"
-            "assets/robotwin_norm_stats.json"
+        type="LingBotParquetDataset",
+        video_backend=os.getenv("LINGBOT_VIDEO_BACKEND", "torchcodec"),
+        resize_dtype=os.getenv("LINGBOT_RESIZE_DTYPE", "float32"),
+        data_path=os.getenv("LINGBOT_DATA_PATH", ""),
+        norm_stats_path=os.getenv(
+            "LINGBOT_NORM_STATS", "{{fileDirname}}/assets/robotwin_norm_stats.json"
         ),
-        tokenizer_path=f"{_ROOT}/models/Qwen3-VL-4B-Instruct",
+        tokenizer_path=os.getenv("LINGBOT_TOKENIZER_PATH", ""),
         action_horizon=50,
         image_size=256,
         tokenizer_max_length=72,
@@ -89,7 +86,7 @@ runner = dict(
     metric=dict(
         type="VLAMetric",
         active_trackers=("jsonl",),
-        run_dir="work_dirs",
+        run_dir=os.getenv("WORK_DIR", "work_dirs/lingbot_online"),
         window_size=1,
     ),
     lr_scheduler=dict(

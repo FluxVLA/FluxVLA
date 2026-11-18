@@ -1,25 +1,21 @@
-"""Online LeRobot input pipeline for LingBot-VLA-v2.
+"""Shared LingBot raw-sample to model-input transform.
 
-This module deliberately owns the complete raw-data to model-input contract.
-It does not import the reference LingBot package and does not consume captured
-model-ready batches.
+Reading and sampling stay in the Parquet dataset/loader. This transform does
+not import the reference LingBot package or a LeRobot runtime reader.
 """
 
 from __future__ import annotations
 
-import inspect
 import json
 from pathlib import Path
 from typing import Any, Mapping
 
 import torch
-from torch.utils.data import Dataset
 
-from fluxvla.engines import DATASETS
-from .flow_rng import sample_flow_by_index
+from fluxvla.engines import TRANSFORMS
 
 
-_RAW_CAMERA_KEYS = (
+ROBOTWIN_CAMERA_KEYS = (
     "observation.images.cam_high",
     "observation.images.cam_left_wrist",
     "observation.images.cam_right_wrist",
@@ -67,92 +63,51 @@ def _load_norm_stats(path: str | Path) -> Mapping[str, Any]:
     return stats
 
 
-def _build_lerobot_dataset(
-    data_path: str | Path,
-    *,
-    action_horizon: int,
-    image_size: int,
-    use_future_images: bool,
-):
-    from lerobot.datasets.lerobot_dataset import LeRobotDataset, LeRobotDatasetMetadata
-    from torchvision.transforms.v2 import Resize
+@TRANSFORMS.register_module()
+class LingBotSampleTransform:
+    """Convert a raw sample (including its ``index``) into model tensors.
 
-    root = Path(data_path).expanduser().resolve()
-    if not root.is_dir():
-        raise FileNotFoundError(f"LingBot LeRobot dataset not found: {root}")
-    repo_id = root.name
-    metadata = LeRobotDatasetMetadata(repo_id, root=root)
-    fps = float(metadata.fps)
-    delta_timestamps = {"action": [index / fps for index in range(action_horizon)]}
-    if use_future_images:
-        future_offset = (action_horizon - 1) / fps
-        delta_timestamps.update(
-            {camera: [0.0, future_offset] for camera in _RAW_CAMERA_KEYS}
-        )
-    dataset_kwargs = {
-        "root": root,
-        "delta_timestamps": delta_timestamps,
-        "image_transforms": Resize((image_size, image_size)),
-    }
-    # ``return_uint8`` was removed from newer LeRobot releases.  The online
-    # adapter already normalizes image tensors through ``_as_uint8``, so pass
-    # the option only when the installed API still exposes it.
-    if "return_uint8" in inspect.signature(LeRobotDataset).parameters:
-        dataset_kwargs["return_uint8"] = True
-    return LeRobotDataset(repo_id, **dataset_kwargs)
-
-
-@DATASETS.register_module()
-class LingBotOnlineDataset(Dataset):
-    """Convert raw RoboTwin LeRobot samples into LingBot model tensors."""
+    Camera tensors must already have the desired spatial resize. Keeping this
+    before uint8 conversion preserves the official resize/rounding boundary.
+    Optional index-keyed flow is a parity contract, not general augmentation.
+    """
 
     def __init__(
         self,
-        data_path: str,
         norm_stats_path: str,
         tokenizer_path: str,
         *,
         action_horizon: int = 50,
-        image_size: int = 256,
         tokenizer_max_length: int = 72,
-        use_future_images: bool = True,
         return_teacher_images: bool = False,
         model_dtype: torch.dtype = torch.bfloat16,
-        dataset=None,
         processor=None,
         flow_rng_seed: int | None = None,
     ) -> None:
         if action_horizon <= 0:
             raise ValueError("LingBot action horizon must be positive")
         self.action_horizon = int(action_horizon)
-        self.image_size = int(image_size)
         self.tokenizer_max_length = int(tokenizer_max_length)
-        self.use_future_images = bool(use_future_images)
         self.return_teacher_images = bool(return_teacher_images)
+        if isinstance(model_dtype, str):
+            model_dtype = getattr(torch, model_dtype, None)
         if model_dtype not in (torch.float32, torch.float16, torch.bfloat16):
             raise ValueError(f"Unsupported LingBot model input dtype: {model_dtype}")
         self.model_dtype = model_dtype
         self.flow_rng_seed = None if flow_rng_seed is None else int(flow_rng_seed)
         self.norm_stats = _load_norm_stats(norm_stats_path)
-        self.dataset = dataset or _build_lerobot_dataset(
-            data_path,
-            action_horizon=self.action_horizon,
-            image_size=self.image_size,
-            use_future_images=self.use_future_images,
-        )
         if processor is None:
+            if not tokenizer_path or not Path(tokenizer_path).expanduser().is_dir():
+                raise FileNotFoundError(f"LingBot tokenizer directory not found: {tokenizer_path!r}")
             from transformers import AutoProcessor
 
             processor = AutoProcessor.from_pretrained(
-                tokenizer_path,
+                str(Path(tokenizer_path).expanduser()),
                 padding_side="right",
                 trust_remote_code=True,
                 local_files_only=True,
             )
         self.processor = processor
-
-    def __len__(self) -> int:
-        return len(self.dataset)
 
     @staticmethod
     def _split_robot_features(value: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
@@ -211,7 +166,7 @@ class LingBotOnlineDataset(Dataset):
     def _process_images(self, raw: Mapping[str, Any]) -> dict[str, torch.Tensor]:
         current_images = []
         future_images = []
-        for camera in _RAW_CAMERA_KEYS:
+        for camera in ROBOTWIN_CAMERA_KEYS:
             frames = torch.as_tensor(raw[camera])
             if frames.ndim == 3:
                 current = frames
@@ -269,15 +224,16 @@ class LingBotOnlineDataset(Dataset):
             "lang_masks": tokenized["attention_mask"][0].bool(),
         }
 
-    def __getitem__(self, index: int) -> dict[str, torch.Tensor]:
-        raw = self.dataset[index]
+    def __call__(self, raw: Mapping[str, Any]) -> dict[str, torch.Tensor]:
         sample = self._pack_robot(raw)
         sample.update(self._process_images(raw))
         sample.update(self._tokenize(raw["task"]))
         for key in ("state", "actions", "images"):
             sample[key] = sample[key].to(dtype=self.model_dtype)
-        sample["sample_index"] = torch.tensor(index, dtype=torch.long)
+        sample["sample_index"] = torch.as_tensor(raw["index"], dtype=torch.long)
         if self.flow_rng_seed is not None:
+            from fluxvla.datasets.lingbot_vla_v2.flow_rng import sample_flow_by_index
+
             noise, time = sample_flow_by_index(
                 sample["sample_index"].reshape(1),
                 (1, *sample["actions"].shape),
@@ -289,4 +245,4 @@ class LingBotOnlineDataset(Dataset):
         return sample
 
 
-__all__ = ["LingBotOnlineDataset"]
+__all__ = ["LingBotSampleTransform", "ROBOTWIN_CAMERA_KEYS"]

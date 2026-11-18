@@ -2,8 +2,16 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-VLA_ROOT=${VLA_ROOT:-/ceph/teamGolden/andyzeng/VLA}
+VLA_ROOT=${VLA_ROOT:-${ROOT}/..}
 MEGATRON_ROOT=${MEGATRON_ROOT:-${VLA_ROOT}/Megatron-LM}
+: "${LINGBOT_NATIVE_CONFIG:?Set LINGBOT_NATIVE_CONFIG to the matching model/training YAML}"
+: "${LINGBOT_CHECKPOINT:?Set LINGBOT_CHECKPOINT to the verified pretrained checkpoint}"
+: "${LINGBOT_TOKENIZER_PATH:?Set LINGBOT_TOKENIZER_PATH to the matching tokenizer directory}"
+[[ -d "${MEGATRON_ROOT}/megatron" ]] || { echo "Invalid MEGATRON_ROOT: ${MEGATRON_ROOT}" >&2; exit 2; }
+[[ -f "${LINGBOT_NATIVE_CONFIG}" ]] || { echo "Model YAML not found: ${LINGBOT_NATIVE_CONFIG}" >&2; exit 2; }
+for input_dir in "${LINGBOT_CHECKPOINT}" "${LINGBOT_TOKENIZER_PATH}"; do
+  [[ -d "${input_dir}" ]] || { echo "Input directory not found: ${input_dir}" >&2; exit 2; }
+done
 export PYTHONPATH="${ROOT}:${MEGATRON_ROOT}:${PYTHONPATH:-}"
 export CUDA_DEVICE_MAX_CONNECTIONS="${CUDA_DEVICE_MAX_CONNECTIONS:-1}"
 export FLUXVLA_MCORE_PRESERVE_FP32_PARAMS="${FLUXVLA_MCORE_PRESERVE_FP32_PARAMS:-0}"
@@ -30,15 +38,26 @@ fi
 DATA_MODE=${LINGBOT_DATA_MODE:-online}
 DATA_ARGS=(--lingbot-data-mode "${DATA_MODE}")
 if [[ "${DATA_MODE}" == "online" ]]; then
+  : "${LINGBOT_DATA_PATH:?Set LINGBOT_DATA_PATH for online training}"
+  [[ -d "${LINGBOT_DATA_PATH}" ]] || { echo "Dataset not found: ${LINGBOT_DATA_PATH}" >&2; exit 2; }
+  NORM_STATS=${LINGBOT_NORM_STATS:-${ROOT}/configs/lingbot_vla_v2/assets/robotwin_norm_stats.json}
+  [[ -f "${NORM_STATS}" ]] || { echo "Normalization statistics not found: ${NORM_STATS}" >&2; exit 2; }
   DATA_ARGS+=(
-    --lingbot-data-path "${LINGBOT_DATA_PATH:-/ceph/teamGolden/datasets/huggingface/lerobot/lingbot_beat_block_hammer_reduced}"
-    --lingbot-norm-stats "${LINGBOT_NORM_STATS:-${ROOT}/fluxvla/datasets/lingbot_vla_v2/assets/robotwin_norm_stats.json}"
+    --lingbot-data-path "${LINGBOT_DATA_PATH}"
+    --lingbot-norm-stats "${NORM_STATS}"
+    --lingbot-video-backend "${LINGBOT_VIDEO_BACKEND:-torchcodec}"
+    --lingbot-resize-dtype "${LINGBOT_RESIZE_DTYPE:-float32}"
+    # Zero isolates parity diagnostics; tune workers on real online workloads.
     --lingbot-num-workers "${LINGBOT_NUM_WORKERS:-0}"
     --lingbot-online-teacher-mode "${LINGBOT_ONLINE_TEACHER_MODE:-disabled}"
   )
-else
+elif [[ "${DATA_MODE}" == "replay" ]]; then
   : "${LINGBOT_MANIFEST:?LINGBOT_MANIFEST is required when LINGBOT_DATA_MODE=replay}"
+  [[ -f "${LINGBOT_MANIFEST}" ]] || { echo "Replay manifest not found: ${LINGBOT_MANIFEST}" >&2; exit 2; }
   DATA_ARGS+=(--lingbot-manifest "${LINGBOT_MANIFEST}")
+else
+  echo "Unsupported LINGBOT_DATA_MODE: ${DATA_MODE}" >&2
+  exit 2
 fi
 
 python -m torch.distributed.run \
@@ -65,14 +84,15 @@ python -m torch.distributed.run \
   --adam-beta1 0.9 --adam-beta2 0.95 --adam-eps 1e-8 \
   --weight-decay 0 --clip-grad 1.0 --seed 42 \
   "${PRECISION_OPT_ARGS[@]}" \
-  --lingbot-native-config "${LINGBOT_NATIVE_CONFIG:-${VLA_ROOT}/lingbot_runs/reduced_beat_block_hammer/lingbotvla_cli.yaml}" \
-  --lingbot-checkpoint "${LINGBOT_CHECKPOINT:-${VLA_ROOT}/models/lingbot-vla-v2-6b}" \
-  --lingbot-tokenizer-path "${LINGBOT_TOKENIZER_PATH:-${VLA_ROOT}/models/Qwen3-VL-4B-Instruct}" \
+  --lingbot-native-config "${LINGBOT_NATIVE_CONFIG}" \
+  --lingbot-checkpoint "${LINGBOT_CHECKPOINT}" \
+  --lingbot-tokenizer-path "${LINGBOT_TOKENIZER_PATH}" \
   "${DATA_ARGS[@]}" \
   --lingbot-train-scope "${LINGBOT_TRAIN_SCOPE:-all}" \
   --lingbot-expert-lr-multiplier "${LINGBOT_EXPERT_LR_MULTIPLIER:-2.8284271247461903}" \
   --lingbot-moe-implementation "${LINGBOT_MOE_IMPLEMENTATION:-auto}" \
   --lingbot-flow-rng-seed "${LINGBOT_FLOW_RNG_SEED:-42}" \
+  --lingbot-sampler-seed "${LINGBOT_SAMPLER_SEED:-42}" \
   $(if [[ "${LINGBOT_TP_ATTENTION:-1}" == "0" ]]; then echo --no-lingbot-tp-attention; fi) \
   $(if [[ "${LINGBOT_TP_MLP:-1}" == "0" ]]; then echo --no-lingbot-tp-mlp; fi) \
   $(if [[ "${LINGBOT_TP_ROUTED_EXPERTS:-1}" == "0" ]]; then echo --no-lingbot-tp-routed-experts; fi) \

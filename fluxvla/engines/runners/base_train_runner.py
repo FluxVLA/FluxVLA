@@ -21,6 +21,7 @@ import os
 import re
 from abc import ABC, abstractmethod
 from datetime import datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -738,8 +739,9 @@ class BaseTrainRunner(ABC):
             # If dataset has a finite length, use it
             return math.ceil(dataset_len / self.global_batch_size)
 
-    def _build_dataloader_generator(self) -> Optional[torch.Generator]:
-        seed = os.environ.get('EXPERIMENT_GLOBAL_SEED')
+    def _build_dataloader_generator(self, seed: Optional[int] = None) -> Optional[torch.Generator]:
+        if seed is None:
+            seed = os.environ.get('EXPERIMENT_GLOBAL_SEED')
         if seed is None:
             return None
 
@@ -891,14 +893,18 @@ class BaseTrainRunner(ABC):
             drop_last=False) if self.sampler == 'distributed' else None
 
         use_workers = self.per_device_num_workers > 0
+        logical_dp_seeding = bool(getattr(vla_dataset, 'seed_workers_by_dp_rank', False))
         dataloader = DataLoader(
             vla_dataset,
             batch_size=self.per_device_batch_size,
             sampler=sampler,
             collate_fn=self.collator,
             num_workers=self.per_device_num_workers,
-            worker_init_fn=worker_init_function,
-            generator=self._build_dataloader_generator(),
+            worker_init_fn=(partial(worker_init_function,
+                                    data_parallel_rank=self._data_parallel_rank())
+                            if logical_dp_seeding else worker_init_function),
+            generator=self._build_dataloader_generator(
+                seed=self.seed if logical_dp_seeding else None),
             pin_memory=True,
             prefetch_factor=2 if use_workers else None,
             persistent_workers=use_workers)

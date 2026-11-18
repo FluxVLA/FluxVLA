@@ -9,7 +9,10 @@ STEPS=${STEPS:-100}
 RECOMPUTE=${RECOMPUTE:-0}
 GPUS=${GPUS:-0,1,2,3}
 OUTPUT_ROOT=${OUTPUT_ROOT:-${ROOT}/work_dirs/lingbot_gb64_4gpu_100step_20261026}
-MANIFEST=${LINGBOT_MANIFEST:-${OUTPUT_ROOT}/gb64_100step_manifest.json}
+: "${LINGBOT_MANIFEST:?Set LINGBOT_MANIFEST; this script runs diagnostic replay, not online training}"
+MANIFEST=${LINGBOT_MANIFEST}
+[[ -f "${MANIFEST}" ]] || { echo "Replay manifest not found: ${MANIFEST}" >&2; exit 2; }
+export LINGBOT_MANIFEST
 
 case "${STRATEGY}" in
   dp4) TP=1; EP=1; SP=0 ;;
@@ -90,7 +93,7 @@ if [[ "${BACKEND}" == native ]]; then
 elif [[ "${BACKEND}" == mcore ]]; then
   NPROC_PER_NODE=4 MASTER_PORT="${MASTER_PORT:-29650}" \
   TP="${TP}" EP="${EP}" SP="${SP}" MB="${MB}" GB=64 STEPS="${STEPS}" \
-  LR_DECAY_ITERS=100 LINGBOT_MANIFEST="${MANIFEST}" \
+  LR_DECAY_ITERS=100 LINGBOT_MANIFEST="${MANIFEST}" LINGBOT_DATA_MODE=replay \
   LINGBOT_TRAIN_SCOPE=all LINGBOT_MOE_IMPLEMENTATION="${MOE_IMPLEMENTATION}" \
   LINGBOT_FSDP2_STRICT_DP_REDUCTION=0 \
     bash scripts/train_mcore_lingbot_vla_v2.sh \

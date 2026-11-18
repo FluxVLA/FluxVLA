@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from functools import partial
 
 import torch
 from torch.utils.data import DataLoader
@@ -67,6 +68,7 @@ class LingBotOnlineIterableDataset:
         start_iteration: int = 0,
         repeat: bool = True,
         num_workers: int = 0,
+        loader_seed: int | None = None,
     ) -> None:
         self.dataset = dataset
         self.dp_rank = int(dp_rank)
@@ -75,6 +77,7 @@ class LingBotOnlineIterableDataset:
         self.sampler_seed = int(sampler_seed)
         self.repeat = bool(repeat)
         self.num_workers = int(num_workers)
+        self.loader_seed = self.sampler_seed if loader_seed is None else int(loader_seed)
         if self.micro_batch_size <= 0:
             raise ValueError("LingBot MCore micro batch size must be positive")
         self.epoch, self.batch_offset = _initial_epoch_and_offset(
@@ -94,25 +97,27 @@ class LingBotOnlineIterableDataset:
         return next(self._iterator)
 
     def _iterate(self) -> Iterator[dict[str, torch.Tensor]]:
+        from fluxvla.engines.utils.torch_utils import worker_init_function
+
+        sampler = DistributedSampler(
+            self.dataset, num_replicas=self.dp_size, rank=self.dp_rank,
+            shuffle=True, seed=self.sampler_seed, drop_last=False,
+        )
+        generator = torch.Generator().manual_seed(self.loader_seed + self.dp_rank)
+        loader = DataLoader(
+            self.dataset,
+            batch_size=self.micro_batch_size,
+            sampler=sampler,
+            num_workers=self.num_workers,
+            worker_init_fn=partial(worker_init_function, data_parallel_rank=self.dp_rank),
+            generator=generator,
+            pin_memory=True,
+            drop_last=True,
+            prefetch_factor=2 if self.num_workers > 0 else None,
+            persistent_workers=self.num_workers > 0,
+        )
         while True:
-            sampler = DistributedSampler(
-                self.dataset,
-                num_replicas=self.dp_size,
-                rank=self.dp_rank,
-                shuffle=True,
-                seed=self.sampler_seed,
-                drop_last=False,
-            )
             sampler.set_epoch(self.epoch)
-            loader = DataLoader(
-                self.dataset,
-                batch_size=self.micro_batch_size,
-                sampler=sampler,
-                num_workers=self.num_workers,
-                pin_memory=True,
-                drop_last=True,
-                persistent_workers=self.num_workers > 0,
-            )
             for batch_index, batch in enumerate(loader):
                 if batch_index >= self.batch_offset:
                     yield batch
@@ -211,7 +216,7 @@ def build_lingbot_datasets(args):
         "sampler_seed": getattr(args, "lingbot_sampler_seed", 0),
     }
     if mode == "online":
-        from fluxvla.datasets.lingbot_vla_v2 import LingBotOnlineDataset
+        from fluxvla.datasets.lingbot_vla_v2 import LingBotParquetDataset
 
         data_path = getattr(args, "lingbot_data_path", None)
         norm_stats = getattr(args, "lingbot_norm_stats", None)
@@ -219,7 +224,9 @@ def build_lingbot_datasets(args):
             raise ValueError("--lingbot-data-path is required in online mode")
         if not norm_stats:
             raise ValueError("--lingbot-norm-stats is required in online mode")
-        dataset = LingBotOnlineDataset(
+        dataset = LingBotParquetDataset(
+            video_backend=getattr(args, "lingbot_video_backend", "torchcodec"),
+            resize_dtype=getattr(args, "lingbot_resize_dtype", "float32"),
             data_path=data_path,
             norm_stats_path=norm_stats,
             tokenizer_path=args.lingbot_tokenizer_path,
@@ -234,6 +241,7 @@ def build_lingbot_datasets(args):
             **common,
             "dataset": dataset,
             "num_workers": getattr(args, "lingbot_num_workers", 0),
+            "loader_seed": getattr(args, "seed", 42),
         }
         train = LingBotOnlineIterableDataset(
             **online_common,

@@ -1,5 +1,5 @@
 """FluxVLA-owned LingBot-VLA-v2 data pipeline."""
 
-from .online_dataset import LingBotOnlineDataset
+from .parquet_dataset import LingBotParquetDataset
 
-__all__ = ["LingBotOnlineDataset"]
+__all__ = ["LingBotParquetDataset"]

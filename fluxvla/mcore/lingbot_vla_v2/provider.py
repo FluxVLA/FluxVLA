@@ -260,6 +260,8 @@ def get_lingbot_args(parser):
     group.add_argument("--lingbot-num-workers", type=int, default=0)
     group.add_argument("--lingbot-action-horizon", type=int, default=50)
     group.add_argument("--lingbot-image-size", type=int, default=256)
+    group.add_argument("--lingbot-video-backend", choices=("torchcodec", "pyav", "video_reader"), default="torchcodec")
+    group.add_argument("--lingbot-resize-dtype", choices=("uint8", "float32"), default="float32")
     group.add_argument("--lingbot-tokenizer-max-length", type=int, default=72)
     group.add_argument(
         "--lingbot-use-future-images",

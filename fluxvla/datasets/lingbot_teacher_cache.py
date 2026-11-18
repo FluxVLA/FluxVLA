@@ -58,7 +58,11 @@ class LingBotTeacherCacheDataset(Dataset):
         require_flow: bool = False,
         replay_order: str = "manifest",
     ) -> None:
+        if not manifest_path:
+            raise ValueError("Set LINGBOT_MANIFEST or dataset.manifest_path for diagnostic replay")
         self.manifest_path = Path(manifest_path).expanduser().resolve()
+        if not self.manifest_path.is_file():
+            raise FileNotFoundError(f"LingBot replay manifest not found: {self.manifest_path}")
         manifest = json.loads(self.manifest_path.read_text(encoding="utf-8"))
         if manifest.get("format") != _CACHE_FORMAT:
             raise ValueError(

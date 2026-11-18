@@ -1,13 +1,11 @@
 """100-step replay of the official LingBot production sampler trace."""
 
 _base_ = ["./lingbot_vla_v2_official_trace_parity_20261016.py"]
+import os  # noqa: E402
 
 train_dataloader = dict(
     dataset=dict(
-        manifest_path=(
-            "/ceph/teamGolden/andyzeng/VLA/FluxVLA/configs/lingbot_vla_v2/"
-            "official_captured_batch_manifest_20261020.json"
-        ),
+        manifest_path=os.getenv("LINGBOT_MANIFEST", ""),
         require_flow=True,
         replay_order="official_step_rank",
     )

@@ -259,12 +259,25 @@ class LingBotVLAV2(nn.Module):
         **kwargs: Any,
     ) -> None:
         super().__init__()
+        # Validate external configuration before importing/constructing a 6B
+        # model. Empty environment-backed paths must never select a fallback.
+        if native_config_path is not None:
+            if not native_config_path:
+                raise ValueError("Set LINGBOT_NATIVE_CONFIG or model.native_config_path")
+            if not Path(native_config_path).expanduser().is_file():
+                raise FileNotFoundError(f"LingBot model YAML not found: {native_config_path}")
+        for label, value in (
+            ("LINGBOT_CHECKPOINT", pretrained_name_or_path),
+            ("LINGBOT_TOKENIZER_PATH", tokenizer_path),
+        ):
+            if value == "":
+                raise ValueError(f"Set {label} or the corresponding model configuration path")
         config_cls, policy_cls = _load_native_symbols()
         config_kwargs = _as_config_dict(model_config)
         if native_config_path is not None:
             import yaml
 
-            native_cfg = yaml.safe_load(Path(native_config_path).read_text())
+            native_cfg = yaml.safe_load(Path(native_config_path).expanduser().read_text())
             merged_native = {}
             merged_native.update(native_cfg.get("model", {}))
             merged_native.update(native_cfg.get("train", {}))
