@@ -51,17 +51,18 @@ def test_lingbot_entry_uses_common_mcore_launcher():
     assert "FSDPTrainRunner" not in source
 
 
-def test_lingbot_mcore_defaults_to_the_native_production_assets():
+def test_lingbot_mcore_requires_explicit_external_assets():
     source = (
         Path(__file__).parents[1] / "scripts" / "train_mcore_lingbot_vla_v2.sh"
     ).read_text(encoding="utf-8")
 
-    assert "${VLA_ROOT}/models/lingbot-vla-v2-6b" in source
-    assert "${VLA_ROOT}/models/Qwen3-VL-4B-Instruct" in source
+    assert "${LINGBOT_CHECKPOINT:?" in source
+    assert "${LINGBOT_TOKENIZER_PATH:?" in source
+    assert "${LINGBOT_NATIVE_CONFIG:?" in source
+    assert "${LINGBOT_DATA_PATH:?" in source
     assert "LINGBOT_DATA_MODE:-online" in source
-    assert "datasets/huggingface/lerobot/lingbot_beat_block_hammer_reduced" in source
-    assert "lingbot_runs/reduced_beat_block_hammer/lingbotvla_cli.yaml" in source
-    assert "robotwin_norm_stats.json" in source
+    assert "configs/lingbot_vla_v2/assets/robotwin_norm_stats.json" in source
+    assert "/ceph/" not in source
     assert "official_captured_batch_manifest_20261020.json" not in source
     assert '--lr-decay-iters "${LR_DECAY_ITERS:-100}"' in source
     assert '${LR_DECAY_ITERS:-${STEPS:-2}}' not in source
@@ -82,8 +83,10 @@ def test_lingbot_online_parity_config_pins_compute_and_stable_data_contract():
     assert 'enable_forward_autocast=True' in source
     assert 'runner.max_steps=100' not in source
     assert 'max_steps=100' in source
-    assert "datasets/huggingface/lerobot/lingbot_beat_block_hammer_reduced" in source
-    assert "lingbot_runs/reduced_beat_block_hammer/lingbotvla_cli.yaml" in source
+    assert 'os.getenv("LINGBOT_DATA_PATH", "")' in source
+    assert "LINGBOT_NUM_WORKERS" in source
+    assert "assets/robotwin_norm_stats.json" in source
+    assert "/ceph/" not in source
     assert "FluxVLA/work_dirs/lingbot_beat_block_hammer_reduced_v2" not in source
 
 

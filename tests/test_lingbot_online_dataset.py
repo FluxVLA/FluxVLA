@@ -8,13 +8,15 @@ import torch
 
 
 class _FakeTokenizer:
+    expected_prompt = "user:pick object"
+
     def apply_chat_template(self, messages, *, tokenize, add_generation_prompt):
         assert tokenize is False
         assert add_generation_prompt is False
         return f"user:{messages[0]['content']}"
 
     def __call__(self, prompts, **kwargs):
-        assert prompts == ["user:pick object"]
+        assert prompts == [self.expected_prompt]
         assert kwargs["max_length"] == 6
         return {
             "input_ids": torch.tensor([[10, 11, 12, 0, 0, 0]]),
@@ -84,16 +86,30 @@ def norm_stats(tmp_path):
     return path
 
 
-def test_online_dataset_builds_model_ready_robotwin_sample(norm_stats):
-    from fluxvla.datasets.lingbot_vla_v2 import LingBotOnlineDataset
+class _TransformedDataset(torch.utils.data.Dataset):
+    """Test-only composition for transform/loader tests, not a storage reader."""
 
-    dataset = LingBotOnlineDataset(
-        data_path="unused",
+    def __init__(self, raw, **kwargs):
+        from fluxvla.transforms.lingbot_online import LingBotSampleTransform
+
+        self.raw = raw
+        self.transform = LingBotSampleTransform(**kwargs)
+
+    def __len__(self):
+        return len(self.raw)
+
+    def __getitem__(self, index):
+        return self.transform({**self.raw[index], "index": index})
+
+
+def test_transform_builds_model_ready_robotwin_sample(norm_stats):
+
+    dataset = _TransformedDataset(
+        _FakeRawDataset(),
         norm_stats_path=str(norm_stats),
         tokenizer_path="unused",
         action_horizon=2,
         tokenizer_max_length=6,
-        dataset=_FakeRawDataset(),
         processor=_FakeProcessor(),
         return_teacher_images=True,
         model_dtype=torch.float32,
@@ -124,16 +140,14 @@ def test_online_dataset_builds_model_ready_robotwin_sample(norm_stats):
     assert sample["sample_index"].item() == 0
 
 
-def test_online_dataset_defaults_model_inputs_to_bfloat16(norm_stats):
-    from fluxvla.datasets.lingbot_vla_v2 import LingBotOnlineDataset
+def test_transform_defaults_model_inputs_to_bfloat16(norm_stats):
 
-    sample = LingBotOnlineDataset(
-        data_path="unused",
+    sample = _TransformedDataset(
+        _FakeRawDataset(),
         norm_stats_path=str(norm_stats),
         tokenizer_path="unused",
         action_horizon=2,
         tokenizer_max_length=6,
-        dataset=_FakeRawDataset(),
         processor=_FakeProcessor(),
     )[0]
 
@@ -143,15 +157,13 @@ def test_online_dataset_defaults_model_inputs_to_bfloat16(norm_stats):
 
 
 def test_flow_targets_are_stable_per_sample_index(norm_stats):
-    from fluxvla.datasets.lingbot_vla_v2 import LingBotOnlineDataset
 
-    dataset = LingBotOnlineDataset(
-        data_path="unused",
+    dataset = _TransformedDataset(
+        _FakeRawDataset(count=3),
         norm_stats_path=str(norm_stats),
         tokenizer_path="unused",
         action_horizon=2,
         tokenizer_max_length=6,
-        dataset=_FakeRawDataset(count=3),
         processor=_FakeProcessor(),
         model_dtype=torch.float32,
         flow_rng_seed=42,

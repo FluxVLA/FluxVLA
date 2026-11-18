@@ -1,23 +1,26 @@
 """LingBot-VLA-v2 DP4 FULL_SHARD training on an offline teacher cache."""
 
-_ROOT = "/ceph/teamGolden/andyzeng/VLA"
-_CACHE = f"{_ROOT}/FluxVLA/work_dirs/lingbot_backend_alignment_20260930"
+_base_ = []
+# Declare _base_ before imports to use MMEngine's legacy config parser.
+import os  # noqa: E402
 
 model = dict(
     type="LingBotVLAV2",
-    tokenizer_path=f"{_ROOT}/models/Qwen3-VL-4B-Instruct",
-    pretrained_name_or_path=f"{_ROOT}/models/lingbot-vla-v2-6b",
-    native_config_path=f"{_ROOT}/FluxVLA/work_dirs/robotwin_reduced_v2.yaml",
+    tokenizer_path=os.getenv("LINGBOT_TOKENIZER_PATH", ""),
+    pretrained_name_or_path=os.getenv("LINGBOT_CHECKPOINT", ""),
+    native_config_path=os.getenv("LINGBOT_NATIVE_CONFIG", ""),
     # Native train.enable_fp32 -> model.action_fp32 contract.
     action_fp32=True,
 )
 
 train_dataloader = dict(
     per_device_batch_size=1,
+    # Diagnostic replay profile: isolate worker RNG/prefetch/trace effects.
+    # This is not a production online-training recommendation.
     per_device_num_workers=0,
     dataset=dict(
         type="LingBotTeacherCacheDataset",
-        manifest_path=f"{_CACHE}/lingbot_teacher_cache_manifest.json",
+        manifest_path=os.getenv("LINGBOT_MANIFEST", ""),
         cache_in_memory=True,
         validate_targets=True,
         fixed_time=0.5,
@@ -79,7 +82,7 @@ runner = dict(
     metric=dict(
         type="VLAMetric",
         active_trackers=("jsonl",),
-        run_dir="work_dirs",
+        run_dir=os.getenv("WORK_DIR", "work_dirs/lingbot"),
         window_size=1,
     ),
     lr_scheduler=dict(

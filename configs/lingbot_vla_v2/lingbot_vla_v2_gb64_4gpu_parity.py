@@ -1,17 +1,18 @@
-"""Four-GPU, GB64, 100-step LingBot Native FSDP parity baseline."""
+"""Four-GPU, GB64, 100-step diagnostic replay, not an online recipe.
+
+Set LINGBOT_MANIFEST to an existing captured-input manifest. WORK_DIR only
+controls output; no input artifacts are assumed to exist under that directory.
+"""
 
 _base_ = ["./lingbot_vla_v2_official_production_100_20261016.py"]
-
-_REPLAY_ROOT = (
-    "/ceph/teamGolden/andyzeng/VLA/FluxVLA/"
-    "work_dirs/lingbot_gb64_4gpu_100step_20261026"
-)
+import os  # noqa: E402
 
 train_dataloader = dict(
     per_device_batch_size=1,
+    # Keep the diagnostic conservative; online worker counts are configurable.
     per_device_num_workers=0,
     dataset=dict(
-        manifest_path=f"{_REPLAY_ROOT}/gb64_100step_manifest.json",
+        manifest_path=os.getenv("LINGBOT_MANIFEST", ""),
         cache_in_memory=False,
         replay_order="official_step_rank",
         flow_from_manifest=True,
@@ -28,7 +29,7 @@ runner = dict(
     metric=dict(
         type="VLAMetric",
         active_trackers=("jsonl",),
-        run_dir=f"{_REPLAY_ROOT}/native_fsdp4_mb1_norecompute",
+        run_dir=os.getenv("WORK_DIR", "work_dirs/lingbot_gb64_native"),
         window_size=1,
     ),
 )
