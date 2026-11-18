@@ -2,6 +2,7 @@
 from .backends import ObservationPredicateMonitor, ScriptedSubtaskPlanner
 from .catalog import SkillCatalog
 from .controller import SubtaskController
+from .local_vlm import LocalVLMSubtaskPlanner
 from .openai import OpenAIPredicateMonitor, OpenAISubtaskPlanner
 from .training_subtasks import (TrainingSubtaskCatalog,
                                 TrainingSubtaskController)
@@ -9,6 +10,7 @@ from .training_subtasks import (TrainingSubtaskCatalog,
 __all__ = [
     'SkillCatalog',
     'SubtaskController',
+    'LocalVLMSubtaskPlanner',
     'ObservationPredicateMonitor',
     'ScriptedSubtaskPlanner',
     'OpenAIPredicateMonitor',

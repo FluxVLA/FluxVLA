@@ -27,11 +27,11 @@ from os import environ as _environ  # noqa: E402
 _checkpoint_dir = _environ.get(
     'PI05_ROBODOJO_CHECKPOINT_DIR',
     '/mnt/data/oss/users/liyinhao/projects/FluxVLA/work_dirs/'
-    'pi05_robodojo_subtask_aee0551af4e_8node_bs128_'
-    '20261110_dlc1c8el1nm8e4rz')
+    'pi05_robodojo_subtask_d78c5a778_8node_bs128_old_'
+    '20261116_dlc1wn1n2jhosfyh')
 _checkpoint = _environ.get(
     'PI05_ROBODOJO_CHECKPOINT', f'{_checkpoint_dir}/checkpoints/'
-    'step-060000-epoch-04-loss=0.0010.safetensors')
+    'step-060000-epoch-04-loss=0.0011.safetensors')
 _dataset = _base_.eval.dataset.copy()
 for _transform in _dataset['transforms']:
     if _transform['type'] == 'ProcessPrompts':
@@ -57,11 +57,14 @@ policy = dict(
     completion_mode='disabled',
     planner_image_keys=['cam_high', 'cam_left_wrist', 'cam_right_wrist'],
     subtask_source=dict(
+        # Both new runs trained on oss-wlcb/RoboDojo_lerobot_v3; this
+        # machine exposes that data under /mnt/data/oss instead.
         data_root=_environ.get('ROBODOJO_SUBTASK_DATA_ROOT')
         or '/mnt/data/oss/datasets/RoboDojo_lerobot_v3',
         subtask_prefix='dense',
-        # Full training tasks contain up to 1743 distinct instructions.
-        max_candidates=2048),
+        # Reload literal labels at startup: 35 tasks, up to 2601 per task.
+        # This is a safety limit, never a truncation or a cached vocabulary.
+        max_candidates=4096),
     planner=dict(
         type='OpenAISubtaskPlanner',
         # Candidate-only selection; stop prediction remains available in
