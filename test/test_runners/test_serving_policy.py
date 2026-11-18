@@ -226,8 +226,8 @@ def test_unverified_finish_at_step160_reports_why_it_stopped(policy_config):
     }
 
 
-def test_robodojo_server_agent_finish_stops_without_env_verification(
-        policy_config, monkeypatch):
+def test_agent_finish_stops_without_env_verification(policy_config,
+                                                     monkeypatch):
     from mmengine import Config
 
     from fluxvla.planning.openai import OpenAIResponsesClient
@@ -235,8 +235,12 @@ def test_robodojo_server_agent_finish_stops_without_env_verification(
     cfg = Config.fromfile(
         Path(__file__).resolve().parents[2] /
         'configs/hierarchical/robodojo_pi05_gpt6.py')
-    configured = cfg.eval.policy.to_dict()
+    configured = cfg.policy.to_dict()
     configured['subtask_source'] = policy_config['subtask_source']
+    # RoboDojo's benchmark disables stops; opt into episode agent mode here.
+    configured['completion_mode'] = 'agent'
+    configured['planner'].update(
+        completion_mode='agent', allow_request_finish=True)
     requests = []
 
     def post_json(self, body):
@@ -903,6 +907,9 @@ def test_builder_installs_policy_from_selected_config_section(
     if section == 'inference':
         cfg.inference = cfg.eval.copy()
     cfg.themis.server.dataset_section = section
+    # This fixture uses an episode controller, not candidate-only requests.
+    cfg.themis.server.runner.policy_execution = 'episode'
+    cfg.themis.server.mode = 'stateful'
     ckpt = tmp_path / 'checkpoints/model.pt'
     ckpt.parent.mkdir()
     torch.save({}, ckpt)

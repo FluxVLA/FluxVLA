@@ -2,13 +2,11 @@
 """Metadata-backed candidates: literal text, task isolation and reselection."""
 
 import copy
-from pathlib import Path
 
 import numpy as np
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
-from mmengine import Config
 
 from fluxvla.planning import (ObservationPredicateMonitor,
                               OpenAISubtaskPlanner, ScriptedSubtaskPlanner,
@@ -20,9 +18,6 @@ OTHER_TASK = 'Stack the three bowls together.'
 LEFT = 'The left arm placed the wood block on the purple block.'
 RIGHT = 'The right arm grasped the purple block as the {base}.'
 BOWL = 'The right arm placed the blue bowl in the white bowl.'
-CONFIG = (
-    Path(__file__).resolve().parents[2] /
-    'configs/hierarchical/robodojo_pi05_gpt6.py')
 
 
 def record(index, task=TASK, names=None):
@@ -435,63 +430,21 @@ def test_finish_control_requires_a_boolean(value):
         OpenAISubtaskPlanner(allow_request_finish=value)
 
 
-def test_worker_loads_source_once_and_filters_on_episode_reset(
-        training_root, monkeypatch):
-    from scripts.planner_worker import serve
-
-    monkeypatch.delenv('FLUXVLA_PLANNER_DEBUG_PORT', raising=False)
-    cfg = Config.fromfile(CONFIG)
-    policy = cfg.eval.policy.to_dict()
-    policy['subtask_source']['data_root'] = str(training_root)
-    policy['planner'] = dict(
-        type='ScriptedSubtaskPlanner',
-        choices=[visual_choice('skill_0000'),
-                 visual_choice('skill_0001')])
-    requests = iter([
-        dict(command='configure', policy=policy),
-        dict(command='reset', goal=TASK),
-        dict(
-            command='step',
-            observation=camera_observation(),
-            observation_id=0,
-            executed_previous_chunk=False),
-        dict(
-            command='step',
-            observation=camera_observation(),
-            observation_id=8,
-            executed_previous_chunk=True),
-        dict(command='reset', goal=OTHER_TASK),
-        dict(
-            command='step',
-            observation=camera_observation(),
-            observation_id=0,
-            executed_previous_chunk=False),
-        dict(command='close'),
-    ])
-
-    class Connection:
-        responses = []
-
-        def recv(self):
-            request = next(requests)
-            if request['command'] == 'reset':
-                # Reset must use the cached metadata, not read frame labels.
-                for path in training_root.rglob('*.parquet'):
-                    path.unlink()
-            return request
-
-        def send(self, response):
-            self.responses.append(response)
-
-        def close(self):
-            pass
-
-    connection = Connection()
-    serve(connection)
-    assert all(r['ok'] for r in connection.responses)
-    events = [r['result'] for r in connection.responses if r['result']]
-    assert [e['instruction'] for e in events] == [LEFT, RIGHT, BOWL]
-    assert [e['executed_chunks'] for e in events] == [0, 1, 0]
+def test_controller_loads_source_once_and_filters_on_episode_reset(
+        training_root):
+    state = controller(training_root, choices=('skill_0000', 'skill_0001'))
+    # Reset must use cached metadata, not read online frame labels.
+    for path in training_root.rglob('*.parquet'):
+        path.unlink()
+    state.reset(TASK)
+    events = [state.step(observation(), 0)]
+    state.record_dispatch(state.version)
+    events.append(state.step(observation(), 8))
+    state.reset(OTHER_TASK)
+    events.append(state.step(observation(), 0))
+    assert [event['status'] for event in events] == ['ready'] * 3
+    assert [event['instruction'] for event in events] == [LEFT, RIGHT, BOWL]
+    assert [event['executed_chunks'] for event in events] == [0, 1, 0]
 
 
 def agent_controller(root, choices, **options):
