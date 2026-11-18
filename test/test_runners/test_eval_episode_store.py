@@ -21,7 +21,7 @@ import accelerate
 import pytest
 
 from fluxvla.engines.utils.eval_episode_store import EvalEpisodeStore
-from fluxvla.engines.utils.overwatch import DistributedOverwatch
+from fluxvla.engines.utils.overwatch import DIST_TIMEOUT, DistributedOverwatch
 
 
 @pytest.fixture
@@ -132,7 +132,7 @@ def test_distributed_overwatch_uses_process_state(monkeypatch, caplog, rank,
     monkeypatch.setattr(accelerate, 'PartialState', state_factory)
     caplog.set_level(logging.WARNING, logger='test_overwatch')
     overwatch = DistributedOverwatch('test_overwatch')
-    state_factory.assert_called_once_with()
+    state_factory.assert_called_once_with(timeout=DIST_TIMEOUT)
     assert overwatch.distributed_state is state
     assert overwatch.is_rank_zero() == (rank == 0)
     assert overwatch.rank() == rank

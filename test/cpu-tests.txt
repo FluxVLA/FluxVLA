@@ -26,3 +26,5 @@ test/test_runners/test_textvqa_eval_runner.py
 test/test_runners/test_libero_openai_rotation_compatibility.py
 test/test_runners/test_robocasa_eval_output_paths.py
 test/test_runners/test_robotwin_eval_output_paths.py
+test/test_datasets/test_dataset_wrapper.py
+test/test_runners/test_eval_episode_store.py
