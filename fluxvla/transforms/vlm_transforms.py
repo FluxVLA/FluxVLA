@@ -337,8 +337,17 @@ class ProcessVLMSFTInputs:
         """
         content = [dict(type='image', image=os.fspath(p)) for p in image_paths]
         content.append(dict(type='text', text=question))
+        return self.encode_messages([dict(role='user', content=content)])
+
+    def encode_messages(self, messages):
+        """Encode image/text messages for generation, including PIL images.
+
+        Keep camera labels and interleaved content intact so online subtask
+        prediction can use exactly the same conversation as its SFT data,
+        without an assistant target or an intermediate image file.
+        """
         output = dict(self._get_processor().apply_chat_template(
-            [dict(role='user', content=content)],
+            messages,
             tokenize=True,
             add_generation_prompt=True,
             enable_thinking=self.enable_thinking or False,
