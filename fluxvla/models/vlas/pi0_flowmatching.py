@@ -14,7 +14,9 @@
 
 import contextlib
 import math
+import os
 from functools import partial
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
 
 import torch
@@ -31,9 +33,34 @@ from fluxvla.engines.utils.model_utils import (
     eager_attention_forward, gated_residual, make_att_2d_masks, sample_beta,
     sdpa_attention_forward, sdpa_math_fp32_attention_forward)
 from fluxvla.engines.utils.overwatch import initialize_overwatch
+from fluxvla.models.vision_alignment_trace import trace_siglip_layers
 from .base_vla import BaseVLA
 
 overwatch = initialize_overwatch(__name__)
+
+
+def _trace_backward_tensor(
+    name: str,
+    tensor: Optional[torch.Tensor],
+    *,
+    save_value: bool = False,
+) -> None:
+    """Save one activation value and gradient for fixed-replay first-bad analysis."""
+    trace_dir = os.environ.get("PI05_BACKWARD_ALIGNMENT_TRACE_DIR")
+    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+    if not trace_dir or rank != 0 or tensor is None or not tensor.requires_grad:
+        return
+
+    path = Path(trace_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    if save_value:
+        torch.save(tensor.detach().cpu(), path / f"fsdp_{name}_value.pt")
+
+    def _save(gradient: torch.Tensor) -> torch.Tensor:
+        torch.save(gradient.detach().cpu(), path / f"fsdp_{name}.pt")
+        return gradient
+
+    tensor.register_hook(_save)
 
 
 @VLAS.register_module()
@@ -276,6 +303,28 @@ class PI0FlowMatching(BaseVLA):
         time = time_beta * 0.999 + 0.001
         return time.to(dtype=torch.float32, device=device)
 
+    def _sample_flow_by_index(self, actions: torch.Tensor,
+                               indices: torch.Tensor):
+        """Generate per-example flow randomness independent of rank/batch layout."""
+        if indices is None:
+            raise ValueError(
+                "FLUXVLA_SAMPLE_RNG_BY_INDEX=1 requires batch index")
+        base_seed = int(os.environ.get("FLUXVLA_SAMPLE_RNG_SEED", "7"))
+        flat_indices = indices.detach().cpu().reshape(-1).tolist()
+        noises, times = [], []
+        for index in flat_indices:
+            generator = torch.Generator(device=actions.device)
+            generator.manual_seed((base_seed + int(index) * 1000003) % (2**63 - 1))
+            noises.append(torch.randn(actions.shape[1:], device=actions.device,
+                                      dtype=torch.float32, generator=generator))
+            times.append(sample_beta(
+                self.time_beta_alpha, self.time_beta_beta, 1,
+                actions.device, sampler=self.time_sampler,
+                generator=generator)[0])
+        noise = torch.stack(noises, dim=0)
+        time = torch.stack(times, dim=0) * 0.999 + 0.001
+        return noise, time.to(dtype=torch.float32, device=actions.device)
+
     def _select_flow_loss_dimensions(self, prediction, target):
         """Select only the configured action dimensions for supervision."""
         if self.loss_action_dim is None:
@@ -330,7 +379,34 @@ class PI0FlowMatching(BaseVLA):
         pad_masks = list()
         attn_masks = list()
         img_masks = img_masks.permute(1, 0)
-        img_emb = self.projector(self.vision_backbone(images))
+        vision_trace_dir = os.environ.get("PI05_VISION_LAYER_TRACE_DIR")
+        vision_trace_enabled = (bool(vision_trace_dir)
+                                and not getattr(
+                                    self, "_vision_layer_trace_done", False))
+        handles = []
+        if vision_trace_enabled and int(os.environ.get("RANK", "0")) == 0:
+            handles = trace_siglip_layers(
+                self.vision_backbone.vision, vision_trace_dir, "fluxvla")
+        try:
+            vision_features = self.vision_backbone(images)
+            img_emb = self.projector(vision_features)
+            _trace_backward_tensor(
+                "vision_tower_output", vision_features, save_value=True
+            )
+            _trace_backward_tensor(
+                "vision_projector_output", img_emb, save_value=True
+            )
+        finally:
+            for handle in handles:
+                handle.remove()
+        if handles:
+            from pathlib import Path
+            trace_path = Path(vision_trace_dir)
+            torch.save(vision_features[:1].detach().cpu(),
+                       trace_path / "fluxvla_vision_features.pt")
+            torch.save(img_emb[:1].detach().cpu(),
+                       trace_path / "fluxvla_projector.pt")
+            self._vision_layer_trace_done = True
         embs.append(img_emb)
         bsize, num_img_embs = img_emb.shape[:2]
         for img_mask in img_masks:
@@ -346,6 +422,19 @@ class PI0FlowMatching(BaseVLA):
         # Normalize language embeddings
         lang_emb_dim = lang_emb.shape[-1]
         lang_emb = lang_emb * math.sqrt(lang_emb_dim)
+        if (
+            os.environ.get("PI05_EMBED_ALIGNMENT_TRACE") == "1"
+            and int(os.environ.get("RANK", "0")) == 0
+        ):
+            path = Path(
+                os.environ.get(
+                    "PI05_EMBED_ALIGNMENT_TRACE_DIR", "work_dirs/embed_trace"
+                )
+            )
+            path.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                lang_emb[:1].detach().cpu(), path / "fsdp_language_embedding.pt"
+            )
 
         embs.append(lang_emb)
         pad_masks.append(lang_masks)
@@ -411,6 +500,20 @@ class PI0FlowMatching(BaseVLA):
         action_time_emb = self.action_time_mlp_in(action_time_emb)
         action_time_emb = F.silu(action_time_emb)
         action_time_emb = self.action_time_mlp_out(action_time_emb)
+        if (
+            os.environ.get("PI05_EMBED_ALIGNMENT_TRACE") == "1"
+            and int(os.environ.get("RANK", "0")) == 0
+        ):
+            path = Path(
+                os.environ.get(
+                    "PI05_EMBED_ALIGNMENT_TRACE_DIR", "work_dirs/embed_trace"
+                )
+            )
+            path.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                action_time_emb[:1].detach().cpu(),
+                path / "fsdp_action_embedding.pt",
+            )
         # Add to input tokens
         embs.append(action_time_emb)
 
@@ -459,11 +562,30 @@ class PI0FlowMatching(BaseVLA):
         Returns:
             List[torch.Tensor]: Output embeddings after processing all layers.
         """
+        trace_dir = os.environ.get("PI05_ALIGNMENT_TRACE_DIR")
+        trace_path = None
+        if trace_dir and int(os.environ.get("RANK", "0")) == 0:
+            from pathlib import Path
+            trace_path = Path(trace_dir)
+            trace_path.mkdir(parents=True, exist_ok=True)
+
         for layer_idx in range(num_layers):
+            backward_trace_layer = int(
+                os.environ.get("PI05_BACKWARD_ALIGNMENT_LAYER", "17")
+            )
+            if trace_path is not None:
+                torch.save(
+                    {
+                        "prefix": inputs_embeds[0][:1].detach().cpu(),
+                        "suffix": inputs_embeds[1][:1].detach().cpu(),
+                    },
+                    trace_path / f"fluxvla_pre_layer_{layer_idx:02d}.pt",
+                )
             query_states = []
             key_states = []
             value_states = []
             gates = []
+            normed_states = []
             for i, hidden_states in enumerate(inputs_embeds):
                 if hidden_states is None:
                     continue
@@ -472,6 +594,16 @@ class PI0FlowMatching(BaseVLA):
                 hidden_states, gate = layer.input_layernorm(
                     hidden_states, cond=adarms_cond[i])
                 gates.append(gate)
+                normed_states.append(hidden_states)
+                if layer_idx == backward_trace_layer and i == 1:
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_input_norm_output", hidden_states
+                    )
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_input_norm_gate",
+                        gate,
+                        save_value=True,
+                    )
                 hidden_shape = (*hidden_states.shape[:-1], -1,
                                 layer.self_attn.head_dim)
 
@@ -492,6 +624,50 @@ class PI0FlowMatching(BaseVLA):
                 query_states.append(query_state)
                 key_states.append(key_state)
                 value_states.append(value_state)
+                if layer_idx == backward_trace_layer and i == 1:
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_suffix_q_proj",
+                        query_state,
+                        save_value=True,
+                    )
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_suffix_k_proj",
+                        key_state,
+                        save_value=True,
+                    )
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_suffix_v_proj",
+                        value_state,
+                        save_value=True,
+                    )
+
+            if trace_path is not None and layer_idx == 0:
+                expert_norm = models[1].layers[0].input_layernorm
+                expert_variance = inputs_embeds[1].float().pow(2).mean(
+                    -1, keepdim=True)
+                expert_rms = inputs_embeds[1] * torch.rsqrt(
+                    expert_variance + expert_norm.eps)
+                expert_modulation = expert_norm.dense(adarms_cond[1])
+                torch.save(
+                    {
+                        "prefix_norm": normed_states[0][:1].detach().cpu(),
+                        "suffix_input": inputs_embeds[1][:1].detach().cpu(),
+                        "suffix_cond": adarms_cond[1][:1].detach().cpu(),
+                        "suffix_rms": expert_rms[:1].detach().cpu(),
+                        "suffix_modulation": expert_modulation[:1].detach().cpu(),
+                        "suffix_norm": normed_states[1][:1].detach().cpu(),
+                        "suffix_gate": gates[1][:1].detach().cpu(),
+                        "prefix_q": query_states[0][:1].detach().cpu(),
+                        "prefix_k": key_states[0][:1].detach().cpu(),
+                        "prefix_v": value_states[0][:1].detach().cpu(),
+                        "suffix_q": query_states[1][:1].detach().cpu(),
+                        "suffix_k": key_states[1][:1].detach().cpu(),
+                        "suffix_v": value_states[1][:1].detach().cpu(),
+                        "attention_mask": attention_masks[:1].detach().cpu(),
+                        "position_ids": position_ids[:1].detach().cpu(),
+                    },
+                    trace_path / "fluxvla_layer_00_qkv.pt",
+                )
 
             query_states = torch.cat(query_states, dim=2)
             key_states = torch.cat(key_states, dim=2)
@@ -508,6 +684,51 @@ class PI0FlowMatching(BaseVLA):
                 self.llm_backbone.rotary_emb(dummy_tensor, position_ids))
             query_states, key_states = apply_rotary_pos_emb(
                 query_states, key_states, cos, sin)
+            if layer_idx == backward_trace_layer:
+                _trace_backward_tensor(
+                    f"layer_{layer_idx:02d}_q_rope",
+                    query_states,
+                    save_value=True,
+                )
+                _trace_backward_tensor(
+                    f"layer_{layer_idx:02d}_k_rope",
+                    key_states,
+                    save_value=True,
+                )
+                _trace_backward_tensor(
+                    f"layer_{layer_idx:02d}_v_attention_input",
+                    value_states,
+                    save_value=True,
+                )
+            if trace_path is not None and layer_idx == 0:
+                rotary_emb = self.llm_backbone.rotary_emb
+                rope_parameters = getattr(rotary_emb.config,
+                                          "rope_parameters", None)
+                torch.save(
+                    {
+                        "q": query_states[:1].detach().cpu(),
+                        "k": key_states[:1].detach().cpu(),
+                        "cos": cos[:1].detach().cpu(),
+                        "sin": sin[:1].detach().cpu(),
+                        "rotary_class": (f"{rotary_emb.__class__.__module__}."
+                                         f"{rotary_emb.__class__.__qualname__}"),
+                        "inv_freq": rotary_emb.inv_freq.detach().cpu(),
+                        "inv_freq_dtype": str(rotary_emb.inv_freq.dtype),
+                        "runtime_inv_freq": rotary_emb.runtime_inv_freq(
+                            device=rotary_emb.inv_freq.device).detach().cpu(),
+                        "original_inv_freq": (
+                            rotary_emb.original_inv_freq.detach().cpu()),
+                        "original_inv_freq_dtype": str(
+                            rotary_emb.original_inv_freq.dtype),
+                        "rope_type": rotary_emb.rope_type,
+                        "rope_parameters": dict(rope_parameters or {}),
+                        "rope_theta": getattr(rotary_emb.config,
+                                              "rope_theta", None),
+                        "head_dim": getattr(rotary_emb.config,
+                                            "head_dim", None),
+                    },
+                    trace_path / "fluxvla_layer_00_rope.pt",
+                )
 
             scaling = self.llm_backbone.layers[layer_idx].self_attn.scaling
 
@@ -524,6 +745,17 @@ class PI0FlowMatching(BaseVLA):
             # PaliGemma configuration, so alternate Gemma widths retain the
             # correct input size for each model's output projection.
             att_output = att_output.flatten(start_dim=2)
+            if layer_idx == backward_trace_layer:
+                _trace_backward_tensor(
+                    f"layer_{layer_idx:02d}_attention_context",
+                    att_output,
+                    save_value=True,
+                )
+            if trace_path is not None and layer_idx == 0:
+                torch.save(
+                    {"attention_output": att_output[:1].detach().cpu()},
+                    trace_path / "fluxvla_layer_00_attention.pt",
+                )
 
             outputs_embeds = []
             start_pos = 0
@@ -537,31 +769,83 @@ class PI0FlowMatching(BaseVLA):
                     att_output = att_output.to(
                         layer.self_attn.o_proj.weight.dtype)
                 compute_fp32 = getattr(layer.self_attn, 'compute_fp32', False)
+                o_input = att_output[:, start_pos:end_pos]
+                if layer_idx == backward_trace_layer and i == 1:
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_suffix_o_input",
+                        o_input,
+                        save_value=True,
+                    )
                 context = (
-                    self._disable_autocast(att_output)
+                    self._disable_autocast(o_input)
                     if compute_fp32 else contextlib.nullcontext())
                 with context:
-                    out_emb = layer.self_attn.o_proj(
-                        att_output[:, start_pos:end_pos])
+                    out_emb = layer.self_attn.o_proj(o_input)
+                if layer_idx == backward_trace_layer and i == 1:
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_attention_output", out_emb
+                    )
+
+                if trace_path is not None and layer_idx == 0:
+                    branch = "prefix" if i == 0 else "suffix"
+                    torch.save(
+                        {"output": out_emb[:1].detach().cpu()},
+                        trace_path / f"fluxvla_layer_00_{branch}_o.pt",
+                    )
 
                 out_emb = gated_residual(hidden_states, out_emb, gates[i])
+                if layer_idx == backward_trace_layer and i == 1:
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_post_attention_residual", out_emb
+                    )
                 after_first_residual = out_emb.clone()
                 out_emb, gate = layer.post_attention_layernorm(
                     out_emb, cond=adarms_cond[i])
+                if layer_idx == backward_trace_layer and i == 1:
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_post_attention_norm_output", out_emb
+                    )
                 if layer.mlp.up_proj.weight.dtype == torch.bfloat16:
                     out_emb = out_emb.to(dtype=torch.bfloat16)
 
                 out_emb = layer.mlp(out_emb)
+                if layer_idx == backward_trace_layer and i == 1:
+                    _trace_backward_tensor(
+                        f"layer_{layer_idx:02d}_mlp_output", out_emb
+                    )
+                if trace_path is not None and layer_idx == 0:
+                    branch = "prefix" if i == 0 else "suffix"
+                    torch.save(
+                        {"output": out_emb[:1].detach().cpu()},
+                        trace_path / f"fluxvla_layer_00_{branch}_mlp.pt",
+                    )
                 out_emb = gated_residual(after_first_residual, out_emb, gate)
                 outputs_embeds.append(out_emb)
                 start_pos = end_pos
 
             inputs_embeds = outputs_embeds
+            _trace_backward_tensor(
+                f"layer_{layer_idx:02d}_prefix_output", inputs_embeds[0]
+            )
+            _trace_backward_tensor(
+                f"layer_{layer_idx:02d}_suffix_output", inputs_embeds[1]
+            )
+            if trace_path is not None:
+                torch.save(
+                    {
+                        "prefix": inputs_embeds[0][:1].detach().cpu(),
+                        "suffix": inputs_embeds[1][:1].detach().cpu(),
+                    },
+                    trace_path / f"fluxvla_layer_{layer_idx:02d}.pt",
+                )
 
         # final norm
         outputs_embeds = []
         for i, hidden_states in enumerate(inputs_embeds):
             if hidden_states is not None:
+                if i == 1:
+                    _trace_backward_tensor("pre_final_norm", hidden_states)
+                    _trace_backward_tensor("final_norm_condition", adarms_cond[i])
                 out_emb, _ = models[i].norm(hidden_states, cond=adarms_cond[i])
                 outputs_embeds.append(out_emb)
             else:
@@ -665,6 +949,26 @@ class PI0FlowMatching(BaseVLA):
         mask.masked_fill_(~att_2d_masks_4d, torch.finfo(torch.bfloat16).min)
         return mask
 
+    def _trace_alignment_parameters(self):
+        trace_dir = os.environ.get("PI05_PARAM_TENSOR_TRACE_DIR")
+        if not trace_dir or int(os.environ.get("RANK", "0")) != 0:
+            return
+        step = getattr(self, "_alignment_param_forward", 0)
+        if step >= int(os.environ.get("PI05_PARAM_TENSOR_TRACE_STEPS", "2")):
+            return
+        from pathlib import Path
+        path = Path(trace_dir)
+        path.mkdir(parents=True, exist_ok=True)
+        tensors = {
+            "vision_q": self.vision_backbone.vision.vision_model.encoder.layers[0].self_attn.q_proj.weight,
+            "vlm_q": self.llm_backbone.layers[0].self_attn.q_proj.weight,
+            "expert_cond": self.llm_expert.layers[0].input_layernorm.dense.weight,
+            "action_out": self.action_out_proj.projector.weight,
+        }
+        torch.save({name: value.detach().cpu() for name, value in tensors.items()},
+                   path / f"fsdp_params_before_forward_{step:02d}.pt")
+        self._alignment_param_forward = step + 1
+
     def forward(self,
                 images: List[torch.Tensor],
                 lang_tokens: torch.Tensor,
@@ -701,11 +1005,17 @@ class PI0FlowMatching(BaseVLA):
             time (Optional[torch.Tensor]): Time tensor for
                 flow matching.
         """
-        if noise is None:
-            noise = self.sample_noise(actions.shape, actions.device)
-
-        if time is None:
-            time = self.sample_time(actions.shape[0], actions.device)
+        self._trace_alignment_parameters()
+        sample_indices = kwarg.get('index')
+        by_index = (os.environ.get('FLUXVLA_SAMPLE_RNG_BY_INDEX') == '1'
+                    and noise is None and time is None)
+        if by_index:
+            noise, time = self._sample_flow_by_index(actions, sample_indices)
+        else:
+            if noise is None:
+                noise = self.sample_noise(actions.shape, actions.device)
+            if time is None:
+                time = self.sample_time(actions.shape[0], actions.device)
 
         if self.openpi_fp32_flow:
             actions = actions.float()
@@ -771,8 +1081,10 @@ class PI0FlowMatching(BaseVLA):
         suffix_out = suffix_out[:, -action_time_dim:]
         # Original openpi code, upcast attention output
         suffix_out = suffix_out.to(dtype=torch.float32)
+        _trace_backward_tensor("action_head_input", suffix_out)
         v_t = self._project_action_output(suffix_out)
         v_t, u_t = self._select_flow_loss_dimensions(v_t, u_t)
+        _trace_backward_tensor("prediction", v_t)
         losses = F.mse_loss(u_t, v_t, reduction='none')
         sample_weight = kwarg.get('sample_weight')
         statistics = kwarg.get('return_loss_statistics', False)
@@ -784,6 +1096,21 @@ class PI0FlowMatching(BaseVLA):
 
         return_dict = dict(predictions=v_t)
         return_dict.update(loss if statistics else dict(loss=loss))
+        trace_dir = os.environ.get("PI05_LOSS_ALIGNMENT_TRACE_DIR")
+        if trace_dir and int(os.environ.get("RANK", "0")) == 0:
+            trace_path = Path(trace_dir)
+            trace_path.mkdir(parents=True, exist_ok=True)
+            torch.save(
+                {
+                    "suffix_final_norm": suffix_out[:1].detach().cpu(),
+                    "prediction": v_t[:1].detach().cpu(),
+                    "target": u_t[:1].detach().cpu(),
+                    "elementwise_loss": losses[:1].detach().cpu(),
+                    "loss": return_dict["loss"].detach().cpu(),
+                },
+                trace_path / "fluxvla_loss.pt",
+            )
+
         return return_dict
 
     def _predict_action_plain(self, x_t, denoise, bsize, dt, device):

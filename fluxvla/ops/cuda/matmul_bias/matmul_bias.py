@@ -13,7 +13,10 @@
 # limitations under the License.
 import torch
 
-from . import matmul_bias_ext
+try:
+    from . import matmul_bias_ext
+except (ImportError, OSError):
+    matmul_bias_ext = None
 
 
 def matmul_bias_cuda(inp: torch.Tensor,
@@ -40,6 +43,15 @@ def matmul_bias_cuda(inp: torch.Tensor,
 
     M, K = inp.shape
     N = weight.size(1)
+
+    if matmul_bias_ext is None:
+        result = inp.matmul(weight) + bias
+        if res is not None:
+            result = result + res.reshape_as(result)
+        if out is not None:
+            out.copy_(result.reshape_as(out))
+            return out
+        return result.reshape(orig_shape[:-1] + (N,))
 
     if res is not None:
         res_2d = res.reshape(M, N) if res.dim() != 2 else res

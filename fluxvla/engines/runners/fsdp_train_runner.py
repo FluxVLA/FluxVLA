@@ -7,8 +7,10 @@
 
 import copy
 import gc
+import json
 import math
 import os
+import re
 from collections import OrderedDict
 from functools import partial
 from pathlib import Path
@@ -65,9 +67,11 @@ class FSDPTrainRunner(BaseTrainRunner):
             Defaults to True.
         mixed_precision_dtype (str, optional): Data type for mixed precision
             training.  Defaults to 'bf16'.
+        batch_dtype (str, optional): Explicit floating model-input dtype,
+            independent from parameter storage and reduction dtypes.
         keep_params_fp32 (bool, optional): Keep master parameters and floating
-            batch inputs in FP32 while autocast controls compute precision.
-            Defaults to False.
+            batch inputs in FP32 by default while autocast controls compute
+            precision. ``batch_dtype`` can override the input side.
         deterministic_algorithms (bool, optional): Require deterministic
             PyTorch/CUDA kernels, including SDPA backward. Defaults to False.
         sharding_strategy (str, optional): Sharding strategy for FSDP.
@@ -94,9 +98,12 @@ class FSDPTrainRunner(BaseTrainRunner):
                  lr_scheduler: Optional[Dict] = None,
                  enable_gradient_checkpointing: bool = True,
                  enable_mixed_precision_training: bool = True,
+                 enable_forward_autocast: Optional[bool] = None,
                  reduce_in_full_precision: bool = True,
                  mixed_precision_dtype: str = 'bf16',
+                 batch_dtype: Optional[str] = None,
                  keep_params_fp32: bool = False,
+                 report_dp_mean_metrics: bool = False,
                  grad_accumulation_steps: int = 1,
                  deterministic_algorithms: bool = False,
                  ema_decay: Optional[float] = None,
@@ -104,6 +111,7 @@ class FSDPTrainRunner(BaseTrainRunner):
                  evaluator: Optional[Dict] = None,
                  sharding_strategy: str = 'hybrid-shard',
                  fsdp_wrap_policy: str = 'model',
+                 fsdp_api_version: int = 1,
                  pre_fsdp_param_dtype: Optional[str] = None,
                  change_key_name: bool = False,
                  tokenizer: Optional[Dict] = None,
@@ -133,8 +141,10 @@ class FSDPTrainRunner(BaseTrainRunner):
             lr_scheduler=lr_scheduler,
             enable_gradient_checkpointing=enable_gradient_checkpointing,
             enable_mixed_precision_training=enable_mixed_precision_training,
+            enable_forward_autocast=enable_forward_autocast,
             reduce_in_full_precision=reduce_in_full_precision,
             mixed_precision_dtype=mixed_precision_dtype,
+            batch_dtype=batch_dtype,
             keep_params_fp32=keep_params_fp32,
             grad_accumulation_steps=grad_accumulation_steps,
             deterministic_algorithms=deterministic_algorithms,
@@ -148,6 +158,11 @@ class FSDPTrainRunner(BaseTrainRunner):
         self.cfg = cfg
         self.args = args
         self.max_grad_norm = max_grad_norm
+        self.report_dp_mean_metrics = bool(report_dp_mean_metrics)
+        if fsdp_api_version not in (1, 2):
+            raise ValueError('fsdp_api_version must be 1 or 2, got '
+                             f'{fsdp_api_version!r}.')
+        self.fsdp_api_version = int(fsdp_api_version)
         self.sharding_strategy = sharding_strategy
         self.pre_fsdp_param_dtype = (
             str_to_dtype(pre_fsdp_param_dtype)
@@ -287,6 +302,10 @@ class FSDPTrainRunner(BaseTrainRunner):
             train_loss (Optional[float], optional): Training loss.
                 Defaults to None.
         """
+        if self.fsdp_api_version == 2:
+            raise NotImplementedError(
+                'FSDP2 checkpoint save is not implemented; set '
+                'save_iter_interval above the validation run length.')
         assert isinstance(self.vla, FSDP), \
             'FSDPStrategy.save_checkpoint assumes VLA is \
                 already wrapped in FSDP!'
@@ -353,6 +372,11 @@ class FSDPTrainRunner(BaseTrainRunner):
                 torch.cuda.synchronize()
                 torch.cuda.empty_cache()
 
+            # Collect RNG streams before rank-zero serialization.  The
+            # checkpoint must restore dropout/noise state independently on
+            # every rank for trajectory-level parity.
+            rng_states = self._capture_rng_states()
+
             # Save on rank zero *only*
             if overwatch.is_rank_zero():
                 checkpoint_dir = os.path.join(run_dir, 'checkpoints')
@@ -374,6 +398,10 @@ class FSDPTrainRunner(BaseTrainRunner):
                     'model': model_state_dicts,
                     'global_step': global_step,
                     'epoch': epoch,
+                    'data_state': {
+                        **self._data_state_dict(),
+                        'rng_states': rng_states,
+                    },
                 }
                 if mixed_state is not None:
                     checkpoint_dict['mixed_training'] = mixed_state
@@ -428,14 +456,359 @@ class FSDPTrainRunner(BaseTrainRunner):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    def _install_alignment_autograd_tensor_trace(self) -> None:
+        """Capture selected gradients before FSDP's reduction hook runs."""
+        root_value = os.environ.get("FLUXVLA_AUTOGRAD_TENSOR_TRACE_DIR")
+        if not root_value:
+            return
+        pattern = re.compile(
+            os.environ.get(
+                "FLUXVLA_GRAD_TRACE_PATTERN",
+                r"(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|"
+                r"action_out_proj|action_in_proj|time_mlp|cond_proj|final_norm|norm)"
+                r"(\.layer)?\.(weight|bias|dense\.weight|dense\.bias)$",
+            )
+        )
+        root = Path(root_value)
+        root.mkdir(parents=True, exist_ok=True)
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        steps: dict[str, int] = {}
+
+        if self.fsdp_api_version == 2:
+            from torch.distributed.fsdp import FSDPModule
+
+            module_names = {
+                id(module): name for name, module in self.vla.named_modules()
+            }
+            installed_groups: set[int] = set()
+            matched_names: list[str] = []
+            for module in self.vla.modules():
+                if not isinstance(module, FSDPModule):
+                    continue
+                state = module._get_fsdp_state()
+                param_group = state._fsdp_param_group
+                if param_group is None or id(param_group) in installed_groups:
+                    continue
+                selected = []
+                for fsdp_param in param_group.fsdp_params:
+                    module_info = fsdp_param._module_info
+                    module_name = module_names.get(id(module_info.module), '')
+                    parameter_name = '.'.join(
+                        part for part in (module_name, module_info.param_name)
+                        if part
+                    ).replace('.layer.', '.')
+                    if pattern.search(parameter_name):
+                        selected.append((parameter_name, fsdp_param))
+                        matched_names.append(parameter_name)
+                if not selected:
+                    continue
+                pre_dp_root_value = os.environ.get(
+                    "FLUXVLA_NATIVE_PRE_DP_GRAD_TRACE_DIR"
+                )
+                if pre_dp_root_value:
+                    pre_dp_root = Path(pre_dp_root_value)
+                    pre_dp_root.mkdir(parents=True, exist_ok=True)
+                    pre_dp_rank = rank
+                    pre_dp_steps: dict[str, int] = {}
+                    for parameter_name, fsdp_param in selected:
+                        unsharded_param = getattr(fsdp_param, "unsharded_param", None)
+                        if unsharded_param is None or not unsharded_param.requires_grad:
+                            continue
+
+                        def _save_pre_dp(
+                            grad,
+                            *,
+                            selected_name=parameter_name,
+                            trace_root=pre_dp_root,
+                            trace_rank=pre_dp_rank,
+                            trace_steps=pre_dp_steps,
+                        ):
+                            trace_steps[selected_name] = trace_steps.get(selected_name, 0) + 1
+                            trace_step = trace_steps[selected_name]
+                            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", selected_name)
+                            torch.save(
+                                {
+                                    "backend": "native_fsdp2",
+                                    "phase": "pre_dp_autograd",
+                                    "step": trace_step,
+                                    "rank": trace_rank,
+                                    "name": selected_name,
+                                    "grad": grad.detach().float().cpu().clone(),
+                                },
+                                trace_root
+                                / f"native_pre_dp_step_{trace_step:06d}_rank_{trace_rank:02d}_{safe_name}.pt",
+                            )
+                            return grad
+
+                        unsharded_param.register_hook(_save_pre_dp)
+                original_post_backward = param_group.post_backward
+
+                def _trace_then_post_backward(
+                    *args,
+                    selections=tuple(selected),
+                    original=original_post_backward,
+                ):
+                    for parameter_name, fsdp_param in selections:
+                        unsharded_param = getattr(
+                            fsdp_param, 'unsharded_param', None)
+                        grad = (
+                            None if unsharded_param is None
+                            else unsharded_param.grad)
+                        if grad is None:
+                            continue
+                        steps[parameter_name] = steps.get(parameter_name, 0) + 1
+                        step = steps[parameter_name]
+                        safe_name = re.sub(
+                            r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                        torch.save(
+                            {
+                                "backend": "fsdp2",
+                                "phase": "autograd",
+                                "step": step,
+                                "rank": rank,
+                                "name": parameter_name,
+                                "grad": grad.detach().float().cpu().clone(),
+                            },
+                            root
+                            / f"fsdp2_autograd_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                        )
+                    return original(*args)
+
+                param_group.post_backward = _trace_then_post_backward
+                installed_groups.add(id(param_group))
+            torch.save(
+                {
+                    "backend": "fsdp2",
+                    "phase": "setup",
+                    "rank": rank,
+                    "groups": len(installed_groups),
+                    "matched_names": matched_names,
+                },
+                root / f"fsdp2_autograd_setup_rank_{rank:02d}.pt",
+            )
+            return
+
+        installed_flat_hook = False
+        for fsdp_module in (module for module in self.vla.modules()
+                            if isinstance(module, FSDP)):
+            flat_parameter = getattr(fsdp_module, '_flat_param', None)
+            parameter_infos = getattr(flat_parameter, '_param_infos', ())
+            numels = getattr(flat_parameter, '_numels', ())
+            shapes = getattr(flat_parameter, '_shapes', ())
+            if flat_parameter is None or not parameter_infos:
+                continue
+            offset = 0
+            selected = []
+            for info, numel, shape in zip(parameter_infos, numels, shapes):
+                name = '.'.join(
+                    part for part in (info.module_name, info.param_name) if part)
+                canonical = name.replace('.layer.', '.')
+                if pattern.search(canonical):
+                    selected.append((canonical, offset, int(numel), tuple(shape)))
+                offset += int(numel)
+            if not selected:
+                continue
+
+            def _save_flat(grad, *, selections=tuple(selected)):
+                for parameter_name, start, numel, shape in selections:
+                    steps[parameter_name] = steps.get(parameter_name, 0) + 1
+                    step = steps[parameter_name]
+                    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                    value = grad.narrow(0, start, numel).view(shape)
+                    torch.save(
+                        {
+                            "backend": "fsdp",
+                            "phase": "autograd",
+                            "step": step,
+                            "rank": rank,
+                            "name": parameter_name,
+                            "grad": value.detach().float().cpu().clone(),
+                        },
+                        root
+                        / f"fsdp_autograd_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                    )
+                return grad
+
+            flat_parameter.register_hook(_save_flat)
+            installed_flat_hook = True
+
+        if installed_flat_hook:
+            return
+
+        for name, parameter in self.vla.named_parameters():
+            canonical = name.removeprefix("module.").replace(".layer.", ".")
+            if not parameter.requires_grad or not pattern.search(canonical):
+                continue
+
+            def _save(grad, *, parameter_name=canonical):
+                steps[parameter_name] = steps.get(parameter_name, 0) + 1
+                step = steps[parameter_name]
+                safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                torch.save(
+                    {
+                        "backend": "fsdp",
+                        "phase": "autograd",
+                        "step": step,
+                        "rank": rank,
+                        "name": parameter_name,
+                        "grad": grad.detach().float().cpu().clone(),
+                    },
+                    root
+                    / f"fsdp_autograd_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                )
+                return grad
+
+            parameter.register_hook(_save)
+
+    def _install_native_pre_fsdp_autograd_trace(self) -> None:
+        """Capture parameter autograd gradients before FSDP wrapping.
+
+        The existing FSDP2 trace is intentionally installed on the final
+        ``post_backward`` boundary.  For backend parity, diagnostics may also
+        request a hook on the original parameters before ``fully_shard``
+        replaces them.  This gives MCore's parameter ``register_hook`` and
+        Native the same capture boundary; it is opt-in and has no production
+        behavior when the environment variable is unset.
+        """
+        root_value = os.environ.get("FLUXVLA_NATIVE_PRE_DP_GRAD_TRACE_DIR")
+        if not root_value:
+            return
+        pattern = re.compile(
+            os.environ.get(
+                "FLUXVLA_GRAD_TRACE_PATTERN",
+                r"(state_proj|action_in_proj)\.(weight|bias)$",
+            )
+        )
+        root = Path(root_value)
+        root.mkdir(parents=True, exist_ok=True)
+        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        steps: dict[str, int] = {}
+        matched = []
+        for name, parameter in self.vla.named_parameters():
+            canonical = name.removeprefix("module.").replace(".layer.", ".")
+            if not parameter.requires_grad or not pattern.search(canonical):
+                continue
+            matched.append(canonical)
+
+            def _save(grad, *, parameter_name=canonical):
+                steps[parameter_name] = steps.get(parameter_name, 0) + 1
+                step = steps[parameter_name]
+                safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                torch.save(
+                    {
+                        "backend": "native_fsdp2",
+                        "phase": "pre_fsdp_autograd",
+                        "step": step,
+                        "rank": rank,
+                        "name": parameter_name,
+                        "grad": grad.detach().float().cpu().clone(),
+                    },
+                    root
+                    / f"native_pre_dp_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                )
+                return grad
+
+            parameter.register_hook(_save)
+        torch.save(
+            {
+                "backend": "native_fsdp2",
+                "phase": "pre_fsdp_setup",
+                "rank": rank,
+                "matched_names": matched,
+            },
+            root / f"native_pre_dp_setup_rank_{rank:02d}.pt",
+        )
+
+    def _write_fsdp2_layout_trace(self) -> None:
+        """Record actual FSDP2 parameter-group ownership for parity checks."""
+        root_value = os.environ.get("FLUXVLA_FSDP2_LAYOUT_TRACE_DIR")
+        if not root_value or self.fsdp_api_version != 2:
+            return
+        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+            return
+        from torch.distributed.fsdp import FSDPModule
+
+        module_names = {id(module): name for name, module in self.vla.named_modules()}
+        seen_groups = set()
+        units = []
+        for module in self.vla.modules():
+            if not isinstance(module, FSDPModule):
+                continue
+            state = module._get_fsdp_state()
+            param_group = state._fsdp_param_group
+            if param_group is None or id(param_group) in seen_groups:
+                continue
+            seen_groups.add(id(param_group))
+            parameters = []
+            for parameter_index, fsdp_param in enumerate(param_group.fsdp_params):
+                module_info = fsdp_param._module_info
+                module_name = module_names.get(id(module_info.module), "")
+                parameter_name = ".".join(
+                    part for part in (module_name, module_info.param_name) if part
+                ).replace(".layer.", ".")
+                shape = fsdp_param._orig_size
+                parameter = fsdp_param.sharded_param
+                parameters.append(
+                    {
+                        "index": parameter_index,
+                        "name": parameter_name,
+                        "shape": list(shape),
+                        "numel": math.prod(shape),
+                        "dtype": str(parameter.dtype),
+                    }
+                )
+            units.append(
+                {
+                    "index": len(units),
+                    "module": module_names.get(id(module), ""),
+                    "parameter_count": len(parameters),
+                    "numel": sum(item["numel"] for item in parameters),
+                    "parameters": parameters,
+                }
+            )
+        root = Path(root_value)
+        root.mkdir(parents=True, exist_ok=True)
+        (root / "native_fsdp2_layout.json").write_text(
+            json.dumps(
+                {
+                    "backend": "native_fsdp2",
+                    "unit_count": len(units),
+                    "units": units,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+
     def run_setup(self, n_train_examples: int) -> None:
-        self.vla.from_pretrained()
         torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
+        initialize_runtime = getattr(
+            self.vla, 'initialize_distributed_runtime', None)
+        if callable(initialize_runtime):
+            initialize_runtime()
+            overwatch.info(
+                'Initialized model-owned distributed runtime.',
+                ctx_level=1)
+
+        self.vla.from_pretrained()
         torch.cuda.empty_cache()
 
         self.vla.freeze_backbones()
         self._prepare_training_task()
         fsdp_ignored_modules = self._resolve_fsdp_ignored_modules()
+
+        model_checkpointing = getattr(
+            self.vla, 'gradient_checkpointing_enable', None)
+        if self.enable_gradient_checkpointing and callable(model_checkpointing):
+            model_checkpointing()
+            overwatch.info(
+                'Enabled model-owned gradient checkpointing before FSDP wrapping.',
+                ctx_level=1)
+
+        # Install before FSDP turns parameters into managed/sharded handles so
+        # this optional parity trace observes the same autograd boundary as
+        # MCore parameter hooks.
+        self._install_native_pre_fsdp_autograd_trace()
 
         is_no_shard = (
             self.fsdp_sharding_strategy == ShardingStrategy.NO_SHARD)
@@ -459,28 +832,39 @@ class FSDPTrainRunner(BaseTrainRunner):
                 == 'vlm' else self.vla.get_fsdp_wrapping_policy())
 
         # Assemble the Default FSDP Mixed Precision Policy
+        explicit_batch_policy = self.batch_dtype is not None
+        fsdp1_input_policy = (
+            {
+                'cast_forward_inputs': False,
+                'cast_root_forward_inputs': False,
+            }
+            if explicit_batch_policy else {})
         if self.enable_mixed_precision_training and self.mixed_precision_dtype == torch.bfloat16:  # noqa: E501
             param_dtype = (None if self.keep_params_fp32 else torch.bfloat16)
             if is_no_shard:
                 fsdp_precision_policy = MixedPrecision(
                     param_dtype=param_dtype,
                     reduce_dtype=torch.bfloat16,
-                    buffer_dtype=torch.bfloat16)
+                    buffer_dtype=torch.bfloat16,
+                    **fsdp1_input_policy)
             elif not self.reduce_in_full_precision:
                 fsdp_precision_policy = MixedPrecision(
                     param_dtype=param_dtype,
                     reduce_dtype=torch.bfloat16,
-                    buffer_dtype=torch.bfloat16)
+                    buffer_dtype=torch.bfloat16,
+                    **fsdp1_input_policy)
             else:
                 fsdp_precision_policy = MixedPrecision(
                     param_dtype=param_dtype,
                     reduce_dtype=torch.float32,
-                    buffer_dtype=torch.float32)
+                    buffer_dtype=torch.float32,
+                    **fsdp1_input_policy)
         else:
             fsdp_precision_policy = MixedPrecision(
                 param_dtype=torch.float32,
                 reduce_dtype=torch.float32,
-                buffer_dtype=torch.float32)
+                buffer_dtype=torch.float32,
+                **fsdp1_input_policy)
 
         if self.pre_fsdp_param_dtype is not None:
             target_dtype = self.pre_fsdp_param_dtype
@@ -540,22 +924,101 @@ class FSDPTrainRunner(BaseTrainRunner):
                     checkpoint_layer_classes.add(
                         self.vla.llm_expert.transformer_layer_cls)
 
-        self.vla = FSDP(
-            self.vla,
-            auto_wrap_policy=vla_fsdp_wrapping_policy,
-            mixed_precision=fsdp_precision_policy,
-            sharding_strategy=self.fsdp_sharding_strategy,
-            ignored_modules=(fsdp_ignored_modules or None),
-            device_id=torch.cuda.current_device(),
-            limit_all_gathers=True,
-            use_orig_params=True,
-        )
-        fsdp_unit_count = sum(
-            isinstance(module, FSDP) for module in self.vla.modules())
+        if self.fsdp_api_version == 2:
+            if fsdp_ignored_modules:
+                raise ValueError('FSDP2 validation does not support ignored modules.')
+            from torch.distributed.fsdp import (MixedPrecisionPolicy,
+                                                fully_shard)
+
+            if self.fsdp_wrap_policy == 'root':
+                fsdp2_modules = []
+            elif self.fsdp_wrap_policy == 'model':
+                module_getter = getattr(
+                    self.vla, 'get_fsdp2_wrapping_modules', None)
+                if not callable(module_getter):
+                    raise ValueError(
+                        f'{type(self.vla).__name__} does not provide '
+                        'get_fsdp2_wrapping_modules().')
+                fsdp2_modules = list(module_getter())
+            else:
+                raise ValueError(
+                    'FSDP2 currently supports model or root wrapping only.')
+            child_mp_policy = MixedPrecisionPolicy(
+                param_dtype=fsdp_precision_policy.param_dtype,
+                reduce_dtype=fsdp_precision_policy.reduce_dtype,
+                output_dtype=fsdp_precision_policy.param_dtype,
+                cast_forward_inputs=not explicit_batch_policy,
+            )
+            root_output_dtype = torch.float32
+            root_output_dtype_getter = getattr(
+                self.vla, "get_fsdp2_root_output_dtype", None)
+            if callable(root_output_dtype_getter):
+                root_output_dtype = root_output_dtype_getter(
+                    fsdp_precision_policy.param_dtype)
+            root_mp_policy = MixedPrecisionPolicy(
+                param_dtype=fsdp_precision_policy.param_dtype,
+                reduce_dtype=fsdp_precision_policy.reduce_dtype,
+                output_dtype=root_output_dtype,
+                cast_forward_inputs=not explicit_batch_policy,
+            )
+            fp32_mp_policy = MixedPrecisionPolicy(
+                param_dtype=torch.float32,
+                reduce_dtype=torch.float32,
+                output_dtype=torch.float32,
+                # Native LingBot applies its FP32 policy to AdaNorm/action
+                # decoder units with the default input cast enabled.  The
+                # explicit batch policy only prevents the BF16 root from
+                # recasting the whole batch; nested FP32 units must still
+                # promote their activation inputs at their own boundary.
+                cast_forward_inputs=True,
+            )
+            reshard_after_forward = (
+                self.fsdp_sharding_strategy == ShardingStrategy.FULL_SHARD)
+            self.vla.to(device=current_device)
+            fp32_module_getter = getattr(
+                self.vla, 'get_fsdp2_full_precision_modules', None)
+            fp32_modules = (
+                list(fp32_module_getter())
+                if callable(fp32_module_getter) else [])
+            for module in fp32_modules:
+                fully_shard(
+                    module,
+                    reshard_after_forward=reshard_after_forward,
+                    mp_policy=fp32_mp_policy,
+                )
+            for module in fsdp2_modules:
+                fully_shard(
+                    module,
+                    reshard_after_forward=reshard_after_forward,
+                    mp_policy=child_mp_policy,
+                )
+            self.vla = fully_shard(
+                self.vla,
+                reshard_after_forward=reshard_after_forward,
+                mp_policy=root_mp_policy,
+            )
+            fsdp_unit_count = len(fp32_modules) + len(fsdp2_modules) + 1
+        else:
+            self.vla = FSDP(
+                self.vla,
+                auto_wrap_policy=vla_fsdp_wrapping_policy,
+                mixed_precision=fsdp_precision_policy,
+                sharding_strategy=self.fsdp_sharding_strategy,
+                ignored_modules=(fsdp_ignored_modules or None),
+                device_id=torch.cuda.current_device(),
+                limit_all_gathers=True,
+                use_orig_params=True,
+            )
+            fsdp_unit_count = sum(
+                isinstance(module, FSDP) for module in self.vla.modules())
+        # Both FSDP APIs materialize their managed parameter objects while
+        # wrapping. Install diagnostics only after those final objects exist.
+        self._write_fsdp2_layout_trace()
+        self._install_alignment_autograd_tensor_trace()
         ignored_numel = sum(param.numel() for module in fsdp_ignored_modules
                             for param in module.parameters())
         overwatch.info(
-            f'FSDP wrapping created {fsdp_unit_count} units '
+            f'FSDP{self.fsdp_api_version} wrapping created {fsdp_unit_count} units '
             f'(policy={self.fsdp_wrap_policy}); kept '
             f'{ignored_numel / 1e9:.2f}B frozen parameters replicated.',
             ctx_level=1)
@@ -642,7 +1105,270 @@ class FSDPTrainRunner(BaseTrainRunner):
 
     def clip_grad_norm(self) -> None:
         # Note =>> FSDP uses a custom `clip_grad_norm_` function; requires *uniform grad dtype*  # noqa: E501
-        self.vla.clip_grad_norm_(max_norm=self.max_grad_norm)
+        self._write_grad_norm_input_trace()
+        if self.fsdp_api_version == 2:
+            # Match the native LingBot non-EP FSDP2 path exactly. PyTorch's
+            # DTensor-aware implementation owns the local-shard reduction and
+            # foreach ordering; rebuilding that reduction changes the norm at
+            # the 1e-5 level and therefore perturbs every AdamW update.
+            trace_root = os.environ.get("FLUXVLA_CLIP_COEFFICIENT_TRACE_DIR")
+            trace_step = int(os.environ.get(
+                "FLUXVLA_CLIP_COEFFICIENT_TRACE_STEP", "0"))
+            step = int(self.metric.global_step) + 1
+            if not trace_root or (trace_step and trace_step != step):
+                return torch.nn.utils.clip_grad_norm_(
+                    self.vla.parameters(),
+                    max_norm=self.max_grad_norm,
+                    foreach=True,
+                )
+
+            # Capture the exact DTensor scalar consumed by PyTorch's clipping
+            # implementation. Reconstructing it later from a logged float can
+            # hide a placement redistribution or one-ULP scalar difference.
+            import torch.nn.utils.clip_grad as clip_grad_module
+            from torch.utils._foreach_utils import (
+                _device_has_foreach_support,
+                _group_tensors_by_device_and_dtype,
+                _has_foreach_support,
+            )
+
+            original_clip = clip_grad_module._clip_grads_with_norm_
+            original_get_total_norm = clip_grad_module._get_total_norm
+            captured = {}
+
+            def tensor_metadata(value, *, include_value=True):
+                local = value.to_local() if hasattr(value, "to_local") else value
+                mesh = getattr(value, "device_mesh", None)
+                metadata = {
+                    "type": type(value).__name__,
+                    "shape": list(value.shape),
+                    "local_shape": list(local.shape),
+                    "dtype": str(value.dtype),
+                    "placements": str(getattr(value, "placements", None)),
+                    "device_mesh_shape": (
+                        None if mesh is None else list(mesh.mesh.shape)
+                    ),
+                }
+                if include_value:
+                    metadata["local_value"] = local.detach().cpu().clone()
+                return metadata
+
+            def traced_get_total_norm(
+                    tensors, norm_type=2.0, error_if_nonfinite=False,
+                    foreach=None):
+                # Mirror torch 2.7's implementation so the trace contains the
+                # actual DTensor intermediates, including _NormPartial
+                # placements. This replacement is installed only for an
+                # explicitly requested diagnostic step.
+                tensors = [tensors] if isinstance(tensors, torch.Tensor) else list(tensors)
+                norm_type = float(norm_type)
+                if not tensors:
+                    return torch.tensor(0.0)
+                first_device = tensors[0].device
+                grouped = _group_tensors_by_device_and_dtype([tensors])
+                norms = []
+                for (device, _), ([device_tensors], _) in grouped.items():
+                    if ((foreach is None and
+                         _has_foreach_support(device_tensors, device)) or
+                            (foreach and _device_has_foreach_support(device))):
+                        norms.extend(torch._foreach_norm(device_tensors, norm_type))
+                    elif foreach:
+                        raise RuntimeError(
+                            "foreach=True was passed, but foreach is unsupported"
+                        )
+                    else:
+                        norms.extend(torch.linalg.vector_norm(tensor, norm_type)
+                                     for tensor in device_tensors)
+                stacked = torch.stack([norm.to(first_device) for norm in norms])
+                total_norm = torch.linalg.vector_norm(stacked, norm_type)
+                if error_if_nonfinite and torch.logical_or(
+                        total_norm.isnan(), total_norm.isinf()):
+                    raise RuntimeError("gradient norm is non-finite")
+                captured["gradient_metadata"] = [
+                    tensor_metadata(tensor, include_value=False)
+                    for tensor in tensors
+                ]
+                captured["per_parameter_norm_metadata"] = [
+                    tensor_metadata(norm) for norm in norms
+                ]
+                captured["stacked_norms_metadata"] = tensor_metadata(stacked)
+                captured["computed_total_norm_metadata"] = tensor_metadata(total_norm)
+                return total_norm
+
+            def traced_clip(parameters, max_norm, total_norm, foreach=None):
+                coefficient = (
+                    float(max_norm) / (total_norm + 1.0e-6)
+                ).clamp(max=1.0)
+
+                def local_copy(value):
+                    if hasattr(value, "to_local"):
+                        value = value.to_local()
+                    return value.detach().cpu().clone()
+
+                captured.update({
+                    "total_norm_local": local_copy(total_norm),
+                    "coefficient_local": local_copy(coefficient),
+                    "total_norm_type": type(total_norm).__name__,
+                    "total_norm_placements": str(
+                        getattr(total_norm, "placements", None)),
+                    "coefficient_placements": str(
+                        getattr(coefficient, "placements", None)),
+                })
+                return original_clip(
+                    parameters, max_norm, total_norm, foreach=foreach)
+
+            clip_grad_module._clip_grads_with_norm_ = traced_clip
+            clip_grad_module._get_total_norm = traced_get_total_norm
+            try:
+                result = torch.nn.utils.clip_grad_norm_(
+                    self.vla.parameters(),
+                    max_norm=self.max_grad_norm,
+                    foreach=True,
+                )
+            finally:
+                clip_grad_module._clip_grads_with_norm_ = original_clip
+                clip_grad_module._get_total_norm = original_get_total_norm
+            root = Path(trace_root)
+            root.mkdir(parents=True, exist_ok=True)
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            torch.save(
+                {"step": step, "rank": rank, **captured},
+                root / f"fsdp_clip_step_{step:06d}_rank_{rank:02d}.pt",
+            )
+            return result
+        return self.vla.clip_grad_norm_(max_norm=self.max_grad_norm)
+
+    def _reduce_training_loss_for_metrics(self, loss: torch.Tensor) -> torch.Tensor:
+        """Optionally report the DP mean used by multi-backend alignment."""
+        if (not self.report_dp_mean_metrics
+                and os.environ.get("FLUXVLA_REPORT_DP_MEAN_LOSS") != "1"):
+            return loss
+        reduced = loss.detach().float().clone()
+        dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+        reduced /= dist.get_world_size()
+        return reduced
+
+    def _reduce_training_metrics_for_metrics(self, metrics):
+        """Report DP-mean components alongside the optional DP-mean loss."""
+        if (not self.report_dp_mean_metrics
+                and os.environ.get("FLUXVLA_REPORT_DP_MEAN_LOSS") != "1"):
+            return metrics
+        reduced_metrics = {}
+        for key, value in metrics.items():
+            reduced = value.detach().float().clone()
+            dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
+            reduced /= dist.get_world_size()
+            reduced_metrics[key] = reduced
+        return reduced_metrics
+
+    def _write_grad_norm_input_trace(self) -> None:
+        """Record the parameter order used internally by FSDP gradient clipping."""
+        root_value = os.environ.get("FLUXVLA_GRAD_NORM_INPUT_TRACE_DIR")
+        if not root_value:
+            return
+
+        step = int(self.metric.global_step) + 1
+        target_step = int(os.environ.get(
+            "FLUXVLA_GRAD_NORM_INPUT_TRACE_STEP", "0"))
+        if target_step and step != target_step:
+            return
+
+        if self.fsdp_api_version == 2:
+            rows = []
+            grad_norms = []
+            for index, (name, parameter) in enumerate(
+                    self.vla.named_parameters()):
+                grad = parameter.grad
+                if grad is None:
+                    continue
+                local_grad = grad.detach()
+                if hasattr(local_grad, "to_local"):
+                    local_grad = local_grad.to_local()
+                rows.append({
+                    "index": len(rows),
+                    "name": name.removeprefix("module.").replace(
+                        ".layer.", "."),
+                    "parameter_shape": list(parameter.shape),
+                    "parameter_type": type(parameter).__name__,
+                    "parameter_placements": str(
+                        getattr(parameter, "placements", None)),
+                    "parameter_device_mesh_shape": (
+                        None
+                        if getattr(parameter, "device_mesh", None) is None
+                        else list(parameter.device_mesh.mesh.shape)
+                    ),
+                    "grad_type": type(grad).__name__,
+                    "grad_shape": list(grad.shape),
+                    "grad_placements": str(getattr(grad, "placements", None)),
+                    "grad_device_mesh_shape": (
+                        None
+                        if getattr(grad, "device_mesh", None) is None
+                        else list(grad.device_mesh.mesh.shape)
+                    ),
+                    "local_grad_shape": list(local_grad.shape),
+                    "dtype": str(local_grad.dtype),
+                })
+                grad_norms.append(torch.linalg.vector_norm(
+                    local_grad, 2.0, dtype=torch.float32))
+            rank = dist.get_rank() if dist.is_initialized() else 0
+            root = Path(root_value)
+            root.mkdir(parents=True, exist_ok=True)
+            torch.save({
+                "backend": "fsdp",
+                "step": step,
+                "rank": rank,
+                "parameters": rows,
+                "grad_norms": (
+                    torch.stack(grad_norms).cpu()
+                    if grad_norms else torch.empty(0, dtype=torch.float32)),
+            }, root / f"fsdp_step_{step:06d}_rank_{rank:02d}.pt")
+            return
+
+        from fluxvla.mcore.diagnostics import _write_grad_norm_input_trace
+
+        names_by_id = {
+            id(parameter): name.removeprefix("module.").replace(".layer.", ".")
+            for name, parameter in self.vla.named_parameters()
+        }
+        all_no_shard = all(
+            not handle.uses_sharded_strategy for handle in self.vla._all_handles
+        )
+        if all_no_shard:
+            ordered_parameters = list(self.vla.parameters())
+        else:
+            sharded_parameters = []
+            nonsharded_parameters = []
+            sharded_ids = set()
+            nonsharded_ids = set()
+            for handle in self.vla._all_handles:
+                if handle.uses_sharded_strategy:
+                    target, seen = sharded_parameters, sharded_ids
+                else:
+                    target, seen = nonsharded_parameters, nonsharded_ids
+                parameters = (
+                    handle.flat_param._params
+                    if handle._use_orig_params
+                    else (handle.flat_param,)
+                )
+                for parameter in parameters:
+                    if id(parameter) not in seen:
+                        seen.add(id(parameter))
+                        target.append(parameter)
+            for parameter in self.vla.parameters():
+                parameter_id = id(parameter)
+                if parameter_id not in sharded_ids and parameter_id not in nonsharded_ids:
+                    nonsharded_ids.add(parameter_id)
+                    nonsharded_parameters.append(parameter)
+            ordered_parameters = sharded_parameters + nonsharded_parameters
+        entries = [
+            (names_by_id.get(id(parameter), f"__unnamed_{index}"), parameter)
+            for index, parameter in enumerate(ordered_parameters)
+        ]
+        _write_grad_norm_input_trace(
+            backend="fsdp",
+            step=step,
+            entries=entries,
+        )
 
     def _load_model_state(self, checkpoint_model_state: dict) -> None:
         """Load FSDP model state from checkpoint.
