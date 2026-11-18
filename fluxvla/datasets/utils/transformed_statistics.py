@@ -449,7 +449,7 @@ def compute_statistics(dataset_paths: Sequence[Path],
     if subtask_prefix is not None and (repeat_terminal
                                        or window_start_idx != 0):
         raise ValueError('Subtask statistics requires repeat_terminal=False '
-                         'and window_start_idx=0, matching ParquetDatasetV3')
+                         'and window_start_idx=0, matching parquet sampling')
     roots = _discover_dataset_roots(dataset_paths)
     files = _parquet_files(roots)
 

@@ -14,7 +14,9 @@
 import json
 import os
 import shlex
+from bisect import bisect_right
 from collections import deque
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
 import numpy as np
@@ -24,6 +26,7 @@ from torch.utils.data import Dataset
 
 from datasets import concatenate_datasets, load_dataset
 from fluxvla.engines import DATASETS, build_transform_from_cfg
+from .utils.subtask_annotations import build_subtask_index
 
 
 def _batched_cuda_tensor(value: Any) -> torch.Tensor:
@@ -64,7 +67,10 @@ class ParquetDataset(Dataset):
                  expose_index: bool = False,
                  supervise_terminal_padding: bool = False,
                  action_dtype: Optional[str] = 'float32',
-                 expected_dataset_version: Optional[str] = None) -> None:
+                 expected_dataset_version: Optional[str] = None,
+                 instruction_source: str = 'task',
+                 subtask_prefix: str = 'dense',
+                 cache_dir: Optional[str] = None) -> None:
         """Initialize the Parquet dataset.
 
         Args:
@@ -125,18 +131,51 @@ class ParquetDataset(Dataset):
             expected_dataset_version (str, optional): Expected FluxVLA dataset
                 content version. If omitted, no version check is performed so
                 existing local datasets remain usable.
+            instruction_source (str): ``'task'`` preserves whole-task training.
+                ``'subtask'`` conditions on the CURRENT annotated segment and
+                clips action/video windows at its exclusive end. Padding has
+                zero action loss mask, including episode tails. Requires
+                window_start_idx=0 and current-frame images.
+            subtask_prefix (str): Episode annotation prefix, e.g. ``'dense'``
+                reads dense_subtask_names/start_frames/end_frames. Subtask
+                annotations must cover every episode without gaps/overlaps.
+            cache_dir (str, optional): Hugging Face cache for the frame data.
+                Set this to a writable disk with sufficient space. None uses
+                HF_DATASETS_CACHE or the Hugging Face default cache directory.
         """
         super().__init__()
+        if instruction_source not in ('task', 'subtask'):
+            raise ValueError('instruction_source must be task or subtask')
+        if instruction_source == 'subtask':
+            if window_start_idx != 0:
+                raise ValueError(
+                    'Subtask training requires window_start_idx=0')
+            if supervise_terminal_padding:
+                raise ValueError('Subtask training requires '
+                                 'supervise_terminal_padding=False')
+            if image_frame_offset != 0 or require_full_window:
+                raise ValueError('Subtask training requires current-frame '
+                                 'images and padded windows: '
+                                 'image_frame_offset=0, '
+                                 'require_full_window=False')
+            if frame_window_size < 1 or frame_sample_stride < 1:
+                raise ValueError('Subtask frame windows and strides must '
+                                 'be positive')
+        if action_window_size <= 0:
+            raise ValueError('action_window_size must be positive')
         if not 0 < train_episode_fraction <= 1:
             raise ValueError('train_episode_fraction must be in (0, 1].')
         if image_frame_offset < 0:
             raise ValueError('image_frame_offset must be non-negative.')
         self.action_window_size = action_window_size
+        self.instruction_source = instruction_source
+        self.subtask_prefix = subtask_prefix
         self.action_dtype = (None if action_dtype is None else
                              np.dtype(action_dtype))
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
         self.data_root_path = data_root_path
+        self.cache_dir = cache_dir
 
         meta_root = [os.path.join(path, 'meta') for path in data_root_path]
         data_root = [os.path.join(path, 'data') for path in data_root_path]
@@ -145,49 +184,40 @@ class ParquetDataset(Dataset):
         all_stats = []
         all_tasks = []
         all_episodes = []
+        episodes_by_dataset = []
         info_list = []
 
         for dataset_root, root in zip(data_root_path, meta_root):
-            info_path = os.path.join(root, 'info.json')
-            assert os.path.exists(info_path), \
-                f'Metadata file not found at {info_path}'
-            with open(os.path.join(root, 'info.json'), 'rb') as f:
-                info_list.append(json.load(f))
+            info_list.append(self._load_info(Path(root)))
             if expected_dataset_version is not None:
                 self._verify_dataset_version(
                     dataset_root=dataset_root,
                     expected_dataset_version=expected_dataset_version)
 
-            stats_path = os.path.join(root, 'episodes_stats.jsonl')
-            assert os.path.exists(stats_path), \
-                f'Statistics file not found at {stats_path}'
-            with open(
-                    os.path.join(root, 'episodes_stats.jsonl'),
-                    'r',
-                    encoding='utf-8') as f:
-                all_stats.extend([json.loads(line) for line in f])
-
-            tasks_path = os.path.join(root, 'tasks.jsonl')
-            assert os.path.exists(tasks_path), \
-                f'Tasks file not found at {tasks_path}'
-            with open(tasks_path, 'r', encoding='utf-8') as f:
-                all_tasks.append([json.loads(line) for line in f])
-
-            episodes_path = os.path.join(root, 'episodes.jsonl')
-            assert os.path.exists(episodes_path), \
-                f'Episodes file not found at {episodes_path}'
-            with open(episodes_path, 'r', encoding='utf-8') as f:
-                all_episodes.extend([json.loads(line) for line in f])
+            stats, tasks, episodes = self._load_metadata(Path(root))
+            all_stats.extend(stats)
+            all_tasks.append(tasks)
+            all_episodes.extend(episodes)
+            episodes_by_dataset.append(episodes)
 
         self.info = info_list
         self.stats = all_stats
         self.tasks = all_tasks
         self.episodes = all_episodes
+        self.episodes_by_dataset = episodes_by_dataset
+        self.subtasks_by_dataset = ([
+            build_subtask_index(records, subtask_prefix)
+            for records in episodes_by_dataset
+        ] if instruction_source == 'subtask' else None)
         # Summarize all data_root
         datasets = []
         dataset_sizes = []  # Record the size of each dataset
         for root in data_root:
-            hf_dataset = load_dataset('parquet', data_dir=root, split='train')
+            hf_dataset = load_dataset(
+                'parquet',
+                data_dir=root,
+                split='train',
+                cache_dir=self.cache_dir)
             hf_dataset = self._relax_fixed_length_list_features(hf_dataset)
             dataset_sizes.append(len(hf_dataset))
             datasets.append(hf_dataset)
@@ -214,6 +244,27 @@ class ParquetDataset(Dataset):
         self.supervise_terminal_padding = supervise_terminal_padding
         for transform in transforms:
             self.transforms.append(build_transform_from_cfg(transform))
+
+    @staticmethod
+    def _load_info(meta_root: Path) -> Dict:
+        path = meta_root / 'info.json'
+        assert path.exists(), f'Metadata file not found at {path}'
+        with open(path, 'rb') as handle:
+            return json.load(handle)
+
+    @staticmethod
+    def _load_metadata(meta_root: Path):
+        """Load legacy metadata; subclasses adapt only the storage layout."""
+
+        def records(filename, label):
+            path = meta_root / filename
+            assert path.exists(), f'{label} file not found at {path}'
+            with open(path, 'r', encoding='utf-8') as handle:
+                return [json.loads(line) for line in handle]
+
+        return (records('episodes_stats.jsonl',
+                        'Statistics'), records('tasks.jsonl', 'Tasks'),
+                records('episodes.jsonl', 'Episodes'))
 
     @staticmethod
     def _read_dataset_version(path: str) -> Optional[str]:
@@ -333,7 +384,10 @@ class ParquetDataset(Dataset):
         return dataset_idx
 
     def _get_task_name(self, dataset_idx: int, index: int) -> str:
-        task_idx = self.dataset[index]['task_index']
+        return self._resolve_task_description(dataset_idx, self.dataset[index])
+
+    def _resolve_task_description(self, dataset_idx: int, data: Dict) -> str:
+        task_idx = data['task_index']
         if task_idx < 0 or task_idx >= len(self.tasks[dataset_idx]):
             return 'empty'
         return self.tasks[dataset_idx][task_idx].get('task', 'empty')
@@ -379,6 +433,8 @@ class ParquetDataset(Dataset):
         return np.array(actions, dtype=self.action_dtype)
 
     def __getitem__(self, index, dataset_statistics):
+        if getattr(self, 'instruction_source', 'task') == 'subtask':
+            return self._getitem_subtask(index, dataset_statistics)
         index = self._resolve_index(index)
         data = self.dataset[index]
         # Determine which dataset the data belongs to
@@ -447,13 +503,92 @@ class ParquetDataset(Dataset):
             if self.frame_window_size > 1:
                 data['frame_masks'] = np.array(frame_masks, dtype=np.float32)
 
+        return self._transform_sample(
+            data, index, dataset_idx, actions, action_masks,
+            self._resolve_task_description(dataset_idx, data),
+            dataset_statistics)
+
+    def _getitem_subtask(self, index, dataset_statistics):
+        """Sample a current segment, independent of metadata file format."""
+        index = self._resolve_index(index)
+        data = self.dataset[index]
+        dataset_idx = self._get_dataset_index(index)
+        episode = int(data['episode_index'])
+        segments = self.subtasks_by_dataset[dataset_idx].get(episode)
+        if segments is None:
+            raise ValueError(
+                f'Missing subtask annotations for episode '
+                f'{episode} in {self.data_root_path[dataset_idx]}')
+        frame = int(data['frame_index'])
+        segment_index = bisect_right([segment.end for segment in segments],
+                                     frame)
+        if frame < 0 or segment_index >= len(segments):
+            raise ValueError(f'Frame {frame} outside annotated episode '
+                             f'{episode}')
+        segment = segments[segment_index]
+        remaining = segment.end - frame
+        valid_length = min(self.action_window_size, remaining)
+        offsets = np.arange(self.frame_window_size) * self.frame_sample_stride
+        frame_masks = offsets < remaining
+        offsets = np.minimum(offsets, remaining - 1)
+        read_length = max(valid_length, int(offsets[-1]) + 1)
+        rows = self.dataset[index:index + read_length]
+        # Validate action AND image rows. Equal episode IDs in different
+        # roots must not join, nor may missing/reordered frames shift labels.
+        if (index + read_length >
+                self.dataset_cumulative_sizes[dataset_idx + 1]
+                or rows['episode_index'] != [episode] * read_length
+                or rows['frame_index'] != list(
+                    range(frame, frame + read_length))):
+            raise ValueError(f'Non-contiguous subtask action rows for episode '
+                             f'{episode}, frame {frame}')
+        actions = self._stack_actions(rows[self.action_key][:valid_length])
+        if self.use_delta:
+            previous = data
+            if frame > 0:
+                previous = self.dataset[index - 1]
+                if (index <= self.dataset_cumulative_sizes[dataset_idx]
+                        or previous['episode_index'] != episode
+                        or previous['frame_index'] != frame - 1):
+                    raise ValueError('Non-contiguous subtask previous action '
+                                     f'for episode {episode}, frame {frame}')
+            # Never read a previous episode/root for frame zero.
+            actions = actions - np.concatenate([
+                self._stack_actions([previous[self.action_key]]), actions[:-1]
+            ])
+        actions = np.concatenate([
+            actions,
+            np.repeat(
+                actions[-1:], self.action_window_size - valid_length, axis=0)
+        ])
+        action_masks = np.zeros(self.action_window_size, dtype=np.float32)
+        action_masks[:valid_length] = 1
+        if self.frame_window_size > 1:
+            data['frame_timestamps'] = [
+                rows['timestamp'][int(offset)] for offset in offsets
+            ]
+            data['frame_masks'] = frame_masks.astype(np.float32)
+        data.update(
+            full_task_description=self._resolve_task_description(
+                dataset_idx, data),
+            subtask=segment.name,
+            subtask_index=segment_index,
+            subtask_start_frame=segment.start,
+            subtask_end_frame=segment.end)
+        return self._transform_sample(data, index, dataset_idx, actions,
+                                      action_masks, segment.name,
+                                      dataset_statistics)
+
+    def _transform_sample(self, data, index, dataset_idx, actions,
+                          action_masks, task_description, dataset_statistics):
+        """Finalize both instruction modes before prompt/token transforms."""
         data['info'] = self.info[dataset_idx]
         data['stats'] = dataset_statistics[self.statistic_name]
         data['actions'] = self._stack_actions(actions)
         data['action_masks'] = np.array(action_masks, dtype=np.float32)
         if self.expose_index:
             data['index'] = np.array(index, dtype=np.int64)
-        data['task_description'] = self._get_task_name(dataset_idx, index)
+        data['task_description'] = task_description
         data['data_root'] = self.data_root_path[dataset_idx]
         for transform in self.transforms:
             data = transform(data)
