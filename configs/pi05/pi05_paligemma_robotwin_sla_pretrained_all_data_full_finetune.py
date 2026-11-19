@@ -49,8 +49,8 @@ Evaluation defaults to all 50 tasks in both clean and random suites.
 _ROBOTWIN_URDF = ('src/RoboTwin/assets/embodiments/aloha-agilex/urdf/'
                   'arx5_description_isaac.urdf')
 
-_PI05_CHECKPOINT = './checkpoints/sla_base_pytorch/model.safetensors'
-_PI05_TOKENIZER = 'checkpoints/pi05_base'
+_PI05_CHECKPOINT = './checkpoints/sla_base/model.safetensors'
+_PI05_TOKENIZER = 'checkpoints/sla_base'
 _ROBOTWIN_DATA_ROOTS = [
     'datasets/robotwin_lerobotv2.1/robotwin_clean_lerobotv2.1',
     'datasets/robotwin_lerobotv2.1/robotwin_randomized_lerobotv2.1',
