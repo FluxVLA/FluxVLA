@@ -1,4 +1,16 @@
 # Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
 import json
 from pathlib import Path
@@ -10,7 +22,10 @@ import pytest
 import torch
 from mmengine import Config
 
-from fluxvla.datasets.parquet_dataset_v3 import ParquetDatasetV3
+from datasets import load_dataset
+from fluxvla.datasets.parquet_dataset import ParquetDataset
+from fluxvla.datasets.parquet_dataset_v3 import (ParquetDatasetV3,
+                                                 _load_parquet_records)
 from fluxvla.datasets.utils.subtask_annotations import build_subtask_index
 from fluxvla.datasets.utils.transformed_statistics import \
     compute_statistics_from_dataset_config
@@ -28,18 +43,27 @@ def _episode():
         dense_subtask_end_frames=[2, 4])
 
 
-def _write_dataset(root, *, record=None, action_offset=0):
+def _write_dataset(root, *, record=None, action_offset=0, legacy=False):
     (root / 'meta/episodes/chunk-000').mkdir(parents=True)
     (root / 'data/chunk-000').mkdir(parents=True)
     (root / 'meta/info.json').write_text(
         json.dumps(dict(fps=25, video_path='unused', chunks_size=1000)))
-    (root / 'meta/stats.json').write_text('{}')
-    pq.write_table(
-        pa.Table.from_pylist([dict(task_index=0, task='Whole task')]),
-        root / 'meta/tasks.parquet')
-    pq.write_table(
-        pa.Table.from_pylist([record or _episode()]),
-        root / 'meta/episodes/chunk-000/file-000.parquet')
+    record = record or _episode()
+    if legacy:
+        for filename, row in (('episodes_stats.jsonl',
+                               dict(episode_index=0, stats={})),
+                              ('tasks.jsonl',
+                               dict(task_index=0, task='Whole task')),
+                              ('episodes.jsonl', record)):
+            (root / 'meta' / filename).write_text(json.dumps(row) + '\n')
+    else:
+        (root / 'meta/stats.json').write_text('{}')
+        pq.write_table(
+            pa.Table.from_pylist([dict(task_index=0, task='Whole task')]),
+            root / 'meta/tasks.parquet')
+        pq.write_table(
+            pa.Table.from_pylist([record]),
+            root / 'meta/episodes/chunk-000/file-000.parquet')
     actions = np.array([[2, 12], [5, 25], [13, 34], [19, 48]]) + action_offset
     pq.write_table(
         pa.table({
@@ -53,8 +77,8 @@ def _write_dataset(root, *, record=None, action_offset=0):
     return root
 
 
-def _dataset(roots, **kwargs):
-    return ParquetDatasetV3(
+def _dataset(roots, dataset_class=ParquetDatasetV3, **kwargs):
+    return dataset_class(
         data_root_path=[str(p) for p in roots],
         transforms=[],
         action_key='action',
@@ -62,6 +86,64 @@ def _dataset(roots, **kwargs):
         window_start_idx=0,
         instruction_source=kwargs.pop('instruction_source', 'subtask'),
         **kwargs)
+
+
+def test_v3_metadata_does_not_prepare_hf_cache(tmp_path, monkeypatch):
+    root = _write_dataset(tmp_path / 'data')
+
+    def reject_hf_cache(*args, **kwargs):
+        raise AssertionError('Local metadata must not generate HF caches')
+
+    monkeypatch.setattr('datasets.builder.DatasetBuilder.download_and_prepare',
+                        reject_hf_cache)
+    stats, tasks, episodes = ParquetDatasetV3._load_metadata(root / 'meta')
+    assert stats == [dict(stats={})]
+    assert tasks == {0: 'Whole task'}
+    assert episodes == [_episode()]
+
+
+def test_parquet_metadata_keeps_file_and_row_group_order(tmp_path):
+    paths = []
+    expected = []
+    for name, indices in [('b', [3, 1]), ('a', [2, 0])]:
+        path = tmp_path / f'{name}.parquet'
+        rows = [dict(_episode(), episode_index=index) for index in indices]
+        pq.write_table(pa.Table.from_pylist(rows), path, row_group_size=1)
+        paths.append(path)
+        expected.extend(rows)
+    assert _load_parquet_records(paths) == expected
+    assert _load_parquet_records([]) == []
+
+
+@pytest.mark.parametrize('dataset_class', [ParquetDataset, ParquetDatasetV3])
+@pytest.mark.parametrize('explicit_cache', [False, True])
+def test_frame_data_cache_directory_is_forwarded(tmp_path, monkeypatch,
+                                                 dataset_class,
+                                                 explicit_cache):
+    roots = [
+        _write_dataset(
+            tmp_path / name, legacy=dataset_class is ParquetDataset)
+        for name in ('a', 'b')
+    ]
+    cache_dir = str(tmp_path / 'hf-cache') if explicit_cache else None
+    observed = []
+
+    def checked_load_dataset(*args, **kwargs):
+        observed.append(kwargs['cache_dir'])
+        return load_dataset(*args, **kwargs)
+
+    monkeypatch.setattr('fluxvla.datasets.parquet_dataset.load_dataset',
+                        checked_load_dataset)
+    dataset = _dataset(roots, dataset_class=dataset_class, cache_dir=cache_dir)
+    assert observed == [cache_dir, cache_dir]
+    assert len(dataset) == 8
+    assert dataset.__getitem__(
+        1, {'private': {}})['subtask'] == ('Pick up the cup')
+    if explicit_cache:
+        assert dataset.dataset.cache_files
+        assert all(
+            Path(item['filename']).is_relative_to(cache_dir)
+            for item in dataset.dataset.cache_files)
 
 
 def test_subtask_selects_current_frame_and_masks_exclusive_end(tmp_path):
@@ -200,13 +282,16 @@ def test_prompt_uses_subtask_not_episode_instruction(tmp_path):
     assert 'Whole task' not in prompt
 
 
-def test_subtask_statistics_match_only_supervised_delta_targets(tmp_path):
-    root = _write_dataset(tmp_path / 'data')
+@pytest.mark.parametrize('legacy', [False, True])
+def test_subtask_statistics_match_only_supervised_delta_targets(
+        tmp_path, legacy):
+    root = _write_dataset(tmp_path / 'data', legacy=legacy)
+    dataset_class = ParquetDataset if legacy else ParquetDatasetV3
     config = dict(
         statistic_name='private',
         datasets=[
             dict(
-                type='ParquetDatasetV3',
+                type=dataset_class.__name__,
                 data_root_path=str(root),
                 instruction_source='subtask',
                 subtask_prefix='dense',
@@ -216,7 +301,7 @@ def test_subtask_statistics_match_only_supervised_delta_targets(tmp_path):
     options = dict(delta_mask=[True, False])
     stats, meta = compute_statistics_from_dataset_config(
         config, options, default_temp_dir=tmp_path)
-    dataset = _dataset([root])
+    dataset = _dataset([root], dataset_class=dataset_class)
     targets = []
     for index in range(len(dataset)):
         sample = dataset.__getitem__(index, {'private': {}})
@@ -254,13 +339,192 @@ def test_pi05_loss_reducer_ignores_masked_targets(tmp_path):
     assert torch.count_nonzero(losses.grad[:, 1:]) == 0
 
 
+def test_v3_inherits_shared_sampling_and_transform_assembly():
+    assert ParquetDatasetV3.__getitem__ is ParquetDataset.__getitem__
+    assert ParquetDatasetV3._getitem_subtask is ParquetDataset._getitem_subtask
+    assert (ParquetDatasetV3._transform_sample is
+            ParquetDataset._transform_sample)
+
+
+@pytest.mark.parametrize('use_delta', [False, True])
+@pytest.mark.parametrize('frame_count', [1, 4])
+def test_legacy_and_v3_subtasks_have_identical_outputs(tmp_path, use_delta,
+                                                       frame_count):
+    datasets = []
+    for legacy, dataset_class in ((True, ParquetDataset), (False,
+                                                           ParquetDatasetV3)):
+        roots = [
+            _write_dataset(
+                tmp_path / f'{legacy}-{index}',
+                action_offset=index * 100,
+                legacy=legacy) for index in range(2)
+        ]
+        datasets.append(
+            _dataset(
+                roots,
+                dataset_class=dataset_class,
+                use_delta=use_delta,
+                frame_window_size=frame_count,
+                frame_sample_stride=2,
+                expose_index=True))
+    # Include segment boundaries, episode tails and equal episode IDs in
+    # different roots. No annotation/tokenization logic depends on format.
+    for index in range(8):
+        samples = [
+            dataset.__getitem__(index, {'private': {}}) for dataset in datasets
+        ]
+        for key in ('actions', 'action_masks', 'task_description', 'subtask',
+                    'full_task_description', 'subtask_index', 'index'):
+            np.testing.assert_array_equal(samples[0][key], samples[1][key])
+        assert samples[0]['actions'].dtype == np.float32
+        if frame_count > 1:
+            assert samples[0]['frame_timestamps'] == samples[1][
+                'frame_timestamps']
+            np.testing.assert_array_equal(samples[0]['frame_masks'],
+                                          samples[1]['frame_masks'])
+        if use_delta and index in (0, 4):
+            np.testing.assert_array_equal(samples[0]['actions'][0], [0, 0])
+
+
+def test_v3_whole_task_keeps_historical_tail_resampling(tmp_path, monkeypatch):
+    root = _write_dataset(
+        tmp_path / 'v3', record=dict(episode_index=0, length=4))
+    dataset = _dataset([root], instruction_source='task', expose_index=True)
+    monkeypatch.setattr(dataset, '_rand_another', lambda: 1)
+    sample = dataset.__getitem__(3, {'private': {}})
+    assert sample['index'] == 1 and sample['frame_index'] == 1
+    assert sample['task_description'] == 'Whole task'
+    np.testing.assert_array_equal(sample['action_masks'], [1, 1, 1])
+
+
+def test_legacy_default_task_mode_keeps_terminal_padding(tmp_path):
+    root = _write_dataset(
+        tmp_path / 'legacy',
+        record=dict(episode_index=0, length=4),
+        legacy=True)
+    assert not (root / 'meta/tasks.parquet').exists()
+    assert not list((root / 'meta/episodes').rglob('*.parquet'))
+    dataset = ParquetDataset(
+        str(root), [],
+        action_key='action',
+        action_window_size=3,
+        window_start_idx=0,
+        supervise_terminal_padding=True)
+    sample = dataset.__getitem__(3, {'private': {}})
+    assert dataset.instruction_source == 'task'
+    assert sample['task_description'] == 'Whole task'
+    assert 'subtask' not in sample
+    np.testing.assert_array_equal(sample['actions'], [[19, 48]] * 3)
+    np.testing.assert_array_equal(sample['action_masks'], [1, 1, 1])
+    with pytest.raises(ValueError, match='Missing subtask annotations'):
+        _dataset([root], dataset_class=ParquetDataset)
+
+
+@pytest.mark.parametrize('dataset_class', [ParquetDataset, ParquetDatasetV3])
+def test_subtask_sample_split_repeats_only_selected_episodes(
+        tmp_path, dataset_class):
+    legacy = dataset_class is ParquetDataset
+    root = _write_dataset(tmp_path / 'data', legacy=legacy)
+    path = root / 'data/chunk-000/file-000.parquet'
+    rows = pq.read_table(path).to_pylist()
+    other = [
+        dict(
+            row,
+            episode_index=1,
+            action=[value + 100 for value in row['action']]) for row in rows
+    ]
+    pq.write_table(pa.Table.from_pylist(rows + other), path)
+    records = [_episode(), dict(_episode(), episode_index=1)]
+    if legacy:
+        (root / 'meta/episodes.jsonl').write_text(''.join(
+            json.dumps(record) + '\n' for record in records))
+    else:
+        pq.write_table(
+            pa.Table.from_pylist(records),
+            root / 'meta/episodes/chunk-000/file-000.parquet')
+    dataset = _dataset([root],
+                       dataset_class=dataset_class,
+                       expose_index=True,
+                       train_episode_fraction=0.5,
+                       repeat_to_full_length=True)
+    assert len(dataset) == 8
+    np.testing.assert_array_equal(dataset.sample_indices, [0, 1, 2, 3])
+    sample = dataset.__getitem__(7, {'private': {}})
+    assert sample['episode_index'] == 0 and sample['index'] == 3
+    np.testing.assert_array_equal(sample['actions'], [[19, 48]] * 3)
+
+
+@pytest.mark.parametrize('dataset_class', [ParquetDataset, ParquetDatasetV3])
+def test_subtask_validates_video_rows_beyond_action_window(
+        tmp_path, dataset_class):
+    record = dict(
+        _episode(),
+        dense_subtask_names=['move'],
+        dense_subtask_start_frames=[0],
+        dense_subtask_end_frames=[4])
+    root = _write_dataset(
+        tmp_path / 'data',
+        record=record,
+        legacy=dataset_class is ParquetDataset)
+    dataset = dataset_class(
+        str(root), [],
+        action_key='action',
+        action_window_size=1,
+        window_start_idx=0,
+        instruction_source='subtask',
+        frame_window_size=4)
+    dataset.dataset = dataset.dataset.select([0, 1, 3, 2])
+    with pytest.raises(ValueError, match='Non-contiguous'):
+        dataset.__getitem__(0, {'private': {}})
+
+
+@pytest.mark.parametrize('dataset_class', [ParquetDataset, ParquetDatasetV3])
+def test_subtask_delta_validates_previous_row(tmp_path, dataset_class):
+    root = _write_dataset(
+        tmp_path / 'data', legacy=dataset_class is ParquetDataset)
+    dataset = _dataset([root], dataset_class=dataset_class, use_delta=True)
+    dataset.dataset = dataset.dataset.select([0, 0, 2, 3])
+    with pytest.raises(ValueError, match='Non-contiguous subtask previous'):
+        dataset.__getitem__(2, {'private': {}})
+
+
+@pytest.mark.parametrize('dataset_class', [ParquetDataset, ParquetDatasetV3])
+@pytest.mark.parametrize('options', [
+    dict(window_start_idx=1),
+    dict(supervise_terminal_padding=True),
+    dict(image_frame_offset=1),
+    dict(require_full_window=True),
+])
+def test_subtask_rejects_conflicting_window_options(dataset_class, options):
+    settings = dict(window_start_idx=0, instruction_source='subtask')
+    settings.update(options)
+    with pytest.raises(ValueError, match='Subtask training requires'):
+        dataset_class('unused', [], **settings)
+
+
+@pytest.mark.parametrize('dataset_class', [ParquetDataset, ParquetDatasetV3])
+def test_subtask_honors_action_dtype(tmp_path, dataset_class):
+    root = _write_dataset(
+        tmp_path / 'data', legacy=dataset_class is ParquetDataset)
+    path = root / 'data/chunk-000/file-000.parquet'
+    rows = pq.read_table(path).to_pylist()
+    rows[1]['action'] = [5.0000000001, 25.0000000001]
+    pq.write_table(pa.Table.from_pylist(rows), path)
+    dataset = _dataset([root], dataset_class=dataset_class, action_dtype=None)
+    sample = dataset.__getitem__(1, {'private': {}})
+    assert sample['actions'].dtype == np.float64
+    np.testing.assert_array_equal(sample['actions'][0], rows[1]['action'])
+
+
 def test_robodojo_subtask_config_contract(monkeypatch):
+    monkeypatch.delenv('HF_DATASETS_CACHE', raising=False)
     root = Path(__file__).resolve().parents[2]
     cfg = Config.fromfile(root / 'configs/pi05/'
                           'pi05_paligemma_robodojo_subtask_full_finetune.py')
     dataset = cfg.train_dataloader.dataset
     source = dataset.datasets[0]
     assert source.type == 'ParquetDatasetV3'
+    assert source.cache_dir == '/mnt/data/cpfs/.cache/fluxvla/hf-datasets'
     assert source.instruction_source == 'subtask'
     assert source.subtask_prefix == 'dense'
     assert source.action_window_size == cfg.model.n_action_steps == 50
@@ -283,8 +547,16 @@ def test_robodojo_subtask_config_contract(monkeypatch):
                            'pi05_paligemma_robodojo_full_finetune.py')
     assert base.train_dataloader.dataset.dataset_statistics is not None
     assert base.train_dataloader.dataset.datasets[0].type == 'ParquetDataset'
+    assert 'cache_dir' not in base.train_dataloader.dataset.datasets[0]
     monkeypatch.setenv('ROBODOJO_SUBTASK_DATA_ROOT', '/custom/data')
+    monkeypatch.setenv('HF_DATASETS_CACHE', '/custom/cache')
     overridden = Config.fromfile(cfg.filename)
     assert overridden.train_dataloader.dataset.datasets[0].data_root_path == [
         '/custom/data'
     ]
+    assert overridden.train_dataloader.dataset.datasets[0].cache_dir == (
+        '/custom/cache')
+    overridden.merge_from_dict(
+        {'train_dataloader.dataset.datasets.0.cache_dir': '/cli/cache'})
+    assert overridden.train_dataloader.dataset.datasets[0].cache_dir == (
+        '/cli/cache')
