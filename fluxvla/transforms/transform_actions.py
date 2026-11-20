@@ -16,6 +16,7 @@ import json
 from typing import Dict, List, Optional
 
 import numpy as np
+from scipy.spatial.transform import Rotation
 
 from fluxvla.engines import TRANSFORMS
 from fluxvla.transforms.normalize import DenormalizeLiberoAction
@@ -159,6 +160,30 @@ def _libero_rot6d_action_to_axisangle(action: np.ndarray) -> np.ndarray:
                           axis=-1)
 
 
+def _rotation_groups(mask: np.ndarray,
+                     rotation_mask: Optional[List[bool]]) -> List[int]:
+    """Validate ``rotation_mask`` against ``mask``; return triple starts."""
+    if rotation_mask is None:
+        return []
+    rotation = np.asarray(rotation_mask, dtype=bool)
+    if rotation.shape != mask.shape:
+        raise ValueError('rotation_mask must have the same length as mask.')
+    if np.any(rotation & ~mask):
+        raise ValueError('rotation_mask must be a subset of mask.')
+    starts = []
+    index = 0
+    while index < len(rotation):
+        if not rotation[index]:
+            index += 1
+            continue
+        if index + 3 > len(rotation) or not rotation[index:index + 3].all():
+            raise ValueError(
+                'rotation_mask must mark contiguous groups of 3 dimensions.')
+        starts.append(index)
+        index += 3
+    return starts
+
+
 @TRANSFORMS.register_module()
 class RelativeActions:
     """Convert selected absolute action dimensions to state-relative deltas.
@@ -166,15 +191,42 @@ class RelativeActions:
     This is the same generic operation used by OpenPI.  ``state_key`` and
     ``action_key`` keep it usable by both the training pipeline and robot
     post-processing code instead of tying it to one embodiment.
+
+    ``rotation_mask`` marks contiguous rotation-vector triples inside
+    ``mask``.  Those dimensions compose spatial rotation deltas
+    (``Ra Rs^T``) instead of subtracting components, so the deltas remain
+    valid rotations; every step of a chunk is referenced to the same state.
     """
 
     def __init__(self,
                  mask: List[bool] = None,
                  state_key: str = 'states',
-                 action_key: str = 'actions') -> None:
+                 action_key: str = 'actions',
+                 rotation_mask: Optional[List[bool]] = None) -> None:
         self.mask = None if mask is None else np.asarray(mask, dtype=bool)
         self.state_key = state_key
         self.action_key = action_key
+        self.rotation_starts = ([] if self.mask is None else _rotation_groups(
+            self.mask, rotation_mask))
+        self.linear_mask = self.mask
+        if self.rotation_starts:
+            self.linear_mask = self.mask & ~np.asarray(rotation_mask, bool)
+
+    def _compose(self, actions: np.ndarray, states: np.ndarray,
+                 inverse: bool) -> np.ndarray:
+        """Apply the rotation-vector composition to each masked triple."""
+        for start in self.rotation_starts:
+            rot = slice(start, start + 3)
+            action_rot = actions[..., rot]
+            state_rot = np.broadcast_to(
+                np.expand_dims(states[..., rot], axis=-2), action_rot.shape)
+            # Copies: scipy needs writable buffers and broadcast views
+            # are read-only.
+            ra = Rotation.from_rotvec(np.array(action_rot).reshape(-1, 3))
+            rs = Rotation.from_rotvec(np.array(state_rot).reshape(-1, 3))
+            relative = ra * rs if inverse else ra * rs.inv()
+            actions[..., rot] = relative.as_rotvec().reshape(action_rot.shape)
+        return actions
 
     def __call__(self, data: Dict) -> Dict:
         if self.action_key not in data or self.mask is None:
@@ -184,8 +236,8 @@ class RelativeActions:
         actions = np.asarray(data[self.action_key]).copy()
         dims = self.mask.shape[-1]
         actions[..., :dims] -= np.expand_dims(
-            np.where(self.mask, states[..., :dims], 0), axis=-2)
-        data[self.action_key] = actions
+            np.where(self.linear_mask, states[..., :dims], 0), axis=-2)
+        data[self.action_key] = self._compose(actions, states, inverse=False)
 
         return data
 
@@ -208,8 +260,8 @@ class AbsoluteActions(RelativeActions):
         actions = np.asarray(data[self.action_key]).copy()
         dims = self.mask.shape[-1]
         actions[..., :dims] += np.expand_dims(
-            np.where(self.mask, states[..., :dims], 0), axis=-2)
-        data[self.action_key] = actions
+            np.where(self.linear_mask, states[..., :dims], 0), axis=-2)
+        data[self.action_key] = self._compose(actions, states, inverse=True)
         return data
 
 

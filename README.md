@@ -108,16 +108,17 @@ the same evaluation seed (`0`), rather than averages over multiple seeds.
 The supplied configs use `unseen` instructions. Scores are success rates (%);
 `Average` is the mean of Clean and Random, with links to model checkpoints.
 
-| Model               |     Clean |    Random |                                                                                                                         Average |
-| ------------------- | --------: | --------: | ------------------------------------------------------------------------------------------------------------------------------: |
-| FluxVLA(PI0)        |     68.26 |     67.76 |        [68.01](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robotwin_all_data_full_finetune_bs128) |
-| FluxVLA(Cosmos3)    |     82.40 |     77.96 |        [80.18](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robotwin_all_data_full_finetune_bs1024) |
-| FluxVLA(PI0.5)      |     81.04 |     83.56 |       [82.30](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_all_data_full_finetune_bs128) |
-| FluxVLA(SmolVLA)    |     87.02 |     85.88 |              [86.45](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robotwin_all_data_full_finetune_bs512) |
-| FluxVLA(GR00T N1.5) |     89.34 |     88.34 |       [88.84](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128) |
-| FluxVLA(GR00T N1.7) |     88.70 |     89.14 | [88.92](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robotwin_all_data_full_finetune_bs256) |
-| FluxVLA(DiT4DiT)    |     90.78 |     89.54 |              [90.16](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robotwin_all_data_full_finetune_bs256) |
-| FluxVLA(FastWAM)    | **90.86** | **89.96** |          [**90.41**](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robotwin_all_data_full_finetune_bs256) |
+| Model                    |     Clean |    Random |                                                                                                                                  Average |
+| ------------------------ | --------: | --------: | ---------------------------------------------------------------------------------------------------------------------------------------: |
+| FluxVLA(PI0)             |     68.26 |     67.76 |                 [68.01](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(Cosmos3)         |     82.40 |     77.96 |                 [80.18](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robotwin_all_data_full_finetune_bs1024) |
+| FluxVLA(PI0.5)           |     81.04 |     83.56 |                [82.30](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(SmolVLA)         |     87.02 |     85.88 |                       [86.45](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robotwin_all_data_full_finetune_bs512) |
+| FluxVLA(PI0.5, SLA init) |     86.34 |     86.92 | [86.63](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robotwin_sla_pretrained_all_data_full_finetune_bs256) |
+| FluxVLA(GR00T N1.5)      |     89.34 |     88.34 |                [88.84](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robotwin_all_data_full_finetune_bs128) |
+| FluxVLA(GR00T N1.7)      |     88.70 |     89.14 |          [88.92](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(DiT4DiT)         |     90.78 |     89.54 |                       [90.16](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robotwin_all_data_full_finetune_bs256) |
+| FluxVLA(FastWAM)         | **90.86** | **89.96** |                   [**90.41**](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robotwin_all_data_full_finetune_bs256) |
 
 ## 📢 Latest News
 
@@ -1045,6 +1046,7 @@ For ARM and SARM workflows, you typically need a CLIP checkpoint for training / 
 | PI0_base               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_base)                                             |
 | PI0 RoboCasa full-data | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robocasa_full_data_full_finetune_bs256) |
 | PI05_base              | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_base)                                            |
+| SLA_base               | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/sla_base)                                             |
 | PI05_libero            | 3B   | [🤗 Hugging Face](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_libero)                                          |
 | SmolVLA                | 450M | [🤗 Hugging Face](https://huggingface.co/lerobot/smolvla_base)                                                                      |
 
@@ -1053,6 +1055,14 @@ together into the directory expected by the configs:
 
 ```bash
 hf download limxdynamics/FluxVLAEngine --include "pi05_base/*" \
+  --local-dir ./checkpoints
+```
+
+To initialize PI0.5 from the SLA pretrained weights, download `sla_base`,
+which contains both the weights and the tokenizer:
+
+```bash
+hf download limxdynamics/FluxVLAEngine --include "sla_base/*" \
   --local-dir ./checkpoints
 ```
 

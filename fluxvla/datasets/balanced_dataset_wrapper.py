@@ -56,6 +56,9 @@ class DistributedBalancedRepeatingDataset(DistributedRepeatingDataset):
         seed: Base seed used by source mapping and virtual-index ordering.
     """
 
+    # Overridden in __init__; kept so ``__new__``-built stubs stay usable.
+    _source_episodes = None
+
     def __init__(
         self,
         datasets: Union[Dict, List[Dict]],

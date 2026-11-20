@@ -80,6 +80,21 @@ def _build_observation(observation: Dict[str, Any], instruction: str) -> Dict:
     return result
 
 
+def _run_denormalize(stages, data: Dict[str, Any]) -> np.ndarray:
+    """Run denormalization stages, passing a dict and ``[T, D]`` actions."""
+    output = data
+    for stage in stages:
+        output = stage(data)
+        if isinstance(output, dict):
+            data = output
+            continue
+        output = np.asarray(output)
+        if output.ndim == 1:
+            output = output[None]
+        data = dict(data, action=output)
+    return output['action'] if isinstance(output, dict) else output
+
+
 def _validate_actions(actions: np.ndarray, eval_chunk_size: int) -> np.ndarray:
     """Validate and truncate denormalized RoboTwin actions."""
     actions = np.asarray(actions, dtype=np.float32)
@@ -214,10 +229,17 @@ class LocalFluxVLAPolicy:
         dataset_cfg.setdefault('statistic_name', self.unnorm_key)
         self.dataset = build_dataset_from_cfg(dataset_cfg)
 
+        # A list chains stages; the first one receives the statistics and
+        # the stages exchange a dict (see ``_run_denormalize``).
         denormalize_cfg = copy.deepcopy(denormalize_action)
-        denormalize_cfg['norm_stats'] = self.norm_stats_path
-        denormalize_cfg.setdefault('statistic_name', self.unnorm_key)
-        self.denormalize_action = build_transform_from_cfg(denormalize_cfg)
+        stages = (
+            list(denormalize_cfg) if isinstance(denormalize_cfg, (list, tuple))
+            else [denormalize_cfg])
+        stages[0]['norm_stats'] = self.norm_stats_path
+        stages[0].setdefault('statistic_name', self.unnorm_key)
+        self.denormalize_action = [
+            build_transform_from_cfg(stage) for stage in stages
+        ]
 
         # Build model and load checkpoint weights.
         model_cfg = BaseEvalRunner.prepare_eval_model_cfg(cfg)
@@ -256,11 +278,12 @@ class LocalFluxVLAPolicy:
         # Denormalize to raw joint positions. Delta-action recipes add the
         # current raw state back, so pass it through when the dataset
         # exposes it (the RoboCasa convention).
-        denorm_input = dict(action=raw_actions.float().cpu().numpy())
+        raw_actions = raw_actions.float().cpu().numpy()
+        denorm_input = dict(action=raw_actions[..., :self.eval_chunk_size, :])
         raw_state = getattr(self.dataset, 'last_raw_state', None)
         if raw_state is not None:
             denorm_input['state'] = raw_state
-        actions = self.denormalize_action(denorm_input)
+        actions = _run_denormalize(self.denormalize_action, denorm_input)
         return _validate_actions(actions, self.eval_chunk_size)
 
     def reset(self) -> None:

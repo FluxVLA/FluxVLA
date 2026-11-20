@@ -2,6 +2,10 @@
 # Install torch==2.8.0 and torchvision==0.23.0 from the PyTorch CPU index first.
 -r ../requirements-test.txt
 numpy==1.26.4
+# EEF/SO(3), Parquet statistics, and training entry-point imports.
+scipy==1.15.3
+pyarrow==24.0.0
+draccus==0.10.0
 mmengine==0.10.7
 # Keep MMEngine's OpenCV dependency compatible with NumPy 1.x.
 opencv-python==4.11.0.86

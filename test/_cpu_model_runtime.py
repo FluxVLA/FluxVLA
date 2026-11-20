@@ -73,6 +73,7 @@ def bootstrap():
     _export_public(utils, sys.modules['fluxvla.engines'])
 
     modules = (
+        'datasets.utils.statistics',
         'models.backbones.llms.llama2',
         'models.backbones.llms.gemma',
         'models.backbones.llms.qwen2',
