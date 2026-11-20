@@ -1,4 +1,16 @@
 # Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """PI05 full fine-tuning on RoboDojo v3's stored dense subtask instructions.
 
 No planner/API calls are made during training. The current frame's annotation
@@ -16,6 +28,8 @@ Defaults: 2 GPUs, 2 samples/GPU, accumulation 1 => global batch 4,
 60k optimizer updates. Full sharding and no EMA reduce memory requirements.
 For another GPU count, adjust accumulation to keep the desired global batch.
 Only local JSONL logging is enabled, so no WandB/API credentials are needed.
+Frame-data Arrow caches default to CPFS rather than the system disk. Override
+with HF_DATASETS_CACHE or train_dataloader.dataset.datasets.0.cache_dir.
 
 Run from the FluxVLA repository with the fluxvla Python environment:
     torchrun --standalone --nproc_per_node=2 scripts/train.py \\
@@ -48,6 +62,9 @@ train_dataloader.dataset.auto_compute_statistics = dict(
 _source = train_dataloader.dataset.datasets[0]
 _source.type = 'ParquetDatasetV3'
 _source.data_root_path = [data_root]
+_source.cache_dir = (
+    os.environ.get('HF_DATASETS_CACHE')
+    or '/mnt/data/cpfs/.cache/fluxvla/hf-datasets')
 _source.instruction_source = 'subtask'
 _source.subtask_prefix = 'dense'
 _source.pop('supervise_terminal_padding')

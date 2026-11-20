@@ -1,8 +1,23 @@
+# Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 """ZMQ inference: stateless replicas or one serial, in-process policy."""
 
 from __future__ import annotations
 import copy
+import faulthandler
 import hashlib
+import math
 import multiprocessing
 import os
 import signal
@@ -14,6 +29,7 @@ import traceback
 import uuid
 from collections import deque
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -37,6 +53,8 @@ class _PendingPrediction:
     unnorm_key: str
     payload: bytes
     deadline: float
+    received_at: float | None = None
+    timeout_s: float | None = None
 
 
 @dataclass
@@ -125,7 +143,8 @@ class FluxVLAInferenceServer:
         startup_deadline = time.monotonic() + self.startup_timeout_s
         print(
             '[FluxVLA] inference server listening '
-            f'frontend={self.frontend_bind} backend={self.backend_bind}',
+            f'frontend={self.frontend_bind} backend={self.backend_bind} '
+            f'request_timeout_s={self.request_timeout_s:g}',
             flush=True)
         try:
             while True:
@@ -219,13 +238,16 @@ class FluxVLAInferenceServer:
         unnorm_key = header.get('unnorm_key', '')
         if not isinstance(unnorm_key, str):
             raise TypeError('header.unnorm_key must be a string')
+        received_at = time.monotonic()
         pending = _PendingPrediction(
             route=route,
             request_id=request_id,
             policy_seed=_required_int(header, 'policy_seed'),
             unnorm_key=unnorm_key,
             payload=payload,
-            deadline=time.monotonic() + timeout_s,
+            deadline=received_at + timeout_s,
+            received_at=received_at,
+            timeout_s=timeout_s,
         )
         self._pending_predictions.append(pending)
         self._predictions_by_id[request_id] = pending
@@ -404,13 +426,18 @@ class FluxVLAInferenceServer:
             if pending.deadline <= now:
                 request_id = pending.request_id
                 self._predictions_by_id.pop(request_id, None)
+                details = f'request={request_id}'
+                if pending.received_at is not None:
+                    details += f' elapsed={now - pending.received_at:.3f}s'
+                if pending.timeout_s is not None:
+                    details += f' effective_budget={pending.timeout_s:g}s'
+                error = TimeoutError('model inference timed out on '
+                                     f'{worker.worker_id}: {details}; '
+                                     'server_limit='
+                                     f'{self.request_timeout_s:g}s')
                 self._send_frontend_error(
-                    pending.route,
-                    request_id,
-                    TimeoutError('model inference timed out'),
-                    error_type='timeout')
-                raise TimeoutError(
-                    f'model inference timed out on {worker.worker_id}')
+                    pending.route, request_id, error, error_type='timeout')
+                raise error
 
     def _require_worker(self, identity: bytes,
                         header: Mapping[str, Any]) -> _ModelWorker:
@@ -497,6 +524,44 @@ def _encode_prediction_payload(prediction, metadata) -> bytes:
             metadata=metadata))
 
 
+def _request_stack_dump_after(cfg) -> float:
+    server = config_get(config_get(cfg, 'themis'), 'server', {})
+    value = config_get(server, 'debug_request_stacks_after_s', 0.0)
+    if (isinstance(value, bool) or not isinstance(value, (int, float))
+            or not math.isfinite(value) or value < 0):
+        raise ValueError('themis.server.debug_request_stacks_after_s must '
+                         'be a finite nonnegative number; 0 disables dumps')
+    return float(value)
+
+
+@contextmanager
+def _prediction_diagnostics(worker_id, request_id, stack_dump_after_s):
+    """Opt-in traces for slow requests, never a cancellation or a retry.
+
+    Cover decode, planner/VLA inference, encoding and sending the result.
+    The timer runs only during a request, not model loading or idle waits.
+    It prints stack locations, not observations, credentials or locals.
+    """
+    if not stack_dump_after_s:
+        yield
+        return
+    started = time.monotonic()
+    print(
+        f'[FluxVLA][debug] request begin worker={worker_id} '
+        f'request={request_id}; a stack dump after '
+        f'{stack_dump_after_s:g}s is diagnostic, not a fatal timeout',
+        flush=True)
+    faulthandler.dump_traceback_later(stack_dump_after_s, repeat=False)
+    try:
+        yield
+    finally:
+        faulthandler.cancel_dump_traceback_later()
+        print(
+            f'[FluxVLA][debug] request leave worker={worker_id} '
+            f'request={request_id} elapsed={time.monotonic() - started:.3f}s',
+            flush=True)
+
+
 def run_model_worker(config_path: str,
                      ckpt_path: str,
                      backend_endpoint: str,
@@ -535,6 +600,7 @@ def run_model_worker(config_path: str,
     cfg = Config.fromfile(config_path)
     if cfg_options:
         cfg.merge_from_dict(dict(cfg_options))
+    stack_dump_after_s = _request_stack_dump_after(cfg)
     runner = build_serving_runner_from_config(
         cfg, ckpt_path=ckpt_path, device=device)
     backend.send_multipart([
@@ -560,25 +626,27 @@ def run_model_worker(config_path: str,
         request_id = _required_string(header, 'request_id')
         payload = frames[1] if len(frames) > 1 else empty_payload()
         try:
-            observation = decode_frame(payload)
-            if not isinstance(observation, Mapping):
-                raise TypeError('prediction payload must be a mapping')
-            prediction, inference_time_s = runner.predict_action(
-                observation,
-                unnorm_key=str(header.get('unnorm_key', '')),
-                policy_seed=_required_int(header, 'policy_seed'),
-            )
-            backend.send_multipart([
-                encode_header(
-                    'predict_result',
-                    **common,
-                    request_id=request_id,
-                    inference_time_s=float(inference_time_s),
-                ),
-                _encode_prediction_payload(
-                    prediction, getattr(runner, 'last_prediction_metadata',
-                                        {})),
-            ])
+            with _prediction_diagnostics(worker_id, request_id,
+                                         stack_dump_after_s):
+                observation = decode_frame(payload)
+                if not isinstance(observation, Mapping):
+                    raise TypeError('prediction payload must be a mapping')
+                prediction, inference_time_s = runner.predict_action(
+                    observation,
+                    unnorm_key=str(header.get('unnorm_key', '')),
+                    policy_seed=_required_int(header, 'policy_seed'),
+                )
+                backend.send_multipart([
+                    encode_header(
+                        'predict_result',
+                        **common,
+                        request_id=request_id,
+                        inference_time_s=float(inference_time_s),
+                    ),
+                    _encode_prediction_payload(
+                        prediction,
+                        getattr(runner, 'last_prediction_metadata', {})),
+                ])
         except Exception as exc:
             print(
                 f'[FluxVLA][debug] model worker prediction failed '
