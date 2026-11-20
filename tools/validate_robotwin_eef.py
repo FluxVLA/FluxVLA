@@ -30,11 +30,22 @@ import pyarrow.parquet as pq
 import sapien.core as sapien
 from scipy.spatial.transform import Rotation
 
-from fluxvla.datasets.kinematics.robotwin_eef import RobotwinEEF, relative_eef
+from fluxvla.transforms.transform_actions import (AbsoluteActions,
+                                                  RelativeActions)
+from fluxvla.transforms.urdf_kinematics import JointToEEFPose
+
+ARM_JOINTS = [[f'fl_joint{i}' for i in range(1, 7)],
+              [f'fr_joint{i}' for i in range(1, 7)]]
+ARM_SLICES = [[0, 6], [7, 13]]
+MASK = [True] * 6 + [False] + [True] * 6 + [False]
+ROTATION = ([False] * 3 + [True] * 3 + [False]) * 2
 
 
 def validate(urdf, parquet_files, samples=16):
-    kin = RobotwinEEF(urdf)
+    joint_to_eef = JointToEEFPose(urdf, ARM_JOINTS, ARM_SLICES)
+    kin = joint_to_eef.kinematics
+    relative = RelativeActions(MASK, rotation_mask=ROTATION)
+    absolute = AbsoluteActions(MASK, rotation_mask=ROTATION)
     tree = ET.parse(urdf)
     for link in tree.getroot().findall('link'):
         for tag in ('visual', 'collision'):
@@ -88,10 +99,10 @@ def validate(urdf, parquet_files, samples=16):
         for t in selected:
             # Target frames share one observation, including terminal holds.
             horizon = actions[np.minimum(t + np.arange(10), len(actions) - 1)]
-            eef = kin.forward(horizon)
-            state = kin.forward(states[t])
-            delta = relative_eef(eef, state)
-            restored = relative_eef(delta, state, inverse=True)
+            eef = joint_to_eef.convert(horizon)
+            state = joint_to_eef.convert(states[t])
+            delta = relative(dict(states=state, actions=eef))['actions']
+            restored = absolute(dict(states=state, actions=delta))['actions']
             np.testing.assert_allclose(
                 restored[:, [0, 1, 2, 7, 8, 9]],
                 eef[:, [0, 1, 2, 7, 8, 9]],
@@ -114,7 +125,7 @@ def validate(urdf, parquet_files, samples=16):
     # There are no task objects/cameras or policy rollouts in this scene.
     initial = states[selected[0]]
     target = actions[min(selected[0] + 5, len(actions) - 1)]
-    desired = kin.forward(target)
+    desired = joint_to_eef.convert(target)
     full_initial, full_target = np.zeros(robot.dof), np.zeros(robot.dof)
     for arm, start in enumerate((0, 7)):
         sl = slice(start, start + 6)

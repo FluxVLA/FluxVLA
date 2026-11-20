@@ -48,7 +48,12 @@ class Profile:
     signs: tuple[float, ...] | None = None
     aloha_gripper_input_range: tuple[float, float] | None = None
     expected_dim: int | None = None
-    pose_adapter: str | None = None
+    # Rotation-vector triples inside ``delta_mask`` composed on SO(3)
+    # (``RelativeActions.rotation_mask``) instead of subtracted.
+    rotation_mask: tuple[bool, ...] | None = None
+    # ``JointToEEFPose`` arguments (without ``urdf_path``) applied to states
+    # and actions before delta conversion.
+    joint_to_eef: Mapping[str, Any] | None = None
 
 
 PROFILES = {
@@ -56,9 +61,15 @@ PROFILES = {
     Profile(
         state_key='observation.state',
         action_key='action',
-        delta_mask=(),
+        # [left EEF pose (6), left gripper, right EEF pose (6), right
+        # gripper]: poses are chunk-relative, grippers stay absolute.
+        delta_mask=(True, ) * 6 + (False, ) + (True, ) * 6 + (False, ),
+        rotation_mask=((False, ) * 3 + (True, ) * 3 + (False, )) * 2,
         expected_dim=14,
-        pose_adapter='robotwin-eef'),
+        joint_to_eef=dict(
+            arm_joints=[[f'fl_joint{i}' for i in range(1, 7)],
+                        [f'fr_joint{i}' for i in range(1, 7)]],
+            joint_slices=[[0, 6], [7, 13]])),
     'absolute':
     Profile(state_key='observation.state', action_key='action', delta_mask=()),
     'aloha':
@@ -333,9 +344,12 @@ def _build_action_chunks(
             current = np.broadcast_to(states[:, None, :len(mask)],
                                       (num_frames, horizon, len(mask)))[valid]
         if rotation_mask:
-            from fluxvla.datasets.kinematics.eef_so3_actions import so3_delta
-            chunks[:, :len(mask)] = so3_delta(chunks[:, :len(mask)], current,
-                                              delta_mask, rotation_mask)
+            from fluxvla.transforms.transform_actions import RelativeActions
+            relative = RelativeActions(
+                list(delta_mask), rotation_mask=list(rotation_mask))
+            chunks[:, :len(mask)] = relative(
+                dict(states=current,
+                     actions=chunks[:, None, :len(mask)]))['actions'][:, 0]
         else:
             chunks[:, :len(mask)] -= np.where(mask, current, 0.0)
     return chunks.astype(np.float32, copy=False)
@@ -416,16 +430,15 @@ def compute_statistics(dataset_paths: Sequence[Path],
     if aloha_gripper_input_range is None:
         aloha_gripper_input_range = requested.aloha_gripper_input_range
     use_aloha_coordinates = profile_name == 'aloha'
-    pose_adapter = None
-    rotation_mask = None
-    if requested.pose_adapter is not None:
-        from fluxvla.datasets.kinematics.eef_so3_actions import \
-            create_pose_adapter
-        if delta_mask or signs or aloha_gripper_input_range:
+    joint_to_eef = None
+    rotation_mask = requested.rotation_mask
+    if requested.joint_to_eef is not None:
+        from fluxvla.transforms.urdf_kinematics import JointToEEFPose
+        if urdf_path is None:
+            raise ValueError(f'{profile_name!r} requires urdf_path')
+        if signs or aloha_gripper_input_range:
             raise ValueError('EEF profile cannot combine joint transforms')
-        pose_adapter = create_pose_adapter(requested.pose_adapter, urdf_path)
-        delta_mask = tuple(pose_adapter.delta_mask)
-        rotation_mask = tuple(pose_adapter.rotation_mask)
+        joint_to_eef = JointToEEFPose(urdf_path, **requested.joint_to_eef)
 
     if state_key != initial_state_key or action_key != initial_action_key:
         first_states, first_actions = next(
@@ -487,9 +500,9 @@ def compute_statistics(dataset_paths: Sequence[Path],
             if use_aloha_coordinates:
                 states, actions = _apply_aloha_coordinates(
                     states, actions, aloha_gripper_input_range)
-            if pose_adapter is not None:
-                states = pose_adapter.forward(states)
-                actions = pose_adapter.forward(actions)
+            if joint_to_eef is not None:
+                states = joint_to_eef.convert(states)
+                actions = joint_to_eef.convert(actions)
             chunks = _build_action_chunks(
                 actions,
                 states,
@@ -539,7 +552,7 @@ def compute_statistics(dataset_paths: Sequence[Path],
         'state_samples': total_states,
         'action_samples': total_actions,
     }
-    if pose_adapter is not None:
+    if rotation_mask:
         metadata['rotation_mask'] = list(rotation_mask)
     return result, metadata
 
@@ -728,7 +741,7 @@ def main() -> None:
     if args.no_delta and args.delta_mask is not None:
         raise ValueError('--no-delta and --delta-mask are mutually exclusive')
     requested = PROFILES.get(args.profile)
-    if requested is not None and requested.pose_adapter and args.no_delta:
+    if requested is not None and requested.joint_to_eef and args.no_delta:
         raise ValueError(f'{args.profile} requires delta EEF targets')
     delta_mask = () if args.no_delta else args.delta_mask
     stats, metadata = compute_statistics(

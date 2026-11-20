@@ -48,6 +48,19 @@ Evaluation defaults to all 50 tasks in both clean and random suites.
 # and dataset paths below; override for a custom ROBOTWIN_ROOT checkout.
 _ROBOTWIN_URDF = ('src/RoboTwin/assets/embodiments/aloha-agilex/urdf/'
                   'arx5_description_isaac.urdf')
+# ARX5 arms: joint6 is the EEF frame; each arm occupies six joint dims
+# followed by one gripper dim in the 14D RoboTwin state/action vector.
+_ROBOTWIN_ARM_JOINTS = [[f'fl_joint{i}' for i in range(1, 7)],
+                        [f'fr_joint{i}' for i in range(1, 7)]]
+_ROBOTWIN_ARM_SLICES = [[0, 6], [7, 13]]
+_ROBOTWIN_JOINT_TO_EEF = dict(
+    urdf_path=_ROBOTWIN_URDF,
+    arm_joints=_ROBOTWIN_ARM_JOINTS,
+    joint_slices=_ROBOTWIN_ARM_SLICES)
+# After JointToEEFPose: [pos(3), rotvec(3), gripper] per arm. Poses are
+# chunk-relative with SO(3) rotation composition; grippers stay absolute.
+_ROBOTWIN_EEF_DELTA_MASK = [True] * 6 + [False] + [True] * 6 + [False]
+_ROBOTWIN_EEF_ROTATION_MASK = ([False] * 3 + [True] * 3 + [False]) * 2
 
 _PI05_CHECKPOINT = './checkpoints/sla_base/model.safetensors'
 _PI05_TOKENIZER = 'checkpoints/sla_base'
@@ -281,10 +294,13 @@ train_dataloader = dict(
                         # Pin the decoder so an optional torchcodec install
                         # cannot silently change training inputs.
                         video_backend='pyav'),
+                    dict(type='JointToEEFPose', **_ROBOTWIN_JOINT_TO_EEF),
                     dict(
-                        type='RelativeEEFInputs',
-                        pose_adapter='robotwin-eef',
-                        urdf_path=_ROBOTWIN_URDF),
+                        type='RelativeActions',
+                        mask=_ROBOTWIN_EEF_DELTA_MASK,
+                        rotation_mask=_ROBOTWIN_EEF_ROTATION_MASK,
+                        state_key='states',
+                        action_key='actions'),
                     # Normalize at native dimension; padding happens after
                     # prompt tokenization, matching OpenPI.
                     dict(
@@ -383,10 +399,7 @@ eval = dict(
         img_keys=['cam_high', 'cam_left_wrist', 'cam_right_wrist'],
         # Mirror the training pipeline exactly (minus augmentation).
         transforms=[
-            dict(
-                type='RelativeEEFInputs',
-                pose_adapter='robotwin-eef',
-                urdf_path=_ROBOTWIN_URDF),
+            dict(type='JointToEEFPose', **_ROBOTWIN_JOINT_TO_EEF),
             dict(
                 type='NormalizeStatesAndActions',
                 action_dim=None,
@@ -411,13 +424,30 @@ eval = dict(
                 backend='pil'),
             dict(type='SimpleNormalizeImages'),
         ]),
-    # Restore absolute EEF targets, then IK only the executed chunk prefix.
-    # The raw joint observation is supplied by LocalFluxVLAPolicy.
-    denormalize_action=dict(
-        type='DenormalizeEEFAction',
-        pose_adapter='robotwin-eef',
-        urdf_path=_ROBOTWIN_URDF,
-        norm_type='quantile',
-        action_dim=14,
-    ),
+    # The runner feeds the executed chunk prefix and the raw joint state
+    # through these stages: denormalize, restore absolute EEF targets from
+    # the current EEF pose, then IK back to qpos seeded by the raw joints.
+    denormalize_action=[
+        dict(
+            type='DenormalizePrivateAction',
+            norm_type='quantile',
+            action_dim=14),
+        dict(
+            type='JointToEEFPose',
+            state_key='state',
+            action_key=None,
+            output_state_key='eef_state',
+            **_ROBOTWIN_JOINT_TO_EEF),
+        dict(
+            type='AbsoluteActions',
+            mask=_ROBOTWIN_EEF_DELTA_MASK,
+            rotation_mask=_ROBOTWIN_EEF_ROTATION_MASK,
+            state_key='eef_state',
+            action_key='action'),
+        dict(
+            type='EEFPoseToJoint',
+            state_key='state',
+            action_key='action',
+            **_ROBOTWIN_JOINT_TO_EEF),
+    ],
 )

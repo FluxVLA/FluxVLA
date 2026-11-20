@@ -26,9 +26,9 @@ from .robocasa_transforms import (  # noqa: F401, F403
     RobocasaEvalDataset, RobocasaGR1N15Bridge, flatten_robocasa_state)
 from .transform_actions import *  # noqa: F401, F403
 from .transform_cosmos3 import *  # noqa: F401, F403
-from .transform_eef_actions import *  # noqa: F401, F403
 from .transform_images import *  # noqa: F401, F403
 from .transform_inputs import *  # noqa: F401, F403
 from .transform_prompts import *  # noqa: F401, F403
+from .urdf_kinematics import *  # noqa: F401, F403
 from .video_action_transforms import *  # noqa: F401, F403
 from .vlm_transforms import BuildVLMMessages, ProcessVLMSFTInputs  # noqa: F401
