@@ -546,8 +546,8 @@ class AlohaOperator:
                 daemon=True)
             self._traj_thread.start()
         else:
-            self._run_trajectory(left_traj, right_traj, dt, base_vel,
-                                 stop_event)
+            return self._run_trajectory(left_traj, right_traj, dt, base_vel,
+                                        stop_event)
 
     def stop_trajectory(self):
         """Stop the currently executing trajectory."""
@@ -678,10 +678,13 @@ class AlohaOperator:
         stop = stop_event
         rate = rospy.Rate(1.0 / dt)
 
+        published = 0
         for i in range(len(left_traj)):
             if rospy.is_shutdown() or stop.is_set():
                 break
             self._send_joints(left_traj[i].tolist(), right_traj[i].tolist())
             if base_vel is not None:
                 self._send_base_velocity(base_vel[i])
+            published += 1
             rate.sleep()
+        return published

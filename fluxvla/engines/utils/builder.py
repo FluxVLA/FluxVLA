@@ -146,6 +146,20 @@ def build_from_cfg(
         return obj
 
 
+def build_policy_from_cfg(cfg, default_args=None):
+    """Build an online policy; runtime models/processors can be injected."""
+    import fluxvla.policies  # noqa: F401
+    from .root import POLICIES
+    return build_from_cfg(cfg, POLICIES, default_args)
+
+
+def build_observation_adapter_from_cfg(cfg):
+    """Build an environment-side adapter, separate from model preprocessing."""
+    import fluxvla.engines.observation_adapters  # noqa: F401
+    from .root import OBSERVATION_ADAPTERS
+    return build_from_cfg(cfg, OBSERVATION_ADAPTERS)
+
+
 def build_tokenizer_from_cfg(
     cfg: Union[dict, ConfigDict, Config],
     default_args: Optional[Union[dict, 'ConfigDict', 'Config']] = None
@@ -353,6 +367,11 @@ def build_runner_from_cfg(
         nn.Module: A built nn.Module.
     """
     from .root import RUNNERS
+    target = cfg.get('type', (default_args or {}).get('type'))
+    runner_cls = RUNNERS.get(target) if isinstance(target, str) else target
+    if getattr(runner_cls, 'inference_backend', None) is not None:
+        from fluxvla.engines.evaluation_runtime import build_native_eval_runner
+        return build_native_eval_runner(cfg, default_args)
     return build_from_cfg(cfg, RUNNERS, default_args)
 
 

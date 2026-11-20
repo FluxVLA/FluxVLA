@@ -408,6 +408,8 @@ class LiberoEvalRunner(BaseEvalRunner):
                 return replay_img
             raise
 
+    inference_backend = 'libero'
+
     def __init__(self,
                  cfg: Dict,
                  seed: int,
@@ -442,10 +444,12 @@ class LiberoEvalRunner(BaseEvalRunner):
                  result_gpu_id: int = None,
                  mixed_precision_dtype: str = 'bf16',
                  enable_mixed_precision_training: bool = True,
-                 controller_use_delta: Optional[bool] = None):
+                 controller_use_delta: Optional[bool] = None,
+                 **kwargs):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
+        super().__init__(**kwargs)
         self.set_common_eval_attrs(cfg, seed, ckpt_path, model_family,
                                    mixed_precision_dtype,
                                    enable_mixed_precision_training)
@@ -590,6 +594,7 @@ class LiberoEvalRunner(BaseEvalRunner):
 
     def cleanup(self) -> None:
         """Release per-suite evaluation resources before the next suite."""
+        self.close_predictor()
         self.vla = None
         self.dataset = None
         self.denormalize_action = None
@@ -606,6 +611,7 @@ class LiberoEvalRunner(BaseEvalRunner):
 
     def run(self):
         """Run the evaluation process."""
+        predictor = self.require_predictor()
         benchmark = _get_libero_benchmark()
         benchmark_dict = benchmark.get_benchmark_dict()
         task_suite = benchmark_dict[self.task_suite_name]()
@@ -749,12 +755,11 @@ class LiberoEvalRunner(BaseEvalRunner):
 
                 # Set initial states
                 obs = env.set_init_state(initial_states[trial_id])
-                is_new_episode = True
+                predictor.reset(task_description, unnorm_key=unnorm_key)
+                predictor.observe(obs, 0)
 
-                # Setup
                 t = 0
                 replay_images = []
-                next_batch = None
 
                 overwatch.info(f'Starting episode {trial_id+1}...')
 
@@ -763,7 +768,6 @@ class LiberoEvalRunner(BaseEvalRunner):
                 task_start_times[task_id] = min(task_start_times[task_id],
                                                 episode_start)
                 done = False
-                controller_delta_applied = False
                 while t < max_steps + self.num_steps_wait:
                     # IMPORTANT: Do nothing for the first
                     # few timesteps
@@ -774,93 +778,42 @@ class LiberoEvalRunner(BaseEvalRunner):
                             get_libero_dummy_action())
                         t += 1
                         continue
-                    if next_batch is None:
-                        obs['task_description'] = task_description
-                        obs['is_new_episode'] = is_new_episode
-                        batch, replay_img = self.dataset(obs)
-                        if (self._should_collect_replay_images()
-                                and len(replay_images) == 0):
+                    output = predictor.predict_action(
+                        obs, t - self.num_steps_wait, environment=env)
+                    if output.metadata or output.status != 'ready':
+                        log_file.write(
+                            'Prediction: ' +
+                            json.dumps(output.event(), ensure_ascii=False) +
+                            '\n')
+                    if (self._should_collect_replay_images()
+                            and not replay_images):
+                        replay_images.append(
+                            self._get_replay_image(obs,
+                                                   predictor.replay_image))
+                    if output.status != 'ready':
+                        break
+                    executed_steps = 0
+                    for action_index, action in enumerate(output.actions):
+                        # Every predictor returns native commands: no second
+                        # tokenization or denormalization in the runner.
+                        obs, reward, done, info = env.step(action.tolist())
+                        executed_steps += 1
+                        t += 1
+                        terminal = done or t >= max_steps + self.num_steps_wait
+                        replay_img = predictor.observe(
+                            obs,
+                            t - self.num_steps_wait,
+                            action_index=action_index,
+                            terminal=terminal)
+                        if self._should_collect_replay_images():
                             replay_images.append(
                                 self._get_replay_image(obs, replay_img))
-                    else:
-                        batch = next_batch
-                        next_batch = None
-                    if not controller_delta_applied:
-                        configure_eval_env = getattr(self.vla,
-                                                     'configure_eval_env',
-                                                     None)
-                        controller_use_delta = getattr(self,
-                                                       'controller_use_delta',
-                                                       None)
-                        if callable(configure_eval_env):
-                            configure_eval_env(env, controller_use_delta)
-                        elif controller_use_delta is not None:
-                            raise RuntimeError(
-                                'controller_use_delta requires the VLA to '
-                                'implement configure_eval_env().')
-                        controller_delta_applied = True
-                    is_new_episode = False
-                    batch['unnorm_key'] = unnorm_key
-                    predict_kwargs = dict(batch)
-                    if self.num_inference_steps is not None:
-                        predict_kwargs['num_inference_steps'] = \
-                            self.num_inference_steps
-                    if self.inference_seed is not None:
-                        predict_kwargs['seed'] = self.inference_seed
-                    build_eval_kwargs = getattr(
-                        self.vla, 'build_eval_predict_action_kwargs', None)
-                    if callable(build_eval_kwargs):
-                        predict_kwargs.update(
-                            build_eval_kwargs(batch, env=env))
-                    with torch.autocast(
-                            'cuda',
-                            dtype=self.mixed_precision_dtype,
-                            enabled=self.enable_mixed_precision_training):
-                        with torch.no_grad():
-                            actions = self.vla.predict_action(**predict_kwargs)
-                    if len(actions.shape) == 3:
-                        actions = actions[
-                            0, :self.eval_chunk_size, :].float().cpu().numpy()
-                    else:
-                        assert len(actions.shape) == 2, \
-                            f'Unexpected action shape: {actions.shape}'
-                        actions = actions[0, None, :].float().cpu().numpy()
-                    for action in actions:
-                        inputs = dict(
-                            action=action,
-                            task_suite_name=self.task_suite_name,
-                            norm_stats_key=self.norm_stats_key,
-                        )
-                        action_denormed = self.denormalize_action(inputs)
-                        obs, reward, done, info = env.step(
-                            action_denormed.tolist())
-                        after_eval_env_step = getattr(self.vla,
-                                                      'after_eval_env_step',
-                                                      None)
-                        if callable(after_eval_env_step):
-                            after_eval_env_step(action)
                         if done:
                             total_successes += 1
                             rank_success_count += 1
-                            if self._should_collect_replay_images():
-                                replay_images.append(
-                                    self._get_replay_image(obs))
-                            next_batch = None
+                        if terminal:
                             break
-                        if self.preprocess_every_step:
-                            obs['task_description'] = task_description
-                            obs['is_new_episode'] = False
-                            batch, replay_img = self.dataset(obs)
-                            if self._should_collect_replay_images():
-                                replay_images.append(
-                                    self._get_replay_image(obs, replay_img))
-                            next_batch = batch
-                        else:
-                            if self._should_collect_replay_images():
-                                replay_images.append(
-                                    self._get_replay_image(obs))
-                            next_batch = None
-                        t += 1
+                    predictor.acknowledge(executed_steps)
                     if done:
                         break
                 total_episodes += 1

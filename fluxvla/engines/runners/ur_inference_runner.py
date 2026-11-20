@@ -34,6 +34,8 @@ class URInferenceRunner(BaseInferenceRunner):
     robot actuation.
     """
 
+    policy_execution_ack = True
+
     def __init__(self, action_mode: str = 'joint', *args, **kwargs):
         """Initialize the Universal Robot inference runner."""
         if action_mode not in {'joint', 'cartesian'}:
@@ -222,7 +224,14 @@ class URInferenceRunner(BaseInferenceRunner):
             actions (np.ndarray): Array of denormalized robot actions
             rate: ROS rate limiter for action timing
         """
+        import rospy
+
+        if self.disable_puppet_arm:
+            return 0
+        published = 0
         for action in actions:
+            if rospy.is_shutdown():
+                break
             if self.action_mode == 'cartesian':
                 self.ros_operator.servol(action[:7])
             else:
@@ -230,4 +239,6 @@ class URInferenceRunner(BaseInferenceRunner):
 
             self.ros_operator.movegrip(action[-1])
 
+            published += 1
             rate.sleep()
+        return published

@@ -47,6 +47,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             Defaults to None (execute all).
     """
 
+    policy_execution_ack = True
+
     def __init__(self,
                  gripper_threshold: float = 0.05,
                  prepare_pose: List[float] = None,
@@ -319,7 +321,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
     def _execute_actions(self, actions, rate):
         """Execute active-arm actions (sync or async)."""
         if self.disable_puppet_arm:
-            return
+            return 0
 
         ctx = self._action_ctx
         final_chunk = False
@@ -349,7 +351,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                                             7]
             gripper_trajectories[arm] = actions[:, arm_slice.start + 7]
 
-        self.ros_operator.execute_trajectory(
+        published = self.ros_operator.execute_trajectory(
             arm_trajectories=arm_trajectories,
             gripper_trajectories=gripper_trajectories,
             dt=self.dt,
@@ -364,6 +366,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             self._remaining_instruction_chunks -= 1
             if self._remaining_instruction_chunks <= 0:
                 self._remaining_instruction_chunks = None
+        return published
 
     def cleanup(self):
         """Clean up resources."""
