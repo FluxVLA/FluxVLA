@@ -48,9 +48,28 @@ class Profile:
     signs: tuple[float, ...] | None = None
     aloha_gripper_input_range: tuple[float, float] | None = None
     expected_dim: int | None = None
+    # Rotation-vector triples inside ``delta_mask`` composed on SO(3)
+    # (``RelativeActions.rotation_mask``) instead of subtracted.
+    rotation_mask: tuple[bool, ...] | None = None
+    # ``JointToEEFPose`` arguments (without ``urdf_path``) applied to states
+    # and actions before delta conversion.
+    joint_to_eef: Mapping[str, Any] | None = None
 
 
 PROFILES = {
+    'robotwin-eef-so3':
+    Profile(
+        state_key='observation.state',
+        action_key='action',
+        # [left EEF pose (6), left gripper, right EEF pose (6), right
+        # gripper]: poses are chunk-relative, grippers stay absolute.
+        delta_mask=(True, ) * 6 + (False, ) + (True, ) * 6 + (False, ),
+        rotation_mask=((False, ) * 3 + (True, ) * 3 + (False, )) * 2,
+        expected_dim=14,
+        joint_to_eef=dict(
+            arm_joints=[[f'fl_joint{i}' for i in range(1, 7)],
+                        [f'fr_joint{i}' for i in range(1, 7)]],
+            joint_slices=[[0, 6], [7, 13]])),
     'absolute':
     Profile(state_key='observation.state', action_key='action', delta_mask=()),
     'aloha':
@@ -286,9 +305,14 @@ def _apply_aloha_coordinates(
     return states, actions
 
 
-def _build_action_chunks(actions: np.ndarray, states: np.ndarray, horizon: int,
-                         window_start_idx: int, delta_mask: tuple[bool, ...],
-                         repeat_terminal: bool) -> np.ndarray:
+def _build_action_chunks(
+        actions: np.ndarray,
+        states: np.ndarray,
+        horizon: int,
+        window_start_idx: int,
+        delta_mask: tuple[bool, ...],
+        repeat_terminal: bool,
+        rotation_mask: tuple[bool, ...] | None = None) -> np.ndarray:
     num_frames, action_dim = actions.shape
     if num_frames == 0:
         return np.empty((0, action_dim), dtype=np.float32)
@@ -319,7 +343,15 @@ def _build_action_chunks(actions: np.ndarray, states: np.ndarray, horizon: int,
             valid = target_indices < num_frames
             current = np.broadcast_to(states[:, None, :len(mask)],
                                       (num_frames, horizon, len(mask)))[valid]
-        chunks[:, :len(mask)] -= np.where(mask, current, 0.0)
+        if rotation_mask:
+            from fluxvla.transforms.transform_actions import RelativeActions
+            relative = RelativeActions(
+                list(delta_mask), rotation_mask=list(rotation_mask))
+            chunks[:, :len(mask)] = relative(
+                dict(states=current,
+                     actions=chunks[:, None, :len(mask)]))['actions'][:, 0]
+        else:
+            chunks[:, :len(mask)] -= np.where(mask, current, 0.0)
     return chunks.astype(np.float32, copy=False)
 
 
@@ -367,7 +399,8 @@ def compute_statistics(dataset_paths: Sequence[Path],
                        aloha_gripper_input_range: tuple[float, float]
                        | None = None,
                        statistic_name: str = 'private',
-                       temp_dir: Path | None = None) -> tuple[dict, dict]:
+                       temp_dir: Path | None = None,
+                       urdf_path: str | None = None) -> tuple[dict, dict]:
     """Compute transformed state/action statistics and provenance metadata."""
     if action_horizon <= 0:
         raise ValueError('action_horizon must be positive')
@@ -397,6 +430,15 @@ def compute_statistics(dataset_paths: Sequence[Path],
     if aloha_gripper_input_range is None:
         aloha_gripper_input_range = requested.aloha_gripper_input_range
     use_aloha_coordinates = profile_name == 'aloha'
+    joint_to_eef = None
+    rotation_mask = requested.rotation_mask
+    if requested.joint_to_eef is not None:
+        from fluxvla.transforms.urdf_kinematics import JointToEEFPose
+        if urdf_path is None:
+            raise ValueError(f'{profile_name!r} requires urdf_path')
+        if signs or aloha_gripper_input_range:
+            raise ValueError('EEF profile cannot combine joint transforms')
+        joint_to_eef = JointToEEFPose(urdf_path, **requested.joint_to_eef)
 
     if state_key != initial_state_key or action_key != initial_action_key:
         first_states, first_actions = next(
@@ -458,9 +500,17 @@ def compute_statistics(dataset_paths: Sequence[Path],
             if use_aloha_coordinates:
                 states, actions = _apply_aloha_coordinates(
                     states, actions, aloha_gripper_input_range)
-            chunks = _build_action_chunks(actions, states, action_horizon,
-                                          window_start_idx, delta_mask,
-                                          repeat_terminal)
+            if joint_to_eef is not None:
+                states = joint_to_eef.convert(states)
+                actions = joint_to_eef.convert(actions)
+            chunks = _build_action_chunks(
+                actions,
+                states,
+                action_horizon,
+                window_start_idx,
+                delta_mask,
+                repeat_terminal,
+                rotation_mask=rotation_mask)
             state_values[state_offset:state_offset + len(states)] = states
             action_values[action_offset:action_offset + len(chunks)] = chunks
             state_offset += len(states)
@@ -502,6 +552,8 @@ def compute_statistics(dataset_paths: Sequence[Path],
         'state_samples': total_states,
         'action_samples': total_actions,
     }
+    if rotation_mask:
+        metadata['rotation_mask'] = list(rotation_mask)
     return result, metadata
 
 
@@ -583,7 +635,7 @@ def compute_statistics_from_dataset_config(
     supported = {
         'state_key', 'action_key', 'delta_mask', 'action_horizon',
         'window_start_idx', 'repeat_terminal', 'signs',
-        'aloha_gripper_input_range', 'statistic_name', 'temp_dir'
+        'aloha_gripper_input_range', 'statistic_name', 'temp_dir', 'urdf_path'
     }
     unknown = sorted(set(options) - supported)
     if unknown:
@@ -668,6 +720,10 @@ def parse_args() -> argparse.Namespace:
         help='Exclude out-of-episode future actions instead of repeating the '
         'last action.')
     parser.add_argument('--temp-dir', type=Path)
+    parser.add_argument(
+        '--urdf-path',
+        help='Robot URDF for profiles with a pose adapter, e.g. '
+        'robotwin-eef-so3.')
     parser.add_argument('--output', type=Path)
     parser.add_argument(
         '--format', choices=('python', 'json'), default='python')
@@ -684,6 +740,9 @@ def main() -> None:
     args = parse_args()
     if args.no_delta and args.delta_mask is not None:
         raise ValueError('--no-delta and --delta-mask are mutually exclusive')
+    requested = PROFILES.get(args.profile)
+    if requested is not None and requested.joint_to_eef and args.no_delta:
+        raise ValueError(f'{args.profile} requires delta EEF targets')
     delta_mask = () if args.no_delta else args.delta_mask
     stats, metadata = compute_statistics(
         args.data_paths,
@@ -697,7 +756,8 @@ def main() -> None:
         signs=args.signs,
         aloha_gripper_input_range=args.gripper_input_range,
         statistic_name=args.statistic_name,
-        temp_dir=args.temp_dir)
+        temp_dir=args.temp_dir,
+        urdf_path=args.urdf_path)
 
     if args.format == 'python':
         output = _format_python(stats, args.variable_name)
