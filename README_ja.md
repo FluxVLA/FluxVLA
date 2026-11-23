@@ -1098,6 +1098,7 @@ VLM ベースの自動アノテーションを使う場合は、公式 SARM VLM 
 - LIBERO と RoboCasa の評価サマリーを Feishu Sheets に自動アップロードできます。詳細は [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md) を参照してください。
 - ZMQ ベースのリモート推論インフラをサポートします。サーバー/クライアントアーキテクチャにより、モデル推論を GPU サーバーにオフロードし、リソースが限られたエッジデバイスへのデプロイを可能にします。詳細は [リモート推論サービス](docs/remote_inference_serving.md) を参照してください。
 - [RTC（Real-Time Chunking）](docs/rtc.md) をサポートし、チャンク間の軌跡の連続性を向上させます。
+- MPC と Ruckig backend による軌跡後処理をサポートします。設定方法、chunk stitching、benchmark については [Trajectory Postprocessing](docs/trajectory_postprocessing.md) を参照してください。
 - GR00T と PI0.5 の推論を高速化します。詳細は [Inference Acceleration](docs/inference_acceleration.md) を参照してください。Triton の融合カーネル、CUDA Graph のキャプチャ、CUDA のカスタム演算子が含まれます。
 - Oli ヒューマノイド全身（移動操作）向けの最小実機推論パスを提供します（rospy センサー入力 + WebSocket 制御。ベース / ハンドコマンドはロボット SDK 統合ポイントです）。詳細は [docs/oli_whole_body.md](docs/oli_whole_body.md) を参照してください。
 

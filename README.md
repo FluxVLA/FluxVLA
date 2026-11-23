@@ -1215,6 +1215,7 @@ If you use VLM-based SARM annotation, place the official SARM VLM under `./check
 - Supports uploading LIBERO and RoboCasa evaluation summaries to Feishu Sheets; see [Feishu Evaluation Reporting](docs/feishu_eval_reporting.md).
 - Supports remote inference infrastructure with ZMQ-based server/client architecture, enabling GPU-offloaded inference for resource-constrained edge devices. See [Remote Inference Serving](docs/remote_inference_serving.md).
 - Supports [RTC (Real-Time Chunking)](docs/rtc.md) to improve cross-chunk trajectory continuity.
+- Supports trajectory postprocessing with reusable MPC and Ruckig backends; see [Trajectory Postprocessing](docs/trajectory_postprocessing.md) for configuration, stitching, and benchmark details.
 - Supports accelerated inference for GR00T and PI0.5; see [Inference Acceleration](docs/inference_acceleration.md), including Triton fused kernels, CUDA Graph capture, and CUDA custom operators.
 - Provides a minimal Oli humanoid whole-body (loco-manipulation) real-robot inference path (rospy sensor input + WebSocket control; base/hand commands are robot-SDK integration points). See [docs/oli_whole_body.md](docs/oli_whole_body.md).
 
