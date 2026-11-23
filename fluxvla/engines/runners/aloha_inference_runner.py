@@ -18,8 +18,8 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from ..utils.postprocess import Trajectory, TrajectoryPostprocessor
-from ..utils.postprocess.plot_utils import plot_postprocess_comparison
 from ..utils.root import RUNNERS
+from ..utils.trajectory_utils import resample_remaining
 from .base_inference_runner import BaseInferenceRunner
 
 
@@ -249,7 +249,6 @@ class AlohaInferenceRunner(BaseInferenceRunner):
             dt=self.dt,
             positions=raw_chunk_actions,
         )
-        self._action_ctx.raw_trajectory = raw_trajectory.copy()
 
         previous_trajectory = getattr(self._prev_ctx, 'trajectory', None)
         processed_trajectory = self.trajectory_postprocessor.process(
@@ -260,28 +259,12 @@ class AlohaInferenceRunner(BaseInferenceRunner):
         for col in (self.LEFT_GRIPPER_COL, self.RIGHT_GRIPPER_COL):
             mask = processed_trajectory.positions[:,
                                                   col] < self.gripper_threshold
-            processed_trajectory.positions[mask, col] = self.gripper_closed_value
+            processed_trajectory.positions[mask, col] = (
+                self.gripper_closed_value)
 
         self._action_ctx.trajectory = processed_trajectory
 
-        self._debug_plot(processed_trajectory)
         return processed_trajectory.positions
-
-    def _debug_plot(self, processed_traj):
-        if not self.postprocess_config.get('debug_plot', False):
-            return
-        prev = self._prev_ctx
-        prev_raw = getattr(prev, 'raw_trajectory', None)
-        prev_post = getattr(prev, 'trajectory', None)
-
-        plot_postprocess_comparison(
-            dof_indices=self.DEFAULT_JOINT_DOF_INDICES,
-            cur_raw=self._action_ctx.raw_trajectory,
-            cur_post=processed_traj,
-            prev_raw=prev_raw,
-            prev_post=prev_post,
-            plot_dofs=self.postprocess_config.get('debug_plot_dofs'),
-        )
 
     def _execute_actions(self, actions, rate):
         """Execute dual-arm actions (sync or async).
@@ -296,7 +279,7 @@ class AlohaInferenceRunner(BaseInferenceRunner):
         if self.async_execution and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
             offset = (time.time() - ctx.action_timestamp) / self.dt
-            actions = self._resample_remaining(actions, offset)
+            actions = resample_remaining(actions, offset)
         else:
             ctx.action_timestamp = time.time()
             if self.execute_horizon is not None:
