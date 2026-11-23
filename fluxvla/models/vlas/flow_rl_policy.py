@@ -10,9 +10,18 @@ from .pi05_rl_sampler import (gaussian_entropy, gaussian_logprob, timesteps,
                               transition)
 
 
+def pad_batch(tensor, size):
+    """Repeat the final row for a fixed network shape."""
+    missing = size - tensor.shape[0]
+    if missing <= 0:
+        return tensor
+    return torch.cat((tensor, tensor[-1:].expand(missing, *tensor.shape[1:])))
+
+
 class FlowRLPolicyMixin:
     """Implement RLinf's PPO interface without renaming native VLA keys."""
 
+    fixed_ppo_batch = False
     rl_trainable_modules = ()
     rl_frozen_modules = ()
 
@@ -108,8 +117,12 @@ class FlowRLPolicyMixin:
                     for key, value in env_obs.items()
                 }) for start in range(0, len(env_obs['states']), micro)
             ])
-        hidden, mask, _ = self._prefix(self._prepare_obs(env_obs))
-        return self._value(hidden, mask)[:, None]
+        obs = self._prepare_obs(env_obs)
+        batch = obs['states'].size(0)
+        if self.fixed_ppo_batch and micro and batch < micro:
+            obs = {key: pad_batch(value, micro) for key, value in obs.items()}
+        hidden, mask, _ = self._prefix(obs)
+        return self._value(hidden, mask)[:batch, None]
 
     def predict_action_batch(self, env_obs, **kwargs):
         """Adapt RLinf's batch-policy interface to FluxVLA's predict_action."""
@@ -161,8 +174,15 @@ class FlowRLPolicyMixin:
             raise ValueError(
                 f'Expected noise shape {shape}, got {tuple(noise.shape)}')
         noise = noise.to(device=self.device, dtype=torch.float32).clone()
-        hidden, mask, cache = self._prefix(obs)
-        values = self._value(hidden, mask)[:, None]
+        # Keep trajectories and RNG draws at the real environment batch size.
+        # Only the BF16 network calls need the replay microbatch shape.
+        network_batch = (micro if mode == 'train' and self.fixed_ppo_batch
+                         and micro else batch)
+        network_obs = ({key: pad_batch(value, network_batch)
+                        for key, value in obs.items()}
+                       if network_batch > batch else obs)
+        hidden, mask, cache = self._prefix(network_obs)
+        values = self._value(hidden, mask)[:batch, None]
         if mode == 'eval':
             with self._network_context():
                 model_actions = super().predict_action(**obs, noise=noise)
@@ -187,7 +207,9 @@ class FlowRLPolicyMixin:
                                  index,
                                  device=self.device,
                                  dtype=torch.long)
-                velocity = self._velocity(obs, mask, cache, x, times[idx])
+                velocity = self._velocity(
+                    network_obs, mask, cache, pad_batch(x, network_batch),
+                    pad_batch(times[idx], network_batch))[:batch]
                 if index == chosen:
                     mean, std = transition(
                         x,

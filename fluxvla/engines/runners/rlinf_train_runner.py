@@ -169,6 +169,10 @@ class RLinfTrainRunner:
             if not path.is_file():
                 raise FileNotFoundError(f'RLinf weights missing: {path}')
             self.cfg.runner.ckpt_path = str(path)
+        if (not evaluation and self.cfg.actor.model.model_type == 'fluxvla_smolvla'
+                and self.cfg.actor.model.fluxvla.rollout_micro_batch_size is None):
+            self.cfg.actor.model.fluxvla.rollout_micro_batch_size = (
+                self.cfg.actor.micro_batch_size)
         cfg = validate_cfg(self.cfg)
         cluster = Cluster(
             cluster_cfg=cfg.cluster,
@@ -178,7 +182,11 @@ class RLinfTrainRunner:
         if not evaluation:
             from rlinf.workers.actor.embodied_fsdp_actor_worker import \
                 EmbodiedFSDPActor
-            actor = EmbodiedFSDPActor
+            if cfg.actor.model.model_type == 'fluxvla_smolvla':
+                from .rlinf.smolvla_actor import SmolVLAActor
+                actor = SmolVLAActor
+            else:
+                actor = EmbodiedFSDPActor
             workers.insert(0, ('actor', actor))
         groups = {
             name: worker.create_group(cfg).launch(

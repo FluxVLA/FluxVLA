@@ -82,15 +82,27 @@ def main():
                 get_libero_wrist_image(obs)[None].copy()),
             task_descriptions=[task.language])
         torch.manual_seed(42)
-        _, rollout = policy.predict_action(env_obs, mode='train')
-        with torch.no_grad():
-            replay = policy(forward_inputs=rollout['forward_inputs'])
-        logprob_error = (
-            replay['logprobs'] - rollout['prev_logprobs']).abs().max().item()
-        value_error = (
-            replay['values'] - rollout['prev_values'][:, 0]).abs().max().item()
+        # Each rollout rank can have one environment while the actor
+        # replays shuffled transitions in a larger microbatch.
+        micro = int(policy.rollout_micro_batch_size or cfg.actor.micro_batch_size)
+        rollouts = [policy.predict_action(env_obs, mode='train')[1]
+                    for _ in range(micro)]
+        inputs = {key: torch.cat([r['forward_inputs'][key] for r in rollouts])
+                  for key in rollouts[0]['forward_inputs']}
+        old = torch.cat([r['prev_logprobs'] for r in rollouts])
+        old_values = torch.cat([r['prev_values'][:, 0] for r in rollouts])
+        policy.train()
+        replay = policy(forward_inputs=inputs)
+        new = replay['logprobs'].detach()
+        ratio = (new.sum((1, 2)) - old.sum((1, 2))).exp()
+        logprob_error = (new - old).abs().max().item()
+        value_error = (replay['values'].detach() - old_values).abs().max().item()
+        torch.testing.assert_close(ratio, torch.ones_like(ratio),
+                                   atol=1e-4, rtol=0)
         assert logprob_error < 1e-5, logprob_error
         assert value_error < 1e-5, value_error
+        del replay
+        policy.eval()
         noise = torch.randn(1, policy.chunk_size, policy.max_action_dim,
                             device='cuda')
         rl_actions, _ = policy.predict_action(env_obs, mode='eval', noise=noise)
@@ -102,7 +114,11 @@ def main():
         model_cfg.strict_mapping = True
         model_cfg.num_steps = int(cfg.actor.model.num_steps)
         native = build_vla_from_cfg(model_cfg).float().cuda().eval()
-        exported = torch.load(args.export, map_location='cpu', weights_only=True)
+        if args.export.suffix == '.safetensors':
+            from safetensors.torch import load_file
+            exported = load_file(str(args.export))
+        else:
+            exported = torch.load(args.export, map_location='cpu', weights_only=True)
         assert not any(name.startswith('value_head.') for name in exported)
         native.load_state_dict(exported, strict=True)
         del exported
@@ -119,6 +135,7 @@ def main():
             task=task.language, action_shape=list(rl_actions.shape),
             changed_expert_tensors=expert_changed,
             changed_frozen_tensors=frozen_changed,
+            pre_update_chunk_ratio=ratio.tolist(),
             max_logprob_replay_error=logprob_error,
             max_value_replay_error=value_error,
             max_export_action_error=export_error)
