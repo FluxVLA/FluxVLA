@@ -1,0 +1,48 @@
+Third-Party Attribution for vpp2
+
+Source projects:
+- VPP2 (Video Prediction Policy 2)
+  Upstream location: https://github.com/roboterax/video-prediction-policy-2/tree/3365872910244f14df83003062f7c563f14c6d9e/src/vpp2/models/wan21_14b
+  Project code: https://github.com/roboterax/video-prediction-policy-2
+  Upstream ref: 3365872910244f14df83003062f7c563f14c6d9e (the XPolicyLab
+  evaluation pin)
+  License: MIT, copyright 2026 The FastWAM Authors (full text in LICENSE)
+  Note: ``modules/`` keeps only the VPP2 numerical code required by the
+  native ``VPP2VLA``/``VPP2Head`` inference integration. Adaptations:
+    * the logger import uses the standard library;
+    * removal of code unreachable from the supported runtime: the unused
+      ``ActionHead`` class and ``ActionDiT``'s standalone loader and
+      experimental video-token routes;
+    * the MoT, flow-matching scheduler and CLIP ViT-H/14 vision tower are
+      replaced by FluxVLA's existing FastWAM and DreamZero copies, which
+      produce bit-identical outputs; ``wan_video_clip.py`` keeps only the
+      visual-encoder wrapper.
+  The retained numerical paths and checkpoint parameter names are unchanged.
+  The Wan2.1 VAE and T5 text encoder reuse FluxVLA's DreamZero modules.
+  Simulator assets and rollout orchestration remain in FluxThemis.
+
+- Alibaba Wan Video (Wan 2.1) and DiffSynth-Studio
+  Upstream location: https://github.com/Wan-Video/Wan2.1/tree/9737cba9c1c3c4d04b33fcad41c111989865d315/wan/modules
+  Additional upstream: https://github.com/modelscope/DiffSynth-Studio/tree/3093e5599430e5605054cd052631344ae4298891/diffsynth/models
+  License: Apache-2.0 (text in LICENSE)
+  Note: VPP2's Wan DiT and CLIP components derive from these projects.
+
+- RoboDojo
+  Upstream location: https://github.com/RoboDojo-Benchmark/RoboDojo
+  License: MIT (notice in LICENSE)
+  Note: Reference materials only; the simulator and its assets are not
+  bundled.
+
+- XPolicyLab
+  Upstream location: https://github.com/XPolicyLab/XPolicyLab
+  License: Apache-2.0 (notice in LICENSE)
+  Note: Reference evaluation interface; not a runtime dependency of the
+  native FluxVLA integration.
+
+License notes:
+- Complete license texts and copyright notices are retained in LICENSE; the
+  identical Apache-2.0 text is included once for all listed Apache
+  components.
+- SPDX identifiers and upstream revisions are recorded in source files.
+- Model weights and datasets are distributed separately under their own
+  terms; these code licenses do not assign licenses to those artifacts.

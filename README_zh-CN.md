@@ -77,18 +77,21 @@ FluxVLA Engine是面向具身智能落地应用的全链路一体化工程平台
 
 #### RoboDojo
 
-RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 次试验；12 个泛化任务各包含 25 次标准布局和 25 次随机布局试验。因此，每个模型共评测 2,100 个 episode。指标格式为：进度分数 / 成功率（%）。模型按平均进度分数升序排列。
+RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 次试验；12 个泛化任务各包含 25 次标准布局和 25 次随机布局试验。因此，每个模型在每个随机种子下共评测 2,100 个 episode。指标格式为：进度分数 / 成功率（%）。平均值对泛化（Gen-Std 与 Gen-Rand 的均值）、精度、长时程、记忆和开放任务等权平均。
 
-| 模型                  |                                                                                                                                     平均 | 标准泛化（Gen-Std） | 随机泛化（Gen-Rand） |           精度 |         长时程 |         记忆 |     开放任务 |
-| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------: | ------------------: | -------------------: | -------------: | -------------: | -----------: | -----------: |
-| FluxVLA(Cosmos3-Nano) |                   [3.03 / 0.93%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robodojo_full_finetune_bs2048) |        3.95 / 1.33% |         1.20 / 0.67% |   2.29 / 0.00% |   8.74 / 2.75% | 1.23 / 0.67% | 0.30 / 0.25% |
-| FluxVLA(GR00T N1.7)   | [3.08 / 1.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robodojo_full_finetune_freeze_vlm_bs256) |        6.52 / 4.33% |         0.85 / 0.33% |   2.11 / 0.50% |   6.19 / 1.50% | 3.13 / 2.67% | 0.30 / 0.25% |
-| FluxVLA(DiT4DiT)      |                         [4.84 / 2.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robodojo_full_finetune_bs128) |        5.67 / 3.33% |         0.83 / 0.00% |   4.49 / 0.00% |  12.17 / 6.50% | 2.45 / 2.33% | 1.83 / 1.75% |
-| FluxVLA(SmolVLA)      |                         [5.29 / 2.98%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robodojo_full_finetune_bs512) |        8.15 / 5.33% |         0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% | 3.97 / 2.33% | 0.67 / 0.67% |
-| FluxVLA(FastWAM)      |                          [5.29 / 2.97%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robodojo_full_finetune_bs32) |        7.07 / 3.67% |         0.52 / 0.33% |   3.96 / 0.25% |  14.99 / 9.50% | 2.95 / 2.33% | 0.78 / 0.75% |
-| FluxVLA(GR00T N1.5)   |                  [5.50 / 3.17%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robodojo_full_finetune_bs640) |        6.48 / 3.33% |         1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% | 5.48 / 4.33% | 0.25 / 0.25% |
-| FluxVLA(PI0)          |                   [5.96 / 3.37%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robodojo_full_finetune_bs256) |       13.05 / 9.67% |         0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% | 3.52 / 2.00% | 0.00 / 0.00% |
-| FluxVLA(PI0.5)        |                 [13.61 / 8.83%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robodojo_full_finetune_bs256) |      22.65 / 16.00% |         6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% | 5.10 / 4.00% | 2.20 / 2.00% |
+| 模型                  |                                                                                                                                     平均 | 标准泛化（Gen-Std） | 随机泛化（Gen-Rand） |           精度 |         长时程 |           记忆 |     开放任务 |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------: | ------------------: | -------------------: | -------------: | -------------: | -------------: | -----------: |
+| FluxVLA(VPP2)         |                                                                              [39.62 / 32.56%](https://huggingface.co/Haodong082399/VPP2) |      52.21 / 46.56% |       19.92 / 11.22% | 43.28 / 35.58% | 56.60 / 37.08% | 57.98 / 57.56% | 4.19 / 3.67% |
+| FluxVLA(Cosmos3-Nano) |                   [3.03 / 0.93%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/cosmos3_nano_robodojo_full_finetune_bs2048) |        3.95 / 1.33% |         1.20 / 0.67% |   2.29 / 0.00% |   8.74 / 2.75% |   1.23 / 0.67% | 0.30 / 0.25% |
+| FluxVLA(GR00T N1.7)   | [3.08 / 1.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_n17_qwen3vl_2b_robodojo_full_finetune_freeze_vlm_bs256) |        6.52 / 4.33% |         0.85 / 0.33% |   2.11 / 0.50% |   6.19 / 1.50% |   3.13 / 2.67% | 0.30 / 0.25% |
+| FluxVLA(DiT4DiT)      |                         [4.84 / 2.45%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/dit4dit_robodojo_full_finetune_bs128) |        5.67 / 3.33% |         0.83 / 0.00% |   4.49 / 0.00% |  12.17 / 6.50% |   2.45 / 2.33% | 1.83 / 1.75% |
+| FluxVLA(SmolVLA)      |                         [5.29 / 2.98%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/smolvla_robodojo_full_finetune_bs512) |        8.15 / 5.33% |         0.30 / 0.00% |   8.70 / 4.50% |   8.89 / 4.75% |   3.97 / 2.33% | 0.67 / 0.67% |
+| FluxVLA(FastWAM)      |                          [5.29 / 2.97%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/fastwam_robodojo_full_finetune_bs32) |        7.07 / 3.67% |         0.52 / 0.33% |   3.96 / 0.25% |  14.99 / 9.50% |   2.95 / 2.33% | 0.78 / 0.75% |
+| FluxVLA(GR00T N1.5)   |                  [5.50 / 3.17%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/gr00t_eagle_3b_robodojo_full_finetune_bs640) |        6.48 / 3.33% |         1.62 / 0.67% |   2.38 / 0.00% |  15.36 / 9.25% |   5.48 / 4.33% | 0.25 / 0.25% |
+| FluxVLA(PI0)          |                   [5.96 / 3.37%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi0_paligemma_robodojo_full_finetune_bs256) |       13.05 / 9.67% |         0.78 / 0.00% |   7.62 / 4.00% |  11.76 / 6.00% |   3.52 / 2.00% | 0.00 / 0.00% |
+| FluxVLA(PI0.5)        |                 [13.61 / 8.83%](https://huggingface.co/limxdynamics/FluxVLAEngine/tree/main/pi05_paligemma_robodojo_full_finetune_bs256) |      22.65 / 16.00% |         6.25 / 2.33% | 18.28 / 10.25% | 28.04 / 18.75% |   5.10 / 4.00% | 2.20 / 2.00% |
+
+VPP2 使用公开发布的 `joint2b_s100000` checkpoint，结果为环境随机种子 0、1、2 的均值（共 6,300 次试验）。其平均成功率为 **32.56% ± 0.32 个百分点**（总体标准差）；详见[验证结果](docs/vpp2.md#validation-results)。
 
 #### RoboTwin
 
@@ -111,6 +114,8 @@ RoboDojo 完整评测覆盖 42 个基准任务：30 个独立任务各进行 50 
 ## 📢 最新动态
 
 **\[2026/11/10\]** 🔥 FluxVLA 现已集成 [RLinf](https://github.com/RLinf/RLinf) 同步 PPO/GAE 强化学习后端，支持 PI0.5 在 LIBERO-10 和 RoboTwin 上进行 RL 训练，以及 SmolVLA 在 LIBERO-10 上进行 RL 训练。安装、训练、评测、断点续训和 checkpoint 导出说明详见 [RLinf 集成指南](docs/rlinf.md)。
+
+**\[2026/11/05\]** 🔥 现已支持 VPP2。
 
 **\[2026/10/27\]** 🔥 现已支持 RoboTwin 评测。
 
@@ -1109,6 +1114,8 @@ huggingface-cli download openai/clip-vit-base-patch32 --local-dir ./checkpoints/
 </p>
 
 ## 使用方式
+
+VPP2 通过 FluxVLA 原生服务端和 FluxThemis 评测客户端支持公开发布的 RoboDojo checkpoint。环境配置、推理和三种子评测详见 [VPP2 指南](docs/vpp2.md)，结果与评测覆盖范围详见[验证结果](docs/vpp2.md#validation-results)。
 
 <details>
 <summary><b>本地调试</b></summary>
