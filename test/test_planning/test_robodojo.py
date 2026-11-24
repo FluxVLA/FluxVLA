@@ -80,6 +80,13 @@ def test_ordinary_themis_protocol_and_top_level_policy(config):
         '/mnt/data/oss/datasets/RoboDojo_lerobot_v3')
     assert policy.subtask_source.subtask_prefix == 'dense'
     assert policy.subtask_source.max_candidates == 4096
+    aliases = policy.subtask_source.task_aliases
+    assert aliases == {
+        'Pick up the broom, hand it over to the right hand, then use '
+        'the dustpan to sweep the objects.':
+        'Pick up the broom, hand it over to the right hand, then use '
+        'the dustpan to sweep the blocks.'
+    }
     assert policy.replan_every_chunks == 1
     assert not policy.planner.allow_request_finish
     assert policy.completion_mode == policy.planner.completion_mode == (

@@ -45,19 +45,26 @@ class TrainingSubtaskCandidate:
 
 
 class TrainingSubtaskCatalog:
-    """Deduplicate validated LeRobot v3 labels per whole-task description.
+    """Deduplicate validated LeRobot v2.1/v3 labels per task description.
 
     The training parser supplies exactly the same whitespace normalization
-    and segment validation. No rewriting, template expansion, semantic
-    merging, candidate truncation, or fallback to another task is allowed.
-    Metadata is loaded once; selecting/resetting a task requires no I/O.
+    and segment validation. Labels are never rewritten or truncated. Task
+    isolation is the default; explicit aliases may select a known vocabulary.
+    With opt-in ``unknown_task='all_training'``, unseen goals use the complete
+    training vocabulary, with original per-label provenance. The planner still
+    receives the real goal, not an alias. Metadata is loaded only once.
     """
 
     predicate_keys = frozenset()
 
-    def __init__(self, data_root, subtask_prefix='dense', max_candidates=1024):
-        import pyarrow.parquet as pq
-
+    def __init__(self,
+                 data_root,
+                 subtask_prefix='dense',
+                 max_candidates=1024,
+                 task_aliases=None,
+                 unknown_task='error'):
+        from fluxvla.datasets.utils.lerobot_metadata import \
+            iter_episode_records
         from fluxvla.datasets.utils.subtask_annotations import \
             build_subtask_index
 
@@ -65,28 +72,37 @@ class TrainingSubtaskCatalog:
             raise ValueError('subtask_prefix must be a nonempty string')
         if type(max_candidates) is not int or max_candidates < 1:
             raise ValueError('max_candidates must be a positive integer')
+        if (not isinstance(unknown_task, str)
+                or unknown_task not in {'error', 'all_training'}):
+            raise ValueError('unknown_task must be error or all_training')
+        if task_aliases is None:
+            task_aliases = {}
+        if not isinstance(task_aliases, Mapping):
+            raise ValueError('task_aliases must map goals to training tasks')
+        self.task_aliases = {}
+        for alias, target in task_aliases.items():
+            if (not isinstance(alias, str) or not alias.strip()
+                    or not isinstance(target, str) or not target.strip()):
+                raise ValueError('Task aliases need nonempty string pairs')
+            alias, target = alias.strip(), target.strip()
+            if alias in self.task_aliases:
+                raise ValueError(f'Duplicate normalized task alias: {alias!r}')
+            self.task_aliases[alias] = target
         self.data_root = Path(data_root).expanduser().resolve()
         self.subtask_prefix = subtask_prefix
         self.max_candidates = max_candidates
+        self.unknown_task = unknown_task
         self.tasks = {}
-        self.candidates = {}
-        self.task = None
-        paths = sorted((self.data_root / 'meta/episodes').rglob('*.parquet'))
-        if not paths:
-            raise FileNotFoundError(
-                f'No episode parquet metadata under {self.data_root}')
+        self._all_training_labels = None
+        self._reported_unseen_goals = set()
+        self.clear_selection()
         columns = ['episode_index', 'length', 'tasks'] + [
             f'{subtask_prefix}_subtask_{suffix}'
             for suffix in ('names', 'start_frames', 'end_frames')
         ]
         seen_episodes = set()
-        for path in paths:
-            parquet = pq.ParquetFile(path)
-            missing = set(columns) - set(parquet.schema_arrow.names)
-            if missing:
-                raise ValueError(f'Missing annotations in {path}: '
-                                 f'{sorted(missing)}')
-            records = parquet.read(columns=columns).to_pylist()
+        for path, records in iter_episode_records(
+                self.data_root / 'meta', columns=columns):
             if not records:
                 continue
             segments = build_subtask_index(records, subtask_prefix)
@@ -115,26 +131,71 @@ class TrainingSubtaskCatalog:
                     source['occurrences'] += 1
         if not self.tasks:
             raise ValueError('No training subtask annotations found')
+        for alias, target in self.task_aliases.items():
+            if target not in self.tasks:
+                raise ValueError(f'Task alias target absent from training: '
+                                 f'{target!r}')
+            if alias in self.tasks and alias != target:
+                raise ValueError('Task alias cannot replace a known training '
+                                 f'task: {alias!r}')
+
+    def clear_selection(self):
+        self.task = None
+        self.candidates = {}
+        self.selection_scope = None
+        self._selected_labels = {}
+
+    def _training_vocabulary(self):
+        if self._all_training_labels is None:
+            labels = {}
+            for task, instructions in sorted(self.tasks.items()):
+                for instruction, source in instructions.items():
+                    if instruction not in labels:
+                        labels[instruction] = dict(
+                            copy.deepcopy(source), task=task, source_tasks=[])
+                        labels[instruction]['occurrences'] = 0
+                    labels[instruction]['occurrences'] += source['occurrences']
+                    labels[instruction]['source_tasks'].append(task)
+            self._all_training_labels = labels
+        return self._all_training_labels
 
     def select_task(self, goal):
         # Clear first, so an invalid reset cannot reuse the previous task.
-        self.task = None
-        self.candidates = {}
-        if not isinstance(goal, str) or goal.strip() not in self.tasks:
+        self.clear_selection()
+        if not isinstance(goal, str) or not goal.strip():
+            raise ValueError('A nonempty task description is required')
+        goal = goal.strip()
+        task = self.task_aliases.get(goal, goal)
+        if task in self.tasks:
+            sources = self.tasks[task]
+            scope = 'task'
+        elif self.unknown_task == 'all_training':
+            sources = self._training_vocabulary()
+            task, scope = None, 'all_training'
+        else:
             raise ValueError(
-                'No training subtask candidates for this task description')
-        task = goal.strip()
-        labels = sorted(self.tasks[task])
+                'No training subtask candidates for this task description: '
+                f'{goal!r}; data_root={self.data_root}')
+        labels = sorted(sources)
         if len(labels) > self.max_candidates:
             raise ValueError(
                 f'Task has {len(labels)} training candidates, exceeding '
                 f'max_candidates={self.max_candidates}; refusing to truncate')
         self.task = task
+        self.selection_scope = scope
+        self._selected_labels = sources
         self.candidates = {
             f'skill_{index:04d}':
             TrainingSubtaskCandidate(f'skill_{index:04d}', label)
             for index, label in enumerate(labels)
         }
+        if scope == 'all_training' and goal not in self._reported_unseen_goals:
+            print(
+                f'[FluxVLA][subtask-catalog] unseen goal={goal!r}; '
+                f'selection_scope=all_training candidates={len(labels)}; '
+                'using original training labels, not an in-domain task',
+                flush=True)
+            self._reported_unseen_goals.add(goal)
 
     def available(self, facts):
         # Feasibility depends on current camera evidence, not training order.
@@ -145,11 +206,14 @@ class TrainingSubtaskCatalog:
 
     def source_for(self, choice):
         candidate = self.candidates[choice]
-        return dict(
+        source = dict(
             data_root=str(self.data_root),
             annotation_field=f'{self.subtask_prefix}_subtask_names',
             task=self.task,
-            **copy.deepcopy(self.tasks[self.task][candidate.instruction]))
+        )
+        source.update(
+            copy.deepcopy(self._selected_labels[candidate.instruction]))
+        return source
 
 
 class TrainingSubtaskController(SubtaskController):
@@ -237,8 +301,7 @@ class TrainingSubtaskController(SubtaskController):
         self.planning_attempts = []
         self.completion_verification = {}
         self.completion_decision = {}
-        self.catalog.task = None
-        self.catalog.candidates = {}
+        self.catalog.clear_selection()
         # The base constructor initializes with an empty goal; the client
         # supplies the actual environment instruction on the first reset.
         if goal:
@@ -249,6 +312,7 @@ class TrainingSubtaskController(SubtaskController):
         event.update(
             candidate_count=len(self.catalog.candidates),
             candidate_task=self.catalog.task,
+            candidate_scope=self.catalog.selection_scope,
             executed_chunks=self.total_chunks)
         if (self.max_control_replans or self.completion_requirements
                 or self.completion_mode == 'agent'):

@@ -311,7 +311,7 @@ def test_inference_legacy_path_is_unchanged(monkeypatch, tmp_path, fake_ros):
 
 
 @pytest.mark.parametrize(
-    'mode', ['rtc', 'async', 'mobile', 'custom_loop', 'missing_ack'])
+    'mode', ['mobile', 'custom_loop', 'missing_ack', 'remote_rtc'])
 def test_unsupported_policy_execution_fails_before_operator_build(
         monkeypatch, mode):
     from fluxvla.engines.runners import base_inference_runner
@@ -319,15 +319,16 @@ def test_unsupported_policy_execution_fails_before_operator_build(
     monkeypatch.setattr(base_inference_runner, 'build_operator_from_cfg',
                         construct)
     attributes = {}
-    name = 'FakeRTC' if mode == 'rtc' else 'FakeExecutor'
-    if mode == 'async':
-        attributes['async_execution'] = True
+    name = 'FakeExecutor'
     if mode == 'custom_loop':
         attributes['_run_episode'] = lambda *_: None
     if mode == 'missing_ack':
         attributes['policy_execution_ack'] = False
+    if mode == 'remote_rtc':
+        attributes['rtc_config'] = dict(enabled=True)
     cls = type(name, (InferenceRunner, ), attributes)
-    with pytest.raises(ValueError, match='synchronous|acknowledgments'):
+    with pytest.raises(
+            ValueError, match='shared acknowledged|acknowledgments|local'):
         cls(policy=policy_config(),
             remote_inference={},
             use_robot_base=mode == 'mobile')

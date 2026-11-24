@@ -316,7 +316,8 @@ class BaseOperator:
                            gripper_trajectories=None,
                            head_trajectory=None,
                            dt: float = 0.1,
-                           async_exec: bool = False):
+                           async_exec: bool = False,
+                           stop_event=None):
         """Execute arm/gripper trajectories in sync or async mode."""
         if dt <= 0.0:
             raise ValueError('dt must be positive')
@@ -325,8 +326,10 @@ class BaseOperator:
         n = self._validate_trajectory_lengths(arm_trajectories,
                                               gripper_trajectories)
 
-        self._traj_stop_event.set()
-        self._traj_stop_event = threading.Event()
+        if self._traj_stop_event is not stop_event:
+            self._traj_stop_event.set()
+        self._traj_stop_event = (
+            stop_event if stop_event is not None else threading.Event())
         stop_event = self._traj_stop_event
         args = (arm_trajectories, gripper_trajectories, head_trajectory, n, dt,
                 stop_event)

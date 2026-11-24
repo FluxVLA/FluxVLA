@@ -23,6 +23,7 @@ from pathlib import Path
 from torch.utils.data import Dataset
 
 from fluxvla.engines import DATASETS, build_transform_from_cfg
+from .utils.lerobot_metadata import load_episode_records
 from .utils.subtask_annotations import build_subtask_index
 from .utils.video_decode import make_lerobot_video_context
 
@@ -31,7 +32,8 @@ from .utils.video_decode import make_lerobot_video_context
 class LeRobotSubtaskDataset(Dataset):
     """Sample current observations within annotated [start, end) segments.
 
-    Requires ``meta/info.json`` and ``meta/episodes/**/*.parquet``. Each
+    Requires ``meta/info.json`` and ``meta/episodes.jsonl`` (v2.1) or
+    ``meta/episodes/**/*.parquet`` (v3). Each
     episode must have ``episode_index``, ``length``, one task in ``tasks``,
     and complete ``<subtask_prefix>_subtask_{names,start_frames,end_frames}``
     annotations. Videos are addressed by the LeRobot ``video_path`` template
@@ -57,8 +59,6 @@ class LeRobotSubtaskDataset(Dataset):
                  split='train',
                  validation_fraction=0.05,
                  seed=42):
-        import pyarrow.parquet as pq
-
         if type(frames_per_subtask) is not int or frames_per_subtask < 1:
             raise ValueError('frames_per_subtask must be a positive integer')
         if split not in ('train', 'val', 'all'):
@@ -85,12 +85,7 @@ class LeRobotSubtaskDataset(Dataset):
         self.frames_per_subtask = frames_per_subtask
         self.subtask_prefix = subtask_prefix
         self.max_retry_times = 0  # Never silently replace an invalid sample.
-        paths = sorted((self.data_root / 'meta/episodes').rglob('*.parquet'))
-        if not paths:
-            raise FileNotFoundError('No LeRobot episode parquet metadata')
-        records = [
-            row for path in paths for row in pq.read_table(path).to_pylist()
-        ]
+        records = load_episode_records(self.data_root / 'meta')
         segments = build_subtask_index(records, prefix=subtask_prefix)
         by_task = defaultdict(list)
         for record in records:

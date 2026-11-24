@@ -13,8 +13,11 @@
 # limitations under the License.
 """Local subtask-trained Qwen3.5 + PI05 with unmodified Themis main.
 
-Only the planner backend changes; the PI05 checkpoint, original training
-candidate vocabulary and full benchmark schedule are inherited unchanged.
+The PI05 checkpoint, literal training labels and full benchmark schedule are
+inherited unchanged. Known goals keep their task-specific candidates. The
+eight open benchmark tasks absent from training use the full label vocabulary
+during constrained decoding, with the real goal left in the VLM prompt. This
+is an explicit out-of-domain setting, not a claim of annotation coverage.
 Both models run in the VLA server process. No GPT endpoint or API key is used.
 Use the matching launch.json entries for four tasks x five episodes; output
 paths remain launch-time arguments, not checkpoint-relative constants.
@@ -31,6 +34,11 @@ _planner_dir = _environ.get(
     '20261116_dlcf6osrr2ymq9yd')
 
 policy = dict(
+    subtask_source=dict(
+        unknown_task='all_training',
+        # All 35 training tasks together have 35,493 distinct labels. Keep a
+        # checked bound above that union; no labels are pruned or invented.
+        max_candidates=65536),
     planner=dict(
         # Do not merge GPT model/base_url/retry options into the local backend.
         _delete_=True,

@@ -16,44 +16,21 @@ from pathlib import Path
 from typing import Any, Dict, List, Union
 
 import numpy as np
-import pyarrow.parquet as pq
 import torch
 
 from fluxvla.datasets.parquet_dataset import ParquetDataset
+from fluxvla.datasets.utils.lerobot_metadata import \
+    load_episode_records as _load_episode_records
+from fluxvla.datasets.utils.lerobot_metadata import \
+    load_jsonl_records as _load_jsonl_records
+from fluxvla.datasets.utils.lerobot_metadata import \
+    load_parquet_records as _load_parquet_records
 from fluxvla.engines import DATASETS
 
 
 def _load_json(path: Path) -> Dict[str, Any]:
     with open(path, 'r', encoding='utf-8') as handle:
         return json.load(handle)
-
-
-def _load_jsonl_records(path: Path) -> List[Dict[str, Any]]:
-    with open(path, 'r', encoding='utf-8') as handle:
-        return [json.loads(line) for line in handle if line.strip()]
-
-
-def _load_parquet_records(paths: List[Path]) -> List[Dict[str, Any]]:
-    """Read local metadata directly, without generating HF Arrow caches."""
-    records = []
-    for path in paths:
-        with pq.ParquetFile(path) as parquet_file:
-            for batch in parquet_file.iter_batches():
-                records.extend(batch.to_pylist())
-    return records
-
-
-def _load_episode_records(meta_root: Path) -> List[Dict[str, Any]]:
-    legacy_path = meta_root / 'episodes.jsonl'
-    if legacy_path.exists():
-        return _load_jsonl_records(legacy_path)
-
-    episodes_dir = meta_root / 'episodes'
-    parquet_files = sorted(episodes_dir.rglob('*.parquet'))
-    if parquet_files:
-        return _load_parquet_records(parquet_files)
-
-    raise FileNotFoundError(f'Episodes metadata not found under {meta_root}')
 
 
 def _load_stats_records(meta_root: Path) -> List[Dict[str, Any]]:

@@ -14,6 +14,7 @@
 """Metadata-backed candidates: literal text, task isolation and reselection."""
 
 import copy
+import json
 
 import numpy as np
 import pyarrow as pa
@@ -122,8 +123,185 @@ def test_excess_candidates_raise_instead_of_truncating(training_root):
     assert len(catalog.candidates) == 1
 
 
+def test_explicit_task_alias_preserves_labels_and_training_source(
+        training_root):
+    alias = 'Stack the objects with different textures.'
+    catalog = TrainingSubtaskCatalog(training_root, task_aliases={alias: TASK})
+    catalog.select_task('  ' + alias + '  ')
+    assert catalog.task == TASK
+    assert catalog.selection_scope == 'task'
+    assert [c.instruction for c in catalog.available({})] == [LEFT, RIGHT]
+    assert catalog.source_for('skill_0000')['task'] == TASK
+    with pytest.raises(ValueError, match='No training subtask candidates'):
+        catalog.select_task('an unrelated task')
+    assert not catalog.candidates and catalog.selection_scope is None
+
+
+@pytest.mark.parametrize('aliases', [
+    [],
+    {
+        '': TASK
+    },
+    {
+        TASK: None
+    },
+    {
+        'new goal': 'missing training task'
+    },
+    {
+        TASK: OTHER_TASK
+    },
+    {
+        ' new goal': TASK,
+        'new goal ': TASK
+    },
+    {
+        'first': 'second',
+        'second': TASK
+    },
+])
+def test_invalid_task_aliases_fail_explicitly(training_root, aliases):
+    with pytest.raises(ValueError):
+        TrainingSubtaskCatalog(training_root, task_aliases=aliases)
+
+
+def test_opt_in_unseen_goals_use_only_complete_training_vocabulary(
+        training_root, capsys):
+    # Duplicate text across tasks must have one ID and combined provenance.
+    write_records(training_root, [record(3, OTHER_TASK, [LEFT])],
+                  'file-002.parquet')
+    catalog = TrainingSubtaskCatalog(
+        training_root, unknown_task='all_training')
+    catalog.select_task('an unseen task')
+    assert catalog.task is None
+    assert catalog.selection_scope == 'all_training'
+    assert [c.instruction
+            for c in catalog.available({})] == sorted([LEFT, RIGHT, BOWL])
+    selected = next(c for c in catalog.available({}) if c.instruction == LEFT)
+    source = catalog.source_for(selected.choice)
+    assert source['task'] in (TASK, OTHER_TASK)
+    assert source['source_tasks'] == sorted([TASK, OTHER_TASK])
+    assert source['occurrences'] == 3
+    assert source['example_metadata_file'].startswith('meta/episodes/')
+    source['source_tasks'].clear()
+    assert len(catalog.source_for(selected.choice)['source_tasks']) == 2
+    assert 'unseen goal=' in capsys.readouterr().out
+    cached = catalog._all_training_labels
+    catalog.clear_selection()
+    catalog.select_task('an unseen task')
+    assert catalog._all_training_labels is cached
+    assert capsys.readouterr().out == ''
+    # Covered tasks stay isolated, even after an unseen goal.
+    catalog.select_task(TASK)
+    assert catalog.task == TASK and catalog.selection_scope == 'task'
+    assert BOWL not in [c.instruction for c in catalog.available({})]
+    assert 'source_tasks' not in catalog.source_for('skill_0000')
+    catalog.select_task('another unseen task')
+    assert 'another unseen task' in capsys.readouterr().out
+
+
+def test_all_training_limit_fails_without_truncation_or_stale_task(
+        training_root):
+    catalog = TrainingSubtaskCatalog(
+        training_root, max_candidates=2, unknown_task='all_training')
+    catalog.select_task(TASK)
+    with pytest.raises(ValueError, match='refusing to truncate'):
+        catalog.select_task('an unseen task')
+    assert not catalog.candidates and catalog.task is None
+    assert catalog.selection_scope is None
+    catalog.select_task(OTHER_TASK)
+    assert [c.instruction for c in catalog.available({})] == [BOWL]
+
+
+@pytest.mark.parametrize('goal', [None, '', '   ', 1])
+def test_unseen_goal_opt_in_never_accepts_invalid_goals(training_root, goal):
+    catalog = TrainingSubtaskCatalog(
+        training_root, unknown_task='all_training')
+    catalog.select_task(TASK)
+    with pytest.raises(ValueError, match='nonempty task description'):
+        catalog.select_task(goal)
+    assert not catalog.candidates and catalog.task is None
+
+
+@pytest.mark.parametrize('mode', [None, [], 'closest', 'truncate'])
+def test_invalid_unknown_task_mode_fails(training_root, mode):
+    with pytest.raises(ValueError, match='unknown_task'):
+        TrainingSubtaskCatalog(training_root, unknown_task=mode)
+
+
+def test_controller_alias_filters_vocabulary_without_rewriting_planner_goal(
+        training_root, monkeypatch):
+    alias = 'Stack the objects.'
+    planner = ScriptedSubtaskPlanner(['skill_0000'])
+    calls = []
+    original_choose = planner.choose
+
+    def choose(**kwargs):
+        calls.append(kwargs)
+        return original_choose(**kwargs)
+
+    monkeypatch.setattr(planner, 'choose', choose)
+    control = TrainingSubtaskController(
+        catalog=TrainingSubtaskCatalog(
+            training_root, task_aliases={alias: TASK}),
+        planner=planner,
+        monitor=ObservationPredicateMonitor(),
+        goal_conditions={'environment_success': True})
+    control.reset(alias)
+    event = control.step(observation(), 0)
+    assert control.goal == alias
+    assert calls[0]['goal'] == alias
+    assert event['candidate_task'] == TASK
+    assert event['candidate_scope'] == 'task'
+    assert event['instruction'] == LEFT
+
+
+def test_v21_candidates_equal_v3_and_keep_jsonl_provenance(
+        training_root, tmp_path):
+    records = [
+        row for path in sorted(training_root.rglob('*.parquet'))
+        for row in pq.read_table(path).to_pylist()
+    ]
+    root = tmp_path / 'v21'
+    path = root / 'meta/episodes.jsonl'
+    path.parent.mkdir(parents=True)
+    path.write_text('\n'.join(json.dumps(row) for row in records))
+    v21, v3 = TrainingSubtaskCatalog(root), TrainingSubtaskCatalog(
+        training_root)
+    for task in (TASK, OTHER_TASK):
+        v21.select_task(task)
+        v3.select_task(task)
+        assert v21.available({}) == v3.available({})
+        for candidate in v21.available({}):
+            source = v21.source_for(candidate.choice)
+            assert source['example_metadata_file'] == 'meta/episodes.jsonl'
+            assert source['occurrences'] == v3.source_for(
+                candidate.choice)['occurrences']
+    # Candidate reselection uses cached annotations for both versions.
+    path.unlink()
+    v21.select_task(TASK)
+    assert len(v21.available({})) == 2
+
+
+@pytest.mark.parametrize('invalid', ['missing', 'duplicate', 'gap'])
+def test_invalid_v21_annotations_fail_without_parquet_fallback(
+        tmp_path, invalid):
+    write_records(tmp_path, [record(0)])
+    rows = [record(0)]
+    if invalid == 'missing':
+        del rows[0]['dense_subtask_names']
+    elif invalid == 'duplicate':
+        rows.append(record(0))
+    else:
+        rows[0]['dense_subtask_start_frames'] = [0, 11]
+    (tmp_path / 'meta/episodes.jsonl').write_text('\n'.join(
+        json.dumps(row) for row in rows))
+    with pytest.raises(ValueError):
+        TrainingSubtaskCatalog(tmp_path)
+
+
 def test_missing_dataset_and_columns_fail_explicitly(tmp_path):
-    with pytest.raises(FileNotFoundError, match='No episode parquet'):
+    with pytest.raises(FileNotFoundError, match='Episodes metadata not found'):
         TrainingSubtaskCatalog(tmp_path)
     write_records(tmp_path, [{'episode_index': 0}])
     with pytest.raises(ValueError, match='Missing annotations'):

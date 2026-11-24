@@ -254,7 +254,7 @@ def test_directory_resolution_uses_step_not_mtime(tmp_path):
         resolve_planner_checkpoint(tmp_path / 'missing')
 
 
-def test_local_config_replaces_only_planner_and_keeps_full_schedule(
+def test_local_config_keeps_full_schedule_and_allows_unseen_goal_vocabulary(
         monkeypatch):
     for key in ('PI05_ROBODOJO_CHECKPOINT_DIR', 'PI05_ROBODOJO_CHECKPOINT',
                 'ROBODOJO_VLM_PLANNER_DIR', 'ROBODOJO_VLM_PLANNER_CHECKPOINT',
@@ -274,7 +274,12 @@ def test_local_config_replaces_only_planner_and_keeps_full_schedule(
     assert cfg.policy.subtask_source.data_root == \
         baseline.policy.subtask_source.data_root
     assert cfg.policy.subtask_source.subtask_prefix == 'dense'
-    assert cfg.policy.subtask_source.max_candidates == 4096
+    assert cfg.policy.subtask_source.max_candidates == 65536
+    assert cfg.policy.subtask_source.unknown_task == 'all_training'
+    assert cfg.policy.subtask_source.task_aliases == \
+        baseline.policy.subtask_source.task_aliases
+    assert baseline.policy.subtask_source.get('unknown_task',
+                                              'error') == 'error'
     assert baseline.policy.subtask_source.max_candidates == 4096
     assert cfg.policy.completion_mode == 'disabled'
     assert cfg.themis.server.runner.policy_execution == 'per_request'
@@ -349,14 +354,20 @@ def test_strict_loading_uses_saved_architecture_without_base_weights(
         LocalVLMSubtaskPlanner(checkpoint, torch_dtype='fp32', device='cpu')
 
 
-def test_local_planner_through_existing_action_only_serving(local, tmp_path):
+@pytest.mark.parametrize('goal, scope', [
+    ('Stack the blocks.', 'task'),
+    ('Stack the objects.', 'task'),
+    ('A new task absent from training.', 'all_training'),
+])
+def test_local_planner_through_existing_action_only_serving(
+        local, tmp_path, goal, scope):
     import pyarrow as pa
     import pyarrow.parquet as pq
 
     from fluxvla.engines.runners.serving.serving_runner import \
         FluxVLAServingRunner
 
-    planner, _, model, _, _ = local
+    planner, processor, model, _, _ = local
     root = tmp_path / 'data/meta/episodes'
     root.mkdir(parents=True)
     pq.write_table(
@@ -390,19 +401,25 @@ def test_local_planner_through_existing_action_only_serving(local, tmp_path):
         policy=dict(
             type='HierarchicalPolicy',
             planner=planner,
-            subtask_source=dict(data_root=str(root.parents[1])),
+            subtask_source=dict(
+                data_root=str(root.parents[1]),
+                task_aliases={'Stack the objects.': 'Stack the blocks.'},
+                unknown_task='all_training'),
             completion_mode='disabled',
             planner_image_keys=CAMERAS,
             monitor=None,
             goal_conditions=None))
     for _ in range(2):
         obs = request()['observation']
-        obs['task_description'] = request()['goal']
+        obs['task_description'] = goal
         actions, _ = runner.predict_action(obs, '', policy_seed=42)
         assert actions.shape == (2, 14) and np.isfinite(actions).all()
         assert runner.last_prediction_metadata['subtask'][
             'instruction'] == LABELS[1]
-        assert obs['task_description'] == 'Stack the blocks.'
+        assert obs['task_description'] == goal
+        assert runner.last_prediction_metadata['planning'][
+            'candidate_scope'] == scope
+        assert f'Overall task: {goal}' in repr(processor.calls[-1][0])
         assert runner.policy._pending_horizon is None
         assert runner.policy.controller.history == []
     assert prompts == [LABELS[1], LABELS[1]]

@@ -31,6 +31,7 @@ from transformers import (PreTrainedTokenizerFast, Qwen2VLImageProcessor,
 
 from fluxvla.collators.vlm_sft_collator import VLMSFTCollator
 from fluxvla.datasets.lerobot_subtask_dataset import LeRobotSubtaskDataset
+from fluxvla.datasets.utils.lerobot_metadata import load_episode_records
 from fluxvla.engines import build_dataset_from_cfg
 from fluxvla.models.backbones.vlms.causal_vlm import \
     CausalVLMBackbone  # noqa: F401
@@ -49,15 +50,20 @@ TARGETS = [
 ]
 
 
-def write_metadata(root, records):
+def write_metadata(root, records, version=None):
+    legacy_path = root / 'meta/episodes.jsonl'
+    if version == 'v2.1' or (version is None and legacy_path.exists()):
+        legacy_path.parent.mkdir(parents=True, exist_ok=True)
+        legacy_path.write_text('\n'.join(json.dumps(row) for row in records))
+        return legacy_path
     path = root / 'meta/episodes/chunk-000/file-000.parquet'
     path.parent.mkdir(parents=True, exist_ok=True)
     pq.write_table(pa.Table.from_pylist(records), path)
     return path
 
 
-@pytest.fixture
-def data_root(tmp_path):
+@pytest.fixture(params=['v2.1', 'v3.0'])
+def data_root(tmp_path, request):
     root = tmp_path / 'data'
     records = [
         dict(
@@ -68,11 +74,12 @@ def data_root(tmp_path):
             dense_subtask_start_frames=[0, 1, 5],
             dense_subtask_end_frames=[1, 5, 8]) for index in range(8)
     ]
-    write_metadata(root, records)
+    write_metadata(root, records, version=request.param)
     (root / 'meta/info.json').write_text(
         json.dumps(
             dict(
                 fps=25,
+                codebase_version=request.param,
                 chunks_size=1000,
                 video_path='videos/{video_key}/'
                 'episode_{episode_index:06d}.mp4',
@@ -151,8 +158,8 @@ def test_split_is_episode_disjoint_per_task_and_order_independent(data_root):
     assert set(val.task_episode_counts.values()) == {1}
     assert len(train) == 6 * 7
     assert len(val) == 2 * 7
-    path = data_root / 'meta/episodes/chunk-000/file-000.parquet'
-    write_metadata(data_root, list(reversed(pq.read_table(path).to_pylist())))
+    records = load_episode_records(data_root / 'meta')
+    write_metadata(data_root, list(reversed(records)))
     repeat = LeRobotSubtaskDataset(data_root, validation_fraction=0.25)
     assert repeat.samples == train.samples
 
@@ -178,11 +185,12 @@ def test_frames_stay_in_current_segment_and_never_use_future_labels(data_root):
 
 
 @pytest.mark.parametrize('prefix', ['dense', 'coarse'])
+@pytest.mark.parametrize('version', ['v2.1', 'v3.0'])
 @pytest.mark.parametrize(
     'cameras',
     [['front'], ['overhead', 'wrist'], ['front', 'rear', 'left', 'right']])
 def test_generic_registry_pipeline_with_custom_labels_and_cameras(
-        tmp_path, monkeypatch, prefix, cameras):
+        tmp_path, monkeypatch, prefix, cameras, version):
     root = tmp_path / 'another_robot'
     keys = [f'observation.images.{name}' for name in cameras]
     labels = ['Grasp the cup.', 'Move the cup to the tray.']
@@ -196,20 +204,26 @@ def test_generic_registry_pipeline_with_custom_labels_and_cameras(
             f'{prefix}_subtask_start_frames': [0, 2],
             f'{prefix}_subtask_end_frames': [2, 4]
         })
-    for index, key in enumerate(keys):
-        row.update({
-            f'videos/{key}/chunk_index': 7,
-            f'videos/{key}/file_index': 9,
-            f'videos/{key}/from_timestamp': 100.0 + index,
-        })
-    write_metadata(root, [row])
+    if version == 'v3.0':
+        for index, key in enumerate(keys):
+            row.update({
+                f'videos/{key}/chunk_index': 7,
+                f'videos/{key}/file_index': 9,
+                f'videos/{key}/from_timestamp': 100.0 + index,
+            })
+    write_metadata(root, [row], version=version)
     (root / 'meta/info.json').write_text(
         json.dumps(
             dict(
                 fps=fps,
+                codebase_version=version,
+                chunks_size=10,
                 robot_type='custom_robot',
-                video_path='videos/{video_key}/chunk-{chunk_index:03d}/'
-                'file-{file_index:03d}.mp4',
+                video_path=('videos/{video_key}/chunk-{chunk_index:03d}/'
+                            'file-{file_index:03d}.mp4'
+                            if version == 'v3.0' else
+                            'videos/chunk-{episode_chunk:03d}/{video_key}/'
+                            'episode_{episode_index:06d}.mp4'),
                 features={key: dict(dtype='video')
                           for key in keys})))
     calls = mock_decoder(monkeypatch)
@@ -239,8 +253,11 @@ def test_generic_registry_pipeline_with_custom_labels_and_cameras(
     assert sample['full_task_description'] in content[-1]['text']
     assert all(label not in content[-1]['text'] for label in labels)
     for index, ((path, timestamps, _), key) in enumerate(zip(calls, keys)):
-        assert path == str(root / f'videos/{key}/chunk-007/file-009.mp4')
-        assert timestamps == [100.0 + index + sample['frame_index'] / fps]
+        relative = (f'videos/{key}/chunk-007/file-009.mp4' if version == 'v3.0'
+                    else f'videos/chunk-004/{key}/episode_000043.mp4')
+        assert path == str(root / relative)
+        offset = 100.0 + index if version == 'v3.0' else 0
+        assert timestamps == [offset + sample['frame_index'] / fps]
 
 
 def test_other_lerobot_data_still_requires_subtask_annotations(data_root):
@@ -263,8 +280,7 @@ def test_invalid_sampling_configuration_fails(data_root, options):
 
 
 def test_invalid_annotations_do_not_fall_back_to_whole_task(data_root):
-    path = data_root / 'meta/episodes/chunk-000/file-000.parquet'
-    records = pq.read_table(path).to_pylist()
+    records = load_episode_records(data_root / 'meta')
     records[0]['dense_subtask_start_frames'] = [0, 2, 5]
     write_metadata(data_root, records)
     with pytest.raises(ValueError, match='Invalid subtask range'):

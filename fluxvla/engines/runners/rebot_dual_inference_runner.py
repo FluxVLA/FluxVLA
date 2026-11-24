@@ -134,7 +134,9 @@ class RebotDualInferenceRunner(BaseInferenceRunner):
             )
 
         ctx = self._action_ctx
-        if self.async_execution and self._prev_ctx is not None:
+        native_async = self.async_execution and getattr(self, 'policy',
+                                                        None) is None
+        if native_async and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
             offset = (time.time() - ctx.action_timestamp) / self.dt
             actions = resample_remaining(actions, offset)
@@ -149,9 +151,10 @@ class RebotDualInferenceRunner(BaseInferenceRunner):
                 'right': actions[:, 7:14],
             },
             dt=self.dt,
-            async_exec=self.async_execution)
+            async_exec=native_async,
+            **self._policy_trajectory_options())
 
-        if self.async_execution and self.execute_horizon is not None:
+        if native_async and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
         return published
 

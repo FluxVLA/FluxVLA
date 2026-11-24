@@ -230,7 +230,9 @@ class URInferenceRunner(BaseInferenceRunner):
             return 0
         published = 0
         for action in actions:
-            if rospy.is_shutdown():
+            if rospy.is_shutdown() or (getattr(self, 'policy',
+                                               None) is not None
+                                       and self._policy_execution_cancelled()):
                 break
             if self.action_mode == 'cartesian':
                 self.ros_operator.servol(action[:7])

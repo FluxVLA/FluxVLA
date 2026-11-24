@@ -324,11 +324,13 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             return 0
 
         ctx = self._action_ctx
+        native_async = self.async_execution and getattr(self, 'policy',
+                                                        None) is None
         final_chunk = False
         if self._remaining_instruction_chunks is not None:
             final_chunk = self._remaining_instruction_chunks <= 1
 
-        if self.async_execution and self._prev_ctx is not None:
+        if native_async and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
             offset = (time.time() - ctx.action_timestamp) / self.dt
             # Drop actions that are already stale while the previous chunk was
@@ -355,9 +357,10 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             arm_trajectories=arm_trajectories,
             gripper_trajectories=gripper_trajectories,
             dt=self.dt,
-            async_exec=self.async_execution)
+            async_exec=native_async,
+            **self._policy_trajectory_options())
 
-        if self.async_execution and self.execute_horizon is not None:
+        if native_async and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
             if final_chunk:
                 self.ros_operator.stop_trajectory()

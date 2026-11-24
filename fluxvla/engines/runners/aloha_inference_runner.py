@@ -256,8 +256,10 @@ class AlohaInferenceRunner(BaseInferenceRunner):
             return 0
 
         ctx = self._action_ctx
+        native_async = self.async_execution and getattr(self, 'policy',
+                                                        None) is None
 
-        if self.async_execution and self._prev_ctx is not None:
+        if native_async and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
             offset = (time.time() - ctx.action_timestamp) / self.dt
             actions = resample_remaining(actions, offset)
@@ -270,10 +272,11 @@ class AlohaInferenceRunner(BaseInferenceRunner):
             actions[:, :7],
             actions[:, 7:14],
             dt=self.dt,
-            async_exec=self.async_execution,
-            base_velocity=actions[:, 14:16] if self.use_robot_base else None)
+            async_exec=native_async,
+            base_velocity=actions[:, 14:16] if self.use_robot_base else None,
+            **self._policy_trajectory_options())
 
-        if self.async_execution and self.execute_horizon is not None:
+        if native_async and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
         return published
 

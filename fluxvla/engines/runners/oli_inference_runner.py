@@ -17,6 +17,7 @@ import sys
 import time
 import unicodedata
 from collections import deque
+from itertools import repeat
 from types import SimpleNamespace
 from typing import Dict
 
@@ -46,6 +47,9 @@ class OliInferenceRunner(BaseInferenceRunner):
     corresponds to one predicted action chunk (optionally truncated by
     ``execute_horizon``).
     """
+
+    policy_execution_ack = True
+    policy_custom_loop = True
 
     def __init__(self,
                  execute_horizon: int = None,
@@ -145,6 +149,12 @@ class OliInferenceRunner(BaseInferenceRunner):
         """Handle SIGINT for graceful shutdown."""
         print('\nShutdown requested...')
         self._running = False
+
+    def _policy_is_shutdown(self):
+        return not self._running
+
+    def _policy_publish_rate(self):
+        return None  # Oli uses mros and its own monotonic rate control.
 
     def _handle_keyboard_pause(self):
         """Return an interactive run to prompt selection at a safe boundary."""
@@ -294,7 +304,7 @@ class OliInferenceRunner(BaseInferenceRunner):
         overwatch = initialize_overwatch(__name__)
         overwatch.info('Starting Oli whole-body inference runner')
 
-        with torch.inference_mode():
+        with self._inference_context():
             try:
                 if self.interactive:
                     while self._running:
@@ -335,6 +345,9 @@ class OliInferenceRunner(BaseInferenceRunner):
         prompt_id = self.default_prompt_id
         instruction = self._get_task_description(prompt_id)
         self._selected_prompt_id = prompt_id
+        if getattr(self, 'policy', None) is not None:
+            return self._run_policy_episode(
+                instruction, instructions=repeat(instruction))
         self._prev_ctx = None
         published_steps = 0
         print(
@@ -355,6 +368,8 @@ class OliInferenceRunner(BaseInferenceRunner):
 
     def _run_episode(self, default_instruction):
         """Execute the selected prompt for the requested chunk count."""
+        if getattr(self, 'policy', None) is not None:
+            return self._run_policy_episode(default_instruction)
         instructions = self._get_user_task_instruction(default_instruction)
         self._prev_ctx = None
         published_steps = 0
@@ -446,7 +461,8 @@ class OliInferenceRunner(BaseInferenceRunner):
             validator(actions)
         sent_steps = 0
         for action in actions:
-            if not self._running:
+            if not self._running or (getattr(self, 'policy', None) is not None
+                                     and self._policy_execution_cancelled()):
                 break
             try:
                 self.ros_operator.send_action(action)
@@ -481,6 +497,8 @@ class OliInferenceRunner(BaseInferenceRunner):
         """Clean up resources."""
         print('Cleaning up OliInferenceRunner')
         self._running = False
+        if getattr(self, 'policy', None) is not None:
+            self._stop_policy_execution()
         first_error = None
         for cleanup in (getattr(self.ros_operator, 'stop_trajectory',
                                 None), getattr(self.ros_operator, 'close',

@@ -17,7 +17,6 @@ import time
 import torch
 
 from ..utils.root import RUNNERS
-from ..utils.trajectory_utils import resample_remaining
 from .tron2_inference_runner import Tron2InferenceRunner
 
 
@@ -37,8 +36,8 @@ class Tron2RTCInferenceRunner(Tron2InferenceRunner):
 
         if (prev is not None and self.rtc_config
                 and self.rtc_config.get('enabled', False)):
-            offset = (ctx.inference_start - prev.action_timestamp) / self.dt
-            remaining = resample_remaining(prev.raw_actions[0], offset)[None]
+            remaining = self._remaining_rtc_actions(prev, ctx.inference_start,
+                                                    self.dt)[None]
             prefix_len = self.rtc_config.get('prefix_len')
             if prefix_len is None:
                 prefix_len = int(prev.inference_elapsed * self.publish_rate)
@@ -53,5 +52,5 @@ class Tron2RTCInferenceRunner(Tron2InferenceRunner):
         raw_action = self.vla.predict_action(**inputs)
 
         ctx.inference_elapsed = time.time() - ctx.inference_start
-        ctx.raw_actions = raw_action.cpu().numpy()
+        ctx.raw_actions = raw_action.detach().float().cpu().numpy()
         return raw_action

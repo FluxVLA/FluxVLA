@@ -20,7 +20,6 @@ import torch
 
 from ..utils import initialize_overwatch
 from ..utils.root import RUNNERS
-from ..utils.trajectory_utils import resample_remaining
 from .rebot_dual_inference_runner import RebotDualInferenceRunner
 
 overwatch = initialize_overwatch(__name__)
@@ -101,9 +100,9 @@ class RebotDualRTCInferenceRunner(RebotDualInferenceRunner):
         prefix_len = 0
 
         if previous is not None:
-            offset = (context.inference_start -
-                      previous.action_timestamp) / self.dt
-            remaining = resample_remaining(previous.raw_actions[0], offset)
+            remaining = self._remaining_rtc_actions(previous,
+                                                    context.inference_start,
+                                                    self.dt)
             prefix_len = self.rtc_config.get('prefix_len')
             if prefix_len is None:
                 prefix_len = int(previous.inference_elapsed *

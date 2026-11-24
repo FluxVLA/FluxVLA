@@ -18,7 +18,6 @@ import torch
 
 from ..utils import initialize_overwatch
 from ..utils.root import RUNNERS
-from ..utils.trajectory_utils import resample_remaining
 from .ur_inference_runner import URInferenceRunner
 
 overwatch = initialize_overwatch(__name__)
@@ -82,8 +81,8 @@ class URRTCInferenceRunner(URInferenceRunner):
                 and self.rtc_config.get('enabled', False)
                 and hasattr(prev, 'action_timestamp')
                 and hasattr(prev, 'raw_actions')):
-            offset = (ctx.inference_start - prev.action_timestamp) / self.dt
-            remaining = resample_remaining(prev.raw_actions[0], offset)[None]
+            remaining = self._remaining_rtc_actions(prev, ctx.inference_start,
+                                                    self.dt)[None]
             prefix_len = self.rtc_config.get('prefix_len')
             if prefix_len is None:
                 prefix_len = int(prev.inference_elapsed * self.publish_rate)
@@ -98,21 +97,17 @@ class URRTCInferenceRunner(URInferenceRunner):
 
         raw_action = self.vla.predict_action(**inputs)
         ctx.inference_elapsed = time.time() - ctx.inference_start
-        ctx.raw_actions = raw_action.cpu().numpy()
+        ctx.raw_actions = raw_action.detach().float().cpu().numpy()
         return raw_action
 
     def _execute_actions(self, actions, rate):
         """Execute the action horizon and record when execution starts."""
         if self.disable_puppet_arm:
-            return
+            return 0
 
         ctx = self._action_ctx
         ctx.action_timestamp = time.time()
 
         if self.execute_horizon is not None:
             actions = actions[:self.execute_horizon]
-        # print("pass execute")
-        for action in actions:
-            self.ros_operator.servoj(action[:6])
-            self.ros_operator.movegrip(action[6])
-            rate.sleep()
+        return super()._execute_actions(actions, rate)

@@ -74,6 +74,15 @@ policy = dict(
         data_root=_environ.get('ROBODOJO_SUBTASK_DATA_ROOT')
         or '/mnt/data/oss/datasets/RoboDojo_lerobot_v3',
         subtask_prefix='dense',
+        # The randomized scene has the same broom/dustpan skill vocabulary,
+        # but its goal says "objects" instead of the training goal's "blocks".
+        # This changes candidate filtering only, never the actual planner goal.
+        task_aliases={
+            'Pick up the broom, hand it over to the right hand, then use '
+            'the dustpan to sweep the objects.':
+            'Pick up the broom, hand it over to the right hand, then use '
+            'the dustpan to sweep the blocks.'
+        },
         # Reload literal labels at startup: 35 tasks, up to 2601 per task.
         # This is a safety limit, never a truncation or a cached vocabulary.
         max_candidates=4096),
