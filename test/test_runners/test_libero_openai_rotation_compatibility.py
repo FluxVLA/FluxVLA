@@ -21,6 +21,7 @@ import pytest
 import torch
 
 from fluxvla.datasets.tool_calling_dataset import ToolCallingLiberoDataset
+from fluxvla.engines.evaluation_runtime import build_eval_predictor
 from fluxvla.engines.runners import libero_eval_runner as module
 from fluxvla.engines.runners.libero_eval_runner import LiberoEvalRunner
 from fluxvla.models.vlas.openai_vla import OpenAIVLA
@@ -130,6 +131,9 @@ def test_existing_runner_delivers_rotation_without_special_handling(
     )
     for name, value in attributes.items():
         setattr(runner, name, value)
+    # Production runner construction now injects the assembled predictor.
+    # Exercise that real composition boundary with the already loaded model.
+    runner.predictor = build_eval_predictor(runner)
     runner.run()
 
     assert env.closed
