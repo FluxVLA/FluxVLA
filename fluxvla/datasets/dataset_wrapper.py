@@ -223,7 +223,7 @@ class DistributedRepeatingDataset(IterableDataset):
         # Optional deterministic replay for cross-topology numerical checks.
         # Keep this out of the config so ordinary training remains unchanged.
         self.replay_indices = self._parse_replay_indices(
-            os.environ.get("FLUXVLA_REPLAY_INDICES"))
+            os.environ.get('FLUXVLA_REPLAY_INDICES'))
 
         # Get the rank and world size from the overwatch
         self.rank = overwatch.rank()
@@ -267,22 +267,24 @@ class DistributedRepeatingDataset(IterableDataset):
             raise ValueError('`strategy` must be either "round_robin" or '
                              f'"blockwise", got {strategy!r}.')
 
-    def _parse_replay_indices(self, value: Optional[str]) -> Optional[List[int]]:
-        """Parse and validate an opt-in comma/whitespace separated index list."""
+    def _parse_replay_indices(self,
+                              value: Optional[str]) -> Optional[List[int]]:
+        """Parse and validate an opt-in comma/whitespace separated index list.
+        """
         if value is None or not value.strip():
             return None
-        tokens = value.replace(",", " ").split()
+        tokens = value.replace(',', ' ').split()
         try:
             indices = [int(token) for token in tokens]
         except ValueError as exc:
             raise ValueError(
-                "FLUXVLA_REPLAY_INDICES must contain integer indices") from exc
+                'FLUXVLA_REPLAY_INDICES must contain integer indices') from exc
         if any(index < 0 or index >= self.total_len for index in indices):
             raise ValueError(
-                f"FLUXVLA_REPLAY_INDICES contains an index outside [0, "
-                f"{self.total_len})")
+                f'FLUXVLA_REPLAY_INDICES contains an index outside [0, '
+                f'{self.total_len})')
         if not indices:
-            raise ValueError("FLUXVLA_REPLAY_INDICES must not be empty")
+            raise ValueError('FLUXVLA_REPLAY_INDICES must not be empty')
         return indices
 
     def set_distributed_context(self, rank: int, world_size: int) -> None:
@@ -295,10 +297,9 @@ class DistributedRepeatingDataset(IterableDataset):
         rank = int(rank)
         world_size = int(world_size)
         if world_size <= 0:
-            raise ValueError("`world_size` must be positive.")
+            raise ValueError('`world_size` must be positive.')
         if rank < 0 or rank >= world_size:
-            raise ValueError(
-                f"rank must be in [0, {world_size}), got {rank}.")
+            raise ValueError(f'rank must be in [0, {world_size}), got {rank}.')
         self.rank = rank
         self.world_size = world_size
 

@@ -1,22 +1,26 @@
 """PI0/PI0.5 Transformer configuration for Pai-Megatron-Patch.
 
 PI0 is a dual-branch VLA (Vision-Language-Action) diffusion transformer for
-robot control. It is NOT a language model. Key differences vs. standard GPT configs:
+robot control. It is NOT a language model. Key differences vs. standard
+GPT configs:
 
-  - Two branches: VLM (PaliGemma, hidden=2048) + Action Expert (Gemma, hidden=1024)
+  - Two branches: VLM (PaliGemma, hidden=2048) + Action Expert
+    (Gemma, hidden=1024)
   - Shared 18 transformer layers with joint cross-branch attention
   - No vocabulary output; predicts action velocity via Flow Matching (MSE loss)
-  - Input: images (SigLIP-encoded) + language tokens + robot state + noisy actions
+  - Input: images (SigLIP-encoded) + language tokens + robot state +
+    noisy actions
   - PI0 injects state as a token; PI0.5 uses adaRMS conditioning per layer
 
 Architecture parameters:
   - VLM: hidden=2048, num_heads=8, head_dim=256, num_kv_heads=1, ffn=16384
   - Expert: hidden=1024, num_heads=8, head_dim=256, num_kv_heads=1, ffn=4096
-  - Both branches share the same head_dim=256, allowing seq-dim concat in joint attention
+  - Both branches share the same head_dim=256, allowing seq-dim concat in
+    joint attention
 """
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from megatron.core.transformer.transformer_config import TransformerConfig
@@ -49,7 +53,8 @@ class PI0TransformerConfig(TransformerConfig):
     # FFN intermediate size of the action expert
     action_expert_ffn_hidden_size: int = 4096
 
-    # Number of attention heads in the action expert (same as VLM for joint attn)
+    # Number of attention heads in the action expert (same as VLM for
+    # joint attn)
     action_expert_num_attention_heads: int = 8
 
     # Number of KV heads in the action expert (GQA: 1 KV head)
@@ -65,17 +70,19 @@ class PI0TransformerConfig(TransformerConfig):
     head_dim: int = 256
 
     # Keep the attention kernel contract explicit for backend alignment.
-    attention_implementation: str = "sdpa"
+    attention_implementation: str = 'sdpa'
 
     # -----------------------------------------------------------------------
     # VLA-specific architecture parameters
     # -----------------------------------------------------------------------
 
-    # Maximum action vector dimension (robot DOF) — used for architecture sizing and padding
+    # Maximum action vector dimension (robot DOF) — used for architecture
+    # sizing and padding
     max_action_dim: int = 32
 
-    # Actual output action dimension for the current dataset (≤ max_action_dim).
-    # When set, loss is truncated to only these dims (matching pi05_training behavior).
+    # Actual output action dimension for the current dataset
+    # (≤ max_action_dim). When set, loss is truncated to only these dims
+    # (matching pi05_training behavior).
     # None = use max_action_dim (backward-compatible default).
     output_action_dim: Optional[int] = None
 
@@ -125,19 +132,23 @@ class PI0TransformerConfig(TransformerConfig):
     # multi_modal_projector).  When True, only the Transformer layers,
     # suffix embedder, and action head are updated.
     # Default False = full training (matches VLASH default).
-    # Pass --pi0-freeze-prefix-embedder to enable (restores original PMP behaviour).
+    # Pass --pi0-freeze-prefix-embedder to enable (restores original PMP
+    # behaviour).
     freeze_prefix_embedder: bool = False
 
     # Freeze the unused Gemma language-model transformer layers that are loaded
-    # inside PaliGemmaForConditionalGeneration but never called by PI0PrefixEmbedder.
+    # inside PaliGemmaForConditionalGeneration but never called by
+    # PI0PrefixEmbedder.
     # (vlm.language_model.model.layers[0-17])
     #
-    # Default True = keep original PMP behaviour: these dead layers remain frozen
-    #   (they receive no gradients, so AdamW creates no optimizer states for them).
-    # Set False = vlash-alignment mode: requires_grad=True for ALL params including
-    #   the dead Gemma LM layers, giving frozen_params=0 like vlash.
-    #   Memory impact is ZERO: AdamW is lazy — optimizer states are only created on
-    #   the first .step() after a non-None gradient, which never fires for dead layers.
+    # Default True = keep original PMP behaviour: these dead layers remain
+    #   frozen (they receive no gradients, so AdamW creates no optimizer
+    #   states for them).
+    # Set False = vlash-alignment mode: requires_grad=True for ALL params
+    #   including the dead Gemma LM layers, giving frozen_params=0 like vlash.
+    #   Memory impact is ZERO: AdamW is lazy — optimizer states are only
+    #   created on the first .step() after a non-None gradient, which never
+    #   fires for dead layers.
     freeze_prefix_lm_layers: bool = True
 
     # When True, physically delete the unused Gemma LM transformer layers from
@@ -183,17 +194,22 @@ class PI0TransformerConfig(TransformerConfig):
     #       = max_images * num_image_tokens + tokenizer_max_length
     #     pp_max_suffix: max Expert suffix tokens per sample
     #       = chunk_size + 1 (state token for PI0) or chunk_size (PI0.5)
-    #     overhead_rows: adaRMS vec (1) + metadata (1) + pos_ids (5) + targets (N)
+    #     overhead_rows: adaRMS vec (1) + metadata (1) + pos_ids (5)
+    #       + targets (N)
     #
     #   micro_batch_size = pp_max_batch_size (= actual_mbs + 1 for TP padding)
     #
     # Layout of (S, max_B, 2048) per batch slot b:
     #   rows [0 : prefix_lens[b]]         VLM hidden states (D=2048)
-    #   rows [max_prefix : +suffix_lens[b]] Expert hidden states (D=1024, padded to 2048)
-    #   row  [max_prefix+max_suffix]       adaRMS conditioning vector (PI0.5) or zeros
+    #   rows [max_prefix : +suffix_lens[b]] Expert hidden states
+    #     (D=1024, padded to 2048)
+    #   row  [max_prefix+max_suffix]       adaRMS conditioning vector
+    #     (PI0.5) or zeros
     #   row  [max_prefix+max_suffix+1]     metadata
-    #   rows [+2 : +7]                     position IDs (packed float32, 5 rows)
-    #   rows [+7 : end]                    velocity targets (dense-packed, for loss)
+    #   rows [+2 : +7]                     position IDs (packed float32,
+    #     5 rows)
+    #   rows [+7 : end]                    velocity targets (dense-packed,
+    #     for loss)
     # -----------------------------------------------------------------------
 
     # Maximum VLM prefix tokens per sample (image tokens + language tokens)
@@ -211,7 +227,7 @@ class PI0TransformerConfig(TransformerConfig):
 
     # Path to the pretrained HuggingFace model checkpoint
     # (directory containing model.safetensors, config.json, etc.)
-    pretrained_model_path: str = ""
+    pretrained_model_path: str = ''
 
     # -----------------------------------------------------------------------
     # Derived / overridden fields
@@ -219,7 +235,8 @@ class PI0TransformerConfig(TransformerConfig):
 
     def __post_init__(self):
         # Map VLM architecture onto the inherited TransformerConfig fields:
-        #   hidden_size         = 2048  (must be set externally when constructing)
+        #   hidden_size         = 2048  (must be set externally when
+        #                                constructing)
         #   num_layers          = 18    (must be set externally)
         #   num_attention_heads = 8     (must be set externally)
         #   ffn_hidden_size     = 16384 (VLM MLP intermediate)
@@ -239,13 +256,16 @@ class PI0TransformerConfig(TransformerConfig):
 
     @property
     def pp_seq_length(self) -> int:
-        """Total rows in PP communication tensor (= --seq-length Megatron arg)."""
+        """Total rows in PP communication tensor.
+
+        Equals the --seq-length Megatron argument.
+        """
         # overhead: adaRMS vec (1) + metadata (1) + pos_ids (5) + target rows
         # target rows = ceil(max_suffix * max_action_dim / hidden_size)
-        target_rows = math.ceil(
-            self.pp_max_suffix_per_sample * self.max_action_dim / self.hidden_size
-        )
-        return self.pp_max_prefix_per_sample + self.pp_max_suffix_per_sample + 7 + target_rows
+        target_rows = math.ceil(self.pp_max_suffix_per_sample *
+                                self.max_action_dim / self.hidden_size)
+        return (self.pp_max_prefix_per_sample + self.pp_max_suffix_per_sample +
+                7 + target_rows)
 
     @property
     def vlm_num_attention_heads(self) -> int:

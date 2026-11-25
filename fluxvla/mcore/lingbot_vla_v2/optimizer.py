@@ -1,7 +1,6 @@
 """LingBot-specific optimizer grouping installed at the MCore boundary."""
 
 from __future__ import annotations
-
 import json
 import math
 import os
@@ -13,8 +12,8 @@ from pathlib import Path
 
 import torch
 
-
-_ROUTED_EXPERT = re.compile(r"(?:^|\.)layers\.\d+\.mlp\.(?:module\.)?experts\.")
+_ROUTED_EXPERT = re.compile(
+    r'(?:^|\.)layers\.\d+\.mlp\.(?:module\.)?experts\.')
 
 
 @dataclass(frozen=True)
@@ -31,33 +30,34 @@ _FSDP2_MICROBATCH_REDUCTION_COMPLETE = False
 
 def _strict_phase_log(message: str) -> None:
     """Emit opt-in timing markers without synchronizing CUDA work."""
-    if os.environ.get("FLUXVLA_STRICT_PHASE_LOG", "0") != "1":
+    if os.environ.get('FLUXVLA_STRICT_PHASE_LOG', '0') != '1':
         return
     rank = (
-        torch.distributed.get_rank()
-        if torch.distributed.is_available() and torch.distributed.is_initialized()
-        else 0
-    )
+        torch.distributed.get_rank() if torch.distributed.is_available()
+        and torch.distributed.is_initialized() else 0)
     print(
-        f"[fluxvla-strict-phase] t={time.monotonic():.6f} rank={rank} {message}",
+        f'[fluxvla-strict-phase] t={time.monotonic():.6f} '
+        f'rank={rank} {message}',
         flush=True,
     )
 
 
 def _write_fsdp2_reduction_layout(adapter: torch.nn.Module) -> None:
     """Write the logical reduction layout without materializing parameters."""
-    root_value = os.environ.get("FLUXVLA_FSDP2_LAYOUT_TRACE_DIR")
+    root_value = os.environ.get('FLUXVLA_FSDP2_LAYOUT_TRACE_DIR')
     if not root_value:
         return
-    if torch.distributed.is_initialized() and torch.distributed.get_rank() != 0:
+    if torch.distributed.is_initialized(
+    ) and torch.distributed.get_rank() != 0:
         return
     names_by_id = {
-        id(parameter): name.replace(".linear.", ".")
+        id(parameter): name.replace('.linear.', '.')
         for name, parameter in adapter.named_parameters()
     }
     from megatron.core import parallel_state
 
-    tensor_parallel_size = parallel_state.get_tensor_model_parallel_world_size()
+    tensor_parallel_size = parallel_state.get_tensor_model_parallel_world_size(
+    )
     units = []
     for unit_index, unit in enumerate(_FSDP2_REDUCTION_UNITS):
         parameters = []
@@ -65,40 +65,47 @@ def _write_fsdp2_reduction_layout(adapter: torch.nn.Module) -> None:
             local_shape = list(parameter.shape)
             logical_shape = list(local_shape)
             is_tensor_parallel = bool(
-                getattr(parameter, "tensor_model_parallel", False)
-            )
-            partition_dim = int(getattr(parameter, "partition_dim", 0))
+                getattr(parameter, 'tensor_model_parallel', False))
+            partition_dim = int(getattr(parameter, 'partition_dim', 0))
             if is_tensor_parallel:
                 logical_shape[partition_dim] *= tensor_parallel_size
-            parameters.append(
-                {
-                    "index": parameter_index,
-                    "name": names_by_id.get(id(parameter), "<unnamed>"),
-                    "shape": logical_shape,
-                    "local_shape": local_shape,
-                    "numel": math.prod(logical_shape),
-                    "dtype": str(parameter.dtype),
-                    "tensor_parallel": is_tensor_parallel,
-                    "partition_dim": partition_dim if is_tensor_parallel else None,
-                }
-            )
-        units.append(
-            {
-                "index": unit_index,
-                "name": unit.name,
-                "parameter_count": len(parameters),
-                "numel": sum(item["numel"] for item in parameters),
-                "parameters": parameters,
-            }
-        )
+            parameters.append({
+                'index':
+                parameter_index,
+                'name':
+                names_by_id.get(id(parameter), '<unnamed>'),
+                'shape':
+                logical_shape,
+                'local_shape':
+                local_shape,
+                'numel':
+                math.prod(logical_shape),
+                'dtype':
+                str(parameter.dtype),
+                'tensor_parallel':
+                is_tensor_parallel,
+                'partition_dim':
+                partition_dim if is_tensor_parallel else None,
+            })
+        units.append({
+            'index': unit_index,
+            'name': unit.name,
+            'parameter_count': len(parameters),
+            'numel': sum(item['numel'] for item in parameters),
+            'parameters': parameters,
+        })
     root = Path(root_value)
     root.mkdir(parents=True, exist_ok=True)
-    (root / "mcore_fsdp2_layout.json").write_text(
+    (root / 'mcore_fsdp2_layout.json').write_text(
         json.dumps(
-            {"backend": "mcore", "unit_count": len(units), "units": units},
+            {
+                'backend': 'mcore',
+                'unit_count': len(units),
+                'units': units
+            },
             indent=2,
         ),
-        encoding="utf-8",
+        encoding='utf-8',
     )
 
 
@@ -127,11 +134,8 @@ def register_lingbot_fsdp2_reduction_units(adapter: torch.nn.Module) -> None:
         local_seen = set()
         for parameter in child_first_parameters(module):
             parameter_id = id(parameter)
-            if (
-                parameter.requires_grad
-                and parameter_id not in claimed
-                and parameter_id not in local_seen
-            ):
+            if (parameter.requires_grad and parameter_id not in claimed
+                    and parameter_id not in local_seen):
                 local_seen.add(parameter_id)
                 parameters.append(parameter)
         parameters = tuple(parameters)
@@ -148,20 +152,19 @@ def register_lingbot_fsdp2_reduction_units(adapter: torch.nn.Module) -> None:
             units.append(_FSDP2ReductionUnit(name, parameters))
 
     for index, module in enumerate(adapter.get_fsdp2_full_precision_modules()):
-        claim(f"fp32_basic_{index}:{module.__class__.__name__}", module)
+        claim(f'fp32_basic_{index}:{module.__class__.__name__}', module)
     for index, module in enumerate(adapter.get_fsdp2_wrapping_modules()):
-        claim(f"vlm_layer_{index}:{module.__class__.__name__}", module)
-    claim("root", adapter)
+        claim(f'vlm_layer_{index}:{module.__class__.__name__}', module)
+    claim('root', adapter)
 
     missing = [
-        parameter
-        for parameter in adapter.parameters()
+        parameter for parameter in adapter.parameters()
         if parameter.requires_grad and id(parameter) not in claimed
     ]
     if missing:
         raise RuntimeError(
-            f"LingBot FSDP2 reduction layout left {len(missing)} trainable parameters unclaimed"
-        )
+            f'LingBot FSDP2 reduction layout left {len(missing)} trainable '
+            'parameters unclaimed')
     _FSDP2_REDUCTION_UNITS.clear()
     _FSDP2_REDUCTION_UNITS.extend(units)
     _write_fsdp2_reduction_layout(adapter)
@@ -178,28 +181,24 @@ def _strict_fsdp2_reduce_unit(
     """Reduce one logical FSDP2 unit with PyTorch's exact packing layout."""
     world_size = torch.distributed.get_world_size(process_group)
     tensor_parallel_size = (
-        1
-        if tensor_parallel_group is None
-        else torch.distributed.get_world_size(tensor_parallel_group)
-    )
+        1 if tensor_parallel_group is None else
+        torch.distributed.get_world_size(tensor_parallel_group))
     active_parameters = [
-        parameter
-        for parameter in unit.parameters
-        if getattr(parameter, "_fluxvla_autograd_grad_seen", False)
+        parameter for parameter in unit.parameters
+        if getattr(parameter, '_fluxvla_autograd_grad_seen', False)
     ]
     if not active_parameters:
         return
     local_gradients = [parameter.main_grad for parameter in active_parameters]
     if any(gradient is None for gradient in local_gradients):
-        raise RuntimeError(f"LingBot strict DP reduction found a missing gradient in {unit.name}")
+        raise RuntimeError(
+            f'LingBot strict DP reduction found a missing gradient in '
+            f'{unit.name}')
     gradients = []
     for parameter, local_gradient in zip(
-        active_parameters, local_gradients, strict=True
-    ):
-        if (
-            tensor_parallel_size > 1
-            and getattr(parameter, "tensor_model_parallel", False)
-        ):
+            active_parameters, local_gradients, strict=True):
+        if (tensor_parallel_size > 1
+                and getattr(parameter, 'tensor_model_parallel', False)):
             shards = [
                 torch.empty_like(local_gradient)
                 for _ in range(tensor_parallel_size)
@@ -212,28 +211,23 @@ def _strict_fsdp2_reduce_unit(
             gradients.append(
                 torch.cat(
                     shards,
-                    dim=int(getattr(parameter, "partition_dim", 0)),
-                )
-            )
+                    dim=int(getattr(parameter, 'partition_dim', 0)),
+                ))
         else:
             gradients.append(local_gradient)
     dtypes = {gradient.dtype for gradient in gradients}
     devices = {gradient.device for gradient in gradients}
     if len(dtypes) != 1 or len(devices) != 1:
         raise RuntimeError(
-            f"LingBot strict DP reduction requires one dtype/device per unit; "
-            f"{unit.name} has dtypes={dtypes}, devices={devices}"
-        )
+            f'LingBot strict DP reduction requires one dtype/device per unit; '
+            f'{unit.name} has dtypes={dtypes}, devices={devices}')
 
     # This is the same padded dim-0 layout used by PyTorch 2.7 FSDP2's
     # foreach_reduce_scatter_copy_in. ``chunk_cat`` writes a [DP, shard_numel]
     # matrix where each row contains that rank's shard of every unit parameter.
     padded_sizes = [
-        torch.Size(
-            [math.ceil(gradient.shape[0] / world_size) * world_size]
-            + list(gradient.shape[1:])
-        )
-        for gradient in gradients
+        torch.Size([math.ceil(gradient.shape[0] / world_size) * world_size] +
+                   list(gradient.shape[1:])) for gradient in gradients
     ]
     total_numel = sum(size.numel() for size in padded_sizes)
     reduce_input = torch.empty(
@@ -272,25 +266,24 @@ def _strict_fsdp2_reduce_unit(
         shard_dim0 = padded_size[0] // world_size
         start = rank * shard_dim0
         valid_dim0 = max(0, min(shard_dim0, gradient.shape[0] - start))
-        shard = reduced_shard[offset : offset + shard_numel].view(
-            shard_dim0, *padded_size[1:]
-        )
+        shard = reduced_shard[offset:offset + shard_numel].view(
+            shard_dim0, *padded_size[1:])
         local_shards.append(shard[:valid_dim0])
         offset += shard_numel
     local_norms = torch._foreach_norm(local_shards, 2.0)
     for parameter, local_norm in zip(
-        active_parameters, local_norms, strict=True
-    ):
+            active_parameters, local_norms, strict=True):
         parameter._fluxvla_fsdp2_local_grad_norm = (
-            local_norm if tensor_parallel_rank == 0 else torch.zeros_like(local_norm)
-        )
+            local_norm
+            if tensor_parallel_rank == 0 else torch.zeros_like(local_norm))
 
     # DistOpt owns different flat-buffer ranges than FSDP2. Gather the already
     # reduced shards without further arithmetic, reconstruct each full tensor,
     # and copy it into the existing MCore main-grad views.
     # The reduce-scatter input is dead after the collective. Reuse that large
     # allocation for all-gather output so strict parity does not hold two full
-    # unit-sized buffers at once (the root unit can contain billions of values).
+    # unit-sized buffers at once (the root unit can contain billions of
+    # values).
     torch.distributed.all_gather_into_tensor(
         reduce_input,
         reduced_shard,
@@ -299,11 +292,11 @@ def _strict_fsdp2_reduce_unit(
     reduced_rows = reduce_input.view(world_size, -1)
     offset = 0
     for parameter, local_gradient, gradient, padded_size in zip(
-        active_parameters,
-        local_gradients,
-        gradients,
-        padded_sizes,
-        strict=True,
+            active_parameters,
+            local_gradients,
+            gradients,
+            padded_sizes,
+            strict=True,
     ):
         shard_numel = padded_size.numel() // world_size
         shard_dim0 = padded_size[0] // world_size
@@ -312,23 +305,19 @@ def _strict_fsdp2_reduce_unit(
             valid_dim0 = min(shard_dim0, gradient.shape[0] - start)
             if valid_dim0 <= 0:
                 break
-            shard = reduced_rows[rank, offset : offset + shard_numel].view(
-                padded_size[0] // world_size, *padded_size[1:]
-            )
+            shard = reduced_rows[rank, offset:offset + shard_numel].view(
+                padded_size[0] // world_size, *padded_size[1:])
             gradient.narrow(0, start, valid_dim0).copy_(shard[:valid_dim0])
-        if (
-            tensor_parallel_size > 1
-            and getattr(parameter, "tensor_model_parallel", False)
-        ):
-            partition_dim = int(getattr(parameter, "partition_dim", 0))
+        if (tensor_parallel_size > 1
+                and getattr(parameter, 'tensor_model_parallel', False)):
+            partition_dim = int(getattr(parameter, 'partition_dim', 0))
             local_extent = local_gradient.shape[partition_dim]
             local_gradient.copy_(
                 gradient.narrow(
                     partition_dim,
                     tensor_parallel_rank * local_extent,
                     local_extent,
-                )
-            )
+                ))
         elif gradient.data_ptr() != local_gradient.data_ptr():
             local_gradient.copy_(gradient)
         offset += shard_numel
@@ -342,20 +331,20 @@ def _strict_fsdp2_finish_grad_sync(ddp) -> None:
     global _FSDP2_MICROBATCH_REDUCTION_COMPLETE
 
     if not _FSDP2_REDUCTION_UNITS:
-        raise RuntimeError("LingBot strict DP reduction units were not registered")
-    expert_parallel_size = parallel_state.get_expert_model_parallel_world_size()
-    config = ddp.ddp_config
-    if (
-        not config.use_distributed_optimizer
-        or config.overlap_grad_reduce
-        or config.num_distributed_optimizer_instances != 1
-    ):
         raise RuntimeError(
-            "LingBot strict FSDP2 DP reduction requires synchronous single-instance DistOpt"
-        )
+            'LingBot strict DP reduction units were not registered')
+    expert_parallel_size = parallel_state.get_expert_model_parallel_world_size(
+    )
+    config = ddp.ddp_config
+    if (not config.use_distributed_optimizer or config.overlap_grad_reduce
+            or config.num_distributed_optimizer_instances != 1):
+        raise RuntimeError(
+            'LingBot strict FSDP2 DP reduction requires synchronous '
+            'single-instance DistOpt')
     if _FSDP2_MICROBATCH_REDUCTION_COMPLETE:
         _FSDP2_MICROBATCH_REDUCTION_COMPLETE = False
-        for bucket_group in ddp.bucket_groups + ddp.expert_parallel_bucket_groups:
+        for bucket_group in (ddp.bucket_groups +
+                             ddp.expert_parallel_bucket_groups):
             bucket_group.param_gather_dispatched = False
             bucket_group.grad_reduce_handle = None
         return
@@ -389,23 +378,23 @@ def _strict_fsdp2_average_ep_dense_parameters(
 ) -> None:
     """Average EP-replicated dense gradients in Native FSDP2 ring order."""
     parameters = [
-        parameter
-        for parameter in unit.parameters
-        if getattr(parameter, "_fluxvla_autograd_grad_seen", False)
-        and not getattr(parameter, "_fluxvla_grad_already_reduced", False)
+        parameter for parameter in unit.parameters
+        if getattr(parameter, '_fluxvla_autograd_grad_seen', False)
+        and not getattr(parameter, '_fluxvla_grad_already_reduced', False)
     ]
     if not parameters:
         return
     if any(parameter.main_grad is None for parameter in parameters):
         raise RuntimeError(
-            f"LingBot strict EP reduction found a missing gradient in {unit.name}"
-        )
+            f'LingBot strict EP reduction found a missing gradient in '
+            f'{unit.name}')
 
     world_size = torch.distributed.get_world_size(process_group)
     max_chunk_numel = int(
-        os.environ.get("FLUXVLA_STRICT_EP_GATHER_CHUNK_NUMEL", str(16 * 1024 * 1024))
-    )
-    from torch.distributed.algorithms._comm_hooks.default_hooks import DefaultState
+        os.environ.get('FLUXVLA_STRICT_EP_GATHER_CHUNK_NUMEL',
+                       str(16 * 1024 * 1024)))
+    from torch.distributed.algorithms._comm_hooks.default_hooks import \
+        DefaultState
 
     predivide = DefaultState._get_gradient_predivide_factor(world_size)
     postdivide = world_size / predivide
@@ -414,18 +403,16 @@ def _strict_fsdp2_average_ep_dense_parameters(
         local = torch.cat([entry[1] for entry in entries])
         gathered = [torch.empty_like(local) for _ in range(world_size)]
         torch.distributed.all_gather(gathered, local, group=process_group)
-        order = [
-            (owner + offset) % world_size
-            for offset in range(1, world_size + 1)
-        ]
+        order = [(owner + offset) % world_size
+                 for offset in range(1, world_size + 1)]
         offset = 0
         for parameter, local_shard, valid_dim0 in entries:
             numel = local_shard.numel()
-            reduced = gathered[order[0]][offset : offset + numel].clone()
+            reduced = gathered[order[0]][offset:offset + numel].clone()
             if predivide > 1.0:
                 reduced.div_(predivide)
             for source in order[1:]:
-                value = gathered[source][offset : offset + numel]
+                value = gathered[source][offset:offset + numel]
                 reduced.add_(value / predivide if predivide > 1.0 else value)
             if postdivide > 1.0:
                 reduced.div_(postdivide)
@@ -433,8 +420,7 @@ def _strict_fsdp2_average_ep_dense_parameters(
             shard_dim0 = local_shard.numel() // math.prod(gradient.shape[1:])
             start = owner * shard_dim0
             gradient.narrow(0, start, valid_dim0).copy_(
-                reduced.view(shard_dim0, *gradient.shape[1:])[:valid_dim0]
-            )
+                reduced.view(shard_dim0, *gradient.shape[1:])[:valid_dim0])
             offset += numel
 
     for owner in range(world_size):
@@ -453,8 +439,7 @@ def _strict_fsdp2_average_ep_dense_parameters(
             )
             if valid_dim0:
                 local_shard[:valid_dim0].copy_(
-                    gradient.narrow(0, start, valid_dim0)
-                )
+                    gradient.narrow(0, start, valid_dim0))
             flat = local_shard.view(-1)
             if entries and chunk_numel + flat.numel() > max_chunk_numel:
                 reduce_chunk(owner, entries)
@@ -475,26 +460,25 @@ def _refresh_strict_fsdp2_local_grad_norms() -> None:
     tensor_parallel_group = parallel_state.get_tensor_model_parallel_group()
     data_parallel_size = torch.distributed.get_world_size(process_group)
     data_parallel_rank = torch.distributed.get_rank(process_group)
-    tensor_parallel_size = torch.distributed.get_world_size(tensor_parallel_group)
+    tensor_parallel_size = torch.distributed.get_world_size(
+        tensor_parallel_group)
     tensor_parallel_rank = torch.distributed.get_rank(tensor_parallel_group)
 
     active_parameters = []
     local_shards = []
     for unit in _FSDP2_REDUCTION_UNITS:
         for parameter in unit.parameters:
-            if not getattr(parameter, "_fluxvla_autograd_grad_seen", False):
+            if not getattr(parameter, '_fluxvla_autograd_grad_seen', False):
                 parameter._fluxvla_fsdp2_local_grad_norm = None
                 continue
             gradient = parameter.main_grad
             if gradient is None:
                 raise RuntimeError(
-                    f"LingBot strict DP norm refresh found a missing gradient in {unit.name}"
-                )
+                    f'LingBot strict DP norm refresh found a missing '
+                    f'gradient in {unit.name}')
             logical_gradient = gradient
-            if (
-                tensor_parallel_size > 1
-                and getattr(parameter, "tensor_model_parallel", False)
-            ):
+            if (tensor_parallel_size > 1
+                    and getattr(parameter, 'tensor_model_parallel', False)):
                 shards = [
                     torch.empty_like(gradient)
                     for _ in range(tensor_parallel_size)
@@ -506,11 +490,10 @@ def _refresh_strict_fsdp2_local_grad_norms() -> None:
                 )
                 logical_gradient = torch.cat(
                     shards,
-                    dim=int(getattr(parameter, "partition_dim", 0)),
+                    dim=int(getattr(parameter, 'partition_dim', 0)),
                 )
-            shard_dim0 = math.ceil(
-                logical_gradient.shape[0] / data_parallel_size
-            )
+            shard_dim0 = math.ceil(logical_gradient.shape[0] /
+                                   data_parallel_size)
             start = data_parallel_rank * shard_dim0
             valid_dim0 = max(
                 0,
@@ -526,28 +509,25 @@ def _refresh_strict_fsdp2_local_grad_norms() -> None:
     # ULP on CUDA and eventually changes clipped AdamW updates.
     local_norms = torch._foreach_norm(local_shards, 2.0)
     for parameter, local_norm in zip(
-        active_parameters, local_norms, strict=True
-    ):
+            active_parameters, local_norms, strict=True):
         parameter._fluxvla_fsdp2_local_grad_norm = (
             local_norm
-            if tensor_parallel_rank == 0
-            else torch.zeros_like(local_norm)
-        )
+            if tensor_parallel_rank == 0 else torch.zeros_like(local_norm))
 
 
 def _install_strict_fsdp2_dp_reduction() -> None:
-    """Patch MCore's final DP-sync boundary, leaving its optimizer unchanged."""
-    from megatron.core.distributed.distributed_data_parallel import (
-        DistributedDataParallel,
-    )
+    """Patch MCore's final DP-sync boundary, leaving its optimizer
+    unchanged."""
+    from megatron.core.distributed.distributed_data_parallel import \
+        DistributedDataParallel
     from megatron.training import get_args
 
     original = DistributedDataParallel.finish_grad_sync
-    if getattr(original, "_fluxvla_lingbot_strict_fsdp2", False):
+    if getattr(original, '_fluxvla_lingbot_strict_fsdp2', False):
         return
 
     def finish_grad_sync(ddp):
-        if not getattr(get_args(), "lingbot_fsdp2_strict_dp_reduction", False):
+        if not getattr(get_args(), 'lingbot_fsdp2_strict_dp_reduction', False):
             return original(ddp)
         return _strict_fsdp2_finish_grad_sync(ddp)
 
@@ -569,35 +549,30 @@ def _accumulate_strict_microbatch_gradients(
     """Stage reduced gradients while preserving microbatch addition order."""
     active_ids = {id(parameter) for parameter in active_parameters}
     if not final_microbatch:
-        cuda_accumulator_bytes = sum(
-            tensor.numel() * tensor.element_size()
-            for tensor in accumulator.values()
-            if tensor.device.type == "cuda"
-        )
+        cuda_accumulator_bytes = sum(tensor.numel() * tensor.element_size()
+                                     for tensor in accumulator.values()
+                                     if tensor.device.type == 'cuda')
         cuda_entries = []
         cpu_entries = []
         new_cuda_keys = set()
-        if (
-            accumulator_device is not None
-            and torch.device(accumulator_device).type == "cuda"
-            and cuda_accumulator_limit_bytes is not None
-        ):
-            available_bytes = cuda_accumulator_limit_bytes - cuda_accumulator_bytes
+        if (accumulator_device is not None
+                and torch.device(accumulator_device).type == 'cuda'
+                and cuda_accumulator_limit_bytes is not None):
+            available_bytes = (
+                cuda_accumulator_limit_bytes - cuda_accumulator_bytes)
             new_parameters = [
-                parameter
-                for parameter in active_parameters
+                parameter for parameter in active_parameters
                 if id(parameter) not in accumulator
             ]
             for parameter in sorted(
-                new_parameters,
-                key=lambda item: item.main_grad.numel()
-                * item.main_grad.element_size(),
-                reverse=True,
+                    new_parameters,
+                    key=lambda item: item.main_grad.numel() * item.main_grad.
+                    element_size(),
+                    reverse=True,
             ):
                 current_bytes = (
-                    parameter.main_grad.numel()
-                    * parameter.main_grad.element_size()
-                )
+                    parameter.main_grad.numel() *
+                    parameter.main_grad.element_size())
                 if current_bytes <= available_bytes:
                     new_cuda_keys.add(id(parameter))
                     available_bytes -= current_bytes
@@ -609,16 +584,14 @@ def _accumulate_strict_microbatch_gradients(
             else:
                 target_device = accumulator_device or current.device
                 current_bytes = current.numel() * current.element_size()
-                if (
-                    torch.device(target_device).type == "cuda"
-                    and cuda_accumulator_limit_bytes is not None
-                    and key not in new_cuda_keys
-                ):
-                    target_device = "cpu"
-                if torch.device(target_device).type == "cuda":
+                if (torch.device(target_device).type == 'cuda'
+                        and cuda_accumulator_limit_bytes is not None
+                        and key not in new_cuda_keys):
+                    target_device = 'cpu'
+                if torch.device(target_device).type == 'cuda':
                     cuda_accumulator_bytes += current_bytes
             entry = (parameter, key, current)
-            if torch.device(target_device).type == "cuda":
+            if torch.device(target_device).type == 'cuda':
                 cuda_entries.append(entry)
             else:
                 cpu_entries.append(entry)
@@ -637,37 +610,35 @@ def _accumulate_strict_microbatch_gradients(
             cpu_keys = [entry[1] for entry in cpu_entries]
             total_cpu_numel = sum(entry[2].numel() for entry in cpu_entries)
             source_device = cpu_entries[0][2].device
-            use_pinned_transfer = source_device.type == "cuda" and transfer_state is not None
+            use_pinned_transfer = (
+                source_device.type == 'cuda' and transfer_state is not None)
             if use_pinned_transfer:
-                host_packed = transfer_state.get("host_transfer")
-                if (
-                    host_packed is None
-                    or host_packed.numel() != total_cpu_numel
-                    or host_packed.dtype != cpu_entries[0][2].dtype
-                ):
+                host_packed = transfer_state.get('host_transfer')
+                if (host_packed is None
+                        or host_packed.numel() != total_cpu_numel
+                        or host_packed.dtype != cpu_entries[0][2].dtype):
                     host_packed = torch.empty(
                         total_cpu_numel,
                         dtype=cpu_entries[0][2].dtype,
-                        device="cpu",
+                        device='cpu',
                         pin_memory=True,
                     )
-                    transfer_state["host_transfer"] = host_packed
+                    transfer_state['host_transfer'] = host_packed
                 max_chunk_numel = int(
                     os.environ.get(
-                        "FLUXVLA_STRICT_TRANSFER_CHUNK_NUMEL",
+                        'FLUXVLA_STRICT_TRANSFER_CHUNK_NUMEL',
                         str(256 * 1024 * 1024),
-                    )
-                )
+                    ))
                 offset = 0
                 chunk = []
                 chunk_numel = 0
                 for entry in cpu_entries:
                     current_numel = entry[2].numel()
                     if chunk and chunk_numel + current_numel > max_chunk_numel:
-                        packed = torch.cat([item[2].reshape(-1) for item in chunk])
-                        host_packed[offset : offset + chunk_numel].copy_(
-                            packed, non_blocking=True
-                        )
+                        packed = torch.cat(
+                            [item[2].reshape(-1) for item in chunk])
+                        host_packed[offset:offset + chunk_numel].copy_(
+                            packed, non_blocking=True)
                         torch.cuda.current_stream(source_device).synchronize()
                         offset += chunk_numel
                         chunk = []
@@ -676,37 +647,41 @@ def _accumulate_strict_microbatch_gradients(
                     chunk_numel += current_numel
                 if chunk:
                     packed = torch.cat([item[2].reshape(-1) for item in chunk])
-                    host_packed[offset : offset + chunk_numel].copy_(
-                        packed, non_blocking=True
-                    )
+                    host_packed[offset:offset + chunk_numel].copy_(
+                        packed, non_blocking=True)
                     torch.cuda.current_stream(source_device).synchronize()
             else:
-                packed = torch.cat([entry[2].reshape(-1) for entry in cpu_entries])
+                packed = torch.cat(
+                    [entry[2].reshape(-1) for entry in cpu_entries])
                 host_packed = packed.cpu()
 
-            if transfer_state is not None and transfer_state.get("cpu_keys") == cpu_keys:
-                transfer_state["cpu_accumulator"].add_(host_packed)
+            if transfer_state is not None and transfer_state.get(
+                    'cpu_keys') == cpu_keys:
+                transfer_state['cpu_accumulator'].add_(host_packed)
                 for parameter in active_parameters:
                     parameter.main_grad.zero_()
                     parameter._fluxvla_autograd_grad_seen = False
                     parameter._fluxvla_fsdp2_local_grad_norm = None
                 return []
 
-            first_cpu_layout = transfer_state is not None and "cpu_keys" not in transfer_state
+            first_cpu_layout = (
+                transfer_state is not None
+                and 'cpu_keys' not in transfer_state)
             if first_cpu_layout:
                 cpu_accumulator = host_packed.clone()
-                transfer_state["cpu_keys"] = cpu_keys
-                transfer_state["cpu_accumulator"] = cpu_accumulator
+                transfer_state['cpu_keys'] = cpu_keys
+                transfer_state['cpu_accumulator'] = cpu_accumulator
             else:
                 cpu_accumulator = None
             offset = 0
             for _, key, current in cpu_entries:
                 numel = current.numel()
                 if first_cpu_layout:
-                    value = cpu_accumulator[offset : offset + numel].view_as(current)
+                    value = cpu_accumulator[offset:offset +
+                                            numel].view_as(current)
                     accumulator[key] = value
                 else:
-                    value = host_packed[offset : offset + numel].view_as(current)
+                    value = host_packed[offset:offset + numel].view_as(current)
                     if key in accumulator:
                         accumulator[key].add_(value)
                     else:
@@ -727,7 +702,8 @@ def _accumulate_strict_microbatch_gradients(
         if staged is None and key not in active_ids:
             continue
         if staged is not None:
-            if staged.device.type == "cpu" and parameter.main_grad.device.type != "cpu":
+            if (staged.device.type == 'cpu'
+                    and parameter.main_grad.device.type != 'cpu'):
                 cpu_entries.append((parameter, staged, key in active_ids))
             else:
                 if key in active_ids:
@@ -740,31 +716,32 @@ def _accumulate_strict_microbatch_gradients(
 
     if cpu_entries:
         cpu_keys = [id(entry[0]) for entry in cpu_entries]
-        if transfer_state is not None and transfer_state.get("cpu_keys") == cpu_keys:
-            host_packed = transfer_state["cpu_accumulator"]
+        if transfer_state is not None and transfer_state.get(
+                'cpu_keys') == cpu_keys:
+            host_packed = transfer_state['cpu_accumulator']
         else:
-            host_packed = torch.cat([entry[1].reshape(-1) for entry in cpu_entries])
+            host_packed = torch.cat(
+                [entry[1].reshape(-1) for entry in cpu_entries])
         max_chunk_numel = int(
             os.environ.get(
-                "FLUXVLA_STRICT_TRANSFER_CHUNK_NUMEL",
+                'FLUXVLA_STRICT_TRANSFER_CHUNK_NUMEL',
                 str(256 * 1024 * 1024),
-            )
-        )
+            ))
         offset = 0
         chunk = []
         chunk_numel = 0
 
         def restore_chunk(entries, start, numel):
-            device_packed = host_packed[start : start + numel].to(
+            device_packed = host_packed[start:start + numel].to(
                 device=entries[0][0].main_grad.device,
                 dtype=entries[0][0].main_grad.dtype,
                 non_blocking=True,
             )
             inner_offset = 0
             for parameter, staged, is_active in entries:
-                value = device_packed[
-                    inner_offset : inner_offset + staged.numel()
-                ].view_as(parameter.main_grad)
+                value = device_packed[inner_offset:inner_offset +
+                                      staged.numel()].view_as(
+                                          parameter.main_grad)
                 if is_active:
                     parameter.main_grad.add_(value)
                 else:
@@ -786,9 +763,8 @@ def _accumulate_strict_microbatch_gradients(
         transfer_state.clear()
     if accumulator:
         raise RuntimeError(
-            "LingBot strict FSDP2 accumulator contains parameters outside "
-            f"the registered reduction units ({len(accumulator)} tensors)"
-        )
+            'LingBot strict FSDP2 accumulator contains parameters outside '
+            f'the registered reduction units ({len(accumulator)} tensors)')
     return finalized
 
 
@@ -810,46 +786,43 @@ def _install_strict_fsdp2_microbatch_reduction() -> None:
     from megatron.training import get_args
 
     original = schedules.backward_step
-    if getattr(original, "_fluxvla_lingbot_strict_microbatch", False):
+    if getattr(original, '_fluxvla_lingbot_strict_microbatch', False):
         return
     state = {
-        "backward_count": 0,
-        "accumulator": {},
-        "transfer_state": {},
+        'backward_count': 0,
+        'accumulator': {},
+        'transfer_state': {},
     }
 
     def accumulator_device() -> str:
-        value = os.environ.get("FLUXVLA_STRICT_ACCUMULATOR_DEVICE", "cuda")
-        if value not in {"cuda", "cpu"}:
+        value = os.environ.get('FLUXVLA_STRICT_ACCUMULATOR_DEVICE', 'cuda')
+        if value not in {'cuda', 'cpu'}:
             raise ValueError(
                 "FLUXVLA_STRICT_ACCUMULATOR_DEVICE must be 'cuda' or 'cpu'; "
-                f"got {value!r}"
-            )
+                f'got {value!r}')
         return value
 
     def cuda_accumulator_limit_bytes() -> int | None:
-        if accumulator_device() != "cuda":
+        if accumulator_device() != 'cuda':
             return None
         limit_gib = float(
-            os.environ.get("FLUXVLA_STRICT_CUDA_ACCUMULATOR_GIB", "13")
-        )
+            os.environ.get('FLUXVLA_STRICT_CUDA_ACCUMULATOR_GIB', '13'))
         if limit_gib <= 0:
             raise ValueError(
-                "FLUXVLA_STRICT_CUDA_ACCUMULATOR_GIB must be positive; "
-                f"got {limit_gib}"
-            )
+                'FLUXVLA_STRICT_CUDA_ACCUMULATOR_GIB must be positive; '
+                f'got {limit_gib}')
         return int(limit_gib * 1024**3)
 
     def reduce_current_microbatch() -> None:
         process_group = parallel_state.get_data_parallel_group()
-        tensor_parallel_group = parallel_state.get_tensor_model_parallel_group()
+        tensor_parallel_group = parallel_state.get_tensor_model_parallel_group(
+        )
         tensor_parallel_rank = parallel_state.get_tensor_model_parallel_rank()
-        detailed_phase_log = os.environ.get("FLUXVLA_STRICT_PHASE_LOG") == "2"
+        detailed_phase_log = os.environ.get('FLUXVLA_STRICT_PHASE_LOG') == '2'
         for unit_index, unit in enumerate(_FSDP2_REDUCTION_UNITS):
             if detailed_phase_log:
                 _strict_phase_log(
-                    f"reduce-unit-start index={unit_index} name={unit.name}"
-                )
+                    f'reduce-unit-start index={unit_index} name={unit.name}')
             _strict_fsdp2_reduce_unit(
                 unit,
                 process_group,
@@ -858,79 +831,73 @@ def _install_strict_fsdp2_microbatch_reduction() -> None:
             )
             if detailed_phase_log:
                 _strict_phase_log(
-                    f"reduce-unit-end index={unit_index} name={unit.name}"
-                )
+                    f'reduce-unit-end index={unit_index} name={unit.name}')
 
     def strict_microbatch_backward_step(*args, **kwargs):
-        _strict_phase_log("backward-start")
+        _strict_phase_log('backward-start')
         result = original(*args, **kwargs)
-        _strict_phase_log("backward-end")
-        if not getattr(get_args(), "lingbot_fsdp2_strict_dp_reduction", False):
+        _strict_phase_log('backward-end')
+        if not getattr(get_args(), 'lingbot_fsdp2_strict_dp_reduction', False):
             return result
         num_microbatches = get_num_microbatches()
         if num_microbatches == 1:
             return result
-        microbatch_index = state["backward_count"] % num_microbatches
-        state["backward_count"] += 1
-        if microbatch_index == 0 and state["accumulator"]:
+        microbatch_index = state['backward_count'] % num_microbatches
+        state['backward_count'] += 1
+        if microbatch_index == 0 and state['accumulator']:
             raise RuntimeError(
-                "LingBot strict FSDP2 started a new optimizer step with a "
-                "non-empty microbatch accumulator"
-            )
-        _strict_phase_log(f"microbatch-reduce-start index={microbatch_index}")
+                'LingBot strict FSDP2 started a new optimizer step with a '
+                'non-empty microbatch accumulator')
+        _strict_phase_log(f'microbatch-reduce-start index={microbatch_index}')
         reduce_current_microbatch()
-        _strict_phase_log(f"microbatch-reduce-end index={microbatch_index}")
+        _strict_phase_log(f'microbatch-reduce-end index={microbatch_index}')
         active_parameters = [
-            parameter
-            for unit in _FSDP2_REDUCTION_UNITS
+            parameter for unit in _FSDP2_REDUCTION_UNITS
             for parameter in unit.parameters
-            if getattr(parameter, "_fluxvla_autograd_grad_seen", False)
+            if getattr(parameter, '_fluxvla_autograd_grad_seen', False)
         ]
         final_microbatch = microbatch_index == num_microbatches - 1
         all_parameters = [
-            parameter
-            for unit in _FSDP2_REDUCTION_UNITS
+            parameter for unit in _FSDP2_REDUCTION_UNITS
             for parameter in unit.parameters
         ]
         if not final_microbatch:
             device = accumulator_device()
             _strict_phase_log(
-                f"accumulator-stage-start index={microbatch_index} "
-                f"device={device} "
-                f"parameters={len(active_parameters)}"
-            )
+                f'accumulator-stage-start index={microbatch_index} '
+                f'device={device} '
+                f'parameters={len(active_parameters)}')
             _accumulate_strict_microbatch_gradients(
                 active_parameters,
                 all_parameters,
-                state["accumulator"],
+                state['accumulator'],
                 final_microbatch=False,
                 accumulator_device=device,
                 cuda_accumulator_limit_bytes=cuda_accumulator_limit_bytes(),
-                transfer_state=state["transfer_state"],
+                transfer_state=state['transfer_state'],
             )
-            _strict_phase_log("accumulator-stage-end")
+            _strict_phase_log('accumulator-stage-end')
             return result
 
         _strict_phase_log(
-            f"accumulator-finalize-start parameters={len(active_parameters)}"
-        )
+            f'accumulator-finalize-start parameters={len(active_parameters)}')
         finalized_parameters = _accumulate_strict_microbatch_gradients(
             active_parameters,
             all_parameters,
-            state["accumulator"],
+            state['accumulator'],
             final_microbatch=True,
-            transfer_state=state["transfer_state"],
+            transfer_state=state['transfer_state'],
         )
-        _strict_phase_log("accumulator-finalize-end")
-        state["accumulator"] = {}
+        _strict_phase_log('accumulator-finalize-end')
+        state['accumulator'] = {}
         # The per-microbatch norms no longer describe the accumulated gradient.
         # Recreate the exact Native FSDP2 rank-local shard norms before the
         # optimizer computes its global norm and clipping coefficient.
         for parameter in finalized_parameters:
             parameter._fluxvla_autograd_grad_seen = True
-        _strict_phase_log("norm-refresh-start")
+        _strict_phase_log('norm-refresh-start')
         _refresh_strict_fsdp2_local_grad_norms()
-        _strict_phase_log("norm-refresh-end")
+        _strict_phase_log('norm-refresh-end')
         for parameter in finalized_parameters:
             parameter._fluxvla_autograd_grad_seen = False
         global _FSDP2_MICROBATCH_REDUCTION_COMPLETE
@@ -944,13 +911,14 @@ def _install_strict_fsdp2_microbatch_reduction() -> None:
 def _chunk_parameter_groups(groups: list[dict], chunk_size: int) -> list[dict]:
     """Split large AdamW groups while preserving their scheduling metadata."""
     if chunk_size <= 0:
-        raise ValueError("LingBot AdamW parameter-group chunk size must be positive")
+        raise ValueError(
+            'LingBot AdamW parameter-group chunk size must be positive')
     chunked = []
     for group in groups:
-        parameters = group["params"]
+        parameters = group['params']
         for start in range(0, len(parameters), chunk_size):
             item = dict(group)
-            item["params"] = parameters[start : start + chunk_size]
+            item['params'] = parameters[start:start + chunk_size]
             chunked.append(item)
     return chunked
 
@@ -958,28 +926,29 @@ def _chunk_parameter_groups(groups: list[dict], chunk_size: int) -> list[dict]:
 def _restore_fp32_master_parameters(optimizer) -> int:
     """Restore DistOpt owned shards from pre-BF16 checkpoint parameters."""
     restored = 0
-    children = getattr(optimizer, "chained_optimizers", (optimizer,))
+    children = getattr(optimizer, 'chained_optimizers', (optimizer, ))
     model_parameters = set()
     for child in children:
-        model_map = getattr(child, "model_param_group_index_map", {})
+        model_map = getattr(child, 'model_param_group_index_map', {})
         for model_parameter in model_map:
             model_parameters.add(model_parameter)
-            initial = getattr(model_parameter, "_fluxvla_fp32_init", None)
-            main_parameter = getattr(model_parameter, "main_param", None)
+            initial = getattr(model_parameter, '_fluxvla_fp32_init', None)
+            main_parameter = getattr(model_parameter, 'main_param', None)
             if initial is None or main_parameter is None:
                 continue
-            param_range = child._get_model_param_range_map(model_parameter)["param"]
-            source = initial.view(-1)[param_range.start : param_range.end]
+            param_range = child._get_model_param_range_map(
+                model_parameter)['param']
+            source = initial.view(-1)[param_range.start:param_range.end]
             if source.numel() != main_parameter.numel():
                 raise RuntimeError(
-                    "LingBot FP32 master shard does not match MCore DistOpt range"
-                )
+                    'LingBot FP32 master shard does not match MCore '
+                    'DistOpt range')
             main_parameter.copy_(source.to(device=main_parameter.device))
             restored += 1
-        for model_chunk in getattr(child, "model_chunks", ()):
+        for model_chunk in getattr(child, 'model_chunks', ()):
             model_parameters.update(model_chunk.parameters())
     for model_parameter in model_parameters:
-        if hasattr(model_parameter, "_fluxvla_fp32_init"):
+        if hasattr(model_parameter, '_fluxvla_fp32_init'):
             del model_parameter._fluxvla_fp32_init
     return restored
 
@@ -991,7 +960,8 @@ def is_routed_expert_parameter(name: str, _parameter) -> bool:
 @torch.no_grad()
 def _fsdp2_virtual_dp_norms(
     parameters: list[torch.nn.Parameter],
-    local_optimizer_ranges: dict[int, tuple[torch.Tensor, tuple[int, int] | None]],
+    local_optimizer_ranges: dict[int, tuple[torch.Tensor,
+                                            tuple[int, int] | None]],
     *,
     data_parallel_size: int,
     trace_path: Path | None = None,
@@ -1020,7 +990,8 @@ def _fsdp2_virtual_dp_norms(
         )
         if owned is not None:
             gradient, model_range = owned
-            start, end = (0, parameter.numel()) if model_range is None else model_range
+            start, end = (
+                0, parameter.numel()) if model_range is None else model_range
             local_gradient[start:end].copy_(gradient.detach().view(-1))
         torch.distributed.all_reduce(
             local_gradient,
@@ -1028,20 +999,23 @@ def _fsdp2_virtual_dp_norms(
             group=dp_group,
         )
         logical_gradient = local_gradient.view(parameter.shape)
-        if tp_size > 1 and getattr(parameter, "tensor_model_parallel", False):
-            shards = [torch.empty_like(logical_gradient) for _ in range(tp_size)]
-            torch.distributed.all_gather(shards, logical_gradient, group=tp_group)
+        if tp_size > 1 and getattr(parameter, 'tensor_model_parallel', False):
+            shards = [
+                torch.empty_like(logical_gradient) for _ in range(tp_size)
+            ]
+            torch.distributed.all_gather(
+                shards, logical_gradient, group=tp_group)
             logical_gradient = torch.cat(
                 shards,
-                dim=int(getattr(parameter, "partition_dim", 0)),
+                dim=int(getattr(parameter, 'partition_dim', 0)),
             )
         flat = logical_gradient.contiguous().view(-1)
         # DTensor/FSDP uses uneven shards when a parameter is not divisible by
         # the DP size (for example, a 55-element action bias becomes 28/27).
-        for rank, shard in enumerate(torch.tensor_split(flat, data_parallel_size)):
+        for rank, shard in enumerate(
+                torch.tensor_split(flat, data_parallel_size)):
             norms_by_dp_rank[rank].append(
-                torch.linalg.vector_norm(shard, 2.0, dtype=torch.float32)
-            )
+                torch.linalg.vector_norm(shard, 2.0, dtype=torch.float32))
     stacked_norms = [torch.stack(norms) for norms in norms_by_dp_rank]
     local_norms = [
         torch.linalg.vector_norm(norms, 2.0) for norms in stacked_norms
@@ -1050,10 +1024,10 @@ def _fsdp2_virtual_dp_norms(
         trace_path.parent.mkdir(parents=True, exist_ok=True)
         torch.save(
             {
-                "per_parameter_norms": [
-                    norms.detach().cpu() for norms in stacked_norms
-                ],
-                "local_total_norms": [norm.detach().cpu() for norm in local_norms],
+                'per_parameter_norms':
+                [norms.detach().cpu() for norms in stacked_norms],
+                'local_total_norms':
+                [norm.detach().cpu() for norm in local_norms],
             },
             trace_path,
         )
@@ -1077,15 +1051,16 @@ def _install_fsdp2_parameterwise_grad_norm(model, optimizer) -> None:
     from megatron.training import get_args
 
     args = get_args()
-    if not getattr(args, "lingbot_fsdp2_parameterwise_grad_norm", True):
+    if not getattr(args, 'lingbot_fsdp2_parameterwise_grad_norm', True):
         return
-    if args.pipeline_model_parallel_size != 1 or args.context_parallel_size != 1:
+    if (args.pipeline_model_parallel_size != 1
+            or args.context_parallel_size != 1):
         return
 
+    from megatron.core.tensor_parallel.layers import \
+        param_is_not_tensor_parallel_duplicate
+
     from ..diagnostics import _optimizer_tensors
-    from megatron.core.tensor_parallel.layers import (
-        param_is_not_tensor_parallel_duplicate,
-    )
 
     model_chunks = model if isinstance(model, list) else [model]
     parameters = []
@@ -1105,18 +1080,16 @@ def _install_fsdp2_parameterwise_grad_norm(model, optimizer) -> None:
         tensors = _optimizer_tensors(optimizer, parameter)
         if tensors is None:
             continue
-        gradient = tensors.get("model_grad")
+        gradient = tensors.get('model_grad')
         if gradient is not None and trace_device is None:
             trace_device = gradient.device
         if gradient is not None:
             local_optimizer_ranges[index] = (
                 gradient,
-                tensors.get("model_range"),
+                tensors.get('model_range'),
             )
-        if (
-            gradient is not None
-            and param_is_not_tensor_parallel_duplicate(parameter)
-        ):
+        if (gradient is not None
+                and param_is_not_tensor_parallel_duplicate(parameter)):
             owned_entries.append((index, parameter, gradient))
     if trace_device is None:
         return
@@ -1130,58 +1103,53 @@ def _install_fsdp2_parameterwise_grad_norm(model, optimizer) -> None:
     # for an opt-in diagnostic norm experiment.  It is deliberately not used
     # by the default parity path until parameter-level ownership is proven.
     expert_entry_mask = [
-        not bool(getattr(parameter, "allreduce", True))
+        not bool(getattr(parameter, 'allreduce', True))
         for _, parameter, _ in owned_entries
     ]
-    trace_state = {"step": 0}
+    trace_state = {'step': 0}
 
     @torch.no_grad()
     def get_grad_norm_fsdp2(chained_optimizer):
         global _FSDP2_PARTIAL_CLIP_DENOMINATOR
-        trace_state["step"] += 1
+        trace_state['step'] += 1
         _FSDP2_PARTIAL_CLIP_DENOMINATOR = None
         partial_norms = [
-            getattr(parameter, "_fluxvla_fsdp2_local_grad_norm", None)
+            getattr(parameter, '_fluxvla_fsdp2_local_grad_norm', None)
             for parameter in parameters
         ]
-        trace_root = os.environ.get("FLUXVLA_FSDP2_NORM_TRACE_DIR")
+        trace_root = os.environ.get('FLUXVLA_FSDP2_NORM_TRACE_DIR')
         trace_target = int(
-            os.environ.get("FLUXVLA_FSDP2_NORM_TRACE_STEP", "0")
-        )
+            os.environ.get('FLUXVLA_FSDP2_NORM_TRACE_STEP', '0'))
         trace_path = None
-        if trace_root and (trace_target == 0 or trace_target == trace_state["step"]):
-            rank = int(os.environ.get("RANK", "0"))
+        if trace_root and (trace_target == 0
+                           or trace_target == trace_state['step']):
+            rank = int(os.environ.get('RANK', '0'))
             trace_path = (
-                Path(trace_root)
-                / f"mcore_norm_step_{trace_state['step']:06d}_rank_{rank:02d}.pt"
+                Path(trace_root) /
+                f"mcore_norm_step_{trace_state['step']:06d}_rank_{rank:02d}.pt"
             )
         if any(value is not None for value in partial_norms):
             from megatron.core import parallel_state
 
             present_indices = [
-                index for index, value in enumerate(partial_norms) if value is not None
+                index for index, value in enumerate(partial_norms)
+                if value is not None
             ]
             present_norms = [partial_norms[index] for index in present_indices]
             local_total_norm = torch.linalg.vector_norm(
-                torch.stack(present_norms), 2.0
-            )
+                torch.stack(present_norms), 2.0)
             group = chained_optimizer.get_grad_stats_parallel_group()
             contributes = parallel_state.get_tensor_model_parallel_rank() == 0
             global_squared = (
                 local_total_norm.square()
-                if contributes
-                else torch.zeros_like(local_total_norm)
-            )
+                if contributes else torch.zeros_like(local_total_norm))
             torch.distributed.all_reduce(
                 global_squared,
                 op=torch.distributed.ReduceOp.SUM,
                 group=group,
             )
-            clip_squared = (
-                (local_total_norm + 1.0e-6).square()
-                if contributes
-                else torch.zeros_like(local_total_norm)
-            )
+            clip_squared = ((local_total_norm + 1.0e-6).square() if contributes
+                            else torch.zeros_like(local_total_norm))
             torch.distributed.all_reduce(
                 clip_squared,
                 op=torch.distributed.ReduceOp.SUM,
@@ -1192,32 +1160,34 @@ def _install_fsdp2_parameterwise_grad_norm(model, optimizer) -> None:
                 trace_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(
                     {
-                        "mode": "partial",
-                        "step": trace_state["step"],
-                        "present_indices": present_indices,
-                        "parameter_names": [
+                        'mode':
+                        'partial',
+                        'step':
+                        trace_state['step'],
+                        'present_indices':
+                        present_indices,
+                        'parameter_names': [
                             parameter_names[id(parameters[index])]
                             for index in present_indices
                         ],
-                        "per_parameter_norms": torch.stack(present_norms)
-                        .detach()
-                        .cpu(),
-                        "local_total_norm": local_total_norm.detach().cpu(),
-                        "contributes": contributes,
-                        "global_total_norm": global_squared.sqrt().detach().cpu(),
-                        "clip_denominator": _FSDP2_PARTIAL_CLIP_DENOMINATOR
-                        .detach()
-                        .cpu(),
+                        'per_parameter_norms':
+                        torch.stack(present_norms).detach().cpu(),
+                        'local_total_norm':
+                        local_total_norm.detach().cpu(),
+                        'contributes':
+                        contributes,
+                        'global_total_norm':
+                        global_squared.sqrt().detach().cpu(),
+                        'clip_denominator':
+                        _FSDP2_PARTIAL_CLIP_DENOMINATOR.detach().cpu(),
                     },
                     trace_path,
                 )
             for parameter in parameters:
                 parameter._fluxvla_fsdp2_local_grad_norm = None
             return float(global_squared.sqrt().item())
-        if (
-            getattr(args, "lingbot_tp_parity_reference", False)
-            and args.tensor_model_parallel_size > 1
-        ):
+        if (getattr(args, 'lingbot_tp_parity_reference', False)
+                and args.tensor_model_parallel_size > 1):
             virtual_norms = _fsdp2_virtual_dp_norms(
                 parameters,
                 local_optimizer_ranges,
@@ -1225,19 +1195,15 @@ def _install_fsdp2_parameterwise_grad_norm(model, optimizer) -> None:
                 trace_path=trace_path,
             )
             total_norm = torch.linalg.vector_norm(
-                torch.stack(virtual_norms), 2.0
-            )
+                torch.stack(virtual_norms), 2.0)
             _FSDP2_PARTIAL_CLIP_DENOMINATOR = torch.linalg.vector_norm(
-                torch.stack(
-                    [norm + 1.0e-6 for norm in virtual_norms]
-                ),
+                torch.stack([norm + 1.0e-6 for norm in virtual_norms]),
                 2.0,
             )
             return float(total_norm.item())
 
         local_squared = torch.zeros(
-            len(parameters), dtype=torch.float32, device=trace_device
-        )
+            len(parameters), dtype=torch.float32, device=trace_device)
         if owned_gradients:
             local_norms = torch._foreach_norm(owned_gradients, 2.0)
             local_squared.index_copy_(
@@ -1245,72 +1211,80 @@ def _install_fsdp2_parameterwise_grad_norm(model, optimizer) -> None:
                 indices,
                 torch.stack(local_norms).float().square(),
             )
-        trace_root = os.environ.get("FLUXVLA_GRAD_NORM_INPUT_TRACE_DIR")
-        trace_step = int(os.environ.get("FLUXVLA_GRAD_NORM_INPUT_TRACE_STEP", "0"))
-        if trace_root and (trace_step == 0 or trace_step == trace_state["step"]):
-            rank = int(os.environ.get("RANK", "0"))
-            path = Path(trace_root) / f"mcore_owned_rank{rank}.jsonl"
+        trace_root = os.environ.get('FLUXVLA_GRAD_NORM_INPUT_TRACE_DIR')
+        trace_step = int(
+            os.environ.get('FLUXVLA_GRAD_NORM_INPUT_TRACE_STEP', '0'))
+        if trace_root and (trace_step == 0
+                           or trace_step == trace_state['step']):
+            rank = int(os.environ.get('RANK', '0'))
+            path = Path(trace_root) / f'mcore_owned_rank{rank}.jsonl'
             path.parent.mkdir(parents=True, exist_ok=True)
             owned_by_index = {
                 index: (parameter, gradient)
                 for index, parameter, gradient in owned_entries
             }
             group = chained_optimizer.get_grad_stats_parallel_group()
-            with path.open("a", encoding="utf-8") as stream:
+            with path.open('a', encoding='utf-8') as stream:
                 for index, parameter in enumerate(parameters):
                     owned = owned_by_index.get(index)
                     gradient = None if owned is None else owned[1]
                     row = {
-                        "backend": "mcore",
-                        "step": trace_state["step"],
-                        "rank": rank,
-                        "index": index,
-                        "name": parameter_names.get(id(parameter), "<unnamed>"),
-                        "parameter_shape": list(parameter.shape),
-                        "gradient_shape": None if gradient is None else list(gradient.shape),
-                        "gradient_norm": (
-                            None
-                            if gradient is None
-                            else float(
-                                torch.linalg.vector_norm(
-                                    gradient.detach(), 2.0, dtype=torch.float32
-                                ).item()
-                            )
-                        ),
-                        "tensor_model_parallel": bool(
-                            getattr(parameter, "tensor_model_parallel", False)
-                        ),
-                        "partition_dim": getattr(parameter, "partition_dim", None),
-                        "allreduce": bool(getattr(parameter, "allreduce", True)),
-                        "grad_stats_group_size": torch.distributed.get_world_size(group),
+                        'backend':
+                        'mcore',
+                        'step':
+                        trace_state['step'],
+                        'rank':
+                        rank,
+                        'index':
+                        index,
+                        'name':
+                        parameter_names.get(id(parameter), '<unnamed>'),
+                        'parameter_shape':
+                        list(parameter.shape),
+                        'gradient_shape':
+                        None if gradient is None else list(gradient.shape),
+                        'gradient_norm': (None if gradient is None else float(
+                            torch.linalg.vector_norm(
+                                gradient.detach(), 2.0,
+                                dtype=torch.float32).item())),
+                        'tensor_model_parallel':
+                        bool(
+                            getattr(parameter, 'tensor_model_parallel',
+                                    False)),
+                        'partition_dim':
+                        getattr(parameter, 'partition_dim', None),
+                        'allreduce':
+                        bool(getattr(parameter, 'allreduce', True)),
+                        'grad_stats_group_size':
+                        torch.distributed.get_world_size(group),
                     }
-                    stream.write(json.dumps(row, sort_keys=True) + "\n")
+                    stream.write(json.dumps(row, sort_keys=True) + '\n')
         stats_group = chained_optimizer.get_grad_stats_parallel_group()
         from megatron.core import parallel_state
 
-        expert_parallel_size = parallel_state.get_expert_model_parallel_world_size()
+        expert_parallel_size = (
+            parallel_state.get_expert_model_parallel_world_size())
         # EP norm de-duplication is diagnostic-only until per-parameter
         # ownership is proven against the Native FSDP2 layout.  In particular,
         # DistributedOptimizer may already partition a replicated dense
         # parameter across the full stats group; blindly dividing every dense
         # entry by EP underestimates the norm and changes clipping.  Keep the
         # historical MCore norm as the default parity path.
-        if (
-            expert_parallel_size > 1
-            and os.environ.get("FLUXVLA_EP_NORM_DEDUP", "0") == "1"
-        ):
+        if (expert_parallel_size > 1
+                and os.environ.get('FLUXVLA_EP_NORM_DEDUP', '0') == '1'):
             # ``stats_group`` is the one-instance DistOpt group.  Reduce the
             # two ownership classes independently before taking the norm.
-            dense_squared = torch.zeros((), dtype=torch.float32, device=trace_device)
+            dense_squared = torch.zeros((),
+                                        dtype=torch.float32,
+                                        device=trace_device)
             expert_squared = torch.zeros_like(dense_squared)
             if owned_gradients:
-                squared = torch.stack(
-                    [
-                        norm.float().square()
-                        for norm in torch._foreach_norm(owned_gradients, 2.0)
-                    ]
-                )
-                mask = torch.tensor(expert_entry_mask, device=trace_device, dtype=torch.bool)
+                squared = torch.stack([
+                    norm.float().square()
+                    for norm in torch._foreach_norm(owned_gradients, 2.0)
+                ])
+                mask = torch.tensor(
+                    expert_entry_mask, device=trace_device, dtype=torch.bool)
                 if (~mask).any():
                     dense_squared = squared[~mask].sum()
                 if mask.any():
@@ -1325,28 +1299,28 @@ def _install_fsdp2_parameterwise_grad_norm(model, optimizer) -> None:
             # routed expert is replicated only across the expert-data group,
             # whose size is DP/EP; using the ordinary DP size would divide its
             # norm twice and under-estimate the clipping denominator.
-            dense_dp_size = parallel_state.get_expert_data_parallel_world_size()
+            dense_dp_size = parallel_state.get_expert_data_parallel_world_size(
+            )
             totals[0].div_(float(expert_parallel_size))
             totals[1].div_(float(dense_dp_size))
             total_norm = totals.sum().sqrt()
-            runtime_trace = os.environ.get("FLUXVLA_FSDP2_NORM_RUNTIME_TRACE")
+            runtime_trace = os.environ.get('FLUXVLA_FSDP2_NORM_RUNTIME_TRACE')
             if runtime_trace:
                 Path(runtime_trace).parent.mkdir(parents=True, exist_ok=True)
-                with Path(runtime_trace).open("a", encoding="utf-8") as stream:
+                with Path(runtime_trace).open('a', encoding='utf-8') as stream:
                     stream.write(
                         json.dumps(
                             {
-                                "optimizer_class": type(chained_optimizer).__name__,
-                                "dense_squared": float(dense_squared.item()),
-                                "expert_squared": float(expert_squared.item()),
-                                "expert_parallel_size": expert_parallel_size,
-                                "expert_data_parallel_size": dense_dp_size,
-                                "total_norm": float(total_norm.item()),
+                                'optimizer_class': type(
+                                    chained_optimizer).__name__,
+                                'dense_squared': float(dense_squared.item()),
+                                'expert_squared': float(expert_squared.item()),
+                                'expert_parallel_size': expert_parallel_size,
+                                'expert_data_parallel_size': dense_dp_size,
+                                'total_norm': float(total_norm.item()),
                             },
                             sort_keys=True,
-                        )
-                        + "\n"
-                    )
+                        ) + '\n')
         else:
             torch.distributed.all_reduce(
                 local_squared,
@@ -1386,7 +1360,7 @@ def _install_fsdp2_foreach_clip() -> None:
     from megatron.core.optimizer.clip_grads import to_local_if_dtensor
 
     original = optimizer_module.clip_grad_by_total_norm_fp32
-    if getattr(original, "_fluxvla_lingbot_fsdp2_clip", False):
+    if getattr(original, '_fluxvla_lingbot_fsdp2_clip', False):
         return
 
     @torch.no_grad()
@@ -1398,10 +1372,9 @@ def _install_fsdp2_foreach_clip() -> None:
     ):
         if isinstance(parameters, torch.Tensor):
             parameters = [parameters]
-        grad_attr = "decoupled_grad" if use_decoupled_grad else "grad"
+        grad_attr = 'decoupled_grad' if use_decoupled_grad else 'grad'
         gradients = [
-            to_local_if_dtensor(gradient).detach()
-            for parameter in parameters
+            to_local_if_dtensor(gradient).detach() for parameter in parameters
             if (gradient := getattr(parameter, grad_attr, None)) is not None
         ]
         if not gradients:
@@ -1416,11 +1389,13 @@ def _install_fsdp2_foreach_clip() -> None:
         torch._foreach_mul_(gradients, coefficient)
 
     clip_grad_by_total_norm_fsdp2._fluxvla_lingbot_fsdp2_clip = True
-    optimizer_module.clip_grad_by_total_norm_fp32 = clip_grad_by_total_norm_fsdp2
+    optimizer_module.clip_grad_by_total_norm_fp32 = (
+        clip_grad_by_total_norm_fsdp2)
 
 
 @torch.no_grad()
-def _sum_then_postdivide_grad_sync(bucket_group, original_start_grad_sync) -> None:
+def _sum_then_postdivide_grad_sync(bucket_group,
+                                   original_start_grad_sync) -> None:
     """Match the active PyTorch FSDP2 gradient reduction contract.
 
     PyTorch 2.7 FSDP2 uses NCCL AVG directly for FP32/BF16 reductions. MCore's
@@ -1431,28 +1406,25 @@ def _sum_then_postdivide_grad_sync(bucket_group, original_start_grad_sync) -> No
     """
     config = bucket_group.ddp_config
     if not config.use_distributed_optimizer:
-        raise RuntimeError(
-            "LingBot FSDP2 reduction ordering requires MCore DistributedOptimizer"
-        )
+        raise RuntimeError('LingBot FSDP2 reduction ordering requires MCore '
+                           'DistributedOptimizer')
     if config.overlap_grad_reduce:
         raise RuntimeError(
-            "LingBot FSDP2 reduction ordering requires synchronous gradient reduction"
-        )
+            'LingBot FSDP2 reduction ordering requires synchronous '
+            'gradient reduction')
     if config.num_distributed_optimizer_instances != 1:
-        raise RuntimeError(
-            "LingBot FSDP2 reduction ordering requires one DistributedOptimizer instance"
-        )
+        raise RuntimeError('LingBot FSDP2 reduction ordering requires one '
+                           'DistributedOptimizer instance')
     reduction_states = [
-        bool(getattr(parameter, "_fluxvla_grad_already_reduced", False))
+        bool(getattr(parameter, '_fluxvla_grad_already_reduced', False))
         for bucket in bucket_group.buckets
-        for parameter in getattr(bucket, "params_list", ())
+        for parameter in getattr(bucket, 'params_list', ())
     ]
     if any(reduction_states):
         if not all(reduction_states):
             raise RuntimeError(
-                "LingBot already-reduced gradients cannot share a bucket with "
-                "ordinary gradients"
-            )
+                'LingBot already-reduced gradients cannot share a bucket with '
+                'ordinary gradients')
         # Gradients are already the full-DP FSDP2 average, but remain in the
         # ordinary DistOpt buffer so optimizer ownership and parameter
         # all-gather are unchanged. With synchronous reduction there is no
@@ -1465,28 +1437,27 @@ def _sum_then_postdivide_grad_sync(bucket_group, original_start_grad_sync) -> No
 
     world_size = bucket_group.intra_distributed_optimizer_instance_size
     rank = bucket_group.intra_distributed_optimizer_instance_rank
-    factors = [bucket.gradient_scaling_factor for bucket in bucket_group.buckets]
+    factors = [
+        bucket.gradient_scaling_factor for bucket in bucket_group.buckets
+    ]
     if not factors:
         return original_start_grad_sync(bucket_group)
     factor = factors[0]
     if factor <= 0.0 or any(abs(item - factor) > 1e-12 for item in factors):
         raise RuntimeError(
-            "LingBot FSDP2 reduction ordering requires one positive gradient "
-            f"scaling factor per bucket group, got {factors}"
-        )
+            'LingBot FSDP2 reduction ordering requires one positive gradient '
+            f'scaling factor per bucket group, got {factors}')
     reduction_divisor = round(1.0 / factor)
-    if (
-        not math.isclose(factor * reduction_divisor, 1.0, abs_tol=1e-12)
-        or reduction_divisor < world_size
-        or reduction_divisor % world_size
-    ):
+    if (not math.isclose(factor * reduction_divisor, 1.0, abs_tol=1e-12)
+            or reduction_divisor < world_size
+            or reduction_divisor % world_size):
         raise RuntimeError(
-            "LingBot FSDP2 reduction ordering expected a reciprocal global-DP "
-            f"scaling factor compatible with communication world size {world_size}, "
-            f"got {factor}"
-        )
+            'LingBot FSDP2 reduction ordering expected a reciprocal global-DP '
+            'scaling factor compatible with communication world size '
+            f'{world_size}, got {factor}')
 
-    from torch.distributed.algorithms._comm_hooks.default_hooks import DefaultState
+    from torch.distributed.algorithms._comm_hooks.default_hooks import \
+        DefaultState
 
     predivide = DefaultState._get_gradient_predivide_factor(reduction_divisor)
     postdivide = reduction_divisor / predivide
@@ -1501,12 +1472,13 @@ def _sum_then_postdivide_grad_sync(bucket_group, original_start_grad_sync) -> No
 
     if bucket_group.grad_reduce_handle is not None:
         raise RuntimeError(
-            "LingBot FSDP2 reduction ordering cannot post-divide an asynchronous collective"
-        )
+            'LingBot FSDP2 reduction ordering cannot post-divide an '
+            'asynchronous collective')
     for bucket in bucket_group.buckets:
         shards = bucket.grad_data.chunk(world_size)
         if len(shards) != world_size:
-            raise RuntimeError("LingBot gradient buffer cannot be evenly sharded over DP")
+            raise RuntimeError(
+                'LingBot gradient buffer cannot be evenly sharded over DP')
         # Expert buckets may communicate over expert-DP while retaining the
         # dense global-DP divisor, so derive both factors from the recorded
         # gradient scaling factor rather than the communication world size.
@@ -1516,16 +1488,17 @@ def _sum_then_postdivide_grad_sync(bucket_group, original_start_grad_sync) -> No
 
 def install_lingbot_fsdp2_reduction_order() -> None:
     """Install LingBot's opt-in FSDP2-compatible DP reduction ordering."""
-    from megatron.core.distributed.param_and_grad_buffer import _ParamAndGradBucketGroup
+    from megatron.core.distributed.param_and_grad_buffer import \
+        _ParamAndGradBucketGroup
     from megatron.training import get_args
 
     original = _ParamAndGradBucketGroup.start_grad_sync
-    if getattr(original, "_fluxvla_lingbot_fsdp2_order", False):
+    if getattr(original, '_fluxvla_lingbot_fsdp2_order', False):
         return
 
     def start_grad_sync(bucket_group):
         args = get_args()
-        if not getattr(args, "lingbot_fsdp2_reduction_order", True):
+        if not getattr(args, 'lingbot_fsdp2_reduction_order', True):
             return original(bucket_group)
         return _sum_then_postdivide_grad_sync(bucket_group, original)
 
@@ -1534,32 +1507,36 @@ def install_lingbot_fsdp2_reduction_order() -> None:
 
 
 def install_lingbot_optimizer_builder() -> None:
-    """Add native LingBot's routed-expert LR multiplier without vendoring MCore."""
+    """Add native LingBot's routed-expert LR multiplier without vendoring
+    MCore."""
+    import megatron.core.optimizer as mcore_optimizer
     from megatron.training import get_args
     from megatron.training import training as megatron_training
-    import megatron.core.optimizer as mcore_optimizer
 
     _install_fsdp2_foreach_clip()
     _install_strict_fsdp2_dp_reduction()
     _install_strict_fsdp2_microbatch_reduction()
 
     get_param_groups = mcore_optimizer._get_param_groups
-    if not getattr(get_param_groups, "_fluxvla_lingbot_chunked", False):
+    if not getattr(get_param_groups, '_fluxvla_lingbot_chunked', False):
+
         def get_chunked_param_groups(*args, **kwargs):
             groups = get_param_groups(*args, **kwargs)
             runtime_args = get_args()
-            if not getattr(runtime_args, "lingbot_low_memory_adam", True):
+            if not getattr(runtime_args, 'lingbot_low_memory_adam', True):
                 return groups
             return _chunk_parameter_groups(
                 groups,
-                int(getattr(runtime_args, "lingbot_adam_foreach_chunk_size", 1)),
+                int(
+                    getattr(runtime_args, 'lingbot_adam_foreach_chunk_size',
+                            1)),
             )
 
         get_chunked_param_groups._fluxvla_lingbot_chunked = True
         mcore_optimizer._get_param_groups = get_chunked_param_groups
 
     original = megatron_training.setup_model_and_optimizer
-    if getattr(original, "_fluxvla_lingbot_optimizer", False):
+    if getattr(original, '_fluxvla_lingbot_optimizer', False):
         return
 
     def setup_model_and_optimizer(
@@ -1571,23 +1548,24 @@ def install_lingbot_optimizer_builder() -> None:
         checkpointing_context=None,
     ):
         if scale_lr_cond is not None:
-            raise ValueError("LingBot MCore owns scale_lr_cond for routed experts")
+            raise ValueError(
+                'LingBot MCore owns scale_lr_cond for routed experts')
         args = get_args()
-        if getattr(args, "optimizer_cpu_offload", False) and getattr(
-            args, "use_precision_aware_optimizer", False
-        ):
-            # Megatron's read-only optimizer_config compares a missing TE
-            # version with packaging.Version.  Keep the backend usable with
-            # its torch hybrid optimizer without modifying Megatron-LM.
+        if getattr(args, 'optimizer_cpu_offload', False) and getattr(
+                args, 'use_precision_aware_optimizer', False):
+            # Megatron's read-only optimizer_config compares a missing
+            # Transformer Engine version with packaging.Version.  Keep the
+            # backend usable with its torch hybrid optimizer without
+            # modifying Megatron-LM.
             from megatron.core import utils as mcore_utils
             from packaging.version import Version
 
             if mcore_utils.get_te_version() is None:
+
                 def _missing_te_version() -> Version:
-                    return Version("0.0.0")
+                    return Version('0.0.0')
 
                 mcore_utils.get_te_version = _missing_te_version
-        multiplier = float(getattr(args, "lingbot_expert_lr_multiplier", 1.0))
         result = original(
             model_provider_func,
             model_type,
@@ -1608,17 +1586,18 @@ def install_lingbot_optimizer_builder() -> None:
         # Keep the MCore backend's public LR knobs step-based and ignore that
         # sample-count increment at this boundary.  This is an instance-level
         # adapter; Megatron-LM remains read-only.
-        decay_steps = getattr(args, "lr_decay_iters", None)
+        decay_steps = getattr(args, 'lr_decay_iters', None)
         if decay_steps is None:
-            decay_steps = getattr(args, "train_iters", None)
+            decay_steps = getattr(args, 'train_iters', None)
         if decay_steps is not None:
             scheduler.lr_decay_steps = int(decay_steps)
             scheduler.wd_incr_steps = int(
-                getattr(args, "train_iters", decay_steps)
-            )
+                getattr(args, 'train_iters', decay_steps))
             original_scheduler_step = scheduler.step
 
-            def step_by_optimizer_update(increment=1, *, _step=original_scheduler_step):
+            def step_by_optimizer_update(increment=1,
+                                         *,
+                                         _step=original_scheduler_step):
                 del increment
                 return _step(1)
 
@@ -1627,10 +1606,8 @@ def install_lingbot_optimizer_builder() -> None:
         # FluxVLA Native calls ``prepare_step`` before the first optimizer
         # update; Megatron advances its scheduler after the update.  Prime a
         # fresh run to schedule(step=1); checkpoint resume keeps its cursor.
-        if (
-            int(getattr(scheduler, "num_steps", 0)) == 0
-            and int(getattr(args, "iteration", 0)) == 0
-        ):
+        if (int(getattr(scheduler, 'num_steps', 0)) == 0
+                and int(getattr(args, 'iteration', 0)) == 0):
             scheduler.step(1)
         restored = _restore_fp32_master_parameters(optimizer)
         # In the Native-FP32 master path the model parameters themselves are
@@ -1638,20 +1615,17 @@ def install_lingbot_optimizer_builder() -> None:
         # snapshots to restore. Its optimizer main shards are initialized from
         # those parameters directly; only the historical BF16 model path needs
         # the explicit restoration guard.
-        preserve_fp32 = os.environ.get("FLUXVLA_MCORE_PRESERVE_FP32_PARAMS") == "1"
+        preserve_fp32 = os.environ.get(
+            'FLUXVLA_MCORE_PRESERVE_FP32_PARAMS') == '1'
         precision_aware = bool(
-            getattr(args, "use_precision_aware_optimizer", False)
-        )
-        if (
-            getattr(args, "use_distributed_optimizer", False)
-            and restored == 0
-            and not preserve_fp32
-            and not precision_aware
-        ):
-            raise RuntimeError("LingBot MCore did not restore any FP32 master shards")
-        if getattr(args, "lingbot_low_memory_adam", True):
+            getattr(args, 'use_precision_aware_optimizer', False))
+        if (getattr(args, 'use_distributed_optimizer', False) and restored == 0
+                and not preserve_fp32 and not precision_aware):
+            raise RuntimeError(
+                'LingBot MCore did not restore any FP32 master shards')
+        if getattr(args, 'lingbot_low_memory_adam', True):
             for group in optimizer.param_groups:
-                group["foreach"] = True
+                group['foreach'] = True
         _install_fsdp2_parameterwise_grad_norm(result[0], optimizer)
         return result
 
@@ -1660,8 +1634,8 @@ def install_lingbot_optimizer_builder() -> None:
 
 
 __all__ = [
-    "install_lingbot_fsdp2_reduction_order",
-    "install_lingbot_optimizer_builder",
-    "is_routed_expert_parameter",
-    "register_lingbot_fsdp2_reduction_units",
+    'install_lingbot_fsdp2_reduction_order',
+    'install_lingbot_optimizer_builder',
+    'is_routed_expert_parameter',
+    'register_lingbot_fsdp2_reduction_units',
 ]

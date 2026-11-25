@@ -3,9 +3,8 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from fluxvla.optimizers.lr_scheduler_policies import (
-    LinearWarmupCosineDecayLRScheduler,
-)
+from fluxvla.optimizers.lr_scheduler_policies import \
+    LinearWarmupCosineDecayLRScheduler
 
 
 def _build_policy(warmup_ratio):
@@ -23,10 +22,10 @@ def _build_policy(warmup_ratio):
 def test_zero_warmup_starts_at_peak_lr():
     optimizer = _build_policy(warmup_ratio=0.0)
 
-    assert optimizer.param_groups[0]["lr"] == pytest.approx(1e-4)
+    assert optimizer.param_groups[0]['lr'] == pytest.approx(1e-4)
 
 
 def test_positive_warmup_starts_at_zero_lr():
     optimizer = _build_policy(warmup_ratio=0.1)
 
-    assert optimizer.param_groups[0]["lr"] == pytest.approx(0.0)
+    assert optimizer.param_groups[0]['lr'] == pytest.approx(0.0)

@@ -51,7 +51,7 @@ def matmul_bias_cuda(inp: torch.Tensor,
         if out is not None:
             out.copy_(result.reshape_as(out))
             return out
-        return result.reshape(orig_shape[:-1] + (N,))
+        return result.reshape(orig_shape[:-1] + (N, ))
 
     if res is not None:
         res_2d = res.reshape(M, N) if res.dim() != 2 else res

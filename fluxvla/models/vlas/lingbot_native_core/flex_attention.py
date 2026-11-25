@@ -15,20 +15,22 @@
 import torch
 import torch.nn.functional as F  # noqa: N812
 from packaging.version import Version
-import einops
 
 FLEX_SPARSE_BLOCK_SIZE = 128
-FLEX_KERNEL_OPTIONS = {"BLOCK_M": 32, "BLOCK_N": 64, "num_warps": 4, "num_stages": 2}
+FLEX_KERNEL_OPTIONS = {
+    'BLOCK_M': 32,
+    'BLOCK_N': 64,
+    'num_warps': 4,
+    'num_stages': 2
+}
 
-if Version(torch.__version__) > Version("2.5.0"):
+if Version(torch.__version__) > Version('2.5.0'):
     # Ffex attention is only available from torch 2.5 onwards
-    from torch.nn.attention.flex_attention import (
-        _mask_mod_signature,
-        _round_up_to_multiple,
-        create_block_mask,
-        create_mask,
-        flex_attention,
-    )
+    from torch.nn.attention.flex_attention import (_mask_mod_signature,
+                                                   _round_up_to_multiple,
+                                                   create_block_mask,
+                                                   create_mask, flex_attention)
+
 
 # @torch.compile(dynamic=False)
 def flex_attention_forward(
@@ -43,7 +45,6 @@ def flex_attention_forward(
     """
     batch_size, seq_len, num_att_heads, head_dim = query_states.shape
     original_dtype = query_states.dtype
-    num_key_value_heads = key_states.shape[2]
     # num_key_value_groups = num_att_heads // num_key_value_heads # 16 // 2 = 8
 
     query_states = query_states.transpose(1, 2)
@@ -56,14 +57,17 @@ def flex_attention_forward(
 
     causal_mask = attention_mask
     if causal_mask is not None:
-        causal_mask = causal_mask[:, None, :, : key_states.shape[2]]
+        causal_mask = causal_mask[:, None, :, :key_states.shape[2]]
 
         if causal_mask.shape[1] == 1 and query_states.shape[1] > 1:
             causal_mask = causal_mask.expand(-1, query_states.shape[1], -1, -1)
 
-    def precomputed_mask_factory(precomputed_mask: torch.Tensor) -> _mask_mod_signature:
+    def precomputed_mask_factory(
+            precomputed_mask: torch.Tensor) -> _mask_mod_signature:
+
         def mask_mod(b, h, q_idx, kv_idx):
-            # Danger zone: if b,h,q_idx,kv_idx exceed the shape, device-side assert occurs.
+            # Danger zone: if b,h,q_idx,kv_idx exceed the shape,
+            # device-side assert occurs.
             return precomputed_mask[b][h][q_idx][kv_idx]
 
         return mask_mod
@@ -80,7 +84,9 @@ def flex_attention_forward(
     pad_k = kv_len_rounded - kv_len
 
     if pad_q > 0:
-        query_states = F.pad(query_states, (0, 0, 0, pad_q), value=0.0)  # [B, H, q_len_rounded, D]
+        query_states = F.pad(
+            query_states, (0, 0, 0, pad_q),
+            value=0.0)  # [B, H, q_len_rounded, D]
     if pad_k > 0:
         key_states = F.pad(key_states, (0, 0, 0, pad_k), value=0.0)
         value_states = F.pad(value_states, (0, 0, 0, pad_k), value=0.0)
@@ -108,7 +114,8 @@ def flex_attention_forward(
         _compile=False,
     )
 
-    #  mask is applied inside the kernel, ideally more efficiently than score_mod.
+    #  mask is applied inside the kernel, ideally more efficiently than
+    # score_mod.
     attn_output, attention_weights = flex_attention(
         query_states,
         key_states,
@@ -120,7 +127,8 @@ def flex_attention_forward(
         kernel_options=FLEX_KERNEL_OPTIONS,
     )
     attn_output = attn_output[:, :, :seq_len, :].to(dtype=original_dtype)
-    attn_output = attn_output.transpose(1, 2).contiguous()  # [B, Q_LEN, H, head_dim]
+    attn_output = attn_output.transpose(
+        1, 2).contiguous()  # [B, Q_LEN, H, head_dim]
     attn_output = attn_output.reshape(
         batch_size,
         -1,
@@ -139,16 +147,16 @@ def build_block_mask(
 ):
     """
     Build a reusable BlockMask from a 3D attention mask [B, Q, KV].
-    This allocates the dense 4D mask once; the returned BlockMask can be reused across layers.
+    This allocates the dense 4D mask once; the returned BlockMask can be
+    reused across layers.
     """
-    from torch.nn.attention.flex_attention import (
-        _mask_mod_signature,
-        _round_up_to_multiple,
-        create_block_mask,
-        create_mask,
-    )
+    from torch.nn.attention.flex_attention import (_round_up_to_multiple,
+                                                   create_block_mask,
+                                                   create_mask)
 
-    causal_mask = attention_mask_3d[:, None, :, :].expand(-1, num_heads, -1, -1).contiguous()
+    causal_mask = attention_mask_3d[:,
+                                    None, :, :].expand(-1, num_heads, -1,
+                                                       -1).contiguous()
     b_mask, h_mask = causal_mask.shape[0], causal_mask.shape[1]
 
     q_len_rounded = _round_up_to_multiple(q_len, block_size)
@@ -159,21 +167,27 @@ def build_block_mask(
     padded_mask = F.pad(causal_mask, (0, pad_k, 0, pad_q), value=0.0)
 
     def precomputed_mask_factory(precomputed_mask: torch.Tensor):
+
         def mask_mod(b, h, q_idx, kv_idx):
             return precomputed_mask[b][h][q_idx][kv_idx]
+
         return mask_mod
 
     mask_4d = create_mask(
         mod_fn=precomputed_mask_factory(padded_mask),
-        B=b_mask, H=h_mask,
-        Q_LEN=q_len_rounded, KV_LEN=kv_len_rounded,
+        B=b_mask,
+        H=h_mask,
+        Q_LEN=q_len_rounded,
+        KV_LEN=kv_len_rounded,
         device=causal_mask.device,
     )
 
     block_mask = create_block_mask(
         mask_mod=precomputed_mask_factory(mask_4d),
-        B=b_mask, H=h_mask,
-        Q_LEN=q_len_rounded, KV_LEN=kv_len_rounded,
+        B=b_mask,
+        H=h_mask,
+        Q_LEN=q_len_rounded,
+        KV_LEN=kv_len_rounded,
         BLOCK_SIZE=block_size,
         device=causal_mask.device,
         _compile=False,
@@ -190,10 +204,10 @@ def flex_attention_with_block_mask(
     scaling=None,
 ):
     """
-    Run flex_attention with a pre-built BlockMask (no create_mask allocation per call).
+    Run flex_attention with a pre-built BlockMask (no create_mask
+    allocation per call).
     """
     batch_size = query_states.shape[0]
-    num_att_heads = query_states.shape[2]
     head_dim = query_states.shape[3]
     original_dtype = query_states.dtype
 
@@ -201,8 +215,10 @@ def flex_attention_with_block_mask(
     key_states = key_states.transpose(1, 2).to(torch.float32)
     value_states = value_states.transpose(1, 2).to(torch.float32)
 
-    q_len_rounded = block_mask.shape[-2] if hasattr(block_mask, 'shape') else query_states.shape[2]
-    kv_len_rounded = block_mask.shape[-1] if hasattr(block_mask, 'shape') else key_states.shape[2]
+    q_len_rounded = block_mask.shape[-2] if hasattr(
+        block_mask, 'shape') else query_states.shape[2]
+    kv_len_rounded = block_mask.shape[-1] if hasattr(
+        block_mask, 'shape') else key_states.shape[2]
 
     pad_q = q_len_rounded - query_states.shape[2]
     pad_k = kv_len_rounded - key_states.shape[2]
@@ -225,5 +241,6 @@ def flex_attention_with_block_mask(
     )
     attn_output = attn_output[:, :, :seq_len, :].to(dtype=original_dtype)
     attn_output = attn_output.transpose(1, 2).contiguous()
-    attn_output = attn_output.reshape(batch_size, -1, attn_output.shape[2] * attn_output.shape[3])
+    attn_output = attn_output.reshape(
+        batch_size, -1, attn_output.shape[2] * attn_output.shape[3])
     return attn_output

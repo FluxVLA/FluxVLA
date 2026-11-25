@@ -17,7 +17,10 @@ import triton.language as tl
 
 
 @triton.jit
-def load_with_pred_1d(ptr, skip_boundary_check: tl.constexpr, mask: tl.tensor, other=0):
+def load_with_pred_1d(ptr,
+                      skip_boundary_check: tl.constexpr,
+                      mask: tl.tensor,
+                      other=0):
     if not skip_boundary_check:
         return tl.load(ptr, mask, other=other)
     else:
@@ -25,7 +28,8 @@ def load_with_pred_1d(ptr, skip_boundary_check: tl.constexpr, mask: tl.tensor, o
 
 
 @triton.jit
-def store_with_pred_1d(ptr, value, skip_boundary_check: tl.constexpr, mask: tl.tensor):
+def store_with_pred_1d(ptr, value, skip_boundary_check: tl.constexpr,
+                       mask: tl.tensor):
     if not skip_boundary_check:
         tl.store(ptr, value, mask)
     else:
@@ -71,24 +75,26 @@ def store_with_pred_2d(
 
 
 @triton.jit
-def load_block_with_pred_2d(ptr, skip_boundary_check_0: tl.constexpr, skip_boundary_check_1: tl.constexpr):
+def load_block_with_pred_2d(ptr, skip_boundary_check_0: tl.constexpr,
+                            skip_boundary_check_1: tl.constexpr):
     if not skip_boundary_check_0 and not skip_boundary_check_1:
         return tl.load(ptr, boundary_check=(0, 1))
     elif not skip_boundary_check_0 and skip_boundary_check_1:
-        return tl.load(ptr, boundary_check=(0,))
+        return tl.load(ptr, boundary_check=(0, ))
     elif skip_boundary_check_0 and not skip_boundary_check_1:
-        return tl.load(ptr, boundary_check=(1,))
+        return tl.load(ptr, boundary_check=(1, ))
     else:
         return tl.load(ptr)
 
 
 @triton.jit
-def store_block_with_pred_2d(ptr, value, skip_boundary_check_0: tl.constexpr, skip_boundary_check_1: tl.constexpr):
+def store_block_with_pred_2d(ptr, value, skip_boundary_check_0: tl.constexpr,
+                             skip_boundary_check_1: tl.constexpr):
     if not skip_boundary_check_0 and not skip_boundary_check_1:
         tl.store(ptr, value, boundary_check=(0, 1))
     elif not skip_boundary_check_0 and skip_boundary_check_1:
-        tl.store(ptr, value, boundary_check=(0,))
+        tl.store(ptr, value, boundary_check=(0, ))
     elif skip_boundary_check_0 and not skip_boundary_check_1:
-        tl.store(ptr, value, boundary_check=(1,))
+        tl.store(ptr, value, boundary_check=(1, ))
     else:
         tl.store(ptr, value)

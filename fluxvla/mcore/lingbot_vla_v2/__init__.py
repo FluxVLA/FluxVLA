@@ -2,4 +2,4 @@
 
 from .recipe import LINGBOT_VLA_V2_SPEC
 
-__all__ = ["LINGBOT_VLA_V2_SPEC"]
+__all__ = ['LINGBOT_VLA_V2_SPEC']

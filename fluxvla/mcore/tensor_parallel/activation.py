@@ -24,7 +24,7 @@ class SequenceParallelMLP(nn.Module):
                 if id(parameter) in seen:
                     continue
                 seen.add(id(parameter))
-                if getattr(parameter, "tensor_model_parallel", False):
+                if getattr(parameter, 'tensor_model_parallel', False):
                     continue
 
                 def allreduce_replicated_wgrad(gradient, *, group=tp_group):
@@ -39,8 +39,7 @@ class SequenceParallelMLP(nn.Module):
     def forward(self, hidden_states, *args, **kwargs):
         from megatron.core.tensor_parallel.mappings import (
             gather_from_sequence_parallel_region,
-            scatter_to_sequence_parallel_region,
-        )
+            scatter_to_sequence_parallel_region)
 
         batch_first = hidden_states.ndim >= 3
         batch_size = hidden_states.shape[0] if batch_first else None
@@ -56,7 +55,8 @@ class SequenceParallelMLP(nn.Module):
             # Padding here keeps the collective contract explicit and trimming
             # after gather restores the exact native token layout.
             if hidden_states.ndim >= 3:
-                hidden_states = F.pad(hidden_states, (0, 0, 0, 0, 0, pad_length))
+                hidden_states = F.pad(hidden_states,
+                                      (0, 0, 0, 0, 0, pad_length))
             else:
                 hidden_states = F.pad(hidden_states, (0, 0, 0, pad_length))
         hidden_states = scatter_to_sequence_parallel_region(hidden_states)
@@ -65,17 +65,19 @@ class SequenceParallelMLP(nn.Module):
             hidden_states = hidden_states.transpose(0, 1).contiguous()
         sp_meta = (batch_size, local_length) if batch_first else None
         for child in self.module.modules():
-            if hasattr(child, "_fluxvla_sp_meta"):
+            if hasattr(child, '_fluxvla_sp_meta'):
                 child._fluxvla_sp_meta = sp_meta
         output = self.module(hidden_states, *args, **kwargs)
         if isinstance(output, tuple):
             value, *rest = output
         else:
             value, rest = output, []
+
         def gather_value(item):
             if not isinstance(item, torch.Tensor) or item.ndim == 0:
                 return item
-            flattened_batch = batch_first and item.shape[0] == batch_size * local_length
+            flattened_batch = batch_first and item.shape[
+                0] == batch_size * local_length
             if flattened_batch:
                 item = item.reshape(batch_size, local_length, *item.shape[1:])
                 item = item.transpose(0, 1).contiguous()
@@ -98,8 +100,7 @@ class SequenceParallelMLP(nn.Module):
                 # 3-D scatter source and fails before the main loss is formed.
                 gathered_length = item.shape[0]
                 item = item.transpose(0, 1).contiguous().reshape(
-                    batch_size * gathered_length, *item.shape[2:]
-                )
+                    batch_size * gathered_length, *item.shape[2:])
             elif batch_first and item.ndim >= 3:
                 item = item.transpose(0, 1).contiguous()
             return item
@@ -109,4 +110,4 @@ class SequenceParallelMLP(nn.Module):
         return (value, *rest) if rest else value
 
 
-__all__ = ["SequenceParallelMLP"]
+__all__ = ['SequenceParallelMLP']

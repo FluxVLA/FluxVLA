@@ -8,7 +8,6 @@ configuration would produce incorrect training semantics.
 """
 
 from __future__ import annotations
-
 from typing import Optional
 
 import torch
@@ -17,8 +16,8 @@ import torch.distributed as dist
 from ..utils.overwatch import initialize_overwatch
 from ..utils.root import RUNNERS
 from .ddp_train_runner import DDPTrainRunner
-from .megatron_runtime import MegatronRuntime, get_optional_parallel_config
 from .megatron_parallel import ShardedOptimizer, apply_tensor_parallel
+from .megatron_runtime import MegatronRuntime, get_optional_parallel_config
 
 overwatch = initialize_overwatch(__name__)
 
@@ -39,7 +38,8 @@ class _MegatronNativeLifecycleRunner(DDPTrainRunner):
         if self.parallel_config.pipeline_model_parallel_size != 1:
             raise NotImplementedError(
                 'PI0.5 pipeline parallel bridge is not enabled yet; use '
-                'pipeline_model_parallel_size=1 for the compatibility backend.')
+                'pipeline_model_parallel_size=1 for the compatibility backend.'
+            )
         if self.parallel_config.context_parallel_size != 1:
             raise NotImplementedError(
                 'PI0.5 context parallel bridge is not enabled yet; use '
@@ -71,10 +71,9 @@ class _MegatronNativeLifecycleRunner(DDPTrainRunner):
         self.megatron_runtime = MegatronRuntime(self.parallel_config)
         self.megatron_runtime.initialize()
         self.ddp_process_group = self.megatron_runtime.data_parallel_group()
-        self.global_batch_size = (self.per_device_batch_size *
-                                  self.megatron_runtime.parallel_state
-                                  .get_data_parallel_world_size() *
-                                  self.grad_accumulation_steps)
+        self.global_batch_size = (
+            self.per_device_batch_size * self.megatron_runtime.parallel_state.
+            get_data_parallel_world_size() * self.grad_accumulation_steps)
         try:
             super().run_setup(n_train_examples)
         except Exception:
@@ -83,25 +82,26 @@ class _MegatronNativeLifecycleRunner(DDPTrainRunner):
             raise
 
         if overwatch.is_rank_zero():
-            backend_name = (
-                'native MCore'
-                if isinstance(self, MegatronNativeTrainRunner)
-                else 'Megatron-Core compatibility')
-            overwatch.info(
-                f'{backend_name} backend initialized: '
-                f'{self.megatron_runtime.summary()}')
+            backend_name = ('native MCore' if isinstance(
+                self, MegatronNativeTrainRunner) else
+                            'Megatron-Core compatibility')
+            overwatch.info(f'{backend_name} backend initialized: '
+                           f'{self.megatron_runtime.summary()}')
 
     def _data_parallel_world_size(self) -> int:
         if self.megatron_runtime is not None:
-            return self.megatron_runtime.parallel_state.get_data_parallel_world_size()
+            parallel_state = self.megatron_runtime.parallel_state
+            return parallel_state.get_data_parallel_world_size()
         return super()._data_parallel_world_size()
 
     def _data_parallel_rank(self) -> int:
         if self.megatron_runtime is not None:
-            return self.megatron_runtime.parallel_state.get_data_parallel_rank()
+            return self.megatron_runtime.parallel_state.get_data_parallel_rank(
+            )
         return super()._data_parallel_rank()
 
-    def _reduce_training_loss_for_metrics(self, loss: torch.Tensor) -> torch.Tensor:
+    def _reduce_training_loss_for_metrics(self,
+                                          loss: torch.Tensor) -> torch.Tensor:
         """Log the DP-global mean instead of rank-local microbatch loss."""
         if self.megatron_runtime is None:
             return loss
@@ -117,17 +117,20 @@ class _MegatronNativeLifecycleRunner(DDPTrainRunner):
         if self.parallel_config.tensor_model_parallel_size <= 1:
             return
         count = apply_tensor_parallel(
-            self.vla, self.megatron_runtime.tensor_model_parallel_group(),
+            self.vla,
+            self.megatron_runtime.tensor_model_parallel_group(),
             minimum_out_features=self.tensor_parallel_min_out_features)
         if overwatch.is_rank_zero():
-            overwatch.info('Megatron TP enabled: partitioned %d Linear modules', count)
+            overwatch.info(
+                'Megatron TP enabled: partitioned %d Linear modules', count)
 
     def _setup_optimizer_and_scheduler(self, n_train_examples: int) -> None:
         super()._setup_optimizer_and_scheduler(n_train_examples)
         if self.distributed_optimizer:
-            self.optimizer = ShardedOptimizer(self.optimizer,
-                                               self.ddp_process_group,
-                                               bucket_cap_mb=self.optimizer_bucket_cap_mb)
+            self.optimizer = ShardedOptimizer(
+                self.optimizer,
+                self.ddp_process_group,
+                bucket_cap_mb=self.optimizer_bucket_cap_mb)
             self.lr_scheduler.bind_optimizer(self.optimizer)
             if overwatch.is_rank_zero():
                 overwatch.info(
@@ -139,9 +142,10 @@ class _MegatronNativeLifecycleRunner(DDPTrainRunner):
         """Rebuild optimizer after a state mismatch, preserving ZeRO-1."""
         super()._reinit_optimizer()
         if self.distributed_optimizer:
-            self.optimizer = ShardedOptimizer(self.optimizer,
-                                               self.ddp_process_group,
-                                               bucket_cap_mb=self.optimizer_bucket_cap_mb)
+            self.optimizer = ShardedOptimizer(
+                self.optimizer,
+                self.ddp_process_group,
+                bucket_cap_mb=self.optimizer_bucket_cap_mb)
             self.lr_scheduler.bind_optimizer(self.optimizer)
 
     def clip_grad_norm(self):
@@ -179,8 +183,9 @@ class _MegatronNativeLifecycleRunner(DDPTrainRunner):
         norms = []
         for name, parameter in self.vla.named_parameters():
             if parameter.grad is None:
-                local_sq = torch.zeros(
-                    (), device=self.device_id, dtype=torch.float32)
+                local_sq = torch.zeros((),
+                                       device=self.device_id,
+                                       dtype=torch.float32)
             else:
                 is_tp_sharded = bool(
                     getattr(parameter, '_tp_sharded', False)
@@ -189,8 +194,9 @@ class _MegatronNativeLifecycleRunner(DDPTrainRunner):
                     grad = parameter.grad.detach().float()
                     local_sq = torch.sum(grad * grad)
                 else:
-                    local_sq = torch.zeros(
-                        (), device=parameter.device, dtype=torch.float32)
+                    local_sq = torch.zeros((),
+                                           device=parameter.device,
+                                           dtype=torch.float32)
             dist.all_reduce(local_sq, group=tp_group)
             if tp_rank == 0:
                 canonical_name = name.replace('.layer.weight', '.weight') \
@@ -224,7 +230,8 @@ class MegatronNativeTrainRunner(_MegatronNativeLifecycleRunner):
         # TP conversion is safe on CPU and must happen before the device move
         # to avoid a full-model plus shard peak allocation.
         self.prepare_backend_on_cpu = True
-        self.sequence_parallel = bool(runner_cfg.get('sequence_parallel', False))
+        self.sequence_parallel = bool(
+            runner_cfg.get('sequence_parallel', False))
         self.tensor_parallel_strategy = str(
             runner_cfg.get('tensor_parallel_strategy', 'gemma_mlp'))
         kwargs.pop('sequence_parallel', None)

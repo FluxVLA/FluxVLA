@@ -414,19 +414,14 @@ class PI05FlowMatching(PI0FlowMatching):
             action_emb = self.action_in_proj(noisy_actions)
             time_emb = F.silu(self.time_mlp_in(time_emb))
             time_emb = F.silu(self.time_mlp_out(time_emb))
-        if (
-            os.environ.get("PI05_EMBED_ALIGNMENT_TRACE") == "1"
-            and int(os.environ.get("RANK", "0")) == 0
-        ):
+        if (os.environ.get('PI05_EMBED_ALIGNMENT_TRACE') == '1'
+                and int(os.environ.get('RANK', '0')) == 0):
             path = Path(
-                os.environ.get(
-                    "PI05_EMBED_ALIGNMENT_TRACE_DIR", "work_dirs/embed_trace"
-                )
-            )
+                os.environ.get('PI05_EMBED_ALIGNMENT_TRACE_DIR',
+                               'work_dirs/embed_trace'))
             path.mkdir(parents=True, exist_ok=True)
-            torch.save(
-                action_emb[:1].detach().cpu(), path / "fsdp_action_embedding.pt"
-            )
+            torch.save(action_emb[:1].detach().cpu(),
+                       path / 'fsdp_action_embedding.pt')
         # Add to input tokens
         embs.append(action_emb)
 

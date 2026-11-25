@@ -12,15 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-
 import os
 from pathlib import Path
 
 import torch
 
-from .group_gemm.kernel.group_gemm import group_gemm_same_mn, group_gemm_same_nk
+from .group_gemm.kernel.group_gemm import (group_gemm_same_mn,
+                                           group_gemm_same_nk)
 from .group_gemm.kernel.moe import expert_histogram, moe_gather, moe_scatter
-
 
 _backward_trace_call_index = 0
 
@@ -31,21 +30,23 @@ def _trace_backward_outputs(
     grad_hidden_states: torch.Tensor,
 ) -> None:
     """Save opt-in fused-MoE backward outputs without changing autograd."""
-    root_value = os.environ.get("FLUXVLA_LINGBOT_FUSED_MOE_BACKWARD_TRACE_DIR")
+    root_value = os.environ.get('FLUXVLA_LINGBOT_FUSED_MOE_BACKWARD_TRACE_DIR')
     if not root_value:
         return
 
     global _backward_trace_call_index
     _backward_trace_call_index += 1
-    calls_per_step = int(os.environ.get("LINGBOT_FUSED_MOE_CALLS_PER_STEP", "36"))
-    target_step = int(os.environ.get("LINGBOT_FUSED_MOE_BACKWARD_TRACE_STEP", "1"))
+    calls_per_step = int(
+        os.environ.get('LINGBOT_FUSED_MOE_CALLS_PER_STEP', '36'))
+    target_step = int(
+        os.environ.get('LINGBOT_FUSED_MOE_BACKWARD_TRACE_STEP', '1'))
     step = (_backward_trace_call_index - 1) // calls_per_step + 1
     if step != target_step:
         return
 
     call_in_step = (_backward_trace_call_index - 1) % calls_per_step + 1
     predicted_layer = calls_per_step - call_in_step
-    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+    rank = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', '0')))
     root = Path(root_value)
     root.mkdir(parents=True, exist_ok=True)
 
@@ -54,24 +55,22 @@ def _trace_backward_outputs(
 
     torch.save(
         {
-            "backend": "fluxvla",
-            "step": step,
-            "rank": rank,
-            "call_in_step": call_in_step,
-            "predicted_layer": predicted_layer,
-            "grad_output": cpu_float(grad_output),
-            "grad_gate_weight": cpu_float(grad_gate_weight),
-            "grad_hidden_states": cpu_float(grad_hidden_states),
+            'backend': 'fluxvla',
+            'step': step,
+            'rank': rank,
+            'call_in_step': call_in_step,
+            'predicted_layer': predicted_layer,
+            'grad_output': cpu_float(grad_output),
+            'grad_gate_weight': cpu_float(grad_gate_weight),
+            'grad_hidden_states': cpu_float(grad_hidden_states),
         },
-        root
-        / (
-            f"flux_step{step:06d}_rank{rank}_call{call_in_step:03d}_"
-            f"layer{predicted_layer:03d}.pt"
-        ),
+        root / (f'flux_step{step:06d}_rank{rank}_call{call_in_step:03d}_'
+                f'layer{predicted_layer:03d}.pt'),
     )
 
 
 class FusedMoeExpertFunction(torch.autograd.Function):
+
     @staticmethod
     def forward(
         ctx,
@@ -92,9 +91,11 @@ class FusedMoeExpertFunction(torch.autograd.Function):
         # MOE Step 3-2: compute the each token's index in result
         # scatter_index shape (batch_size * sequence_len, topk)
         # TODO(wenyawei): opt it
-        scatter_index = expert_index.flatten().argsort(stable=True).argsort().int().view(expert_index.shape)
+        scatter_index = expert_index.flatten().argsort(
+            stable=True).argsort().int().view(expert_index.shape)
 
-        # MOE Step 3-3: compute the result, select tokens by scatter_index, and put them together
+        # MOE Step 3-3: compute the result, select tokens by
+        # scatter_index, and put them together
         # scatter_output shape (batch_size * sequence_len * topk, hidden_size)
         scatter_output = moe_scatter(hidden_states, scatter_index)
 
@@ -130,13 +131,15 @@ class FusedMoeExpertFunction(torch.autograd.Function):
         fc1_activation = fc1_1_activation * fc1_2_output
 
         # MOE Step 8: compute the the weighted linear layer 1 result
-        # MOE Step 8-1: compute scattered_gate_weight, shape is (batch_size * sequence_len * topk)
+        # MOE Step 8-1: compute scattered_gate_weight, shape is
+        # (batch_size * sequence_len * topk)
         reshaped_gate_weight = gate_weights.reshape(-1, 1)
         scattered_gate_weight = torch.empty_like(reshaped_gate_weight)
         scattered_gate_weight[scatter_index.flatten()] = reshaped_gate_weight
 
         # MOE Step 8-2: multiply activate with scattered_gate_weight
-        # fc1_weighted_output shape is (batch_size * sequence_len * topk, ffn_dim)
+        # fc1_weighted_output shape is (batch_size * sequence_len * topk,
+        # ffn_dim)
         fc1_weighted_output = fc1_activation * scattered_gate_weight
 
         # MOE Step 9: compute linear layer 2
@@ -150,7 +153,8 @@ class FusedMoeExpertFunction(torch.autograd.Function):
             transpose_b=True,
         )
 
-        # MOE Step 10: gather the final token result by averate the the topk token results
+        # MOE Step 10: gather the final token result by averate the the
+        # topk token results
         expert_output = moe_gather(fc2_output, scatter_index)
 
         # reshape the output with input shape
@@ -229,7 +233,8 @@ class FusedMoeExpertFunction(torch.autograd.Function):
         grad_fc1_activation = grad_fc1_weighted_output * scattered_gate_weight
 
         # MOE Step 8-1
-        grad_scattered_gate_weight = torch.sum(fc1_activation * grad_fc1_weighted_output, dim=-1)
+        grad_scattered_gate_weight = torch.sum(
+            fc1_activation * grad_fc1_weighted_output, dim=-1)
         grad_gate_weight = grad_scattered_gate_weight[scatter_index.flatten()]
         grad_gate_weight = grad_gate_weight.reshape(gate_weights.shape)
 
@@ -267,7 +272,8 @@ class FusedMoeExpertFunction(torch.autograd.Function):
             )
 
         # MOE Step 5
-        grad_fc1_1_output = torch.ops.aten.silu_backward(grad_fc1_1_activation, fc1_1_output)
+        grad_fc1_1_output = torch.ops.aten.silu_backward(
+            grad_fc1_1_activation, fc1_1_output)
 
         # MOE Step 4
         # grad_scatter_output_1 = torch.empty_like(scatter_output)
@@ -323,7 +329,6 @@ class FusedMoeExpertFunction(torch.autograd.Function):
         )
 
 
-
 def fused_moe_forward(
     module: torch.nn.Module,
     num_experts: int,
@@ -369,4 +374,4 @@ def fused_moe_forward(
     )
 
 
-__all__ = ["FusedMoeExpertFunction", "fused_moe_forward"]
+__all__ = ['FusedMoeExpertFunction', 'fused_moe_forward']

@@ -67,11 +67,11 @@ def test_replay_indices_are_sharded_by_data_parallel_rank():
     assert list(islice(iter(rank1_dataset), 4)) == [3, 2, 3, 2]
 
 
-@pytest.mark.parametrize("value", ["", "abc", "1,12"])
+@pytest.mark.parametrize('value', ['', 'abc', '1,12'])
 def test_replay_indices_parser_rejects_invalid_values(value):
     dataset = object.__new__(DistributedRepeatingDataset)
     dataset.total_len = 12
-    if value == "":
+    if value == '':
         assert dataset._parse_replay_indices(value) is None
     else:
         with pytest.raises(ValueError):
@@ -81,11 +81,11 @@ def test_replay_indices_parser_rejects_invalid_values(value):
 def test_replay_indices_parser_accepts_comma_and_whitespace():
     dataset = object.__new__(DistributedRepeatingDataset)
     dataset.total_len = 12
-    assert dataset._parse_replay_indices("8, 3 11") == [8, 3, 11]
+    assert dataset._parse_replay_indices('8, 3 11') == [8, 3, 11]
 
 
 @pytest.mark.parametrize(
-    ("rank", "world_size"),
+    ('rank', 'world_size'),
     [(-1, 2), (2, 2), (0, 0)],
 )
 def test_distributed_context_rejects_invalid_topology(rank, world_size):

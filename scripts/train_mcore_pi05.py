@@ -16,5 +16,5 @@ def main():
     run_mcore(PI05_SPEC)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

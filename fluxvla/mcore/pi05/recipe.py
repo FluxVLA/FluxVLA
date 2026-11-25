@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from megatron.core.enums import ModelType
 
-from ..checkpointing import install_mixed_precision_optimizer_checkpoint_adapter
+from ..checkpointing import \
+    install_mixed_precision_optimizer_checkpoint_adapter
 from ..contracts import MCoreModelSpec
-from ..diagnostics import (
-    install_fsdp_grad_norm_contract,
-    install_fsdp_grad_reduce_contract,
-    install_optimizer_alignment_trace,
-)
+from ..diagnostics import (install_fsdp_grad_norm_contract,
+                           install_fsdp_grad_reduce_contract,
+                           install_optimizer_alignment_trace)
 from .dataset import build_pi0_datasets
 from .forward_step import forward_step
 from .provider import get_pi05_args, model_provider
@@ -24,7 +23,7 @@ def _dataset_provider(num_samples):
 
 
 PI05_SPEC = MCoreModelSpec(
-    name="pi05",
+    name='pi05',
     model_type=ModelType.encoder_or_decoder,
     model_provider=model_provider,
     dataset_provider=_dataset_provider,
@@ -38,11 +37,10 @@ PI05_SPEC = MCoreModelSpec(
         install_fsdp_grad_reduce_contract,
     ),
     args_defaults={
-        "tokenizer_type": "NullTokenizer",
-        "vocab_size": 1,
-        "dataloader_type": "external",
+        'tokenizer_type': 'NullTokenizer',
+        'vocab_size': 1,
+        'dataloader_type': 'external',
     },
 )
 
-
-__all__ = ["PI05_SPEC"]
+__all__ = ['PI05_SPEC']

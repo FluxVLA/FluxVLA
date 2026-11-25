@@ -353,29 +353,32 @@ class ParquetDataset(Dataset):
         return self.tasks[dataset_idx][task_idx].get('task', 'empty')
 
     def _window_rows(self):
-        """Read numeric windows without decoding every row's embedded images."""
+        """Read numeric windows without decoding every row's embedded
+        images."""
         if not hasattr(self, '_window_dataset'):
-            columns = [key for key in ('episode_index', 'task_index', 'task',
-                                      'timestamp', self.action_key)
-                       if key in self.dataset.column_names]
+            columns = [
+                key for key in ('episode_index', 'task_index', 'task',
+                                'timestamp', self.action_key)
+                if key in self.dataset.column_names
+            ]
             self._window_dataset = self.dataset.select_columns(
                 list(dict.fromkeys(columns)))
         return self._window_dataset
 
-    def get_episode_metadata(self, dataset_idx: int, episode_index: int) -> Dict:
+    def get_episode_metadata(self, dataset_idx: int,
+                             episode_index: int) -> Dict:
         """Resolve episode metadata independently of v2/v3 storage layout."""
         if not hasattr(self, '_episode_metadata'):
-            self._episode_metadata = [
-                {int(record['episode_index']): record for record in records
-                 if 'episode_index' in record}
-                for records in self.episodes_by_dataset
-            ]
+            self._episode_metadata = [{
+                int(record['episode_index']): record
+                for record in records if 'episode_index' in record
+            } for records in self.episodes_by_dataset]
         return self._episode_metadata[dataset_idx].get(int(episode_index), {})
 
     def _invalid_start_index(self, index: int, dataset_idx: int,
                              data: Dict[str, Any]) -> bool:
-        preserve_tasks = (getattr(self, 'task_filter_policy', 'resample')
-                          == 'preserve')
+        preserve_tasks = (
+            getattr(self, 'task_filter_policy', 'resample') == 'preserve')
         if (not preserve_tasks and self._get_task_name(dataset_idx, index)
                 in ('empty', 'static')):
             return True
@@ -428,8 +431,8 @@ class ParquetDataset(Dataset):
         actions = list()
         action_masks = list()
         window_rows = self._window_rows()
-        preserve_tasks = (getattr(self, 'task_filter_policy', 'resample')
-                          == 'preserve')
+        preserve_tasks = (
+            getattr(self, 'task_filter_policy', 'resample') == 'preserve')
         window_idx = self.window_start_idx
         while len(actions) < self.action_window_size:
             action_index = index + window_idx
@@ -438,12 +441,13 @@ class ParquetDataset(Dataset):
             action_task = (
                 self._get_task_name(dataset_idx, action_index)
                 if valid_window_index else None)
-            if (valid_window_index and
-                    (preserve_tasks or action_task not in ('empty', 'static'))):
+            keep_task = (
+                preserve_tasks or action_task not in ('empty', 'static'))
+            if valid_window_index and keep_task:
                 if self.use_delta:
-                    actions.append((
-                        np.array(window_rows[action_index][self.action_key]) -
-                        np.array(window_rows[action_index -
+                    actions.append(
+                        (np.array(window_rows[action_index][self.action_key]) -
+                         np.array(window_rows[action_index -
                                               1][self.action_key])).tolist())
                 else:
                     actions.append(window_rows[action_index][self.action_key])

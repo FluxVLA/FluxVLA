@@ -1,4 +1,5 @@
-"""PI0.5 Libero recipe using the optional Megatron-Core compatibility runner."""
+"""PI0.5 Libero recipe using the optional Megatron-Core compatibility runner.
+"""
 
 _base_ = ['./pi05_paligemma_libero_10_full_finetune.py']
 

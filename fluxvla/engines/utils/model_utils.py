@@ -85,8 +85,10 @@ def sample_beta(alpha,
         # Keep the legacy path generator-aware and preserve beta compatibility.
         return torch.distributions.Beta(alpha_t, beta_t).sample((int(bsize), ))
     if sampler == 'legacy_power_ratio':
-        gamma1 = torch.rand((bsize, ), device=device, generator=generator).pow(1 / alpha)
-        gamma2 = torch.rand((bsize, ), device=device, generator=generator).pow(1 / beta)
+        gamma1 = torch.rand((bsize, ), device=device,
+                            generator=generator).pow(1 / alpha)
+        gamma2 = torch.rand((bsize, ), device=device,
+                            generator=generator).pow(1 / beta)
         return gamma1 / (gamma1 + gamma2)
     raise ValueError(f'Unsupported beta sampler {sampler!r}. Expected '
                      "'beta' or 'legacy_power_ratio'.")

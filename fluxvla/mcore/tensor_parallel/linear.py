@@ -1,7 +1,6 @@
 """Shared MCore Column/Row parallel linear adapters."""
 
 from __future__ import annotations
-
 import copy
 
 import torch
@@ -41,7 +40,7 @@ class _GatherRowWeightForReference(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_weight: torch.Tensor):
         start = ctx.rank * ctx.local_width
-        return grad_weight[:, start : start + ctx.local_width].contiguous(), None
+        return grad_weight[:, start:start + ctx.local_width].contiguous(), None
 
 
 class _GatherColumnTensorForReference(torch.autograd.Function):
@@ -60,16 +59,16 @@ class _GatherColumnTensorForReference(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_tensor: torch.Tensor):
         start = ctx.rank * ctx.local_length
-        return grad_tensor[start : start + ctx.local_length].contiguous(), None
+        return grad_tensor[start:start + ctx.local_length].contiguous(), None
 
 
 class MCoreTPLinear(nn.Module):
     """Wrap an MCore Column/RowParallelLinear with an ordinary Linear API.
 
-    ``column=True`` shards output features and gathers the output.  ``column=False``
-    shards input features and reduces the output.  This contract lets native HF
-    blocks keep their existing tensor shapes while model-specific adapters decide
-    which projections are safe to shard.
+    ``column=True`` shards output features and gathers the output.
+    ``column=False`` shards input features and reduces the output.  This
+    contract lets native HF blocks keep their existing tensor shapes while
+    model-specific adapters decide which projections are safe to shard.
     """
 
     def __init__(
@@ -86,12 +85,10 @@ class MCoreTPLinear(nn.Module):
         column_full_weight_reference: bool = False,
     ) -> None:
         super().__init__()
-        from megatron.core.tensor_parallel.layers import (
-            ColumnParallelLinear,
-            RowParallelLinear,
-            set_tensor_model_parallel_attributes,
-        )
         from megatron.core import parallel_state
+        from megatron.core.tensor_parallel.layers import (
+            ColumnParallelLinear, RowParallelLinear,
+            set_tensor_model_parallel_attributes)
 
         self.in_features = source.in_features
         self.out_features = source.out_features
@@ -104,12 +101,11 @@ class MCoreTPLinear(nn.Module):
         self.column_full_weight_reference = bool(column_full_weight_reference)
         if self.column and self.row_full_weight_reference:
             raise ValueError(
-                "row_full_weight_reference is valid only for RowParallelLinear"
+                'row_full_weight_reference is valid only for RowParallelLinear'
             )
         if not self.column and self.column_full_weight_reference:
-            raise ValueError(
-                "column_full_weight_reference is valid only for ColumnParallelLinear"
-            )
+            raise ValueError('column_full_weight_reference is valid only for '
+                             'ColumnParallelLinear')
         self._fluxvla_sp_meta = None
         mconfig = mcore_tp_config(config, source.weight.dtype)
         mconfig.sequence_parallel = self.sequence_parallel
@@ -120,9 +116,8 @@ class MCoreTPLinear(nn.Module):
                 config=mconfig,
                 init_method=_no_init,
                 bias=source.bias is not None,
-                gather_output=(
-                    self.column_gather_output and not self.sequence_parallel
-                ),
+                gather_output=(self.column_gather_output
+                               and not self.sequence_parallel),
                 disable_grad_reduce=self.sequence_parallel,
             )
         else:
@@ -132,9 +127,8 @@ class MCoreTPLinear(nn.Module):
                 config=mconfig,
                 init_method=_no_init,
                 bias=source.bias is not None,
-                input_is_parallel=(
-                    self.row_input_is_parallel or self.sequence_parallel
-                ),
+                input_is_parallel=(self.row_input_is_parallel
+                                   or self.sequence_parallel),
                 skip_bias_add=False,
             )
         # MCore's CPU-init path only installs TP metadata when it also runs
@@ -151,12 +145,18 @@ class MCoreTPLinear(nn.Module):
         with torch.no_grad():
             if column:
                 local = self.linear.weight.shape[0]
-                self.linear.weight.copy_(source.weight.detach()[rank * local : (rank + 1) * local].cpu())
+                self.linear.weight.copy_(
+                    source.weight.detach()[rank * local:(rank + 1) *
+                                           local].cpu())
                 if source.bias is not None:
-                    self.linear.bias.copy_(source.bias.detach()[rank * local : (rank + 1) * local].cpu())
+                    self.linear.bias.copy_(
+                        source.bias.detach()[rank * local:(rank + 1) *
+                                             local].cpu())
             else:
                 local = self.linear.weight.shape[1]
-                self.linear.weight.copy_(source.weight.detach()[:, rank * local : (rank + 1) * local].cpu())
+                self.linear.weight.copy_(
+                    source.weight.detach()[:, rank * local:(rank + 1) *
+                                           local].cpu())
                 if source.bias is not None:
                     self.linear.bias.copy_(source.bias.detach().cpu())
 
@@ -164,7 +164,7 @@ class MCoreTPLinear(nn.Module):
         # the source parameter before this wrapper replaces the native Linear.
         # Preserve it on the MCore parameter; otherwise EP local-expert
         # gradients can be reduced a second time by DistributedOptimizer.
-        for attribute in ("allreduce", "_fluxvla_grad_already_reduced"):
+        for attribute in ('allreduce', '_fluxvla_grad_already_reduced'):
             if hasattr(source.weight, attribute):
                 setattr(
                     self.linear.weight,
@@ -190,10 +190,11 @@ class MCoreTPLinear(nn.Module):
         batch_first = self.sequence_parallel and hidden_states.ndim >= 3
         flattened_batch = False
         if self.sequence_parallel and hidden_states.ndim == 2:
-            meta = getattr(self, "_fluxvla_sp_meta", None)
+            meta = getattr(self, '_fluxvla_sp_meta', None)
             if meta is not None:
                 batch_size, local_length = meta
-                hidden_states = hidden_states.reshape(batch_size, local_length, -1)
+                hidden_states = hidden_states.reshape(batch_size, local_length,
+                                                      -1)
                 hidden_states = hidden_states.transpose(0, 1).contiguous()
                 flattened_batch = True
         if batch_first:
@@ -207,10 +208,7 @@ class MCoreTPLinear(nn.Module):
                 _GatherColumnTensorForReference.apply(
                     self.linear.bias,
                     self.linear.tp_group,
-                )
-                if self.linear.bias is not None
-                else None
-            )
+                ) if self.linear.bias is not None else None)
             output = F.linear(hidden_states, full_weight, full_bias)
         elif self.row_full_weight_reference:
             full_weight = _GatherRowWeightForReference.apply(
@@ -219,9 +217,8 @@ class MCoreTPLinear(nn.Module):
             )
             output = F.linear(hidden_states, full_weight, self.linear.bias)
         elif self.use_native_linear and self.column:
-            from megatron.core.tensor_parallel.mappings import (
-                copy_to_tensor_model_parallel_region,
-            )
+            from megatron.core.tensor_parallel.mappings import \
+                copy_to_tensor_model_parallel_region
 
             local_input = copy_to_tensor_model_parallel_region(
                 hidden_states,
@@ -233,9 +230,8 @@ class MCoreTPLinear(nn.Module):
                 self.linear.bias,
             )
             if self.linear.gather_output:
-                from megatron.core.tensor_parallel.mappings import (
-                    gather_from_tensor_model_parallel_region,
-                )
+                from megatron.core.tensor_parallel.mappings import \
+                    gather_from_tensor_model_parallel_region
 
                 output = gather_from_tensor_model_parallel_region(
                     output,
@@ -244,8 +240,7 @@ class MCoreTPLinear(nn.Module):
         elif self.use_native_linear:
             from megatron.core.tensor_parallel.mappings import (
                 reduce_from_tensor_model_parallel_region,
-                scatter_to_tensor_model_parallel_region,
-            )
+                scatter_to_tensor_model_parallel_region)
 
             local_input = hidden_states
             if not self.linear.input_is_parallel:
@@ -266,11 +261,12 @@ class MCoreTPLinear(nn.Module):
         if batch_first:
             output = output.transpose(0, 1).contiguous()
         if flattened_batch:
-            output = output.transpose(0, 1).contiguous().reshape(-1, output.shape[-1])
+            output = output.transpose(0, 1).contiguous().reshape(
+                -1, output.shape[-1])
         # MCore mapping Functions may return a view.  Ordinary nn.Linear
         # callers are allowed to apply in-place residual updates to their
         # output, so restore that API contract at the adapter boundary.
         return output.clone()
 
 
-__all__ = ["MCoreTPLinear", "mcore_tp_config"]
+__all__ = ['MCoreTPLinear', 'mcore_tp_config']

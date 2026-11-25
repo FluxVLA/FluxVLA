@@ -1,7 +1,6 @@
 """Public contracts shared by Native Megatron-Core model recipes."""
 
 from __future__ import annotations
-
 from dataclasses import dataclass, field
 from typing import Any, Callable, Mapping
 
@@ -26,14 +25,15 @@ class MCoreModelSpec:
 
     def __post_init__(self) -> None:
         if not self.name or not self.name.strip():
-            raise ValueError("MCore model spec name must be non-empty")
+            raise ValueError('MCore model spec name must be non-empty')
         for field_name in (
-            "model_provider",
-            "dataset_provider",
-            "forward_step",
-            "args_provider",
+                'model_provider',
+                'dataset_provider',
+                'forward_step',
+                'args_provider',
         ):
             if not callable(getattr(self, field_name)):
-                raise TypeError(f"MCore spec field {field_name!r} must be callable")
+                raise TypeError(
+                    f'MCore spec field {field_name!r} must be callable')
         if not isinstance(self.args_defaults, Mapping):
-            raise TypeError("MCore spec args_defaults must be a mapping")
+            raise TypeError('MCore spec args_defaults must be a mapping')

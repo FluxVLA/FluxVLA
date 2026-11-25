@@ -4,7 +4,7 @@ Set LINGBOT_MANIFEST to an existing captured-input manifest. WORK_DIR only
 controls output; no input artifacts are assumed to exist under that directory.
 """
 
-_base_ = ["./lingbot_vla_v2_official_production_100_20261016.py"]
+_base_ = ['./lingbot_vla_v2_official_production_100_20261016.py']
 import os  # noqa: E402
 
 train_dataloader = dict(
@@ -12,9 +12,9 @@ train_dataloader = dict(
     # Keep the diagnostic conservative; online worker counts are configurable.
     per_device_num_workers=0,
     dataset=dict(
-        manifest_path=os.getenv("LINGBOT_MANIFEST", ""),
+        manifest_path=os.getenv('LINGBOT_MANIFEST', ''),
         cache_in_memory=False,
-        replay_order="official_step_rank",
+        replay_order='official_step_rank',
         flow_from_manifest=True,
         require_flow=True,
     ),
@@ -27,9 +27,9 @@ runner = dict(
     enable_gradient_checkpointing=False,
     save_iter_interval=10000,
     metric=dict(
-        type="VLAMetric",
-        active_trackers=("jsonl",),
-        run_dir=os.getenv("WORK_DIR", "work_dirs/lingbot_gb64_native"),
+        type='VLAMetric',
+        active_trackers=('jsonl', ),
+        run_dir=os.getenv('WORK_DIR', 'work_dirs/lingbot_gb64_native'),
         window_size=1,
     ),
 )

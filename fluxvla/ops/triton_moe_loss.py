@@ -12,13 +12,15 @@ import torch
 import torch.nn.functional as F
 
 
-def _native_tie_aware_topk_mask(logits: torch.Tensor, top_k: int) -> torch.Tensor:
+def _native_tie_aware_topk_mask(logits: torch.Tensor,
+                                top_k: int) -> torch.Tensor:
     """Match the native Triton router-counting tie semantics.
 
-    The native kernel selects one distinct score level per round.  When several
-    experts share that level, their single count is divided evenly.  ``topk``
-    instead chooses an arbitrary subset at a Kth-boundary tie, which changes the
-    otherwise detached load factor and therefore the auxiliary-loss gradient.
+    The native kernel selects one distinct score level per round.  When
+    several experts share that level, their single count is divided evenly.
+    ``topk`` instead chooses an arbitrary subset at a Kth-boundary tie, which
+    changes the otherwise detached load factor and therefore the
+    auxiliary-loss gradient.
     """
     remaining = logits
     mask = torch.zeros_like(logits, dtype=torch.float32)
@@ -27,7 +29,7 @@ def _native_tie_aware_topk_mask(logits: torch.Tensor, top_k: int) -> torch.Tenso
         is_maximum = remaining == maximum
         tie_count = is_maximum.sum(dim=-1, keepdim=True).to(torch.float32)
         mask.add_(is_maximum.to(torch.float32) / tie_count)
-        remaining = remaining.masked_fill(is_maximum, float("-inf"))
+        remaining = remaining.masked_fill(is_maximum, float('-inf'))
     return mask
 
 
@@ -38,7 +40,9 @@ def _sequence_wise_balance_loss(
     padding_len: int,
     score_func: str,
 ):
-    valid_logits = [logits for logits in router_logits_list if logits is not None]
+    valid_logits = [
+        logits for logits in router_logits_list if logits is not None
+    ]
     if not valid_logits:
         return []
 
@@ -47,17 +51,15 @@ def _sequence_wise_balance_loss(
     for logits in valid_logits:
         logits = logits.to(dtype=torch.float32)
         if padding_len > 0:
-            logits = logits[: logits.shape[0] - padding_len]
+            logits = logits[:logits.shape[0] - padding_len]
         all_logits.append(logits)
         if valid_tokens_per_layer is None:
             valid_tokens_per_layer = logits.shape[0]
 
     if any(logits.shape[0] != valid_tokens_per_layer for logits in all_logits):
         return [
-            _sequence_wise_balance_loss(
-                (logits,), top_k, seq_lengths, 0, score_func
-            )[0]
-            for logits in all_logits
+            _sequence_wise_balance_loss((logits, ), top_k, seq_lengths, 0,
+                                        score_func)[0] for logits in all_logits
         ]
 
     lengths = list(seq_lengths or [valid_tokens_per_layer])
@@ -73,7 +75,7 @@ def _sequence_wise_balance_loss(
     )
     concatenated = torch.cat(all_logits, dim=0)
 
-    if score_func == "sigmoid":
+    if score_func == 'sigmoid':
         scores = concatenated.sigmoid()
         probabilities = scores / scores.sum(dim=-1, keepdim=True)
     else:
@@ -87,7 +89,8 @@ def _sequence_wise_balance_loss(
         dtype=torch.float32,
     )
     probability_sums.scatter_add_(0, expanded_segment_ids, probabilities)
-    probability_means = probability_sums / all_segment_lengths.unsqueeze(1).float().clamp(min=1)
+    probability_means = probability_sums / all_segment_lengths.unsqueeze(
+        1).float().clamp(min=1)
 
     # The native Triton kernel counts K distinct score levels.  At a tie it
     # distributes one count across every tied expert instead of choosing an
@@ -97,9 +100,8 @@ def _sequence_wise_balance_loss(
         count_sums = torch.zeros_like(probability_sums)
         count_sums.scatter_add_(0, expanded_segment_ids, token_expert_mask)
         load = count_sums * (
-            (float(num_experts) / top_k)
-            / all_segment_lengths.unsqueeze(1).float().clamp(min=1)
-        )
+            (float(num_experts) / top_k) /
+            all_segment_lengths.unsqueeze(1).float().clamp(min=1))
 
     losses = (load * probability_means).sum(dim=-1)
     losses = losses.reshape(num_layers, num_sequences).mean(dim=1)
@@ -113,7 +115,7 @@ def triton_sequence_wise_balance_loss(
     router_logits_list=None,
     seq_lengths=None,
     padding_len=0,
-    score_func="softmax",
+    score_func='softmax',
     *args,
     **kwargs,
 ) -> torch.Tensor:
@@ -126,11 +128,14 @@ def triton_sequence_wise_balance_loss(
             score_func=score_func,
         )
     if router_logits is None or num_experts is None:
-        raise ValueError("router_logits and num_experts are required")
+        raise ValueError('router_logits and num_experts are required')
     probabilities = router_logits.float().softmax(dim=-1)
     assignments = probabilities.topk(top_k, dim=-1).indices
-    counts = torch.zeros(num_experts, device=router_logits.device, dtype=probabilities.dtype)
-    counts.scatter_add_(0, assignments.reshape(-1), torch.ones_like(assignments, dtype=probabilities.dtype).reshape(-1))
+    counts = torch.zeros(
+        num_experts, device=router_logits.device, dtype=probabilities.dtype)
+    counts.scatter_add_(
+        0, assignments.reshape(-1),
+        torch.ones_like(assignments, dtype=probabilities.dtype).reshape(-1))
     counts = counts / max(1, assignments.numel())
     load = probabilities.mean(dim=tuple(range(probabilities.ndim - 1)))
     return (load * counts).sum() * float(num_experts)

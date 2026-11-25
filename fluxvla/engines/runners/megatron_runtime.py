@@ -6,9 +6,7 @@ DDP/FSDP installations remain unaffected.
 """
 
 from __future__ import annotations
-
 from dataclasses import dataclass
-from typing import Optional
 
 import torch.distributed as dist
 
@@ -28,7 +26,8 @@ class MegatronParallelConfig:
 
 
 class MegatronRuntime:
-    """Own Megatron-Core process-group lifecycle without changing its source."""
+    """Own Megatron-Core process-group lifecycle without changing its
+    source."""
 
     def __init__(self, config: MegatronParallelConfig) -> None:
         self.config = config
@@ -63,8 +62,8 @@ class MegatronRuntime:
             return
         parallel_state.initialize_model_parallel(
             tensor_model_parallel_size=self.config.tensor_model_parallel_size,
-            pipeline_model_parallel_size=
-            self.config.pipeline_model_parallel_size,
+            pipeline_model_parallel_size=self.config.
+            pipeline_model_parallel_size,
             context_parallel_size=self.config.context_parallel_size,
             expert_model_parallel_size=self.config.expert_model_parallel_size)
         self._initialized_here = True
@@ -84,11 +83,10 @@ class MegatronRuntime:
         if self.parallel_state is None:
             return 'uninitialized'
         ps = self.parallel_state
-        return (
-            f'DP={ps.get_data_parallel_world_size()} '
-            f'TP={ps.get_tensor_model_parallel_world_size()} '
-            f'PP={ps.get_pipeline_model_parallel_world_size()} '
-            f'CP={ps.get_context_parallel_world_size()}')
+        return (f'DP={ps.get_data_parallel_world_size()} '
+                f'TP={ps.get_tensor_model_parallel_world_size()} '
+                f'PP={ps.get_pipeline_model_parallel_world_size()} '
+                f'CP={ps.get_context_parallel_world_size()}')
 
     def destroy(self) -> None:
         if self._initialized_here and self.parallel_state is not None:
@@ -98,6 +96,7 @@ class MegatronRuntime:
 
 def get_optional_parallel_config(cfg) -> MegatronParallelConfig:
     """Read runner fields while accepting plain dict/ConfigDict objects."""
+
     def get(name: str, default: int) -> int:
         value = cfg.get(name, default) if hasattr(cfg, 'get') else getattr(
             cfg, name, default)

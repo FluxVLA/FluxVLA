@@ -19,27 +19,22 @@ import triton
 import triton.language as tl
 
 from ..utils.pretuned import algo_key_scaled, pretuned
-from .triton_utils.activation import (
-    ActivationType,
-    activation_fwd,
-)
-from .triton_utils.memory import (
-    load_block_with_pred_2d,
-    load_with_pred_1d,
-    load_with_pred_2d,
-    store_block_with_pred_2d,
-    store_with_pred_2d,
-)
-from .triton_utils.utils import (
-    get_pid_mn,
-    make_blocked,
-)
+from .triton_utils.activation import ActivationType, activation_fwd
+from .triton_utils.memory import (load_block_with_pred_2d, load_with_pred_1d,
+                                  load_with_pred_2d, store_block_with_pred_2d,
+                                  store_with_pred_2d)
+from .triton_utils.utils import get_pid_mn, make_blocked
 
 
 def _get_cuda_autotune_config():
     return [
         triton.Config(
-            {"BLOCK_M": 128, "BLOCK_N": 256, "BLOCK_K": 64, "GROUP": 8},
+            {
+                'BLOCK_M': 128,
+                'BLOCK_N': 256,
+                'BLOCK_K': 64,
+                'GROUP': 8
+            },
             num_stages=3,
             num_warps=8,
         ),
@@ -51,16 +46,21 @@ def _get_cuda_autotune_config():
 #     key=["total_M", "N", "K"],
 # )
 @pretuned(
-    algo_key=algo_key_scaled(["total_M", "N", "K"], [5000, 1, 1], ["TRANSPOSE_A", "TRANSPOSE_B"]),
-    fallback={"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP": 8},
+    algo_key=algo_key_scaled(['total_M', 'N', 'K'], [5000, 1, 1],
+                             ['TRANSPOSE_A', 'TRANSPOSE_B']),
+    fallback={
+        'BLOCK_M': 128,
+        'BLOCK_N': 128,
+        'BLOCK_K': 32,
+        'GROUP': 8
+    },
 )
 @triton.heuristics(
     values={
-        "N_ALIGNED": lambda args: args["N"] % args["BLOCK_N"] == 0,
-        "K_ALIGNED": lambda args: args["K"] % args["BLOCK_K"] == 0,
-        "HAS_ACTIVATION": lambda args: args["ACTIVATION"] is not None,
-    }
-)
+        'N_ALIGNED': lambda args: args['N'] % args['BLOCK_N'] == 0,
+        'K_ALIGNED': lambda args: args['K'] % args['BLOCK_K'] == 0,
+        'HAS_ACTIVATION': lambda args: args['ACTIVATION'] is not None,
+    })
 @triton.jit
 def group_gemm_same_nk_kernel(
     a_ptr,
@@ -78,7 +78,8 @@ def group_gemm_same_nk_kernel(
     BLOCK_K: tl.constexpr,
     TRANSPOSE_A: tl.constexpr,
     TRANSPOSE_B: tl.constexpr,
-    # No need to support TRANPOSE_C, just ask user to calculate `c.t()` as `b.t() @ a.t()`.
+    # No need to support TRANPOSE_C, just ask user to calculate `c.t()` as
+    # `b.t() @ a.t()`.
     ACCUMULATE_TO_C: tl.constexpr,
     GROUP: tl.constexpr,
     N_ALIGNED: tl.constexpr,
@@ -111,8 +112,10 @@ def group_gemm_same_nk_kernel(
     stride_am, stride_ak = (K, 1) if not TRANSPOSE_A else (1, m_size)
     stride_bk, stride_bn = (N, 1) if not TRANSPOSE_B else (1, K)
 
-    a_ptrs = a_ptr + (offs_am[:, None] * stride_am + blk_k[None, :] * stride_ak)
-    b_ptrs = b_ptr + (blk_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
+    a_ptrs = a_ptr + (
+        offs_am[:, None] * stride_am + blk_k[None, :] * stride_ak)
+    b_ptrs = b_ptr + (
+        blk_k[:, None] * stride_bk + offs_bn[None, :] * stride_bn)
     c_ptrs = c_ptr + N * offs_m[:, None] + 1 * offs_n[None, :]
 
     if ACCUMULATE_TO_C:
@@ -127,9 +130,12 @@ def group_gemm_same_nk_kernel(
     else:
         c = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
     for k in range(0, tl.cdiv(K, BLOCK_K)):
-        # Really loading a 2D block. Using `load_with_pred_1d` as we only have one predicate.
-        a = load_with_pred_1d(a_ptrs, K_ALIGNED, blk_k[None, :] < K - k * BLOCK_K, other=0)
-        b = load_with_pred_1d(b_ptrs, K_ALIGNED, blk_k[:, None] < K - k * BLOCK_K, other=0)
+        # Really loading a 2D block. Using `load_with_pred_1d` as we only
+        # have one predicate.
+        a = load_with_pred_1d(
+            a_ptrs, K_ALIGNED, blk_k[None, :] < K - k * BLOCK_K, other=0)
+        b = load_with_pred_1d(
+            b_ptrs, K_ALIGNED, blk_k[:, None] < K - k * BLOCK_K, other=0)
 
         c = tl.dot(a, b, c)
 
@@ -141,7 +147,8 @@ def group_gemm_same_nk_kernel(
         c = make_blocked(c, c_ptr.dtype.element_ty)
         if SAVE_ACTIVATION:
             store_with_pred_2d(
-                act_ptr + gtid_start * N + N * offs_m[:, None] + offs_n[None, :],
+                act_ptr + gtid_start * N + N * offs_m[:, None] +
+                offs_n[None, :],
                 c,
                 False,
                 N_ALIGNED,
@@ -150,7 +157,8 @@ def group_gemm_same_nk_kernel(
             )
         c = activation_fwd(c, ACTIVATION)
 
-    store_with_pred_2d(c_ptrs, c, False, N_ALIGNED, offs_m[:, None] < m_size, offs_n[None, :] < N)
+    store_with_pred_2d(c_ptrs, c, False, N_ALIGNED, offs_m[:, None] < m_size,
+                       offs_n[None, :] < N)
 
 
 def group_gemm_same_nk(
@@ -182,34 +190,38 @@ def group_gemm_same_nk(
     else:
         G, K, N = b.shape
 
-    assert not transpose_a, "Transpose A not tested yet."
+    assert not transpose_a, 'Transpose A not tested yet.'
 
     assert a.dtype in [torch.bfloat16, torch.float16], a.dtype
     assert b.dtype in [torch.bfloat16, torch.float16], b.dtype
 
-    assert a.device == b.device, f"a.device = {a.device}, b.device = {b.device}"
+    assert a.device == b.device, (
+        f'a.device = {a.device}, b.device = {b.device}')
 
     assert len(cumsum_M) == b.shape[0]
 
-    assert activation is None or activation in list(ActivationType), f"Not implemented: activation is {activation}."
-    assert activation or not save_activation, "Can't save activation since activation type is None"
+    assert activation is None or activation in list(
+        ActivationType), f'Not implemented: activation is {activation}.'
+    assert activation or not save_activation, (
+        "Can't save activation since activation type is None")
 
-    assert a.is_contiguous() and b.is_contiguous(), "Not implemented: Noncontiguous input."
+    assert a.is_contiguous() and b.is_contiguous(
+    ), 'Not implemented: Noncontiguous input.'
 
     c_is_none = c is None
     if c_is_none:
-        c = torch.empty((a.shape[1] if transpose_a else a.shape[0], N), dtype=a.dtype, device=a.device)
+        c = torch.empty((a.shape[1] if transpose_a else a.shape[0], N),
+                        dtype=a.dtype,
+                        device=a.device)
 
     if save_activation:
         act = torch.empty_like(c)
 
     with torch.cuda.device(a.device):
-        group_gemm_same_nk_kernel[
-            lambda x: (
-                triton.cdiv(max_M, x["BLOCK_M"]) * triton.cdiv(N, x["BLOCK_N"]),
-                x["G"],
-            )
-        ](
+        group_gemm_same_nk_kernel[lambda x: (
+            triton.cdiv(max_M, x['BLOCK_M']) * triton.cdiv(N, x['BLOCK_N']),
+            x['G'],
+        )](
             a_ptr=a,
             b_ptr=b,
             c_ptr=c,
@@ -238,15 +250,20 @@ def group_gemm_same_nk(
 #     key=["total_K", "M", "N"],
 # )
 @pretuned(
-    algo_key=algo_key_scaled(["M", "N", "total_K"], [1, 1, 5000], ["TRANSPOSE_A", "TRANSPOSE_B"]),
-    fallback={"BLOCK_M": 128, "BLOCK_N": 128, "BLOCK_K": 32, "GROUP": 8},
+    algo_key=algo_key_scaled(['M', 'N', 'total_K'], [1, 1, 5000],
+                             ['TRANSPOSE_A', 'TRANSPOSE_B']),
+    fallback={
+        'BLOCK_M': 128,
+        'BLOCK_N': 128,
+        'BLOCK_K': 32,
+        'GROUP': 8
+    },
 )
 @triton.heuristics(
     values={
-        "M_ALIGNED": lambda args: args["M"] % args["BLOCK_M"] == 0,
-        "N_ALIGNED": lambda args: args["N"] % args["BLOCK_N"] == 0,
-    }
-)
+        'M_ALIGNED': lambda args: args['M'] % args['BLOCK_M'] == 0,
+        'N_ALIGNED': lambda args: args['N'] % args['BLOCK_N'] == 0,
+    })
 @triton.jit
 def group_gemm_same_mn_kernel(
     a_ptr,
@@ -324,8 +341,10 @@ def group_gemm_same_mn_kernel(
             # Zero out the corresponding output region.
             store_block_with_pred_2d(
                 c_block_ptr,
-                # tl.zeros(..., dtype=c_block_ptr.dtype.element_ty) raises "not implemented".
-                tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32).to(c_block_ptr.dtype.element_ty),
+                # tl.zeros(..., dtype=c_block_ptr.dtype.element_ty) raises
+                # "not implemented".
+                tl.zeros((BLOCK_M, BLOCK_N),
+                         dtype=tl.float32).to(c_block_ptr.dtype.element_ty),
                 M_ALIGNED,
                 N_ALIGNED,
             )
@@ -350,7 +369,8 @@ def group_gemm_same_mn_kernel(
         a_block_ptr = tl.advance(a_block_ptr, (0, BLOCK_K))
         b_block_ptr = tl.advance(b_block_ptr, (BLOCK_K, 0))
 
-    store_block_with_pred_2d(c_block_ptr, out.to(c_block_ptr.dtype.element_ty), M_ALIGNED, N_ALIGNED)
+    store_block_with_pred_2d(c_block_ptr, out.to(c_block_ptr.dtype.element_ty),
+                             M_ALIGNED, N_ALIGNED)
 
 
 def group_gemm_same_mn(
@@ -367,21 +387,22 @@ def group_gemm_same_mn(
     assert a.dtype in [torch.bfloat16, torch.float16], a.dtype
     assert b.dtype in [torch.bfloat16, torch.float16], b.dtype
 
-    assert a.device == b.device, f"a.device = {a.device}, b.device = {b.device}"
-    assert a.device == c.device, f"a.device = {a.device}, c.device = {c.device}"
+    assert a.device == b.device, (
+        f'a.device = {a.device}, b.device = {b.device}')
+    assert a.device == c.device, (
+        f'a.device = {a.device}, c.device = {c.device}')
 
     # TODO(wenyawei):
     assert c is not None, c
-    assert len(cumsum_K) == c.shape[0], f"{len(cumsum_K), c.shape}"
-    assert a.is_contiguous() and b.is_contiguous() and c.is_contiguous(), "Not implemented: Noncontiguous input."
+    assert len(cumsum_K) == c.shape[0], f'{len(cumsum_K), c.shape}'
+    assert a.is_contiguous() and b.is_contiguous() and c.is_contiguous(
+    ), 'Not implemented: Noncontiguous input.'
 
     with torch.cuda.device(a.device):
-        group_gemm_same_mn_kernel[
-            lambda x: (
-                triton.cdiv(M, x["BLOCK_M"]) * triton.cdiv(N, x["BLOCK_N"]),
-                x["G"],
-            )
-        ](
+        group_gemm_same_mn_kernel[lambda x: (
+            triton.cdiv(M, x['BLOCK_M']) * triton.cdiv(N, x['BLOCK_N']),
+            x['G'],
+        )](
             a_ptr=a,
             b_ptr=b,
             c_ptr=c,

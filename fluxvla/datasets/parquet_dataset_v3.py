@@ -255,7 +255,8 @@ class ParquetDatasetV3(ParquetDataset):
         return ''
 
     def _get_task_name(self, dataset_idx: int, index: int) -> str:
-        return self._resolve_task_description(dataset_idx, self._window_rows()[index])
+        return self._resolve_task_description(dataset_idx,
+                                              self._window_rows()[index])
 
     def __getitem__(self, index, dataset_statistics):
         """Build one transformed sample from a parquet row.

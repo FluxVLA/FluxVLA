@@ -1,7 +1,6 @@
 """MegatronModule ownership boundary for the LingBot-VLA-v2 policy."""
 
 from __future__ import annotations
-
 import os
 from collections.abc import Mapping
 from typing import Any
@@ -15,7 +14,8 @@ class LingBotVLA2MCoreModel(MegatronModule):
 
     P0 deliberately keeps the official LingBot computation graph intact.  MCore
     owns DDP, forward/backward scheduling, optimizer state and checkpointing;
-    later TP work can replace selected decoder blocks behind this same contract.
+    later TP work can replace selected decoder blocks behind this same
+    contract.
     """
 
     def __init__(
@@ -32,8 +32,7 @@ class LingBotVLA2MCoreModel(MegatronModule):
         # view to BF16. Megatron's stock Float16Module calls model.bfloat16()
         # in-place, which would round the loaded checkpoint before step 1.
         self._preserve_all_fp32_params = (
-            os.environ.get("FLUXVLA_MCORE_PRESERVE_FP32_PARAMS", "0") == "1"
-        )
+            os.environ.get('FLUXVLA_MCORE_PRESERVE_FP32_PARAMS', '0') == '1')
         # Native production has two independent precision switches. The
         # training-side FSDP2 policy keeps ``basic_modules`` (action decoder
         # and AdaNorm units) in FP32, while model ``action_fp32`` only promotes
@@ -42,11 +41,8 @@ class LingBotVLA2MCoreModel(MegatronModule):
         # FSDP2 units for these modules.
         fp32_parameter_ids = {
             id(parameter)
-            for module in (
-                adapter.get_fsdp2_full_precision_modules()
-                if preserve_fsdp2_fp32_modules
-                else ()
-            )
+            for module in (adapter.get_fsdp2_full_precision_modules(
+            ) if preserve_fsdp2_fp32_modules else ())
             for parameter in module.parameters()
         }
         self._fp32_parameter_names = {
@@ -59,15 +55,11 @@ class LingBotVLA2MCoreModel(MegatronModule):
         # buffers (notably rotary inv_freq) together with this compatibility
         # contract; Megatron's Float16Module would otherwise cast them to BF16
         # and create a first-bad attention activation despite equal weights.
-        self._preserved_buffer_names = (
-            {
-                name
-                for name, buffer in self.named_buffers()
-                if buffer.is_floating_point()
-            }
-            if preserve_fsdp2_fp32_modules
-            else set()
-        )
+        self._preserved_buffer_names = ({
+            name
+            for name, buffer in self.named_buffers()
+            if buffer.is_floating_point()
+        } if preserve_fsdp2_fp32_modules else set())
         # The native adapter may carry ``allreduce=False`` markers from its
         # FSDP runtime.  They are foreign metadata when EP is disabled, but
         # under MCore EP the local routed-expert shards deliberately use the
@@ -79,10 +71,10 @@ class LingBotVLA2MCoreModel(MegatronModule):
     def _apply(self, fn, recurse: bool = True):
         """Preserve native action-basic FP32 parameters under ``--bf16``.
 
-        Megatron's Float16Module calls ``model.bfloat16()``.  Native FSDP2 casts
-        the VLM/root units to BF16 for compute but leaves ``_no_split_modules``
-        action units in FP32.  Retaining those parameter storages reproduces the
-        same mixed model/master-parameter boundary.
+        Megatron's Float16Module calls ``model.bfloat16()``.  Native FSDP2
+        casts the VLM/root units to BF16 for compute but leaves
+        ``_no_split_modules`` action units in FP32.  Retaining those parameter
+        storages reproduces the same mixed model/master-parameter boundary.
         """
         probe = torch.empty(0, dtype=torch.float32)
         try:
@@ -100,7 +92,8 @@ class LingBotVLA2MCoreModel(MegatronModule):
             }
             for name, parameter in self.named_parameters():
                 if parameter.dtype == torch.float32 and name not in preserved:
-                    parameter._fluxvla_fp32_init = parameter.detach().cpu().clone()
+                    parameter._fluxvla_fp32_init = parameter.detach().cpu(
+                    ).clone()
             preserved_buffers = {
                 name: buffer
                 for name, buffer in self.named_buffers()
@@ -115,11 +108,10 @@ class LingBotVLA2MCoreModel(MegatronModule):
         if preserved_buffers:
             modules = dict(self.named_modules())
             for name, original in preserved_buffers.items():
-                module_name, _, buffer_name = name.rpartition(".")
+                module_name, _, buffer_name = name.rpartition('.')
                 module = modules[module_name]
                 module._buffers[buffer_name] = original.to(
-                    device=module._buffers[buffer_name].device
-                )
+                    device=module._buffers[buffer_name].device)
         return result
 
     def bfloat16(self):
@@ -153,15 +145,17 @@ class LingBotVLA2MCoreModel(MegatronModule):
         batch = self._prepare_native_batch(batch)
         use_bf16_autocast = (
             torch.cuda.is_available()
-            and os.environ.get("FLUXVLA_MCORE_DISABLE_AUTOCAST", "0") != "1"
-        )
+            and os.environ.get('FLUXVLA_MCORE_DISABLE_AUTOCAST', '0') != '1')
         if use_bf16_autocast:
-            with torch.autocast(device_type="cuda", dtype=torch.bfloat16):
+            with torch.autocast(device_type='cuda', dtype=torch.bfloat16):
                 return self.adapter(**batch)
         return self.adapter(**batch)
 
-    def _prepare_native_batch(self, batch: Mapping[str, Any]) -> dict[str, Any]:
-        """Match Native runner's BF16 input cast without touching integer masks."""
+    def _prepare_native_batch(self, batch: Mapping[str,
+                                                   Any]) -> dict[str, Any]:
+        """Match Native runner's BF16 input cast without touching integer
+        masks."""
+
         def convert(value: Any) -> Any:
             if isinstance(value, torch.Tensor):
                 if value.is_floating_point():
@@ -176,25 +170,26 @@ class LingBotVLA2MCoreModel(MegatronModule):
             return value
 
         prepared = {key: convert(value) for key, value in batch.items()}
-        prepare = getattr(self.adapter, "prepare_training_batch", None)
+        prepare = getattr(self.adapter, 'prepare_training_batch', None)
         return prepare(prepared) if callable(prepare) else prepared
 
     def sharded_state_dict(
-        self,
-        prefix: str = "",
-        sharded_offsets=(),
-        metadata=None,
+            self,
+            prefix: str = '',
+            sharded_offsets=(),
+            metadata=None,
     ):
         """Expose replicated P0 tensors to MCore distributed checkpointing."""
         del metadata
-        from megatron.core.transformer.utils import make_sharded_tensors_for_checkpoint
+        from megatron.core.transformer.utils import \
+            make_sharded_tensors_for_checkpoint
 
         return make_sharded_tensors_for_checkpoint(
-            self.state_dict(prefix="", keep_vars=True),
+            self.state_dict(prefix='', keep_vars=True),
             prefix,
             {},
             sharded_offsets,
         )
 
 
-__all__ = ["LingBotVLA2MCoreModel"]
+__all__ = ['LingBotVLA2MCoreModel']

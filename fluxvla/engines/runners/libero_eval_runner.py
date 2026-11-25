@@ -151,6 +151,10 @@ class LiberoEvalRunner(BaseEvalRunner):
             Default is True.
     """
 
+    # Default matches the ``save_action_traces`` constructor argument so that
+    # partially constructed runners never fail on this read.
+    save_action_traces: bool = False
+
     @staticmethod
     def _inject_checkpoint_tokenizer(dataset: Dict, ckpt_path: str) -> None:
         if ckpt_path is None:
@@ -373,8 +377,8 @@ class LiberoEvalRunner(BaseEvalRunner):
         trace_root = self.result_output_dir or self.run_dir
         trace_dir = os.path.join(trace_root, self.task_suite_name, 'traces')
         os.makedirs(trace_dir, exist_ok=True)
-        trace_path = os.path.join(
-            trace_dir, f'task{task_id}_trial{trial_id}.jsonl')
+        trace_path = os.path.join(trace_dir,
+                                  f'task{task_id}_trial{trial_id}.jsonl')
         with open(trace_path, 'w', encoding='utf-8') as stream:
             stream.writelines(json.dumps(row) + '\n' for row in rows)
 
@@ -860,13 +864,15 @@ class LiberoEvalRunner(BaseEvalRunner):
                             after_eval_env_step(action)
                         if self.save_action_traces:
                             action_trace.append({
-                                'step': t,
-                                'normalized_action': action.tolist(),
+                                'step':
+                                t,
+                                'normalized_action':
+                                action.tolist(),
                                 'denormalized_action':
                                 action_denormed.tolist(),
                                 'eef_position_before':
-                                None if eef_before is None else
-                                eef_before.tolist(),
+                                None
+                                if eef_before is None else eef_before.tolist(),
                                 'eef_position_after':
                                 None if obs.get('robot0_eef_pos') is None else
                                 obs['robot0_eef_pos'].tolist(),
@@ -876,8 +882,10 @@ class LiberoEvalRunner(BaseEvalRunner):
                                 'gripper_after':
                                 None if obs.get('robot0_gripper_qpos') is None
                                 else obs['robot0_gripper_qpos'].tolist(),
-                                'reward': float(reward),
-                                'done': bool(done),
+                                'reward':
+                                float(reward),
+                                'done':
+                                bool(done),
                             })
                         if done:
                             total_successes += 1

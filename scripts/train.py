@@ -363,7 +363,8 @@ def _resolve_train_seed(cfg):
 
 
 def _set_rank_training_seed(seed, data_parallel_rank=None):
-    rank = overwatch.rank() if data_parallel_rank is None else data_parallel_rank
+    rank = overwatch.rank(
+    ) if data_parallel_rank is None else data_parallel_rank
     rank_seed = int(seed) + int(rank)
     random.seed(rank_seed)
     np.random.seed(rank_seed)

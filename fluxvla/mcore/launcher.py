@@ -8,7 +8,7 @@ from .contracts import MCoreModelSpec
 def run_mcore(spec: MCoreModelSpec) -> None:
     """Run a validated model spec through Megatron's native lifecycle."""
     if not isinstance(spec, MCoreModelSpec):
-        raise TypeError(f"expected MCoreModelSpec, got {type(spec).__name__}")
+        raise TypeError(f'expected MCoreModelSpec, got {type(spec).__name__}')
 
     from megatron.training import pretrain
 

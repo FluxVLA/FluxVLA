@@ -39,10 +39,13 @@ class GemmaRotaryEmbedding(Function):
         sin_output_features = inv_freq.new_zeros(batch_size, num_pos,
                                                  num_channels * 2)
         if gemma_rotary_embedding_ext is None:
-            angles = position_ids.to(inv_freq.dtype).unsqueeze(-1) * inv_freq.reshape(1, 1, -1)
+            angles = position_ids.to(
+                inv_freq.dtype).unsqueeze(-1) * inv_freq.reshape(1, 1, -1)
             angles = angles * attention_scaling
-            cos_output_features.copy_(torch.cat((angles.cos(), angles.cos()), dim=-1))
-            sin_output_features.copy_(torch.cat((angles.sin(), angles.sin()), dim=-1))
+            cos_output_features.copy_(
+                torch.cat((angles.cos(), angles.cos()), dim=-1))
+            sin_output_features.copy_(
+                torch.cat((angles.sin(), angles.sin()), dim=-1))
             return cos_output_features, sin_output_features
         gemma_rotary_embedding_ext.gemma_rotary_embedding_forward_wrapper(
             batch_size,

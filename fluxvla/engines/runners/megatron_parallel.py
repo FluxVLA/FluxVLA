@@ -8,13 +8,12 @@ linear parameter and optimizer footprint by the TP degree.
 """
 
 from __future__ import annotations
-
 from typing import Optional
 
 import torch
-from torch import nn
 import torch.distributed as dist
 import torch.distributed.nn.functional as dist_nn
+from torch import nn
 
 
 class ColumnParallelLinear(nn.Module):
@@ -34,11 +33,14 @@ class ColumnParallelLinear(nn.Module):
         self.group = group
         start = self.tp_rank * (source.out_features // world)
         end = start + source.out_features // world
-        self.weight = nn.Parameter(source.weight.detach()[start:end].clone(),
-                                   requires_grad=source.weight.requires_grad)
-        self.bias = (nn.Parameter(source.bias.detach()[start:end].clone(),
-                                   requires_grad=source.bias.requires_grad)
-                     if source.bias is not None else None)
+        self.weight = nn.Parameter(
+            source.weight.detach()[start:end].clone(),
+            requires_grad=source.weight.requires_grad)
+        self.bias = (
+            nn.Parameter(
+                source.bias.detach()[start:end].clone(),
+                requires_grad=source.bias.requires_grad)
+            if source.bias is not None else None)
         self.weight._tp_sharded = True
         if self.bias is not None:
             self.bias._tp_sharded = True
@@ -49,7 +51,8 @@ class ColumnParallelLinear(nn.Module):
         return torch.cat(chunks, dim=-1)
 
 
-def _replace_linear_modules(module: nn.Module, group: dist.ProcessGroup,
+def _replace_linear_modules(module: nn.Module,
+                            group: dist.ProcessGroup,
                             minimum_out_features: int = 0) -> int:
     """Replace eligible nn.Linear children and return the replacement count."""
     count = 0
@@ -59,11 +62,13 @@ def _replace_linear_modules(module: nn.Module, group: dist.ProcessGroup,
                 setattr(module, name, ColumnParallelLinear(child, group))
                 count += 1
         else:
-            count += _replace_linear_modules(child, group, minimum_out_features)
+            count += _replace_linear_modules(child, group,
+                                             minimum_out_features)
     return count
 
 
-def apply_tensor_parallel(module: nn.Module, group: Optional[dist.ProcessGroup],
+def apply_tensor_parallel(module: nn.Module,
+                          group: Optional[dist.ProcessGroup],
                           minimum_out_features: int = 128) -> int:
     """Apply output TP to a model after its full checkpoint has been loaded."""
     if group is None or dist.get_world_size(group) <= 1:
@@ -96,23 +101,31 @@ class ShardedOptimizer:
     without modifying the read-only Megatron-LM checkout.
     """
 
-    def __init__(self, optimizer: torch.optim.Optimizer,
+    def __init__(self,
+                 optimizer: torch.optim.Optimizer,
                  group: Optional[dist.ProcessGroup],
                  bucket_cap_mb: float = 25.0):
         self.optimizer = optimizer
         self.group = group
         self.rank = dist.get_rank(group) if group is not None else 0
-        self.world_size = dist.get_world_size(group) if group is not None else 1
+        self.world_size = dist.get_world_size(
+            group) if group is not None else 1
         if bucket_cap_mb <= 0:
             raise ValueError('bucket_cap_mb must be positive')
         self.bucket_cap_bytes = int(bucket_cap_mb * 1024 * 1024)
-        self._all_params = [p for g in optimizer.param_groups for p in g['params']]
-        owned = [p for i, p in enumerate(self._all_params)
-                 if i % self.world_size == self.rank]
+        self._all_params = [
+            p for g in optimizer.param_groups for p in g['params']
+        ]
+        owned = [
+            p for i, p in enumerate(self._all_params)
+            if i % self.world_size == self.rank
+        ]
         owned_ids = {id(p) for p in owned}
         self._owned = owned
         for group_cfg in optimizer.param_groups:
-            group_cfg['params'] = [p for p in group_cfg['params'] if id(p) in owned_ids]
+            group_cfg['params'] = [
+                p for p in group_cfg['params'] if id(p) in owned_ids
+            ]
         self.param_groups = optimizer.param_groups
         self._buckets = self._build_buckets()
 
@@ -131,8 +144,8 @@ class ShardedOptimizer:
             current_bytes = 0
             for parameter in parameters:
                 parameter_bytes = parameter.numel() * parameter.element_size()
-                if (current is None
-                        or current_bytes + parameter_bytes > self.bucket_cap_bytes):
+                if (current is None or current_bytes + parameter_bytes >
+                        self.bucket_cap_bytes):
                     current = {'key': key, 'params': [], 'numel': 0}
                     buckets.append(current)
                     current_bytes = 0
@@ -160,14 +173,16 @@ class ShardedOptimizer:
                 for parameter in bucket['params']:
                     size = parameter.numel()
                     if owner == self.rank:
-                        flat[offset:offset + size].copy_(parameter.data.view(-1))
+                        flat[offset:offset + size].copy_(
+                            parameter.data.view(-1))
                     offset += size
                 # ``owner`` is a rank local to the DP group.  TP/DP topologies
                 # commonly create non-contiguous global ranks (for example
                 # groups [0, 2] and [1, 3]); passing the local rank as ``src``
                 # therefore targets a rank outside the process group.
-                group_src = (dist.get_global_rank(self.group, owner)
-                             if hasattr(dist, 'get_global_rank') else owner)
+                group_src = (
+                    dist.get_global_rank(self.group, owner) if hasattr(
+                        dist, 'get_global_rank') else owner)
                 dist.broadcast(flat, src=group_src, group=self.group)
                 offset = 0
                 for parameter in bucket['params']:

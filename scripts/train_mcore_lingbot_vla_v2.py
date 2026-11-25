@@ -8,5 +8,5 @@ def main() -> None:
     run_mcore(LINGBOT_VLA_V2_SPEC)
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()

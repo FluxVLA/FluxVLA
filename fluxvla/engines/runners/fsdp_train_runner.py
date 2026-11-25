@@ -458,27 +458,29 @@ class FSDPTrainRunner(BaseTrainRunner):
 
     def _install_alignment_autograd_tensor_trace(self) -> None:
         """Capture selected gradients before FSDP's reduction hook runs."""
-        root_value = os.environ.get("FLUXVLA_AUTOGRAD_TENSOR_TRACE_DIR")
+        root_value = os.environ.get('FLUXVLA_AUTOGRAD_TENSOR_TRACE_DIR')
         if not root_value:
             return
         pattern = re.compile(
             os.environ.get(
-                "FLUXVLA_GRAD_TRACE_PATTERN",
-                r"(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|"
-                r"action_out_proj|action_in_proj|time_mlp|cond_proj|final_norm|norm)"
-                r"(\.layer)?\.(weight|bias|dense\.weight|dense\.bias)$",
-            )
-        )
+                'FLUXVLA_GRAD_TRACE_PATTERN',
+                r'(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|'
+                r'action_out_proj|action_in_proj|time_mlp|cond_proj|'
+                r'final_norm|norm)'
+                r'(\.layer)?\.(weight|bias|dense\.weight|dense\.bias)$',
+            ))
         root = Path(root_value)
         root.mkdir(parents=True, exist_ok=True)
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        rank = dist.get_rank(
+        ) if dist.is_available() and dist.is_initialized() else 0
         steps: dict[str, int] = {}
 
         if self.fsdp_api_version == 2:
             from torch.distributed.fsdp import FSDPModule
 
             module_names = {
-                id(module): name for name, module in self.vla.named_modules()
+                id(module): name
+                for name, module in self.vla.named_modules()
             }
             installed_groups: set[int] = set()
             matched_names: list[str] = []
@@ -495,24 +497,24 @@ class FSDPTrainRunner(BaseTrainRunner):
                     module_name = module_names.get(id(module_info.module), '')
                     parameter_name = '.'.join(
                         part for part in (module_name, module_info.param_name)
-                        if part
-                    ).replace('.layer.', '.')
+                        if part).replace('.layer.', '.')
                     if pattern.search(parameter_name):
                         selected.append((parameter_name, fsdp_param))
                         matched_names.append(parameter_name)
                 if not selected:
                     continue
                 pre_dp_root_value = os.environ.get(
-                    "FLUXVLA_NATIVE_PRE_DP_GRAD_TRACE_DIR"
-                )
+                    'FLUXVLA_NATIVE_PRE_DP_GRAD_TRACE_DIR')
                 if pre_dp_root_value:
                     pre_dp_root = Path(pre_dp_root_value)
                     pre_dp_root.mkdir(parents=True, exist_ok=True)
                     pre_dp_rank = rank
                     pre_dp_steps: dict[str, int] = {}
                     for parameter_name, fsdp_param in selected:
-                        unsharded_param = getattr(fsdp_param, "unsharded_param", None)
-                        if unsharded_param is None or not unsharded_param.requires_grad:
+                        unsharded_param = getattr(fsdp_param,
+                                                  'unsharded_param', None)
+                        if (unsharded_param is None
+                                or not unsharded_param.requires_grad):
                             continue
 
                         def _save_pre_dp(
@@ -523,20 +525,24 @@ class FSDPTrainRunner(BaseTrainRunner):
                             trace_rank=pre_dp_rank,
                             trace_steps=pre_dp_steps,
                         ):
-                            trace_steps[selected_name] = trace_steps.get(selected_name, 0) + 1
+                            trace_steps[selected_name] = trace_steps.get(
+                                selected_name, 0) + 1
                             trace_step = trace_steps[selected_name]
-                            safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", selected_name)
+                            safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_',
+                                               selected_name)
                             torch.save(
                                 {
-                                    "backend": "native_fsdp2",
-                                    "phase": "pre_dp_autograd",
-                                    "step": trace_step,
-                                    "rank": trace_rank,
-                                    "name": selected_name,
-                                    "grad": grad.detach().float().cpu().clone(),
+                                    'backend': 'native_fsdp2',
+                                    'phase': 'pre_dp_autograd',
+                                    'step': trace_step,
+                                    'rank': trace_rank,
+                                    'name': selected_name,
+                                    'grad':
+                                    grad.detach().float().cpu().clone(),
                                 },
-                                trace_root
-                                / f"native_pre_dp_step_{trace_step:06d}_rank_{trace_rank:02d}_{safe_name}.pt",
+                                trace_root /
+                                f'native_pre_dp_step_{trace_step:06d}_rank_'
+                                f'{trace_rank:02d}_{safe_name}.pt',
                             )
                             return grad
 
@@ -549,28 +555,28 @@ class FSDPTrainRunner(BaseTrainRunner):
                     original=original_post_backward,
                 ):
                     for parameter_name, fsdp_param in selections:
-                        unsharded_param = getattr(
-                            fsdp_param, 'unsharded_param', None)
-                        grad = (
-                            None if unsharded_param is None
-                            else unsharded_param.grad)
+                        unsharded_param = getattr(fsdp_param,
+                                                  'unsharded_param', None)
+                        grad = (None if unsharded_param is None else
+                                unsharded_param.grad)
                         if grad is None:
                             continue
-                        steps[parameter_name] = steps.get(parameter_name, 0) + 1
+                        steps[parameter_name] = steps.get(parameter_name,
+                                                          0) + 1
                         step = steps[parameter_name]
-                        safe_name = re.sub(
-                            r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                        safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_',
+                                           parameter_name)
                         torch.save(
                             {
-                                "backend": "fsdp2",
-                                "phase": "autograd",
-                                "step": step,
-                                "rank": rank,
-                                "name": parameter_name,
-                                "grad": grad.detach().float().cpu().clone(),
+                                'backend': 'fsdp2',
+                                'phase': 'autograd',
+                                'step': step,
+                                'rank': rank,
+                                'name': parameter_name,
+                                'grad': grad.detach().float().cpu().clone(),
                             },
-                            root
-                            / f"fsdp2_autograd_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                            root / f'fsdp2_autograd_step_{step:06d}_rank_'
+                            f'{rank:02d}_{safe_name}.pt',
                         )
                     return original(*args)
 
@@ -578,13 +584,13 @@ class FSDPTrainRunner(BaseTrainRunner):
                 installed_groups.add(id(param_group))
             torch.save(
                 {
-                    "backend": "fsdp2",
-                    "phase": "setup",
-                    "rank": rank,
-                    "groups": len(installed_groups),
-                    "matched_names": matched_names,
+                    'backend': 'fsdp2',
+                    'phase': 'setup',
+                    'rank': rank,
+                    'groups': len(installed_groups),
+                    'matched_names': matched_names,
                 },
-                root / f"fsdp2_autograd_setup_rank_{rank:02d}.pt",
+                root / f'fsdp2_autograd_setup_rank_{rank:02d}.pt',
             )
             return
 
@@ -601,10 +607,12 @@ class FSDPTrainRunner(BaseTrainRunner):
             selected = []
             for info, numel, shape in zip(parameter_infos, numels, shapes):
                 name = '.'.join(
-                    part for part in (info.module_name, info.param_name) if part)
+                    part for part in (info.module_name, info.param_name)
+                    if part)
                 canonical = name.replace('.layer.', '.')
                 if pattern.search(canonical):
-                    selected.append((canonical, offset, int(numel), tuple(shape)))
+                    selected.append(
+                        (canonical, offset, int(numel), tuple(shape)))
                 offset += int(numel)
             if not selected:
                 continue
@@ -613,19 +621,19 @@ class FSDPTrainRunner(BaseTrainRunner):
                 for parameter_name, start, numel, shape in selections:
                     steps[parameter_name] = steps.get(parameter_name, 0) + 1
                     step = steps[parameter_name]
-                    safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                    safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_', parameter_name)
                     value = grad.narrow(0, start, numel).view(shape)
                     torch.save(
                         {
-                            "backend": "fsdp",
-                            "phase": "autograd",
-                            "step": step,
-                            "rank": rank,
-                            "name": parameter_name,
-                            "grad": value.detach().float().cpu().clone(),
+                            'backend': 'fsdp',
+                            'phase': 'autograd',
+                            'step': step,
+                            'rank': rank,
+                            'name': parameter_name,
+                            'grad': value.detach().float().cpu().clone(),
                         },
-                        root
-                        / f"fsdp_autograd_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                        root / f'fsdp_autograd_step_{step:06d}_rank_'
+                        f'{rank:02d}_{safe_name}.pt',
                     )
                 return grad
 
@@ -636,25 +644,25 @@ class FSDPTrainRunner(BaseTrainRunner):
             return
 
         for name, parameter in self.vla.named_parameters():
-            canonical = name.removeprefix("module.").replace(".layer.", ".")
+            canonical = name.removeprefix('module.').replace('.layer.', '.')
             if not parameter.requires_grad or not pattern.search(canonical):
                 continue
 
             def _save(grad, *, parameter_name=canonical):
                 steps[parameter_name] = steps.get(parameter_name, 0) + 1
                 step = steps[parameter_name]
-                safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_', parameter_name)
                 torch.save(
                     {
-                        "backend": "fsdp",
-                        "phase": "autograd",
-                        "step": step,
-                        "rank": rank,
-                        "name": parameter_name,
-                        "grad": grad.detach().float().cpu().clone(),
+                        'backend': 'fsdp',
+                        'phase': 'autograd',
+                        'step': step,
+                        'rank': rank,
+                        'name': parameter_name,
+                        'grad': grad.detach().float().cpu().clone(),
                     },
-                    root
-                    / f"fsdp_autograd_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                    root / f'fsdp_autograd_step_{step:06d}_rank_'
+                    f'{rank:02d}_{safe_name}.pt',
                 )
                 return grad
 
@@ -670,22 +678,22 @@ class FSDPTrainRunner(BaseTrainRunner):
         Native the same capture boundary; it is opt-in and has no production
         behavior when the environment variable is unset.
         """
-        root_value = os.environ.get("FLUXVLA_NATIVE_PRE_DP_GRAD_TRACE_DIR")
+        root_value = os.environ.get('FLUXVLA_NATIVE_PRE_DP_GRAD_TRACE_DIR')
         if not root_value:
             return
         pattern = re.compile(
             os.environ.get(
-                "FLUXVLA_GRAD_TRACE_PATTERN",
-                r"(state_proj|action_in_proj)\.(weight|bias)$",
-            )
-        )
+                'FLUXVLA_GRAD_TRACE_PATTERN',
+                r'(state_proj|action_in_proj)\.(weight|bias)$',
+            ))
         root = Path(root_value)
         root.mkdir(parents=True, exist_ok=True)
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        rank = dist.get_rank(
+        ) if dist.is_available() and dist.is_initialized() else 0
         steps: dict[str, int] = {}
         matched = []
         for name, parameter in self.vla.named_parameters():
-            canonical = name.removeprefix("module.").replace(".layer.", ".")
+            canonical = name.removeprefix('module.').replace('.layer.', '.')
             if not parameter.requires_grad or not pattern.search(canonical):
                 continue
             matched.append(canonical)
@@ -693,42 +701,46 @@ class FSDPTrainRunner(BaseTrainRunner):
             def _save(grad, *, parameter_name=canonical):
                 steps[parameter_name] = steps.get(parameter_name, 0) + 1
                 step = steps[parameter_name]
-                safe_name = re.sub(r"[^A-Za-z0-9_.-]", "_", parameter_name)
+                safe_name = re.sub(r'[^A-Za-z0-9_.-]', '_', parameter_name)
                 torch.save(
                     {
-                        "backend": "native_fsdp2",
-                        "phase": "pre_fsdp_autograd",
-                        "step": step,
-                        "rank": rank,
-                        "name": parameter_name,
-                        "grad": grad.detach().float().cpu().clone(),
+                        'backend': 'native_fsdp2',
+                        'phase': 'pre_fsdp_autograd',
+                        'step': step,
+                        'rank': rank,
+                        'name': parameter_name,
+                        'grad': grad.detach().float().cpu().clone(),
                     },
-                    root
-                    / f"native_pre_dp_step_{step:06d}_rank_{rank:02d}_{safe_name}.pt",
+                    root / f'native_pre_dp_step_{step:06d}_rank_{rank:02d}_'
+                    f'{safe_name}.pt',
                 )
                 return grad
 
             parameter.register_hook(_save)
         torch.save(
             {
-                "backend": "native_fsdp2",
-                "phase": "pre_fsdp_setup",
-                "rank": rank,
-                "matched_names": matched,
+                'backend': 'native_fsdp2',
+                'phase': 'pre_fsdp_setup',
+                'rank': rank,
+                'matched_names': matched,
             },
-            root / f"native_pre_dp_setup_rank_{rank:02d}.pt",
+            root / f'native_pre_dp_setup_rank_{rank:02d}.pt',
         )
 
     def _write_fsdp2_layout_trace(self) -> None:
         """Record actual FSDP2 parameter-group ownership for parity checks."""
-        root_value = os.environ.get("FLUXVLA_FSDP2_LAYOUT_TRACE_DIR")
+        root_value = os.environ.get('FLUXVLA_FSDP2_LAYOUT_TRACE_DIR')
         if not root_value or self.fsdp_api_version != 2:
             return
-        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+        if dist.is_available() and dist.is_initialized(
+        ) and dist.get_rank() != 0:
             return
         from torch.distributed.fsdp import FSDPModule
 
-        module_names = {id(module): name for name, module in self.vla.named_modules()}
+        module_names = {
+            id(module): name
+            for name, module in self.vla.named_modules()
+        }
         seen_groups = set()
         units = []
         for module in self.vla.modules():
@@ -740,55 +752,51 @@ class FSDPTrainRunner(BaseTrainRunner):
                 continue
             seen_groups.add(id(param_group))
             parameters = []
-            for parameter_index, fsdp_param in enumerate(param_group.fsdp_params):
+            for parameter_index, fsdp_param in enumerate(
+                    param_group.fsdp_params):
                 module_info = fsdp_param._module_info
-                module_name = module_names.get(id(module_info.module), "")
-                parameter_name = ".".join(
-                    part for part in (module_name, module_info.param_name) if part
-                ).replace(".layer.", ".")
+                module_name = module_names.get(id(module_info.module), '')
+                parameter_name = '.'.join(
+                    part for part in (module_name, module_info.param_name)
+                    if part).replace('.layer.', '.')
                 shape = fsdp_param._orig_size
                 parameter = fsdp_param.sharded_param
-                parameters.append(
-                    {
-                        "index": parameter_index,
-                        "name": parameter_name,
-                        "shape": list(shape),
-                        "numel": math.prod(shape),
-                        "dtype": str(parameter.dtype),
-                    }
-                )
-            units.append(
-                {
-                    "index": len(units),
-                    "module": module_names.get(id(module), ""),
-                    "parameter_count": len(parameters),
-                    "numel": sum(item["numel"] for item in parameters),
-                    "parameters": parameters,
-                }
-            )
+                parameters.append({
+                    'index': parameter_index,
+                    'name': parameter_name,
+                    'shape': list(shape),
+                    'numel': math.prod(shape),
+                    'dtype': str(parameter.dtype),
+                })
+            units.append({
+                'index': len(units),
+                'module': module_names.get(id(module), ''),
+                'parameter_count': len(parameters),
+                'numel': sum(item['numel'] for item in parameters),
+                'parameters': parameters,
+            })
         root = Path(root_value)
         root.mkdir(parents=True, exist_ok=True)
-        (root / "native_fsdp2_layout.json").write_text(
+        (root / 'native_fsdp2_layout.json').write_text(
             json.dumps(
                 {
-                    "backend": "native_fsdp2",
-                    "unit_count": len(units),
-                    "units": units,
+                    'backend': 'native_fsdp2',
+                    'unit_count': len(units),
+                    'units': units,
                 },
                 indent=2,
             ),
-            encoding="utf-8",
+            encoding='utf-8',
         )
 
     def run_setup(self, n_train_examples: int) -> None:
         torch.cuda.set_device(device_id := self.device_id)  # noqa: F841
-        initialize_runtime = getattr(
-            self.vla, 'initialize_distributed_runtime', None)
+        initialize_runtime = getattr(self.vla,
+                                     'initialize_distributed_runtime', None)
         if callable(initialize_runtime):
             initialize_runtime()
             overwatch.info(
-                'Initialized model-owned distributed runtime.',
-                ctx_level=1)
+                'Initialized model-owned distributed runtime.', ctx_level=1)
 
         self.vla.from_pretrained()
         torch.cuda.empty_cache()
@@ -797,12 +805,14 @@ class FSDPTrainRunner(BaseTrainRunner):
         self._prepare_training_task()
         fsdp_ignored_modules = self._resolve_fsdp_ignored_modules()
 
-        model_checkpointing = getattr(
-            self.vla, 'gradient_checkpointing_enable', None)
-        if self.enable_gradient_checkpointing and callable(model_checkpointing):
+        model_checkpointing = getattr(self.vla,
+                                      'gradient_checkpointing_enable', None)
+        if self.enable_gradient_checkpointing and callable(
+                model_checkpointing):
             model_checkpointing()
             overwatch.info(
-                'Enabled model-owned gradient checkpointing before FSDP wrapping.',
+                'Enabled model-owned gradient checkpointing before FSDP '
+                'wrapping.',
                 ctx_level=1)
 
         # Install before FSDP turns parameters into managed/sharded handles so
@@ -833,12 +843,10 @@ class FSDPTrainRunner(BaseTrainRunner):
 
         # Assemble the Default FSDP Mixed Precision Policy
         explicit_batch_policy = self.batch_dtype is not None
-        fsdp1_input_policy = (
-            {
-                'cast_forward_inputs': False,
-                'cast_root_forward_inputs': False,
-            }
-            if explicit_batch_policy else {})
+        fsdp1_input_policy = ({
+            'cast_forward_inputs': False,
+            'cast_root_forward_inputs': False,
+        } if explicit_batch_policy else {})
         if self.enable_mixed_precision_training and self.mixed_precision_dtype == torch.bfloat16:  # noqa: E501
             param_dtype = (None if self.keep_params_fp32 else torch.bfloat16)
             if is_no_shard:
@@ -926,15 +934,16 @@ class FSDPTrainRunner(BaseTrainRunner):
 
         if self.fsdp_api_version == 2:
             if fsdp_ignored_modules:
-                raise ValueError('FSDP2 validation does not support ignored modules.')
+                raise ValueError(
+                    'FSDP2 validation does not support ignored modules.')
             from torch.distributed.fsdp import (MixedPrecisionPolicy,
                                                 fully_shard)
 
             if self.fsdp_wrap_policy == 'root':
                 fsdp2_modules = []
             elif self.fsdp_wrap_policy == 'model':
-                module_getter = getattr(
-                    self.vla, 'get_fsdp2_wrapping_modules', None)
+                module_getter = getattr(self.vla, 'get_fsdp2_wrapping_modules',
+                                        None)
                 if not callable(module_getter):
                     raise ValueError(
                         f'{type(self.vla).__name__} does not provide '
@@ -950,8 +959,9 @@ class FSDPTrainRunner(BaseTrainRunner):
                 cast_forward_inputs=not explicit_batch_policy,
             )
             root_output_dtype = torch.float32
-            root_output_dtype_getter = getattr(
-                self.vla, "get_fsdp2_root_output_dtype", None)
+            root_output_dtype_getter = getattr(self.vla,
+                                               'get_fsdp2_root_output_dtype',
+                                               None)
             if callable(root_output_dtype_getter):
                 root_output_dtype = root_output_dtype_getter(
                     fsdp_precision_policy.param_dtype)
@@ -975,8 +985,9 @@ class FSDPTrainRunner(BaseTrainRunner):
             reshard_after_forward = (
                 self.fsdp_sharding_strategy == ShardingStrategy.FULL_SHARD)
             self.vla.to(device=current_device)
-            fp32_module_getter = getattr(
-                self.vla, 'get_fsdp2_full_precision_modules', None)
+            fp32_module_getter = getattr(self.vla,
+                                         'get_fsdp2_full_precision_modules',
+                                         None)
             fp32_modules = (
                 list(fp32_module_getter())
                 if callable(fp32_module_getter) else [])
@@ -1018,7 +1029,8 @@ class FSDPTrainRunner(BaseTrainRunner):
         ignored_numel = sum(param.numel() for module in fsdp_ignored_modules
                             for param in module.parameters())
         overwatch.info(
-            f'FSDP{self.fsdp_api_version} wrapping created {fsdp_unit_count} units '
+            f'FSDP{self.fsdp_api_version} wrapping created '
+            f'{fsdp_unit_count} units '
             f'(policy={self.fsdp_wrap_policy}); kept '
             f'{ignored_numel / 1e9:.2f}B frozen parameters replicated.',
             ctx_level=1)
@@ -1111,9 +1123,9 @@ class FSDPTrainRunner(BaseTrainRunner):
             # DTensor-aware implementation owns the local-shard reduction and
             # foreach ordering; rebuilding that reduction changes the norm at
             # the 1e-5 level and therefore perturbs every AdamW update.
-            trace_root = os.environ.get("FLUXVLA_CLIP_COEFFICIENT_TRACE_DIR")
-            trace_step = int(os.environ.get(
-                "FLUXVLA_CLIP_COEFFICIENT_TRACE_STEP", "0"))
+            trace_root = os.environ.get('FLUXVLA_CLIP_COEFFICIENT_TRACE_DIR')
+            trace_step = int(
+                os.environ.get('FLUXVLA_CLIP_COEFFICIENT_TRACE_STEP', '0'))
             step = int(self.metric.global_step) + 1
             if not trace_root or (trace_step and trace_step != step):
                 return torch.nn.utils.clip_grad_norm_(
@@ -1128,39 +1140,44 @@ class FSDPTrainRunner(BaseTrainRunner):
             import torch.nn.utils.clip_grad as clip_grad_module
             from torch.utils._foreach_utils import (
                 _device_has_foreach_support,
-                _group_tensors_by_device_and_dtype,
-                _has_foreach_support,
-            )
+                _group_tensors_by_device_and_dtype, _has_foreach_support)
 
             original_clip = clip_grad_module._clip_grads_with_norm_
             original_get_total_norm = clip_grad_module._get_total_norm
             captured = {}
 
             def tensor_metadata(value, *, include_value=True):
-                local = value.to_local() if hasattr(value, "to_local") else value
-                mesh = getattr(value, "device_mesh", None)
+                local = value.to_local() if hasattr(value,
+                                                    'to_local') else value
+                mesh = getattr(value, 'device_mesh', None)
                 metadata = {
-                    "type": type(value).__name__,
-                    "shape": list(value.shape),
-                    "local_shape": list(local.shape),
-                    "dtype": str(value.dtype),
-                    "placements": str(getattr(value, "placements", None)),
-                    "device_mesh_shape": (
-                        None if mesh is None else list(mesh.mesh.shape)
-                    ),
+                    'type':
+                    type(value).__name__,
+                    'shape':
+                    list(value.shape),
+                    'local_shape':
+                    list(local.shape),
+                    'dtype':
+                    str(value.dtype),
+                    'placements':
+                    str(getattr(value, 'placements', None)),
+                    'device_mesh_shape':
+                    (None if mesh is None else list(mesh.mesh.shape)),
                 }
                 if include_value:
-                    metadata["local_value"] = local.detach().cpu().clone()
+                    metadata['local_value'] = local.detach().cpu().clone()
                 return metadata
 
-            def traced_get_total_norm(
-                    tensors, norm_type=2.0, error_if_nonfinite=False,
-                    foreach=None):
+            def traced_get_total_norm(tensors,
+                                      norm_type=2.0,
+                                      error_if_nonfinite=False,
+                                      foreach=None):
                 # Mirror torch 2.7's implementation so the trace contains the
                 # actual DTensor intermediates, including _NormPartial
                 # placements. This replacement is installed only for an
                 # explicitly requested diagnostic step.
-                tensors = [tensors] if isinstance(tensors, torch.Tensor) else list(tensors)
+                tensors = [tensors] if isinstance(
+                    tensors, torch.Tensor) else list(tensors)
                 norm_type = float(norm_type)
                 if not tensors:
                     return torch.tensor(0.0)
@@ -1168,51 +1185,60 @@ class FSDPTrainRunner(BaseTrainRunner):
                 grouped = _group_tensors_by_device_and_dtype([tensors])
                 norms = []
                 for (device, _), ([device_tensors], _) in grouped.items():
-                    if ((foreach is None and
-                         _has_foreach_support(device_tensors, device)) or
-                            (foreach and _device_has_foreach_support(device))):
-                        norms.extend(torch._foreach_norm(device_tensors, norm_type))
+                    implicit_foreach = (
+                        foreach is None
+                        and _has_foreach_support(device_tensors, device))
+                    explicit_foreach = (
+                        foreach and _device_has_foreach_support(device))
+                    if implicit_foreach or explicit_foreach:
+                        norms.extend(
+                            torch._foreach_norm(device_tensors, norm_type))
                     elif foreach:
                         raise RuntimeError(
-                            "foreach=True was passed, but foreach is unsupported"
-                        )
+                            'foreach=True was passed, but foreach is '
+                            'unsupported')
                     else:
-                        norms.extend(torch.linalg.vector_norm(tensor, norm_type)
-                                     for tensor in device_tensors)
-                stacked = torch.stack([norm.to(first_device) for norm in norms])
+                        norms.extend(
+                            torch.linalg.vector_norm(tensor, norm_type)
+                            for tensor in device_tensors)
+                stacked = torch.stack(
+                    [norm.to(first_device) for norm in norms])
                 total_norm = torch.linalg.vector_norm(stacked, norm_type)
                 if error_if_nonfinite and torch.logical_or(
                         total_norm.isnan(), total_norm.isinf()):
-                    raise RuntimeError("gradient norm is non-finite")
-                captured["gradient_metadata"] = [
+                    raise RuntimeError('gradient norm is non-finite')
+                captured['gradient_metadata'] = [
                     tensor_metadata(tensor, include_value=False)
                     for tensor in tensors
                 ]
-                captured["per_parameter_norm_metadata"] = [
+                captured['per_parameter_norm_metadata'] = [
                     tensor_metadata(norm) for norm in norms
                 ]
-                captured["stacked_norms_metadata"] = tensor_metadata(stacked)
-                captured["computed_total_norm_metadata"] = tensor_metadata(total_norm)
+                captured['stacked_norms_metadata'] = tensor_metadata(stacked)
+                captured['computed_total_norm_metadata'] = tensor_metadata(
+                    total_norm)
                 return total_norm
 
             def traced_clip(parameters, max_norm, total_norm, foreach=None):
-                coefficient = (
-                    float(max_norm) / (total_norm + 1.0e-6)
-                ).clamp(max=1.0)
+                coefficient = (float(max_norm) /
+                               (total_norm + 1.0e-6)).clamp(max=1.0)
 
                 def local_copy(value):
-                    if hasattr(value, "to_local"):
+                    if hasattr(value, 'to_local'):
                         value = value.to_local()
                     return value.detach().cpu().clone()
 
                 captured.update({
-                    "total_norm_local": local_copy(total_norm),
-                    "coefficient_local": local_copy(coefficient),
-                    "total_norm_type": type(total_norm).__name__,
-                    "total_norm_placements": str(
-                        getattr(total_norm, "placements", None)),
-                    "coefficient_placements": str(
-                        getattr(coefficient, "placements", None)),
+                    'total_norm_local':
+                    local_copy(total_norm),
+                    'coefficient_local':
+                    local_copy(coefficient),
+                    'total_norm_type':
+                    type(total_norm).__name__,
+                    'total_norm_placements':
+                    str(getattr(total_norm, 'placements', None)),
+                    'coefficient_placements':
+                    str(getattr(coefficient, 'placements', None)),
                 })
                 return original_clip(
                     parameters, max_norm, total_norm, foreach=foreach)
@@ -1232,16 +1258,21 @@ class FSDPTrainRunner(BaseTrainRunner):
             root.mkdir(parents=True, exist_ok=True)
             rank = dist.get_rank() if dist.is_initialized() else 0
             torch.save(
-                {"step": step, "rank": rank, **captured},
-                root / f"fsdp_clip_step_{step:06d}_rank_{rank:02d}.pt",
+                {
+                    'step': step,
+                    'rank': rank,
+                    **captured
+                },
+                root / f'fsdp_clip_step_{step:06d}_rank_{rank:02d}.pt',
             )
             return result
         return self.vla.clip_grad_norm_(max_norm=self.max_grad_norm)
 
-    def _reduce_training_loss_for_metrics(self, loss: torch.Tensor) -> torch.Tensor:
+    def _reduce_training_loss_for_metrics(self,
+                                          loss: torch.Tensor) -> torch.Tensor:
         """Optionally report the DP mean used by multi-backend alignment."""
         if (not self.report_dp_mean_metrics
-                and os.environ.get("FLUXVLA_REPORT_DP_MEAN_LOSS") != "1"):
+                and os.environ.get('FLUXVLA_REPORT_DP_MEAN_LOSS') != '1'):
             return loss
         reduced = loss.detach().float().clone()
         dist.all_reduce(reduced, op=dist.ReduceOp.SUM)
@@ -1251,7 +1282,7 @@ class FSDPTrainRunner(BaseTrainRunner):
     def _reduce_training_metrics_for_metrics(self, metrics):
         """Report DP-mean components alongside the optional DP-mean loss."""
         if (not self.report_dp_mean_metrics
-                and os.environ.get("FLUXVLA_REPORT_DP_MEAN_LOSS") != "1"):
+                and os.environ.get('FLUXVLA_REPORT_DP_MEAN_LOSS') != '1'):
             return metrics
         reduced_metrics = {}
         for key, value in metrics.items():
@@ -1262,77 +1293,87 @@ class FSDPTrainRunner(BaseTrainRunner):
         return reduced_metrics
 
     def _write_grad_norm_input_trace(self) -> None:
-        """Record the parameter order used internally by FSDP gradient clipping."""
-        root_value = os.environ.get("FLUXVLA_GRAD_NORM_INPUT_TRACE_DIR")
+        """Record the parameter order used internally by FSDP gradient
+        clipping."""
+        root_value = os.environ.get('FLUXVLA_GRAD_NORM_INPUT_TRACE_DIR')
         if not root_value:
             return
 
         step = int(self.metric.global_step) + 1
-        target_step = int(os.environ.get(
-            "FLUXVLA_GRAD_NORM_INPUT_TRACE_STEP", "0"))
+        target_step = int(
+            os.environ.get('FLUXVLA_GRAD_NORM_INPUT_TRACE_STEP', '0'))
         if target_step and step != target_step:
             return
 
         if self.fsdp_api_version == 2:
             rows = []
             grad_norms = []
-            for index, (name, parameter) in enumerate(
-                    self.vla.named_parameters()):
+            for index, (name,
+                        parameter) in enumerate(self.vla.named_parameters()):
                 grad = parameter.grad
                 if grad is None:
                     continue
                 local_grad = grad.detach()
-                if hasattr(local_grad, "to_local"):
+                if hasattr(local_grad, 'to_local'):
                     local_grad = local_grad.to_local()
                 rows.append({
-                    "index": len(rows),
-                    "name": name.removeprefix("module.").replace(
-                        ".layer.", "."),
-                    "parameter_shape": list(parameter.shape),
-                    "parameter_type": type(parameter).__name__,
-                    "parameter_placements": str(
-                        getattr(parameter, "placements", None)),
-                    "parameter_device_mesh_shape": (
-                        None
-                        if getattr(parameter, "device_mesh", None) is None
-                        else list(parameter.device_mesh.mesh.shape)
-                    ),
-                    "grad_type": type(grad).__name__,
-                    "grad_shape": list(grad.shape),
-                    "grad_placements": str(getattr(grad, "placements", None)),
-                    "grad_device_mesh_shape": (
-                        None
-                        if getattr(grad, "device_mesh", None) is None
-                        else list(grad.device_mesh.mesh.shape)
-                    ),
-                    "local_grad_shape": list(local_grad.shape),
-                    "dtype": str(local_grad.dtype),
+                    'index':
+                    len(rows),
+                    'name':
+                    name.removeprefix('module.').replace('.layer.', '.'),
+                    'parameter_shape':
+                    list(parameter.shape),
+                    'parameter_type':
+                    type(parameter).__name__,
+                    'parameter_placements':
+                    str(getattr(parameter, 'placements', None)),
+                    'parameter_device_mesh_shape':
+                    (None if getattr(parameter, 'device_mesh', None) is None
+                     else list(parameter.device_mesh.mesh.shape)),
+                    'grad_type':
+                    type(grad).__name__,
+                    'grad_shape':
+                    list(grad.shape),
+                    'grad_placements':
+                    str(getattr(grad, 'placements', None)),
+                    'grad_device_mesh_shape':
+                    (None if getattr(grad, 'device_mesh', None) is None else
+                     list(grad.device_mesh.mesh.shape)),
+                    'local_grad_shape':
+                    list(local_grad.shape),
+                    'dtype':
+                    str(local_grad.dtype),
                 })
-                grad_norms.append(torch.linalg.vector_norm(
-                    local_grad, 2.0, dtype=torch.float32))
+                grad_norms.append(
+                    torch.linalg.vector_norm(
+                        local_grad, 2.0, dtype=torch.float32))
             rank = dist.get_rank() if dist.is_initialized() else 0
             root = Path(root_value)
             root.mkdir(parents=True, exist_ok=True)
-            torch.save({
-                "backend": "fsdp",
-                "step": step,
-                "rank": rank,
-                "parameters": rows,
-                "grad_norms": (
-                    torch.stack(grad_norms).cpu()
-                    if grad_norms else torch.empty(0, dtype=torch.float32)),
-            }, root / f"fsdp_step_{step:06d}_rank_{rank:02d}.pt")
+            torch.save(
+                {
+                    'backend':
+                    'fsdp',
+                    'step':
+                    step,
+                    'rank':
+                    rank,
+                    'parameters':
+                    rows,
+                    'grad_norms': (torch.stack(grad_norms).cpu() if grad_norms
+                                   else torch.empty(0, dtype=torch.float32)),
+                }, root / f'fsdp_step_{step:06d}_rank_{rank:02d}.pt')
             return
 
         from fluxvla.mcore.diagnostics import _write_grad_norm_input_trace
 
         names_by_id = {
-            id(parameter): name.removeprefix("module.").replace(".layer.", ".")
+            id(parameter):
+            name.removeprefix('module.').replace('.layer.', '.')
             for name, parameter in self.vla.named_parameters()
         }
-        all_no_shard = all(
-            not handle.uses_sharded_strategy for handle in self.vla._all_handles
-        )
+        all_no_shard = all(not handle.uses_sharded_strategy
+                           for handle in self.vla._all_handles)
         if all_no_shard:
             ordered_parameters = list(self.vla.parameters())
         else:
@@ -1346,26 +1387,24 @@ class FSDPTrainRunner(BaseTrainRunner):
                 else:
                     target, seen = nonsharded_parameters, nonsharded_ids
                 parameters = (
-                    handle.flat_param._params
-                    if handle._use_orig_params
-                    else (handle.flat_param,)
-                )
+                    handle.flat_param._params if handle._use_orig_params else
+                    (handle.flat_param, ))
                 for parameter in parameters:
                     if id(parameter) not in seen:
                         seen.add(id(parameter))
                         target.append(parameter)
             for parameter in self.vla.parameters():
                 parameter_id = id(parameter)
-                if parameter_id not in sharded_ids and parameter_id not in nonsharded_ids:
+                if (parameter_id not in sharded_ids
+                        and parameter_id not in nonsharded_ids):
                     nonsharded_ids.add(parameter_id)
                     nonsharded_parameters.append(parameter)
             ordered_parameters = sharded_parameters + nonsharded_parameters
-        entries = [
-            (names_by_id.get(id(parameter), f"__unnamed_{index}"), parameter)
-            for index, parameter in enumerate(ordered_parameters)
-        ]
+        entries = [(names_by_id.get(id(parameter),
+                                    f'__unnamed_{index}'), parameter)
+                   for index, parameter in enumerate(ordered_parameters)]
         _write_grad_norm_input_trace(
-            backend="fsdp",
+            backend='fsdp',
             step=step,
             entries=entries,
         )

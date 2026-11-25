@@ -1,9 +1,7 @@
 import torch
 
-from fluxvla.models.vlas.lingbot_native_core.modeling_lingbot_vla_v2 import (
-    _register_router_logit_grad_trace,
-)
-
+from fluxvla.models.vlas.lingbot_native_core.modeling_lingbot_vla_v2 import \
+    _register_router_logit_grad_trace
 from fluxvla.ops.triton_moe_loss import triton_sequence_wise_balance_loss
 
 
@@ -11,7 +9,7 @@ def _reference(logits, *, top_k, lengths):
     losses = []
     offset = 0
     for length in lengths:
-        sequence = logits[offset : offset + length].float()
+        sequence = logits[offset:offset + length].float()
         scores = sequence.sigmoid()
         probabilities = scores / scores.sum(dim=-1, keepdim=True)
         with torch.no_grad():
@@ -36,10 +34,10 @@ def test_sequence_wise_sigmoid_loss_and_gradient_match_native_contract():
     second = first.detach().clone().requires_grad_(True)
 
     actual = triton_sequence_wise_balance_loss(
-        router_logits_list=(first,),
+        router_logits_list=(first, ),
         top_k=2,
         seq_lengths=[2, 1],
-        score_func="sigmoid",
+        score_func='sigmoid',
     )[0]
     expected = _reference(second, top_k=2, lengths=[2, 1])
     actual.backward()
@@ -55,7 +53,7 @@ def test_sequence_wise_loss_returns_one_value_per_layer():
         router_logits_list=(logits, logits + 0.5),
         top_k=2,
         seq_lengths=[3, 3],
-        score_func="sigmoid",
+        score_func='sigmoid',
     )
 
     assert len(losses) == 2
@@ -68,10 +66,10 @@ def test_sequence_wise_loss_matches_native_kth_boundary_tie_semantics():
     expected_logits = actual_logits.detach().clone().requires_grad_(True)
 
     actual = triton_sequence_wise_balance_loss(
-        router_logits_list=(actual_logits,),
+        router_logits_list=(actual_logits, ),
         top_k=3,
         seq_lengths=[1],
-        score_func="sigmoid",
+        score_func='sigmoid',
     )[0]
     probabilities = expected_logits.sigmoid()
     probabilities = probabilities / probabilities.sum(dim=-1, keepdim=True)
@@ -86,19 +84,18 @@ def test_sequence_wise_loss_matches_native_kth_boundary_tie_semantics():
 
 
 def test_router_logit_grad_trace_records_only_the_target_step(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("FLUXVLA_LINGBOT_ROUTER_GRAD_TRACE_DIR", str(tmp_path))
-    monkeypatch.setenv("LINGBOT_ROUTER_GRAD_TRACE_STEP", "2")
+        tmp_path, monkeypatch):
+    monkeypatch.setenv('FLUXVLA_LINGBOT_ROUTER_GRAD_TRACE_DIR', str(tmp_path))
+    monkeypatch.setenv('LINGBOT_ROUTER_GRAD_TRACE_STEP', '2')
     skipped = torch.randn(3, 4, requires_grad=True)
     traced = torch.randn(3, 4, requires_grad=True)
 
-    _register_router_logit_grad_trace((skipped,), step=1)
-    _register_router_logit_grad_trace((traced,), step=2)
+    _register_router_logit_grad_trace((skipped, ), step=1)
+    _register_router_logit_grad_trace((traced, ), step=2)
     traced.square().sum().backward()
 
-    paths = list(tmp_path.glob("*.pt"))
+    paths = list(tmp_path.glob('*.pt'))
     assert len(paths) == 1
     payload = torch.load(paths[0], weights_only=True)
-    assert payload["layer"] == 0
-    assert torch.equal(payload["router_logits_grad"], 2 * traced.detach())
+    assert payload['layer'] == 0
+    assert torch.equal(payload['router_logits_grad'], 2 * traced.detach())

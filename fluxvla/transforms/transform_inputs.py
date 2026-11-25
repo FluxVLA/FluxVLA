@@ -202,7 +202,7 @@ class ProcessParquetInputs():
         # Normal training configs do not expose these fields.
         if (os.environ.get('FLUXVLA_BATCH_TRACE') == '1'
                 or os.environ.get('FLUXVLA_SAMPLE_RNG_BY_INDEX') == '1'):
-            for identity_key in ('index',):
+            for identity_key in ('index', ):
                 if identity_key in data:
                     inputs[identity_key] = data[identity_key]
         if self.dataset_name is not None:

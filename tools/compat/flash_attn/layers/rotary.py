@@ -4,6 +4,6 @@ def apply_rotary_emb(x, cos, sin, *args, **kwargs):
 
 
 def _rotate_half(x):
-    x1 = x[..., : x.shape[-1] // 2]
-    x2 = x[..., x.shape[-1] // 2 :]
-    return __import__("torch").cat((-x2, x1), dim=-1)
+    x1 = x[..., :x.shape[-1] // 2]
+    x2 = x[..., x.shape[-1] // 2:]
+    return __import__('torch').cat((-x2, x1), dim=-1)

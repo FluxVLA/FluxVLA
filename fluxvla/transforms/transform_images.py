@@ -2176,7 +2176,8 @@ class QWen2VLImageTransform:
 
     def __call__(self, inputs):
         image_array = np.asarray(inputs[self.img_key])
-        images = image_array.reshape(-1, 3, image_array.shape[-2], image_array.shape[-1])
+        images = image_array.reshape(-1, 3, image_array.shape[-2],
+                                     image_array.shape[-1])
         images = self._exact_resize(images)
         ret_dict = self.img_transform(images)
         if self.to_tensor:

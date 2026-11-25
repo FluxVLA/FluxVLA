@@ -19,8 +19,9 @@ export FLUXVLA_MCORE_PRESERVE_FP32_PARAMS="${FLUXVLA_MCORE_PRESERVE_FP32_PARAMS:
 PRECISION_OPT_ARGS=()
 if [[ "${LINGBOT_USE_PRECISION_AWARE_OPTIMIZER:-0}" == "1" ]]; then
   # Transformer Engine's precision-aware Adam keeps the parameter remainder
-  # state in the optimizer.  Keep this opt-in: it requires a matching TE
-  # extension and changes optimizer-state dtypes relative to the baseline.
+  # state in the optimizer.  Keep this opt-in: it requires a matching
+  # Transformer Engine extension and changes optimizer-state dtypes relative
+  # to the baseline.
   PRECISION_OPT_ARGS=(
     --use-precision-aware-optimizer
     --main-params-dtype "${LINGBOT_PRECISION_MAIN_PARAMS_DTYPE:-fp16}"

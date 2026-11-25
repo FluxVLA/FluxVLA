@@ -246,7 +246,7 @@ class DDPTrainRunner(BaseTrainRunner):
         checkpoint is still on CPU.  This avoids a transient allocation of
         both the replicated model and its TP shards on every GPU.
         """
-        return bool(getattr(self, "prepare_backend_on_cpu", False))
+        return bool(getattr(self, 'prepare_backend_on_cpu', False))
 
     def _apply_lora(self) -> None:
         # Use configured lora_alpha, default to lora_rank if not specified.
@@ -295,7 +295,8 @@ class DDPTrainRunner(BaseTrainRunner):
             elif self._prepare_backend_before_device_move():
                 prepare_backend()
             self._move_vla_to_device(target_device)
-            if prepare_backend is not None and not self._prepare_backend_before_device_move():
+            if (prepare_backend is not None
+                    and not self._prepare_backend_before_device_move()):
                 prepare_backend()
             if prepare_backend is not None:
                 self._setup_optimizer_and_scheduler(n_train_examples)
@@ -304,8 +305,9 @@ class DDPTrainRunner(BaseTrainRunner):
                 self._apply_lora()
 
             prepare_backend = getattr(self, '_prepare_backend_model', None)
-            prepare_on_cpu = (prepare_backend is not None
-                              and self._prepare_backend_before_device_move())
+            prepare_on_cpu = (
+                prepare_backend is not None
+                and self._prepare_backend_before_device_move())
             if prepare_on_cpu:
                 prepare_backend()
             self._move_vla_to_device(target_device)

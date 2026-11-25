@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Limx Dynamics
+# Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -85,6 +85,11 @@ class BaseTrainRunner(ABC):
         sharding_strategy (str, optional): Sharding strategy for
             distributed training. Defaults to 'full-shard'.
     """
+
+    # Micro-batch cursor inside ``current_epoch``. Defined on the class so that
+    # partially constructed runners (tests, subclasses that postpone
+    # ``__init__``) still restart the sampler from a well-defined position.
+    _sampler_batch_offset: int = 0
 
     def __init__(self,
                  cfg: dict,
@@ -186,12 +191,12 @@ class BaseTrainRunner(ABC):
         self.enable_gradient_checkpointing = enable_gradient_checkpointing
         self.enable_mixed_precision_training = enable_mixed_precision_training
         self.enable_forward_autocast = (
-            bool(enable_mixed_precision_training)
-            if enable_forward_autocast is None else bool(enable_forward_autocast))
+            bool(enable_mixed_precision_training) if
+            enable_forward_autocast is None else bool(enable_forward_autocast))
         self.reduce_in_full_precision = reduce_in_full_precision
         self.mixed_precision_dtype = str_to_dtype(mixed_precision_dtype)
-        self.batch_dtype = (
-            None if batch_dtype is None else str_to_dtype(batch_dtype))
+        self.batch_dtype = (None if batch_dtype is None else
+                            str_to_dtype(batch_dtype))
         self.keep_params_fp32 = bool(keep_params_fp32)
         self.deterministic_algorithms = bool(deterministic_algorithms)
         self.per_device_batch_size = per_device_batch_size
@@ -447,7 +452,7 @@ class BaseTrainRunner(ABC):
         return self._prepare_batch(batch, self.device_id, dtype)
 
     def _prepare_model_training_batch(self, batch: Dict) -> Dict:
-        """Apply an optional model-owned input contract after device casting."""
+        """Apply model-owned input contract after device casting."""
         module = self.vla.module if hasattr(self.vla, 'module') else self.vla
         prepare = getattr(module, 'prepare_training_batch', None)
         return prepare(batch) if callable(prepare) else batch
@@ -739,7 +744,9 @@ class BaseTrainRunner(ABC):
             # If dataset has a finite length, use it
             return math.ceil(dataset_len / self.global_batch_size)
 
-    def _build_dataloader_generator(self, seed: Optional[int] = None) -> Optional[torch.Generator]:
+    def _build_dataloader_generator(self,
+                                    seed: Optional[int] = None
+                                    ) -> Optional[torch.Generator]:
         if seed is None:
             seed = os.environ.get('EXPERIMENT_GLOBAL_SEED')
         if seed is None:
@@ -766,12 +773,14 @@ class BaseTrainRunner(ABC):
         optimizer step.
         """
         local = {
-            'torch': torch.get_rng_state(),
+            'torch':
+            torch.get_rng_state(),
             'cuda': (torch.cuda.get_rng_state_all()
                      if torch.cuda.is_available() else None),
         }
         if dist.is_available() and dist.is_initialized():
-            gathered = [None] * dist.get_world_size() if dist.get_rank() == 0 else None
+            gathered = [None] * dist.get_world_size() if dist.get_rank(
+            ) == 0 else None
             dist.gather_object(local, gathered, dst=0)
             return gathered
         return [local]
@@ -780,7 +789,8 @@ class BaseTrainRunner(ABC):
         """Restore the current rank's torch RNG stream from a checkpoint."""
         if not isinstance(states, (list, tuple)):
             return
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        rank = dist.get_rank(
+        ) if dist.is_available() and dist.is_initialized() else 0
         if rank >= len(states) or not isinstance(states[rank], dict):
             return
         state = states[rank]
@@ -874,8 +884,8 @@ class BaseTrainRunner(ABC):
         self._configure_dataset_sharding(vla_dataset)
         training_eval_dataset = (
             vla_dataset if eval_dataset is None else eval_dataset)
-        set_distributed_context = getattr(
-            vla_dataset, 'set_distributed_context', None)
+        set_distributed_context = getattr(vla_dataset,
+                                          'set_distributed_context', None)
         if callable(set_distributed_context):
             set_distributed_context(
                 rank=self._data_parallel_rank(),
@@ -885,7 +895,8 @@ class BaseTrainRunner(ABC):
             vla_dataset,
             num_replicas=self._data_parallel_world_size(),
             rank=self._data_parallel_rank(),
-            shuffle=not bool(getattr(vla_dataset, "deterministic_order", False)),
+            shuffle=not bool(
+                getattr(vla_dataset, 'deterministic_order', False)),
             # PyTorch defaults this to zero.  The native LingBot sampler uses
             # the training seed, so leaving the default silently changes the
             # sample trajectory even when all model/RNG settings match.
@@ -893,15 +904,17 @@ class BaseTrainRunner(ABC):
             drop_last=False) if self.sampler == 'distributed' else None
 
         use_workers = self.per_device_num_workers > 0
-        logical_dp_seeding = bool(getattr(vla_dataset, 'seed_workers_by_dp_rank', False))
+        logical_dp_seeding = bool(
+            getattr(vla_dataset, 'seed_workers_by_dp_rank', False))
         dataloader = DataLoader(
             vla_dataset,
             batch_size=self.per_device_batch_size,
             sampler=sampler,
             collate_fn=self.collator,
             num_workers=self.per_device_num_workers,
-            worker_init_fn=(partial(worker_init_function,
-                                    data_parallel_rank=self._data_parallel_rank())
+            worker_init_fn=(partial(
+                worker_init_function,
+                data_parallel_rank=self._data_parallel_rank())
                             if logical_dp_seeding else worker_init_function),
             generator=self._build_dataloader_generator(
                 seed=self.seed if logical_dp_seeding else None),
@@ -927,7 +940,7 @@ class BaseTrainRunner(ABC):
                                             training_eval_dataset)
             else:
                 return self._run_epoch_based(dataloader, sampler,
-                                            training_eval_dataset)
+                                             training_eval_dataset)
         finally:
             self._shutdown_dataloader(self._active_dataloader)
             self._active_dataloader = None
@@ -1109,13 +1122,13 @@ class BaseTrainRunner(ABC):
                 # Parity runs must preserve the production scheduler horizon;
                 # changing max_steps for a short diagnostic also changes LR.
                 # Stop only after the requested update and trace have landed.
-                parity_stop = os.environ.get("FLUXVLA_PARITY_STOP_AFTER_STEP")
+                parity_stop = os.environ.get('FLUXVLA_PARITY_STOP_AFTER_STEP')
                 if (parity_stop is not None
                         and self.metric.global_step >= int(parity_stop)):
                     if overwatch.is_rank_zero():
                         overwatch.info(
-                            "Parity diagnostic stopped after global step "
-                            f"{self.metric.global_step}.")
+                            'Parity diagnostic stopped after global step '
+                            f'{self.metric.global_step}.')
                     break
 
         return self._get_checkpoint_path()
@@ -1287,7 +1300,7 @@ class BaseTrainRunner(ABC):
         task = mixed.active_task if mixed is not None else self.train_task
         if task not in ('vla', 'vlm'):
             raise ValueError('Select a task before a mixed training step.')
-        memory_metrics = os.environ.get("FLUXVLA_MEMORY_METRICS") == "1"
+        memory_metrics = os.environ.get('FLUXVLA_MEMORY_METRICS') == '1'
         if memory_metrics and torch.cuda.is_available():
             torch.cuda.reset_peak_memory_stats(self.device_id)
         self.lr_scheduler.prepare_step(self)
@@ -1338,12 +1351,13 @@ class BaseTrainRunner(ABC):
                 loss = self._finish_vlm_accumulation(output)
         else:
             metric_loss = self._reduce_training_loss_for_metrics(loss)
-            loss_metrics = self._reduce_training_metrics_for_metrics(loss_metrics)
+            loss_metrics = self._reduce_training_metrics_for_metrics(
+                loss_metrics)
             self.metric.commit(loss=metric_loss, **loss_metrics)
             (loss / self.grad_accumulation_steps).backward()
 
         self._write_alignment_gradient_trace()
-        self._write_alignment_param_trace("pre_clip")
+        self._write_alignment_param_trace('pre_clip')
 
         # Commit per-dataset metrics
         if overwatch.is_rank_zero() and all(k in output for k in [
@@ -1364,20 +1378,20 @@ class BaseTrainRunner(ABC):
             self._log_gradient_norm_breakdown()
         grad_norm = self.clip_grad_norm()
         clip_coefficient = None
-        capture_clip = os.environ.get("FLUXVLA_PARAM_TRACE") == "1"
+        capture_clip = os.environ.get('FLUXVLA_PARAM_TRACE') == '1'
         if grad_norm is not None:
             # FSDP2 returns a replicated DTensor whose local shard is not the
             # reportable global norm. All ranks must materialize it before
             # logging or deriving diagnostic clip coefficients.
-            if hasattr(grad_norm, "full_tensor"):
+            if hasattr(grad_norm, 'full_tensor'):
                 grad_norm = grad_norm.full_tensor()
             grad_norm_value = torch.as_tensor(
                 grad_norm, device=loss.device, dtype=torch.float32)
             if capture_clip and self.max_grad_norm is not None:
                 clip_coefficient = min(
                     1.0,
-                    float(self.max_grad_norm)
-                    / (float(grad_norm_value.detach().item()) + 1e-6),
+                    float(self.max_grad_norm) /
+                    (float(grad_norm_value.detach().item()) + 1e-6),
                 )
             self.metric.commit(grad_norm=grad_norm_value)
             if clip_coefficient is not None:
@@ -1396,11 +1410,12 @@ class BaseTrainRunner(ABC):
                 raise
         self._update_ema_parameters()
         self.lr_scheduler.step(self)
-        self._write_alignment_param_trace("post_update")
+        self._write_alignment_param_trace('post_update')
         if memory_metrics and torch.cuda.is_available():
             self.metric.commit(
                 max_memory_allocated_gb=torch.as_tensor(
-                    torch.cuda.max_memory_allocated(self.device_id) / (1024**3),
+                    torch.cuda.max_memory_allocated(self.device_id) /
+                    (1024**3),
                     device=loss.device,
                     dtype=torch.float32))
         self.optimizer.zero_grad()
@@ -1414,57 +1429,62 @@ class BaseTrainRunner(ABC):
         return loss
 
     def _maybe_load_pi05_alignment_batch(self, batch: Dict) -> Dict:
-        """Replace an online batch with a frozen model-ready PI0.5 replay batch."""
-        replay_dir = os.environ.get("PI05_ALIGNMENT_REPLAY_DIR")
+        """Replace an online batch with a frozen model-ready PI0.5 batch."""
+        replay_dir = os.environ.get('PI05_ALIGNMENT_REPLAY_DIR')
         if not replay_dir:
             return batch
 
         import gzip
 
         step = int(self.metric.global_step)
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
+        rank = dist.get_rank(
+        ) if dist.is_available() and dist.is_initialized() else 0
         world_size = (
             dist.get_world_size()
-            if dist.is_available() and dist.is_initialized()
-            else 1
-        )
-        state = getattr(self, "_pi05_alignment_replay_state", None)
-        if state is None or state["step"] != step:
+            if dist.is_available() and dist.is_initialized() else 1)
+        state = getattr(self, '_pi05_alignment_replay_state', None)
+        if state is None or state['step'] != step:
             micro_step = 0
         else:
-            micro_step = state["micro_step"] + 1
+            micro_step = state['micro_step'] + 1
         if micro_step >= self.grad_accumulation_steps:
             raise RuntimeError(
-                "PI0.5 alignment replay consumed more micro-batches than the "
-                f"configured gradient accumulation ({self.grad_accumulation_steps}) "
-                f"at optimizer step {step}."
-            )
+                'PI0.5 alignment replay consumed more micro-batches than the '
+                f'configured gradient accumulation '
+                f'({self.grad_accumulation_steps}) '
+                f'at optimizer step {step}.')
         self._pi05_alignment_replay_state = {
-            "step": step,
-            "micro_step": micro_step,
+            'step': step,
+            'micro_step': micro_step,
         }
         # Frozen captures are logical data-parallel streams. Reconstruct the
         # same stream ordering when a smaller physical DP group uses gradient
         # accumulation: rank r consumes r, r + DP, r + 2*DP, ... .
         source_rank = rank + micro_step * world_size
-        path = Path(replay_dir) / f"step_{step:06d}_rank_{source_rank:02d}.pt.gz"
+        path = Path(
+            replay_dir) / f'step_{step:06d}_rank_{source_rank:02d}.pt.gz'
         if not path.is_file():
-            raise FileNotFoundError(f"PI0.5 alignment replay batch not found: {path}")
-        with gzip.open(path, "rb") as stream:
-            artifact = torch.load(stream, map_location="cpu", weights_only=False)
+            raise FileNotFoundError(
+                f'PI0.5 alignment replay batch not found: {path}')
+        with gzip.open(path, 'rb') as stream:
+            artifact = torch.load(
+                stream, map_location='cpu', weights_only=False)
 
         replay = {
-            "images": artifact.get("images"),
-            "img_masks": artifact.get("img_masks"),
-            "lang_tokens": artifact.get("tokens"),
-            "lang_masks": artifact.get("text_masks"),
-            "states": artifact.get("states"),
-            "actions": artifact["actions"],
-            "noise": artifact.get("noise"),
-            "time": artifact.get("time"),
-            "action_masks": artifact.get("action_is_pad"),
+            'images': artifact.get('images'),
+            'img_masks': artifact.get('img_masks'),
+            'lang_tokens': artifact.get('tokens'),
+            'lang_masks': artifact.get('text_masks'),
+            'states': artifact.get('states'),
+            'actions': artifact['actions'],
+            'noise': artifact.get('noise'),
+            'time': artifact.get('time'),
+            'action_masks': artifact.get('action_is_pad'),
         }
-        return {key: value for key, value in replay.items() if value is not None}
+        return {
+            key: value
+            for key, value in replay.items() if value is not None
+        }
 
     def _maybe_capture_pi05_alignment_batch(self, batch: Dict) -> None:
         """Capture a deterministic PI0.5 model-ready batch for backend replay.
@@ -1487,22 +1507,26 @@ class BaseTrainRunner(ABC):
             self._vla_accepts_kwarg('noise')
             and self._vla_accepts_kwarg('time')
             and hasattr(module, 'sample_noise')
-            and hasattr(module, 'sample_time')
-        )
+            and hasattr(module, 'sample_time'))
         if 'noise' not in batch and accepts_flow:
             seed = int(os.environ.get('PI05_ALIGNMENT_FLOW_SEED', '123'))
             generator = torch.Generator(device=batch['actions'].device)
             generator.manual_seed(seed + step)
             actions = batch['actions']
             batch['noise'] = torch.normal(
-                mean=0.0, std=1.0, size=actions.shape, dtype=torch.float32,
-                device=actions.device, generator=generator)
+                mean=0.0,
+                std=1.0,
+                size=actions.shape,
+                dtype=torch.float32,
+                device=actions.device,
+                generator=generator)
             # Isolate the CUDA stream used by the reference beta sampler, so
             # capturing does not perturb dropout or any later model RNG.
             previous_state = torch.cuda.get_rng_state(self.device_id)
             try:
                 torch.cuda.manual_seed(seed + step + 1)
-                batch['time'] = module.sample_time(actions.shape[0], actions.device)
+                batch['time'] = module.sample_time(actions.shape[0],
+                                                   actions.device)
             finally:
                 torch.cuda.set_rng_state(previous_state, self.device_id)
 
@@ -1518,43 +1542,53 @@ class BaseTrainRunner(ABC):
         rank = int(os.environ.get('RANK', '0'))
         path = Path(output_dir) / f'step_{step:06d}_rank_{rank:02d}.pt.gz'
         artifact = {
-            'images': cpu(batch.get('images')),
-            'img_masks': cpu(batch.get('img_masks')),
-            'tokens': cpu(batch.get('lang_tokens', batch.get('tokens'))),
-            'text_masks': cpu(batch.get('lang_masks', batch.get('text_masks'))),
-            'states': cpu(batch.get('states')),
-            'actions': cpu(batch['actions']),
-            'noise': cpu(batch.get('noise')),
-            'time': cpu(batch.get('time')),
-            'action_is_pad': cpu(batch.get('action_masks', batch.get('action_is_pad'))),
+            'images':
+            cpu(batch.get('images')),
+            'img_masks':
+            cpu(batch.get('img_masks')),
+            'tokens':
+            cpu(batch.get('lang_tokens', batch.get('tokens'))),
+            'text_masks':
+            cpu(batch.get('lang_masks', batch.get('text_masks'))),
+            'states':
+            cpu(batch.get('states')),
+            'actions':
+            cpu(batch['actions']),
+            'noise':
+            cpu(batch.get('noise')),
+            'time':
+            cpu(batch.get('time')),
+            'action_is_pad':
+            cpu(batch.get('action_masks', batch.get('action_is_pad'))),
         }
         with gzip.open(path, 'wb', compresslevel=1) as stream:
             torch.save(artifact, stream)
 
-    def _reduce_training_loss_for_metrics(self, loss: torch.Tensor) -> torch.Tensor:
-        """Return the loss value used for logging; backends may aggregate it."""
+    def _reduce_training_loss_for_metrics(self,
+                                          loss: torch.Tensor) -> torch.Tensor:
+        """Return the loss value for logging; backends may aggregate it."""
         return loss
 
     def _write_batch_identity_trace(self, batch: Dict) -> None:
         """Optionally persist stable sample identities for replay debugging."""
-        if os.environ.get("FLUXVLA_BATCH_TRACE") != "1":
+        if os.environ.get('FLUXVLA_BATCH_TRACE') != '1':
             return
         trace_dir = Path(
-            os.environ.get("FLUXVLA_BATCH_TRACE_DIR", "work_dirs"))
+            os.environ.get('FLUXVLA_BATCH_TRACE_DIR', 'work_dirs'))
         trace_dir.mkdir(parents=True, exist_ok=True)
         identity = {}
-        for key in ("sample_index", "index", "episode_index", "current_index", "frame_index",
-                    "timestamp"):
+        for key in ('sample_index', 'index', 'episode_index', 'current_index',
+                    'frame_index', 'timestamp'):
             value = batch.get(key)
             if isinstance(value, torch.Tensor):
                 identity[key] = value.detach().cpu().tolist()
             elif value is not None:
                 identity[key] = value
-        row = {"step": int(self.metric.global_step + 1), "identity": identity}
+        row = {'step': int(self.metric.global_step + 1), 'identity': identity}
         rank = overwatch.rank()
-        path = trace_dir / f"batch_rank{rank}.jsonl"
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(row, ensure_ascii=True) + "\n")
+        path = trace_dir / f'batch_rank{rank}.jsonl'
+        with path.open('a', encoding='utf-8') as handle:
+            handle.write(json.dumps(row, ensure_ascii=True) + '\n')
 
     def _write_alignment_param_trace(self, phase: str) -> None:
         """Optionally record selected parameter/optimizer state summaries.
@@ -1563,48 +1597,53 @@ class BaseTrainRunner(ABC):
         a device synchronization.  It is intended for fixed-replay first-bad
         analysis at the optimizer boundary, not for performance measurement.
         """
-        if os.environ.get("FLUXVLA_PARAM_TRACE") != "1":
+        if os.environ.get('FLUXVLA_PARAM_TRACE') != '1':
             return
         pattern = os.environ.get(
-            "FLUXVLA_PARAM_TRACE_PATTERN",
-            r"(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)"
-            r"(\.layer)?\.(weight|bias)$",
+            'FLUXVLA_PARAM_TRACE_PATTERN',
+            r'(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj)'
+            r'(\.layer)?\.(weight|bias)$',
         )
         matcher = re.compile(pattern)
-        root = Path(os.environ.get("FLUXVLA_PARAM_TRACE_DIR", "work_dirs/param_trace"))
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        path = root / f"rank{rank}.jsonl"
+        root = Path(
+            os.environ.get('FLUXVLA_PARAM_TRACE_DIR', 'work_dirs/param_trace'))
+        rank = dist.get_rank(
+        ) if dist.is_available() and dist.is_initialized() else 0
+        path = root / f'rank{rank}.jsonl'
         path.parent.mkdir(parents=True, exist_ok=True)
         step = int(self.metric.global_step) + 1
-        target_step = int(os.environ.get("FLUXVLA_PARAM_TRACE_STEP", "0"))
+        target_step = int(os.environ.get('FLUXVLA_PARAM_TRACE_STEP', '0'))
         if target_step and step != target_step:
             return
-        snapshots = getattr(self, "_alignment_param_snapshots", None)
+        snapshots = getattr(self, '_alignment_param_snapshots', None)
         if snapshots is None:
             snapshots = self._alignment_param_snapshots = {}
         rows = []
-        tensor_trace_root = os.environ.get("FLUXVLA_OPTIMIZER_TENSOR_TRACE_DIR")
-        materialize_full = os.environ.get("FLUXVLA_PARAM_TRACE_FULL") == "1"
-        summary_only = os.environ.get("FLUXVLA_PARAM_SUMMARY_ONLY") == "1"
+        tensor_trace_root = os.environ.get(
+            'FLUXVLA_OPTIMIZER_TENSOR_TRACE_DIR')
+        materialize_full = os.environ.get('FLUXVLA_PARAM_TRACE_FULL') == '1'
+        summary_only = os.environ.get('FLUXVLA_PARAM_SUMMARY_ONLY') == '1'
 
         def trace_value(value):
-            """Materialize selected DTensors only for explicit parity tracing."""
+            """Materialize selected DTensors only for parity tracing."""
             if value is None:
                 return None
-            if materialize_full and hasattr(value, "full_tensor"):
+            if materialize_full and hasattr(value, 'full_tensor'):
                 value = value.full_tensor()
-            elif hasattr(value, "to_local"):
+            elif hasattr(value, 'to_local'):
                 # Avoid perturbing clipping with diagnostic collectives. Paired
                 # FSDP runs compare the same rank-local shard.
                 value = value.to_local()
             return value.detach().float()
 
-        tensor_snapshots = getattr(self, "_alignment_optimizer_tensor_snapshots", None)
+        tensor_snapshots = getattr(self,
+                                   '_alignment_optimizer_tensor_snapshots',
+                                   None)
         if tensor_snapshots is None:
             tensor_snapshots = self._alignment_optimizer_tensor_snapshots = {}
         tensor_rows = []
         for name, parameter in self.vla.named_parameters():
-            canonical = name.removeprefix("module.").replace(".layer.", ".")
+            canonical = name.removeprefix('module.').replace('.layer.', '.')
             if not matcher.search(canonical):
                 continue
             grad = parameter.grad
@@ -1612,24 +1651,39 @@ class BaseTrainRunner(ABC):
             parameter_trace = trace_value(parameter)
             grad_trace = trace_value(grad)
             row = {
-                "step": step,
-                "phase": phase,
-                "name": canonical,
-                "shape": list(parameter.shape),
-                "dtype": str(parameter.dtype),
-                "parameter_norm": float(parameter_trace.norm().item()),
-                "parameter_sum": float(parameter_trace.sum().item()),
-                "parameter_abs_max": float(parameter_trace.abs().max().item()),
-                "grad_norm": None if grad_trace is None else float(grad_trace.norm().item()),
-                "grad_mean": None if grad_trace is None else float(grad_trace.mean().item()),
-                "grad_sum": None if grad_trace is None else float(grad_trace.sum().item()),
-                "grad_abs_max": None if grad_trace is None else float(grad_trace.abs().max().item()),
-                "tp_sharded": bool(
-                    getattr(parameter, "tensor_model_parallel", False)
-                    or getattr(parameter, "_tp_sharded", False)
-                ),
+                'step':
+                step,
+                'phase':
+                phase,
+                'name':
+                canonical,
+                'shape':
+                list(parameter.shape),
+                'dtype':
+                str(parameter.dtype),
+                'parameter_norm':
+                float(parameter_trace.norm().item()),
+                'parameter_sum':
+                float(parameter_trace.sum().item()),
+                'parameter_abs_max':
+                float(parameter_trace.abs().max().item()),
+                'grad_norm':
+                None
+                if grad_trace is None else float(grad_trace.norm().item()),
+                'grad_mean':
+                None
+                if grad_trace is None else float(grad_trace.mean().item()),
+                'grad_sum':
+                None if grad_trace is None else float(grad_trace.sum().item()),
+                'grad_abs_max':
+                None if grad_trace is None else float(
+                    grad_trace.abs().max().item()),
+                'tp_sharded':
+                bool(
+                    getattr(parameter, 'tensor_model_parallel', False)
+                    or getattr(parameter, '_tp_sharded', False)),
             }
-            if phase == "pre_clip":
+            if phase == 'pre_clip':
                 # Keep the selected tensors on-device only for the interval
                 # between pre-clip and post-update. This is diagnostic-only
                 # and avoids changing the normal training memory footprint.
@@ -1637,87 +1691,89 @@ class BaseTrainRunner(ABC):
                     snapshots[canonical] = parameter_trace.clone()
                 if tensor_trace_root:
                     tensor_snapshots[canonical] = {
-                        "parameter_before": parameter_trace.cpu().clone(),
-                        "raw_grad": None
+                        'parameter_before':
+                        parameter_trace.cpu().clone(),
+                        'raw_grad':
+                        None
                         if grad_trace is None else grad_trace.cpu().clone(),
                     }
-                    for state_name in ("exp_avg", "exp_avg_sq"):
+                    for state_name in ('exp_avg', 'exp_avg_sq'):
                         value = state.get(state_name)
                         if isinstance(value, torch.Tensor):
-                            tensor_snapshots[canonical][f"{state_name}_before"] = (
-                                trace_value(value).cpu().clone()
-                            )
-            elif phase == "post_update":
+                            tensor_snapshots[canonical][
+                                f'{state_name}_before'] = (
+                                    trace_value(value).cpu().clone())
+            elif phase == 'post_update':
                 previous = snapshots.pop(canonical, None)
                 parameter_bf16 = parameter_trace.to(torch.bfloat16).float()
                 parameter_bf16_bits = (
-                    parameter_bf16.to(torch.bfloat16)
-                    .contiguous()
-                    .view(torch.int16)
-                    .to(torch.int64)
-                    .bitwise_and(0xFFFF)
-                )
+                    parameter_bf16.to(torch.bfloat16).contiguous().view(
+                        torch.int16).to(torch.int64).bitwise_and(0xFFFF))
                 row.update({
-                    "parameter_bf16_norm": float(parameter_bf16.norm().item()),
-                    "parameter_bf16_sum": float(parameter_bf16.sum().item()),
-                    "parameter_bf16_abs_max": float(
-                        parameter_bf16.abs().max().item()),
-                    "parameter_bf16_bits_sum": int(
-                        parameter_bf16_bits.sum().item()),
+                    'parameter_bf16_norm':
+                    float(parameter_bf16.norm().item()),
+                    'parameter_bf16_sum':
+                    float(parameter_bf16.sum().item()),
+                    'parameter_bf16_abs_max':
+                    float(parameter_bf16.abs().max().item()),
+                    'parameter_bf16_bits_sum':
+                    int(parameter_bf16_bits.sum().item()),
                 })
-                row["parameter_delta_norm"] = (
-                    None if previous is None else float(
-                        (parameter_trace - previous).norm().item())
-                )
+                row['parameter_delta_norm'] = (None if previous is None else
+                                               float((parameter_trace -
+                                                      previous).norm().item()))
                 if tensor_trace_root:
                     tensor_snapshot = tensor_snapshots.pop(canonical, {})
-                    tensor_snapshot.update(
-                        {
-                            "name": canonical,
-                            "model_shape": list(parameter.shape),
-                            "master_shape": list(parameter.shape),
-                            "post_clip_grad": None
-                            if grad is None
-                            else grad_trace.cpu().clone(),
-                            "parameter_after": parameter_trace.cpu().clone(),
-                            "exp_avg": None,
-                            "exp_avg_sq": None,
-                        }
-                    )
-                    for state_name in ("exp_avg", "exp_avg_sq"):
+                    tensor_snapshot.update({
+                        'name':
+                        canonical,
+                        'model_shape':
+                        list(parameter.shape),
+                        'master_shape':
+                        list(parameter.shape),
+                        'post_clip_grad':
+                        None if grad is None else grad_trace.cpu().clone(),
+                        'parameter_after':
+                        parameter_trace.cpu().clone(),
+                        'exp_avg':
+                        None,
+                        'exp_avg_sq':
+                        None,
+                    })
+                    for state_name in ('exp_avg', 'exp_avg_sq'):
                         value = state.get(state_name)
                         if isinstance(value, torch.Tensor):
-                            tensor_snapshot[state_name] = trace_value(value).cpu().clone()
+                            tensor_snapshot[state_name] = trace_value(
+                                value).cpu().clone()
                     tensor_rows.append(tensor_snapshot)
-            row["clip_coefficient"] = getattr(
-                self, "_alignment_clip_coefficient", None)
-            for state_name in ("exp_avg", "exp_avg_sq"):
+            row['clip_coefficient'] = getattr(self,
+                                              '_alignment_clip_coefficient',
+                                              None)
+            for state_name in ('exp_avg', 'exp_avg_sq'):
                 value = state.get(state_name)
                 state_trace = trace_value(value)
-                row[f"{state_name}_norm"] = (
-                    None if state_trace is None else float(state_trace.norm().item())
-                )
-                row[f"{state_name}_sum"] = (
-                    None if state_trace is None else float(state_trace.sum().item())
-                )
-                row[f"{state_name}_abs_max"] = (
-                    None if state_trace is None else float(state_trace.abs().max().item())
-                )
+                row[f'{state_name}_norm'] = (None if state_trace is None else
+                                             float(state_trace.norm().item()))
+                row[f'{state_name}_sum'] = (None if state_trace is None else
+                                            float(state_trace.sum().item()))
+                row[f'{state_name}_abs_max'] = (
+                    None if state_trace is None else float(
+                        state_trace.abs().max().item()))
             rows.append(row)
-        with path.open("a", encoding="utf-8") as stream:
+        with path.open('a', encoding='utf-8') as stream:
             for row in rows:
-                stream.write(json.dumps(row, sort_keys=True) + "\n")
-        if phase == "post_update" and tensor_trace_root:
+                stream.write(json.dumps(row, sort_keys=True) + '\n')
+        if phase == 'post_update' and tensor_trace_root:
             tensor_root = Path(tensor_trace_root)
             tensor_root.mkdir(parents=True, exist_ok=True)
             torch.save(
                 {
-                    "backend": "fsdp",
-                    "step": step,
-                    "rank": rank,
-                    "parameters": tensor_rows,
+                    'backend': 'fsdp',
+                    'step': step,
+                    'rank': rank,
+                    'parameters': tensor_rows,
                 },
-                tensor_root / f"fsdp_step_{step:06d}_rank_{rank:02d}.pt",
+                tensor_root / f'fsdp_step_{step:06d}_rank_{rank:02d}.pt',
             )
 
     def _write_alignment_gradient_trace(self) -> None:
@@ -1728,41 +1784,49 @@ class BaseTrainRunner(ABC):
         cannot be hidden by a later optimizer operation.  It is opt-in because
         iterating all parameters is synchronization-heavy.
         """
-        if os.environ.get("FLUXVLA_GRAD_TRACE") != "1":
+        if os.environ.get('FLUXVLA_GRAD_TRACE') != '1':
             return
         pattern = os.environ.get(
-            "FLUXVLA_GRAD_TRACE_PATTERN",
-            r"(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|"
-            r"action_out_proj|action_in_proj|time_mlp|cond_proj|final_norm|norm)"
-            r"(\.layer)?\.(weight|bias|dense\.weight|dense\.bias)$",
+            'FLUXVLA_GRAD_TRACE_PATTERN',
+            r'(q_proj|k_proj|v_proj|o_proj|gate_proj|up_proj|down_proj|'
+            r'action_out_proj|action_in_proj|time_mlp|cond_proj|'
+            r'final_norm|norm)'
+            r'(\.layer)?\.(weight|bias|dense\.weight|dense\.bias)$',
         )
         matcher = re.compile(pattern)
-        root = Path(os.environ.get("FLUXVLA_GRAD_TRACE_DIR", "work_dirs/grad_trace"))
-        rank = dist.get_rank() if dist.is_available() and dist.is_initialized() else 0
-        path = root / f"rank{rank}.jsonl"
+        root = Path(
+            os.environ.get('FLUXVLA_GRAD_TRACE_DIR', 'work_dirs/grad_trace'))
+        rank = dist.get_rank(
+        ) if dist.is_available() and dist.is_initialized() else 0
+        path = root / f'rank{rank}.jsonl'
         path.parent.mkdir(parents=True, exist_ok=True)
         step = int(self.metric.global_step) + 1
-        with path.open("a", encoding="utf-8") as stream:
+        with path.open('a', encoding='utf-8') as stream:
             for name, parameter in self.vla.named_parameters():
-                canonical = name.removeprefix("module.").replace(".layer.", ".")
+                canonical = name.removeprefix('module.').replace(
+                    '.layer.', '.')
                 if not matcher.search(canonical):
                     continue
                 grad = parameter.grad
                 if grad is None:
-                    row = {"step": step, "name": canonical, "shape": list(parameter.shape),
-                           "grad": None}
+                    row = {
+                        'step': step,
+                        'name': canonical,
+                        'shape': list(parameter.shape),
+                        'grad': None
+                    }
                 else:
                     value = grad.detach().float()
                     row = {
-                        "step": step,
-                        "name": canonical,
-                        "shape": list(parameter.shape),
-                        "grad_norm": float(value.norm().item()),
-                        "grad_mean": float(value.mean().item()),
-                        "grad_abs_max": float(value.abs().max().item()),
-                        "grad_sum": float(value.sum().item()),
+                        'step': step,
+                        'name': canonical,
+                        'shape': list(parameter.shape),
+                        'grad_norm': float(value.norm().item()),
+                        'grad_mean': float(value.mean().item()),
+                        'grad_abs_max': float(value.abs().max().item()),
+                        'grad_sum': float(value.sum().item()),
                     }
-                stream.write(json.dumps(row, sort_keys=True) + "\n")
+                stream.write(json.dumps(row, sort_keys=True) + '\n')
 
     def _log_gradient_norm_breakdown(self, top_k: int = 20) -> None:
         """Log the largest per-parameter gradient norms for alignment runs."""
@@ -1771,7 +1835,8 @@ class BaseTrainRunner(ABC):
         norms = []
         for name, parameter in self.vla.named_parameters():
             if parameter.grad is not None:
-                norms.append((name, parameter.grad.detach().float().norm().item()))
+                norms.append(
+                    (name, parameter.grad.detach().float().norm().item()))
         norms.sort(key=lambda item: item[1], reverse=True)
         overwatch.info('Gradient norm breakdown (top %d): %s', top_k,
                        norms[:top_k])
@@ -1797,47 +1862,56 @@ class BaseTrainRunner(ABC):
         expert-LR regexes can be checked without materializing optimizer
         tensors or changing the training path.
         """
-        if os.environ.get("FLUXVLA_OPTIMIZER_GROUP_TRACE") != "1":
+        if os.environ.get('FLUXVLA_OPTIMIZER_GROUP_TRACE') != '1':
             return
-        if dist.is_available() and dist.is_initialized() and dist.get_rank() != 0:
+        if dist.is_available() and dist.is_initialized(
+        ) and dist.get_rank() != 0:
             return
         root = Path(
             os.environ.get(
-                "FLUXVLA_OPTIMIZER_GROUP_TRACE_DIR",
-                "work_dirs/optimizer_trace",
+                'FLUXVLA_OPTIMIZER_GROUP_TRACE_DIR',
+                'work_dirs/optimizer_trace',
             ))
         root.mkdir(parents=True, exist_ok=True)
         names_by_id = {
-            id(parameter): name.removeprefix("module.").replace(
-                "._fsdp_wrapped_module.", ".")
+            id(parameter):
+            name.removeprefix('module.').replace('._fsdp_wrapped_module.', '.')
             for name, parameter in self.vla.named_parameters()
         }
         groups = []
         for index, group in enumerate(self.optimizer.param_groups):
             names = [
-                names_by_id.get(id(parameter), "<unnamed>")
-                for parameter in group["params"]
+                names_by_id.get(id(parameter), '<unnamed>')
+                for parameter in group['params']
             ]
-            expert_names = [name for name in names if ".mlp.experts." in name]
+            expert_names = [name for name in names if '.mlp.experts.' in name]
             groups.append({
-                "group": index,
-                "lr": float(group["lr"]),
-                "weight_decay": float(group.get("weight_decay", 0.0)),
-                "betas": [float(value) for value in group.get("betas", ())],
-                "eps": float(group.get("eps", 0.0)),
-                "parameter_count": len(names),
-                "expert_parameter_count": len(expert_names),
-                "parameter_names": names,
+                'group':
+                index,
+                'lr':
+                float(group['lr']),
+                'weight_decay':
+                float(group.get('weight_decay', 0.0)),
+                'betas': [float(value) for value in group.get('betas', ())],
+                'eps':
+                float(group.get('eps', 0.0)),
+                'parameter_count':
+                len(names),
+                'expert_parameter_count':
+                len(expert_names),
+                'parameter_names':
+                names,
             })
         payload = {
-            "backend": "fsdp",
-            "world_size": (
-                dist.get_world_size()
-                if dist.is_available() and dist.is_initialized() else 1),
-            "groups": groups,
+            'backend':
+            'fsdp',
+            'world_size': (dist.get_world_size() if dist.is_available()
+                           and dist.is_initialized() else 1),
+            'groups':
+            groups,
         }
-        (root / "optimizer_groups.json").write_text(
-            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        (root / 'optimizer_groups.json').write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding='utf-8')
 
     def _save_and_sync(self, loss_value: float = None):
         """Save checkpoint and synchronize.

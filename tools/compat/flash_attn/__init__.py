@@ -11,12 +11,16 @@ def _eager(q, k, v, causal=False, **kwargs):
     if k.shape[-2] != q.shape[-2]:
         k = k.repeat_interleave(q.shape[-2] // k.shape[-2], dim=-2)
         v = v.repeat_interleave(q.shape[-2] // v.shape[-2], dim=-2)
-    scores = torch.matmul(q.transpose(0, 1), k.transpose(0, 1).transpose(-2, -1))
-    scores = scores * (q.shape[-1] ** -0.5)
+    scores = torch.matmul(
+        q.transpose(0, 1),
+        k.transpose(0, 1).transpose(-2, -1))
+    scores = scores * (q.shape[-1]**-0.5)
     if causal:
-        mask = torch.ones(scores.shape[-2:], device=scores.device, dtype=torch.bool).tril()
+        mask = torch.ones(
+            scores.shape[-2:], device=scores.device, dtype=torch.bool).tril()
         scores = scores.masked_fill(~mask, torch.finfo(scores.dtype).min)
-    return torch.matmul(scores.softmax(dim=-1), v.transpose(0, 1)).transpose(0, 1)
+    return torch.matmul(scores.softmax(dim=-1),
+                        v.transpose(0, 1)).transpose(0, 1)
 
 
 def flash_attn_func(q, k, v, causal=False, **kwargs):

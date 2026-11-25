@@ -20,12 +20,13 @@ from .aloha_rtc_inference_runner import \
 from .base_eval_runner import BaseEvalRunner  # noqa: F401, F403
 from .base_train_runner import BaseTrainRunner  # noqa: F401, F403
 from .ddp_train_runner import DDPTrainRunner  # noqa: F401, F403
-from .megatron_train_runner import MegatronNativeTrainRunner  # noqa: F401, F403
 from .fluxbisim_aloha_inference_runner import \
     AlohaInferenceRunnerSim  # noqa: F401, F403
 from .fluxbisim_base_inference_runner import \
     BaseInferenceRunnerSim  # noqa: F401, F403
 from .franka_inference_runner import FrankaInferenceRunner  # noqa: F401, F403
+from .megatron_train_runner import \
+    MegatronNativeTrainRunner  # noqa: F401, F403
 from .serving.serving_runner import FluxVLAServingRunner  # noqa: F401, F403
 from .textvqa_eval_runner import TextVQAEvalRunner  # noqa: F401, F403
 

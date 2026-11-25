@@ -96,7 +96,7 @@ Only requested current/future rows are decoded online; no replay is needed.
 `LINGBOT_VIDEO_BACKEND` / `--lingbot-video-backend` selects the explicit video
 backend (default `torchcodec`). `LINGBOT_RESIZE_DTYPE` /
 `--lingbot-resize-dtype` selects `float32` (default) or `uint8` resizing.
-The current embedded-image reference uses float32 images in [0,1] before
+The current embedded-image reference uses float32 images in \[0,1\] before
 resize. For references that resize uint8 video frames, explicitly choose
 `uint8`. Different backends/dtypes are not assumed numerically equivalent.
 New 10/100-step optimizer and full-production certification remains separate

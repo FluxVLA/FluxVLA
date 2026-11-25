@@ -20,23 +20,23 @@ import triton.language as tl
 
 
 class ActivationType(str, Enum):
-    GELU = "gelu"
-    GELU_NEW = "gelu_new"  # gelu with tanh approximation
-    SILU = "silu"
+    GELU = 'gelu'
+    GELU_NEW = 'gelu_new'  # gelu with tanh approximation
+    SILU = 'silu'
 
 
 @triton.jit
 def activation_fwd(x: tl.tensor, ACTIVATION: tl.constexpr):
     orig_dtype = x.dtype
     x = x.to(tl.float32)
-    if ACTIVATION == "gelu":
+    if ACTIVATION == 'gelu':
         y = gelu(x)
-    elif ACTIVATION == "gelu_new":
+    elif ACTIVATION == 'gelu_new':
         y = gelu_new(x)
-    elif ACTIVATION == "silu":
+    elif ACTIVATION == 'silu':
         y = silu(x)
     else:
-        tl.static_assert(False, f"Unsupported activation of {ACTIVATION}")
+        tl.static_assert(False, f'Unsupported activation of {ACTIVATION}')
     return y.to(orig_dtype)
 
 
@@ -45,20 +45,21 @@ def activation_bwd(dy: tl.tensor, x: tl.tensor, ACTIVATION: tl.constexpr):
     orig_dtype = dy.dtype
     x = x.to(tl.float32)
     dy = dy.to(tl.float32)
-    if ACTIVATION == "gelu":
+    if ACTIVATION == 'gelu':
         dx = dy * gelu_grad(x)
-    elif ACTIVATION == "gelu_new":
+    elif ACTIVATION == 'gelu_new':
         dx = dy * gelu_new_grad(x)
-    elif ACTIVATION == "silu":
+    elif ACTIVATION == 'silu':
         dx = dy * silu_grad(x)
     else:
-        tl.static_assert(False, f"Unsupported activation of {ACTIVATION}")
+        tl.static_assert(False, f'Unsupported activation of {ACTIVATION}')
     return dx.to(orig_dtype)
 
 
 _sqrt2pi: triton.language.constexpr = math.sqrt(2.0 / math.pi)
 _sqrt1_2: triton.language.constexpr = math.sqrt(1.0 / 2)
-_gaussian_pdf_normalization: triton.language.constexpr = 1.0 / math.sqrt(2 * math.pi)
+_gaussian_pdf_normalization: triton.language.constexpr = 1.0 / math.sqrt(
+    2 * math.pi)
 
 
 @triton.jit
@@ -98,7 +99,9 @@ def gelu_new_grad(x):
     # https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/model/fused_bias_gelu.py#L30
     x = x.to(tl.float32)
     tanh_out = tanh(0.79788456 * x * (1 + 0.044715 * x * x))
-    return 0.5 * x * ((1 - tanh_out * tanh_out) * (0.79788456 + 0.1070322243 * x * x)) + 0.5 * (1 + tanh_out)
+    return 0.5 * x * (
+        (1 - tanh_out * tanh_out) *
+        (0.79788456 + 0.1070322243 * x * x)) + 0.5 * (1 + tanh_out)
 
 
 @triton.jit

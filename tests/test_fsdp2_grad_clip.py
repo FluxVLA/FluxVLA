@@ -22,7 +22,7 @@ def test_fsdp2_clip_uses_global_p_norm_without_distributed_runtime():
 def test_fsdp2_grad_norm_input_trace_is_step_gated_and_rank_local():
     source = inspect.getsource(FSDPTrainRunner._write_grad_norm_input_trace)
 
-    assert "FLUXVLA_GRAD_NORM_INPUT_TRACE_STEP" in source
+    assert 'FLUXVLA_GRAD_NORM_INPUT_TRACE_STEP' in source
     assert 'hasattr(local_grad, "to_local")' in source
     assert '"grad_norms"' in source
     assert '"grad_placements"' in source
@@ -32,7 +32,7 @@ def test_fsdp2_grad_norm_input_trace_is_step_gated_and_rank_local():
 def test_fsdp2_clip_trace_captures_dtensor_norm_intermediates():
     source = inspect.getsource(FSDPTrainRunner.clip_grad_norm)
 
-    assert "per_parameter_norm_metadata" in source
-    assert "stacked_norms_metadata" in source
-    assert "computed_total_norm_metadata" in source
-    assert "clip_grad_module._get_total_norm = traced_get_total_norm" in source
+    assert 'per_parameter_norm_metadata' in source
+    assert 'stacked_norms_metadata' in source
+    assert 'computed_total_norm_metadata' in source
+    assert 'clip_grad_module._get_total_norm = traced_get_total_norm' in source

@@ -5,12 +5,11 @@ from unittest.mock import Mock, patch
 
 import torch
 
-from fluxvla.engines.runners.megatron_train_runner import MegatronNativeTrainRunner
-from fluxvla.mcore.diagnostics import (
-    _fsdp_gradient_divide_factors,
-    _ordered_grad_reduce_entries,
-    _tp_aware_fsdp_total_norm,
-)
+from fluxvla.engines.runners.megatron_train_runner import \
+    MegatronNativeTrainRunner
+from fluxvla.mcore.diagnostics import (_fsdp_gradient_divide_factors,
+                                       _ordered_grad_reduce_entries,
+                                       _tp_aware_fsdp_total_norm)
 
 
 def test_fsdp_gradient_divide_factors_match_dp_collective_contract():
@@ -25,16 +24,20 @@ def test_grad_reduce_entries_include_ordered_zero_segments():
     after = torch.nn.Parameter(torch.zeros(5))
 
     entries = _ordered_grad_reduce_entries(
-        [("after", after), ("before", before)],
-        grad_order=lambda name: {"before": (0,), "after": (2,)}[name],
-        zero_segments=[((1,), 7)],
+        [('after', after), ('before', before)],
+        grad_order=lambda name: {
+            'before': (0, ),
+            'after': (2, )
+        }[name],
+        zero_segments=[((1, ), 7)],
     )
 
-    assert [(name, parameter, numel) for name, parameter, numel in entries] == [
-        ("before", before, 6),
-        ("__zero_reduce_segment_0", None, 7),
-        ("after", after, 5),
-    ]
+    assert [(name, parameter, numel)
+            for name, parameter, numel in entries] == [
+                ('before', before, 6),
+                ('__zero_reduce_segment_0', None, 7),
+                ('after', after, 5),
+            ]
     assert sum(numel for _, _, numel in entries) == 18
 
 
@@ -44,12 +47,12 @@ def test_grad_reduce_entries_skip_non_allreduce_parameters():
     excluded.allreduce = False
 
     entries = _ordered_grad_reduce_entries(
-        [("excluded", excluded), ("included", included)],
-        grad_order=lambda name: (name,),
+        [('excluded', excluded), ('included', included)],
+        grad_order=lambda name: (name, ),
         zero_segments=[],
     )
 
-    assert entries == [("included", included, 2)]
+    assert entries == [('included', included, 2)]
 
 
 def test_tp_aware_fsdp_norm_gathers_shards_and_counts_replicas_once():
@@ -68,16 +71,16 @@ def test_tp_aware_fsdp_norm_gathers_shards_and_counts_replicas_once():
 
     tp_group = object()
     with (
-        patch(
-            "megatron.core.parallel_state.get_tensor_model_parallel_group",
-            return_value=tp_group,
-        ),
-        patch("torch.distributed.get_world_size", return_value=2),
-        patch("torch.distributed.all_gather", side_effect=all_gather),
+            patch(
+                'megatron.core.parallel_state.get_tensor_model_parallel_group',
+                return_value=tp_group,
+            ),
+            patch('torch.distributed.get_world_size', return_value=2),
+            patch('torch.distributed.all_gather', side_effect=all_gather),
     ):
-        total_norm = _tp_aware_fsdp_total_norm(
-            [("replicated", replicated), ("zero", None), ("sharded", sharded)]
-        )
+        total_norm = _tp_aware_fsdp_total_norm([('replicated', replicated),
+                                                ('zero', None),
+                                                ('sharded', sharded)])
 
     torch.testing.assert_close(total_norm, torch.tensor(13.0))
 
@@ -95,14 +98,14 @@ def test_tp_grad_norm_counts_replicas_once_and_all_shards():
     runtime.tensor_model_parallel_group.return_value = object()
     runner = SimpleNamespace(
         max_grad_norm=2.5,
-        device_id=torch.device("cpu"),
+        device_id=torch.device('cpu'),
         vla=model,
         megatron_runtime=runtime,
     )
 
     with (
-        patch("torch.distributed.get_rank", return_value=0),
-        patch("torch.distributed.all_reduce"),
+            patch('torch.distributed.get_rank', return_value=0),
+            patch('torch.distributed.all_reduce'),
     ):
         total_norm = MegatronNativeTrainRunner.clip_grad_norm(runner)
 

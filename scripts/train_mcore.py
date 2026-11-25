@@ -7,16 +7,14 @@ backend.
 """
 
 from __future__ import annotations
-
 import os
 
 from mmengine import Config
 
 from scripts.train import parse_args, train
 
-
-if __name__ == "__main__":
-    os.environ.setdefault("FLUXVLA_BACKEND", "mcore")
+if __name__ == '__main__':
+    os.environ.setdefault('FLUXVLA_BACKEND', 'mcore')
     args, _ = parse_args()
     cfg = Config.fromfile(args.config)
     if args.cfg_options is not None:

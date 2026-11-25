@@ -114,23 +114,26 @@ def decode_video_frames_torchvision(
             import av
         except ImportError as exc:
             raise RuntimeError(
-                'torchvision.io.VideoReader is unavailable and PyAV is not installed'
-            ) from exc
+                'torchvision.io.VideoReader is unavailable and PyAV is not '
+                'installed') from exc
         container = av.open(video_path)
         stream = container.streams.video[0]
         stream.thread_type = 'AUTO'
         requested = [float(ts) for ts in timestamps]
         decoded = []
         for frame in container.decode(stream):
-            ts = float(frame.pts * frame.time_base) if frame.pts is not None else None
+            ts = float(frame.pts *
+                       frame.time_base) if frame.pts is not None else None
             if ts is None:
                 continue
             decoded.append((ts, frame))
         if not decoded:
-            raise RuntimeError(f'Could not decode {len(requested)} frames from {video_path}')
+            raise RuntimeError(
+                f'Could not decode {len(requested)} frames from {video_path}')
         return torch.stack([
-            torch.from_numpy(min(decoded, key=lambda item: abs(item[0] - ts))[1].to_ndarray(format='rgb24')).permute(2, 0, 1)
-            for ts in requested
+            torch.from_numpy(
+                min(decoded, key=lambda item: abs(item[0] - ts))[1].to_ndarray(
+                    format='rgb24')).permute(2, 0, 1) for ts in requested
         ])
 
     def _load_candidates(

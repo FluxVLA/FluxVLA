@@ -4,7 +4,8 @@ These modules run only on the first pipeline-parallel stage (pre_process=True).
 They are NOT tensor-parallel because:
   - SigLIP (vision encoder) is replicated across TP ranks — it is small and
     only runs once per forward pass.
-  - The action/state MLP layers are tiny (1024-dim) and their cost is negligible.
+  - The action/state MLP layers are tiny (1024-dim) and their cost is
+    negligible.
   - Their outputs (full hidden states) feed into the TP-sharded transformer
     layers, which internally split by heads — no TP coordination needed here.
 
@@ -18,7 +19,6 @@ import math
 import os
 from contextlib import ExitStack, nullcontext
 from pathlib import Path
-import sys
 from typing import List, Optional, Tuple
 
 import torch
@@ -31,25 +31,25 @@ from fluxvla.models.vision_alignment_trace import trace_siglip_layers
 
 
 def _profile_range(name: str):
-    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
-    if os.environ.get("PI05_PROFILE_MARKERS") == "1" and rank == 0:
+    rank = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', '0')))
+    if os.environ.get('PI05_PROFILE_MARKERS') == '1' and rank == 0:
         return torch.profiler.record_function(name)
     return nullcontext()
 
 
 def _trace_vision_backward(name: str, tensor: Tensor) -> None:
     """Capture a vision activation and its gradient for alignment diagnosis."""
-    trace_dir = os.environ.get("PI05_VISION_BACKWARD_TRACE_DIR")
-    rank = int(os.environ.get("RANK", os.environ.get("LOCAL_RANK", "0")))
+    trace_dir = os.environ.get('PI05_VISION_BACKWARD_TRACE_DIR')
+    rank = int(os.environ.get('RANK', os.environ.get('LOCAL_RANK', '0')))
     if not trace_dir or rank != 0 or not tensor.requires_grad:
         return
 
     path = Path(trace_dir)
     path.mkdir(parents=True, exist_ok=True)
-    torch.save(tensor.detach().cpu(), path / f"native_{name}_value.pt")
+    torch.save(tensor.detach().cpu(), path / f'native_{name}_value.pt')
 
     def _save(gradient: Tensor) -> Tensor:
-        torch.save(gradient.detach().cpu(), path / f"native_{name}_grad.pt")
+        torch.save(gradient.detach().cpu(), path / f'native_{name}_grad.pt')
         return gradient
 
     tensor.register_hook(_save)
@@ -59,12 +59,13 @@ def _trace_vision_backward(name: str, tensor: Tensor) -> None:
 # Sinusoidal time embedding (kept local to avoid importing the training stack)
 # ---------------------------------------------------------------------------
 
+
 def _get_safe_dtype(dtype: torch.dtype, device: torch.device) -> torch.dtype:
     if isinstance(device, torch.device):
         device_type = device.type
     else:
         device_type = str(device)
-    if device_type == "mps" and dtype == torch.float64:
+    if device_type == 'mps' and dtype == torch.float64:
         return torch.float32
     return dtype
 
@@ -78,12 +79,13 @@ def create_sinusoidal_pos_embedding(
 ) -> Tensor:
     """Sinusoidal time embedding for Flow Matching timestep t ∈ [0, 1]."""
     if dimension % 2 != 0:
-        raise ValueError(f"dimension ({dimension}) must be divisible by 2")
+        raise ValueError(f'dimension ({dimension}) must be divisible by 2')
     # Match FluxVLA PI0.5 exactly: the reference helper evaluates the
     # frequencies and sin/cos in FP32 before the BF16 autocast MLP boundary.
     dtype = _get_safe_dtype(torch.float32, device)
-    fraction = torch.linspace(0.0, 1.0, dimension // 2, dtype=dtype, device=device)
-    period = min_period * (max_period / min_period) ** fraction
+    fraction = torch.linspace(
+        0.0, 1.0, dimension // 2, dtype=dtype, device=device)
+    period = min_period * (max_period / min_period)**fraction
     scaling_factor = 1.0 / period * 2 * math.pi
     sin_input = scaling_factor[None, :] * time[:, None].to(dtype)
     pos_emb = torch.cat([torch.sin(sin_input), torch.cos(sin_input)], dim=1)
@@ -158,16 +160,17 @@ def build_shared_obs_attention_mask_and_position_ids(
     mask_value = -2.3819763e38
 
     full_pad = torch.zeros(B, total_L, dtype=torch.bool, device=device)
-    full_att = torch.zeros(B, total_L, dtype=prefix_att_masks.dtype, device=device)
+    full_att = torch.zeros(
+        B, total_L, dtype=prefix_att_masks.dtype, device=device)
     full_pad[:, :prefix_L] = prefix_pad_masks
     full_att[:, :prefix_L] = prefix_att_masks
 
     suffix_pad_tiled = (
-        suffix_pad_masks.unsqueeze(1).expand(-1, num_offsets, -1).reshape(B, -1)
-    )
+        suffix_pad_masks.unsqueeze(1).expand(-1, num_offsets,
+                                             -1).reshape(B, -1))
     suffix_att_tiled = (
-        suffix_att_masks.unsqueeze(1).expand(-1, num_offsets, -1).reshape(B, -1)
-    )
+        suffix_att_masks.unsqueeze(1).expand(-1, num_offsets,
+                                             -1).reshape(B, -1))
     full_pad[:, prefix_L:] = suffix_pad_tiled
     full_att[:, prefix_L:] = suffix_att_tiled
 
@@ -180,19 +183,24 @@ def build_shared_obs_attention_mask_and_position_ids(
     suffix_pos = torch.arange(num_offsets * suffix_L, device=device)
     offset_ids = suffix_pos // suffix_L
     cross_ok = offset_ids.unsqueeze(1) == offset_ids.unsqueeze(0)
-    att_2d[:, prefix_L:, prefix_L:] = att_2d[:, prefix_L:, prefix_L:] & cross_ok
+    att_2d[:, prefix_L:,
+           prefix_L:] = att_2d[:, prefix_L:, prefix_L:] & cross_ok
 
     # Mask invalid offsets
-    offset_valid = offset_mask.unsqueeze(2).expand(-1, -1, suffix_L).reshape(B, -1)
-    att_2d[:, prefix_L:, :] = att_2d[:, prefix_L:, :] & offset_valid.unsqueeze(2)
-    att_2d[:, :, prefix_L:] = att_2d[:, :, prefix_L:] & offset_valid.unsqueeze(1)
+    offset_valid = offset_mask.unsqueeze(2).expand(-1, -1,
+                                                   suffix_L).reshape(B, -1)
+    att_2d[:,
+           prefix_L:, :] = att_2d[:, prefix_L:, :] & offset_valid.unsqueeze(2)
+    att_2d[:, :,
+           prefix_L:] = att_2d[:, :, prefix_L:] & offset_valid.unsqueeze(1)
 
     position_ids = torch.zeros(B, total_L, dtype=torch.long, device=device)
     prefix_pos = torch.cumsum(prefix_pad_masks.long(), dim=1) - 1
     position_ids[:, :prefix_L] = prefix_pos
     last_pre = prefix_pos[:, -1]
     suffix_base = torch.cumsum(suffix_pad_masks.long(), dim=1)
-    suffix_tiled = suffix_base.unsqueeze(1).expand(-1, num_offsets, -1).reshape(B, -1)
+    suffix_tiled = suffix_base.unsqueeze(1).expand(-1, num_offsets,
+                                                   -1).reshape(B, -1)
     position_ids[:, prefix_L:] = last_pre[:, None] + suffix_tiled
 
     attention_mask = torch.where(
@@ -207,12 +215,14 @@ def build_shared_obs_attention_mask_and_position_ids(
 # PI0PrefixEmbedder
 # ---------------------------------------------------------------------------
 
+
 class PI0PrefixEmbedder(nn.Module):
     """Embed images (via SigLIP) and language tokens (via Gemma embed_tokens).
 
     Wraps the PaliGemma model to extract:
       - Image features: SigLIP(img) → projected to VLM hidden_size (2048)
-      - Language embeddings: Gemma embed_tokens(tokens) scaled by sqrt(hidden_size)
+      - Language embeddings: Gemma embed_tokens(tokens) scaled by
+        sqrt(hidden_size)
 
     This module is replicated (not tensor-parallel) since SigLIP is small and
     runs only on the first pipeline stage.
@@ -232,48 +242,49 @@ class PI0PrefixEmbedder(nn.Module):
 
     def forward(
         self,
-        images: List[Tensor],          # list of [B, C, H, W], one per camera
-        img_masks: List[Tensor],        # list of [B] bool
-        tokens: Tensor,                 # [B, L_text] long
-        masks: Tensor,                  # [B, L_text] bool
+        images: List[Tensor],  # list of [B, C, H, W], one per camera
+        img_masks: List[Tensor],  # list of [B] bool
+        tokens: Tensor,  # [B, L_text] long
+        masks: Tensor,  # [B, L_text] bool
         subtask_spans=None,
     ) -> Tuple[Tensor, Tensor, Tensor]:
         """
         Returns:
             embs:      [B, L_prefix, D_vlm=2048]
             pad_masks: [B, L_prefix] bool
-            att_masks: [B, L_prefix] float  (0 = within-block, 1 = block boundary)
+            att_masks: [B, L_prefix] float
+                (0 = within-block, 1 = block boundary)
         """
         embs_list = []
         pad_masks_list = []
         att_masks_flat = []
-        vision_trace_dir = os.environ.get("PI05_VISION_ALIGNMENT_TRACE_DIR")
+        vision_trace_dir = os.environ.get('PI05_VISION_ALIGNMENT_TRACE_DIR')
         vision_trace_enabled = bool(vision_trace_dir) and not getattr(
-            self, "_vision_alignment_trace_done", False
-        )
+            self, '_vision_alignment_trace_done', False)
         if vision_trace_enabled:
             import torch.distributed as dist
 
-            vision_trace_enabled = (
-                not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
-            )
+            vision_trace_enabled = (not dist.is_available()
+                                    or not dist.is_initialized()
+                                    or dist.get_rank() == 0)
             if vision_trace_enabled:
                 Path(vision_trace_dir).mkdir(parents=True, exist_ok=True)
-        layer_trace_dir = os.environ.get("PI05_VISION_LAYER_TRACE_DIR")
-        full_batch_replay_dir = os.environ.get("PI05_VISION_FULL_BATCH_REPLAY_DIR")
+        layer_trace_dir = os.environ.get('PI05_VISION_LAYER_TRACE_DIR')
+        full_batch_replay_dir = os.environ.get(
+            'PI05_VISION_FULL_BATCH_REPLAY_DIR')
         layer_trace_enabled = bool(layer_trace_dir) and not getattr(
-            self, "_vision_layer_trace_done", False
-        )
+            self, '_vision_layer_trace_done', False)
         if layer_trace_enabled:
             import torch.distributed as dist
 
-            layer_trace_enabled = (
-                not dist.is_available() or not dist.is_initialized() or dist.get_rank() == 0
-            )
+            layer_trace_enabled = (not dist.is_available()
+                                   or not dist.is_initialized()
+                                   or dist.get_rank() == 0)
 
         vision_features_list = []
         image_inputs = []
-        reference_fp32 = os.environ.get("PI05_REFERENCE_FP32_VISION_FORWARD") == "1"
+        reference_fp32 = os.environ.get(
+            'PI05_REFERENCE_FP32_VISION_FORWARD') == '1'
         # The FSDP reference runs every camera and the projector under one
         # outer autocast context. Keep that context alive across per-camera
         # calls so autocast reuses the same cached BF16 parameter casts.
@@ -283,20 +294,21 @@ class PI0PrefixEmbedder(nn.Module):
                 device_type=images[0].device.type,
                 dtype=torch.bfloat16,
                 enabled=images[0].is_cuda and not reference_fp32,
-            )
-        )
+            ))
         for image_index, (img, img_mask) in enumerate(zip(images, img_masks)):
             if full_batch_replay_dir and layer_trace_enabled:
                 replay = torch.load(
-                    Path(full_batch_replay_dir) / f"reference_image_{image_index:02d}.pt",
+                    Path(full_batch_replay_dir) /
+                    f'reference_image_{image_index:02d}.pt',
                     map_location=img.device,
                     weights_only=True,
                 )
                 if replay.shape != img.shape:
-                    raise RuntimeError(
-                        f"Vision replay shape mismatch: reference={tuple(replay.shape)}, pmp={tuple(img.shape)}"
-                    )
+                    raise RuntimeError('Vision replay shape mismatch: '
+                                       f'reference={tuple(replay.shape)}, '
+                                       f'pmp={tuple(img.shape)}')
                 img = replay.to(dtype=img.dtype)
+
             def embed_vision(image, image_index=image_index):
                 # PI05se with use_amp=False evaluates its fp32_vision branch in
                 # FP32.  Keep the historical BF16-autocast path as the default,
@@ -304,34 +316,31 @@ class PI0PrefixEmbedder(nn.Module):
                 # forward alignment.
                 image = image.to(dtype=torch.float32)
                 trace_layers = (
-                    layer_trace_dir
-                    and layer_trace_enabled
-                    and image_index == 0
-                )
+                    layer_trace_dir and layer_trace_enabled
+                    and image_index == 0)
                 handles = (
-                    trace_siglip_layers(
-                        self._vlm_model.vision_tower, layer_trace_dir, "pmp")
-                    if trace_layers
-                    else []
-                )
+                    trace_siglip_layers(self._vlm_model.vision_tower,
+                                        layer_trace_dir, 'pmp')
+                    if trace_layers else [])
                 try:
                     with torch.autocast(
-                        device_type=image.device.type,
-                        dtype=torch.bfloat16,
-                        enabled=image.is_cuda and not reference_fp32,
+                            device_type=image.device.type,
+                            dtype=torch.bfloat16,
+                            enabled=image.is_cuda and not reference_fp32,
                     ):
                         output = self._vlm_model.vision_tower(image)
                         vision_features = output.last_hidden_state
                         _trace_vision_backward(
-                            f"camera_{image_index:02d}_tower_output", vision_features
-                        )
+                            f'camera_{image_index:02d}_tower_output',
+                            vision_features)
                 finally:
                     for handle in handles:
                         handle.remove()
                 return vision_features
 
-            with _profile_range(f"pi05.model.vision.{image_index}"):
-                if self.training and self.config.recompute_granularity is not None:
+            with _profile_range(f'pi05.model.vision.{image_index}'):
+                if (self.training
+                        and self.config.recompute_granularity is not None):
                     vision_features = checkpoint(
                         embed_vision,
                         img,
@@ -347,57 +356,62 @@ class PI0PrefixEmbedder(nn.Module):
         # invocation. Matching that GEMM shape is required for bitwise BF16
         # input gradients into the vision tower.
         combined_vision_features = torch.cat(vision_features_list, dim=1)
-        with _profile_range("pi05.model.vision_projector"), torch.autocast(
-            device_type=combined_vision_features.device.type,
-            dtype=torch.bfloat16,
-            enabled=combined_vision_features.is_cuda and not reference_fp32,
+        with _profile_range('pi05.model.vision_projector'), torch.autocast(
+                device_type=combined_vision_features.device.type,
+                dtype=torch.bfloat16,
+                enabled=combined_vision_features.is_cuda
+                and not reference_fp32,
         ):
             combined_img_emb = self._vlm_model.multi_modal_projector(
-                combined_vision_features
-            )
+                combined_vision_features)
         vision_autocast.close()
-        _trace_vision_backward("vision_projector_output", combined_img_emb)
+        _trace_vision_backward('vision_projector_output', combined_img_emb)
 
         token_offset = 0
         for image_index, (img, img_mask, n_img) in enumerate(image_inputs):
-            img_emb = combined_img_emb[:, token_offset : token_offset + n_img]
+            img_emb = combined_img_emb[:, token_offset:token_offset + n_img]
             token_offset += n_img
             img_emb = img_emb.to(dtype=img.dtype)
             if vision_trace_enabled:
                 torch.save(
-                    {"image": img[:1].detach().cpu(), "embedding": img_emb[:1].detach().cpu()},
-                    Path(vision_trace_dir) / f"pmp_vision_{image_index:02d}.pt",
+                    {
+                        'image': img[:1].detach().cpu(),
+                        'embedding': img_emb[:1].detach().cpu()
+                    },
+                    Path(vision_trace_dir) /
+                    f'pmp_vision_{image_index:02d}.pt',
                 )
             bsz = img_emb.shape[0]
             embs_list.append(img_emb)
             pad_masks_list.append(img_mask[:, None].expand(bsz, n_img))
             att_masks_flat += [0] * n_img
 
-        with _profile_range("pi05.model.language_embedding"):
-            lang_emb = self.lang_embedder(tokens)              # [B, L_text, D_vlm]
-        # In the pinned 0811 stack, get_input_embeddings() is GemmaEmbedding and
-        # already applies sqrt(hidden_size). The PMP container exposes a plain
-        # nn.Embedding instead, so reproduce that reference contract explicitly.
-        if not hasattr(self.lang_embedder, "embed_scale"):
-            # GemmaEmbedding materializes the scale in the embedding dtype. A
-            # Python float promotes this multiply differently on BF16 and leaves
-            # one-ULP text-token differences which the first transformer layer
-            # amplifies. Keep the scalar construction in the same dtype.
+        with _profile_range('pi05.model.language_embedding'):
+            lang_emb = self.lang_embedder(tokens)  # [B, L_text, D_vlm]
+        # In the pinned 0811 stack, get_input_embeddings() is GemmaEmbedding
+        # and already applies sqrt(hidden_size). The PMP container exposes a
+        # plain nn.Embedding instead, so reproduce that reference contract
+        # explicitly.
+        if not hasattr(self.lang_embedder, 'embed_scale'):
+            # GemmaEmbedding materializes the scale in the embedding dtype.
+            # A Python float promotes this multiply differently on BF16 and
+            # leaves one-ULP text-token differences which the first
+            # transformer layer amplifies. Keep the scalar construction in
+            # the same dtype.
             embed_scale = torch.tensor(
-                math.sqrt(lang_emb.shape[-1]), dtype=lang_emb.dtype, device=lang_emb.device
-            )
+                math.sqrt(lang_emb.shape[-1]),
+                dtype=lang_emb.dtype,
+                device=lang_emb.device)
             lang_emb = lang_emb * embed_scale
-        if os.environ.get("PI05_EMBED_ALIGNMENT_TRACE") == "1":
-            if int(os.environ.get("RANK", "0")) == 0:
+        if os.environ.get('PI05_EMBED_ALIGNMENT_TRACE') == '1':
+            if int(os.environ.get('RANK', '0')) == 0:
                 path = Path(
-                    os.environ.get(
-                        "PI05_EMBED_ALIGNMENT_TRACE_DIR", "work_dirs/embed_trace"
-                    )
-                )
+                    os.environ.get('PI05_EMBED_ALIGNMENT_TRACE_DIR',
+                                   'work_dirs/embed_trace'))
                 path.mkdir(parents=True, exist_ok=True)
                 torch.save(
                     lang_emb[:1].detach().cpu(),
-                    path / "native_language_embedding.pt",
+                    path / 'native_language_embedding.pt',
                 )
         embs_list.append(lang_emb)
         pad_masks_list.append(masks)
@@ -405,13 +419,15 @@ class PI0PrefixEmbedder(nn.Module):
 
         embs = torch.cat(embs_list, dim=1)
         pad_masks = torch.cat(pad_masks_list, dim=1)
-        att_masks = torch.tensor(att_masks_flat, dtype=embs.dtype, device=embs.device)
-        if subtask_spans is not None and any(span is not None for span in subtask_spans):
+        att_masks = torch.tensor(
+            att_masks_flat, dtype=embs.dtype, device=embs.device)
+        if subtask_spans is not None and any(span is not None
+                                             for span in subtask_spans):
             att_masks = att_masks[None, :].repeat(embs.shape[0], 1)
             n_img = att_masks.shape[1] - tokens.shape[1]
             for row, span in enumerate(subtask_spans):
                 if span is not None:
-                    att_masks[row, n_img + span[0] : n_img + span[1]] = 1
+                    att_masks[row, n_img + span[0]:n_img + span[1]] = 1
         else:
             att_masks = att_masks[None, :].expand(embs.shape[0], -1)
         if vision_trace_enabled:
@@ -425,8 +441,10 @@ class PI0PrefixEmbedder(nn.Module):
 # PI0SuffixEmbedder  (PI0 variant: state token + action tokens)
 # ---------------------------------------------------------------------------
 
+
 class PI0SuffixEmbedder(nn.Module):
-    """PI0 suffix embedder: state token + noisy action tokens + time conditioning.
+    """PI0 suffix embedder: state token + noisy action tokens + time
+    conditioning.
 
     PI0 mode (use_adarms=False):
       - State is prepended as the first explicit token in the suffix.
@@ -449,10 +467,10 @@ class PI0SuffixEmbedder(nn.Module):
         self.action_time_mlp_out = nn.Linear(width, width)
 
     def forward(
-        self,
-        state: Tensor,         # [B, state_dim]
-        noisy_actions: Tensor, # [B, T, action_dim]
-        time: Tensor,          # [B]
+            self,
+            state: Tensor,  # [B, state_dim]
+            noisy_actions: Tensor,  # [B, T, action_dim]
+            time: Tensor,  # [B]
     ) -> Tuple[Tensor, Tensor, Tensor, Optional[Tensor]]:
         """
         Returns:
@@ -461,7 +479,8 @@ class PI0SuffixEmbedder(nn.Module):
             att_masks:  [B, 1+T] float
             adarms_cond: None  (PI0 has no adaRMS conditioning)
         """
-        state_emb = self.state_proj(state).to(dtype=torch.bfloat16)  # [B, D_exp]
+        state_emb = self.state_proj(state).to(
+            dtype=torch.bfloat16)  # [B, D_exp]
         bsz = state_emb.shape[0]
         device = state_emb.device
 
@@ -473,13 +492,15 @@ class PI0SuffixEmbedder(nn.Module):
             device,
         ).to(dtype=self.action_in_proj.weight.dtype)
 
-        action_emb = self.action_in_proj(noisy_actions)        # [B, T, D_exp]
+        action_emb = self.action_in_proj(noisy_actions)  # [B, T, D_exp]
         time_expanded = time_emb[:, None, :].expand_as(action_emb)
-        action_time = torch.cat([action_emb, time_expanded], dim=2)  # [B, T, 2*D]
+        action_time = torch.cat([action_emb, time_expanded],
+                                dim=2)  # [B, T, 2*D]
         action_time = F.silu(self.action_time_mlp_in(action_time))
-        action_time = self.action_time_mlp_out(action_time)           # [B, T, D_exp]
+        action_time = self.action_time_mlp_out(action_time)  # [B, T, D_exp]
 
-        embs = torch.cat([state_emb[:, None, :], action_time], dim=1)  # [B, 1+T, D]
+        embs = torch.cat([state_emb[:, None, :], action_time],
+                         dim=1)  # [B, 1+T, D]
         T_total = embs.shape[1]
 
         pad_masks = torch.ones(bsz, T_total, dtype=torch.bool, device=device)
@@ -487,8 +508,8 @@ class PI0SuffixEmbedder(nn.Module):
         # action tokens: first one is also a block boundary, rest are causal.
         att_masks_list = [1] + [1] + [0] * (self.config.chunk_size - 1)
         att_masks = torch.tensor(
-            att_masks_list, dtype=embs.dtype, device=device
-        )[None, :].expand(bsz, -1)
+            att_masks_list, dtype=embs.dtype,
+            device=device)[None, :].expand(bsz, -1)
 
         return embs, pad_masks, att_masks, None
 
@@ -497,8 +518,10 @@ class PI0SuffixEmbedder(nn.Module):
 # PI05SuffixEmbedder  (PI0.5 variant: no state token, adaRMS conditioning)
 # ---------------------------------------------------------------------------
 
+
 class PI05SuffixEmbedder(nn.Module):
-    """PI0.5 suffix embedder: noisy action tokens with adaRMS state+time conditioning.
+    """PI0.5 suffix embedder: noisy action tokens with adaRMS state+time
+    conditioning.
 
     PI0.5 mode (use_adarms=True):
       - NO explicit state token in the sequence.
@@ -530,10 +553,10 @@ class PI05SuffixEmbedder(nn.Module):
             nn.init.zeros_(self.state_mlp_out.bias)
 
     def forward(
-        self,
-        state: Tensor,         # [B, state_dim]
-        noisy_actions: Tensor, # [B, T, action_dim]
-        time: Tensor,          # [B]
+            self,
+            state: Tensor,  # [B, state_dim]
+            noisy_actions: Tensor,  # [B, T, action_dim]
+            time: Tensor,  # [B]
     ) -> Tuple[Tensor, Tensor, Tensor, Tensor]:
         """
         Returns:
@@ -564,25 +587,23 @@ class PI05SuffixEmbedder(nn.Module):
             state_emb = F.silu(self.state_mlp_out(state_emb))
             adarms_cond = adarms_cond + state_emb
 
-        noisy_actions = noisy_actions.to(dtype=self.action_in_proj.weight.dtype)
+        noisy_actions = noisy_actions.to(
+            dtype=self.action_in_proj.weight.dtype)
         embs = self.action_in_proj(noisy_actions)  # [B, T, D_exp]
-        if os.environ.get("PI05_EMBED_ALIGNMENT_TRACE") == "1":
-            if int(os.environ.get("RANK", "0")) == 0:
+        if os.environ.get('PI05_EMBED_ALIGNMENT_TRACE') == '1':
+            if int(os.environ.get('RANK', '0')) == 0:
                 path = Path(
-                    os.environ.get(
-                        "PI05_EMBED_ALIGNMENT_TRACE_DIR", "work_dirs/embed_trace"
-                    )
-                )
+                    os.environ.get('PI05_EMBED_ALIGNMENT_TRACE_DIR',
+                                   'work_dirs/embed_trace'))
                 path.mkdir(parents=True, exist_ok=True)
-                torch.save(
-                    embs[:1].detach().cpu(), path / "native_action_embedding.pt"
-                )
+                torch.save(embs[:1].detach().cpu(),
+                           path / 'native_action_embedding.pt')
         pad_masks = torch.ones(bsz, T, dtype=torch.bool, device=device)
         # First action token is a block boundary; rest are causal within block.
         att_list = [1] + [0] * (T - 1)
         att_masks = torch.tensor(
-            att_list, dtype=embs.dtype, device=device
-        )[None, :].expand(bsz, -1)
+            att_list, dtype=embs.dtype,
+            device=device)[None, :].expand(bsz, -1)
 
         return embs, pad_masks, att_masks, adarms_cond
 
@@ -590,6 +611,7 @@ class PI05SuffixEmbedder(nn.Module):
 # ---------------------------------------------------------------------------
 # AdaRMSNorm for PI0.5 per-layer conditioning
 # ---------------------------------------------------------------------------
+
 
 class AdaRMSNorm(nn.Module):
     """Adaptive RMSNorm with DiT-style conditioning (scale + shift + gate).
@@ -607,28 +629,32 @@ class AdaRMSNorm(nn.Module):
 
     Args:
         hidden_size: dimension of the hidden states to normalize
-        cond_dim:    dimension of the conditioning vector (D_exp = 1024); 0 disables
+        cond_dim:    dimension of the conditioning vector (D_exp = 1024);
+                     0 disables
         eps:         RMSNorm epsilon
     """
 
     def __init__(self, hidden_size: int, cond_dim: int = 0, eps: float = 1e-6):
         super().__init__()
         self.eps = eps
-        # cond_proj projects cond → [scale, shift, gate] concatenated (3×hidden_size)
-        # Checkpoint dense.weight shape: (3*D_exp, D_cond) = (3072, 1024) — exact match
+        # cond_proj projects cond → [scale, shift, gate] concatenated
+        # (3×hidden_size)
+        # Checkpoint dense.weight shape: (3*D_exp, D_cond) = (3072, 1024)
+        # — exact match
         if cond_dim > 0:
             self.cond_proj = nn.Linear(cond_dim, 3 * hidden_size, bias=True)
             nn.init.zeros_(self.cond_proj.weight)
             nn.init.zeros_(self.cond_proj.bias)
         else:
-            # GemmaRMSNorm convention (1 + norm_weight), only for unconditioned norms.
+            # GemmaRMSNorm convention (1 + norm_weight), only for
+            # unconditioned norms.
             self.norm_weight = nn.Parameter(torch.zeros(hidden_size))
             self.cond_proj = None
 
     def forward(
-        self,
-        hidden_states: Tensor,         # [B, L, D]
-        cond: Optional[Tensor] = None, # [B, D_cond] or None
+            self,
+            hidden_states: Tensor,  # [B, L, D]
+            cond: Optional[Tensor] = None,  # [B, D_cond] or None
     ) -> Tuple[Tensor, Optional[Tensor]]:
         """
         Returns:
@@ -639,20 +665,21 @@ class AdaRMSNorm(nn.Module):
         # The input stays in its model dtype for the multiply while variance
         # and reciprocal RMS are evaluated in FP32.
         variance = torch.mean(
-            torch.square(hidden_states.float()), dim=-1, keepdim=True
-        )
+            torch.square(hidden_states.float()), dim=-1, keepdim=True)
         normed = hidden_states * torch.rsqrt(variance + self.eps)
 
         if cond is not None and self.cond_proj is not None:
             # DiT-style: project cond → scale, shift, gate; skip norm_weight
-            modulation = self.cond_proj(cond.to(self.cond_proj.weight.dtype)).float()
+            modulation = self.cond_proj(cond.to(
+                self.cond_proj.weight.dtype)).float()
             modulation = modulation[:, None, :]  # [B, 1, 3*D]
             scale, shift, gate = modulation.chunk(3, dim=-1)
             normed = (normed * (1.0 + scale) + shift).to(hidden_states.dtype)
             return normed, gate.to(hidden_states.dtype)
         else:
             # Standard GemmaRMSNorm: learnable scale (used by VLM branch)
-            normed = (normed * (1.0 + self.norm_weight.float())).to(hidden_states.dtype)
+            normed = (normed * (1.0 + self.norm_weight.float())).to(
+                hidden_states.dtype)
             return normed, None
 
 
@@ -673,7 +700,8 @@ class GatedRMSNorm(nn.Module):
         hidden_states: Tensor,
         cond: Optional[Tensor] = None,
     ) -> Tuple[Tensor, None]:
-        variance = hidden_states.to(torch.float32).pow(2).mean(-1, keepdim=True)
+        variance = hidden_states.to(torch.float32).pow(2).mean(
+            -1, keepdim=True)
         normed = hidden_states * torch.rsqrt(variance + self.eps)
         normed = (normed.float() * self.weight.float()).type_as(hidden_states)
         return normed, None

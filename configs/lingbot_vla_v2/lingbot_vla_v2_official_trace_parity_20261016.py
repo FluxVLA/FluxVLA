@@ -1,6 +1,6 @@
 """FluxVLA replay of the official LingBot DP2 sampler trace."""
 
-_base_ = ["./lingbot_vla_v2_robotwin_dense_finetune.py"]
+_base_ = ['./lingbot_vla_v2_robotwin_dense_finetune.py']
 import os  # noqa: E402
 
 model = dict(
@@ -10,19 +10,19 @@ model = dict(
     # Native production config has train.enable_fp32=true. Keep action expert
     # parameters and its loss in FP32 for an apples-to-apples replay.
     action_fp32=True,
-    attention_implementation="eager",
-    vit_attn_implementation="eager",
+    attention_implementation='eager',
+    vit_attn_implementation='eager',
     # Official production config uses the fused token-MoE path.
-    moe_implementation="fused",
-    attention=dict(implementation="eager", vit_implementation="eager"),
+    moe_implementation='fused',
+    attention=dict(implementation='eager', vit_implementation='eager'),
 )
 
 train_dataloader = dict(
     per_device_batch_size=1,
     per_device_num_workers=0,
     dataset=dict(
-        type="LingBotTeacherCacheDataset",
-        manifest_path=os.getenv("LINGBOT_MANIFEST", ""),
+        type='LingBotTeacherCacheDataset',
+        manifest_path=os.getenv('LINGBOT_MANIFEST', ''),
         cache_in_memory=True,
         validate_targets=True,
         fixed_time=0.5,
@@ -34,10 +34,10 @@ train_dataloader = dict(
 runner = dict(
     max_steps=1,
     seed=42,
-    sharding_strategy="global-shard-grad-op",
+    sharding_strategy='global-shard-grad-op',
     fsdp_api_version=2,
     enable_mixed_precision_training=True,
-    mixed_precision_dtype="bf16",
+    mixed_precision_dtype='bf16',
     # The official trainer applies FP32 only to action-expert/basic modules.
     # Its VLM decoder/root FSDP2 units still use BF16 parameters with FP32
     # gradient reduction, so keeping every parameter FP32 would be a different
