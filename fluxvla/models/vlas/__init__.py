@@ -36,6 +36,7 @@ import_heterogeneous_runtime_symbols(
         'vpp2_vla': ['VPP2VLA'],
         'fastwam_vla': ['FastWAMVLA'],
         'cosmos3_flowmatching': ['Cosmos3FlowMatching'],
+        'lingbot_vla_v2': ['LingBotVLAV2'],
         'openai_vla': ['OpenAIVLA'],
         'minimax_vla': ['MiniMaxVLA'],
     },

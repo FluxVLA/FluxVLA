@@ -68,6 +68,9 @@ setup(
     long_description_content_type='text/markdown',
     url=None,
     packages=find_packages(),
+    package_data={
+        'fluxvla.datasets.lingbot_vla_v2': ['assets/*.json'],
+    },
     classifiers=[
         'Programming Language :: Python :: 3',
         'Operating System :: OS Independent',

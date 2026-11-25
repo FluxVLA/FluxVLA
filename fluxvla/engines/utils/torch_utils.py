@@ -1,4 +1,4 @@
-﻿# Copyright 2026 Limx Dynamics
+# Copyright 2026 Limx Dynamics
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -162,7 +162,9 @@ def set_seed_everywhere(seed: int):
     os.environ['PYTHONHASHSEED'] = str(seed)
 
 
-def worker_init_function(worker_id: int) -> None:
+def worker_init_function(worker_id: int,
+                         *,
+                         data_parallel_rank: Optional[int] = None) -> None:
     """Sets the seed for each worker in a distributed setting. This is called
     by PyTorch's DataLoader for each worker process. The seed is derived from
     the global seed, the worker ID, and the global rank (if applicable). This
@@ -171,13 +173,20 @@ def worker_init_function(worker_id: int) -> None:
 
     Args:
         worker_id (int): The ID of the worker process.
+        data_parallel_rank (int, optional): Logical data-parallel identity.
+            When omitted, retain the existing LOCAL_RANK policy.
 
     Raises:
         AssertionError: If the worker ID is not a non-negative integer.
     """
     # Get current `rank` (if running distributed) and `process_seed`
-    global_rank, process_seed = int(
-        os.environ['LOCAL_RANK']), torch.initial_seed()
+    # A dataset may opt into logical-DP seeding so TP ranks process identical
+    # augmentation streams. Other datasets retain the existing LOCAL_RANK
+    # policy.
+    global_rank = (
+        int(os.environ.get('LOCAL_RANK', '0'))
+        if data_parallel_rank is None else int(data_parallel_rank))
+    process_seed = torch.initial_seed()
 
     # Back out the "base" (original) seed - the per-worker seed is
     # set in PyTorch: > https://pytorch.org/docs/stable/data.html#data-loading-randomness  # noqa: E501

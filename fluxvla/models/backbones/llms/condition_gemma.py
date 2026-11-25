@@ -254,6 +254,18 @@ class GemmaRotaryEmbedding(nn.Module):
         self.register_buffer(
             'original_inv_freq', inv_freq.clone(), persistent=False)
 
+    def _apply(self, fn, recurse=True):
+        """Keep RoPE frequencies in FP32 across model-wide dtype conversion.
+
+        Model-wide BF16 conversion also casts non-persistent buffers. Casting
+        ``inv_freq`` back to float in ``forward`` cannot recover the frequency
+        bits already lost, and the resulting phase error grows with position.
+        """
+        result = super()._apply(fn, recurse=recurse)
+        self.inv_freq = self.inv_freq.float()
+        self.original_inv_freq = self.original_inv_freq.float()
+        return result
+
     @staticmethod
     def compute_default_rope_parameters(config=None,
                                         device=None,
@@ -270,6 +282,20 @@ class GemmaRotaryEmbedding(nn.Module):
             base**(torch.arange(0, dim, 2, dtype=torch.int64).to(
                 device=device, dtype=torch.float) / dim))
         return inv_freq, attention_factor
+
+    def runtime_inv_freq(self, device=None):
+        """Return the FP32 frequencies used by the current forward pass.
+
+        FSDP mixed precision casts buffers immediately before forward and
+        bypasses ``Module._apply``. Rebuild default RoPE from its semantic
+        config so a BF16 buffer cast cannot quantize the accumulated phase.
+        Dynamic/scaled RoPE keeps using the state managed by Transformers.
+        """
+        if self.rope_type == 'default':
+            inv_freq, _ = self.compute_default_rope_parameters(
+                self.config, device=device)
+            return inv_freq
+        return self.inv_freq.to(device=device, dtype=torch.float32)
 
     @torch.no_grad()
     @dynamic_rope_update
@@ -294,7 +320,8 @@ class GemmaRotaryEmbedding(nn.Module):
                        `(batch_size, seq_length, hidden_size)`):
                     The sine tensor.
         """
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(
+        runtime_inv_freq = self.runtime_inv_freq(device=x.device)
+        inv_freq_expanded = runtime_inv_freq[None, :, None].expand(
             position_ids.shape[0], -1, 1).to(x.device)
         position_ids_expanded = position_ids[:, None, :].float()
 

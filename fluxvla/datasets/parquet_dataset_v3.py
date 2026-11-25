@@ -44,14 +44,14 @@ def _load_parquet_records(paths: List[Path]) -> List[Dict[str, Any]]:
 
 
 def _load_episode_records(meta_root: Path) -> List[Dict[str, Any]]:
-    legacy_path = meta_root / 'episodes.jsonl'
-    if legacy_path.exists():
-        return _load_jsonl_records(legacy_path)
-
     episodes_dir = meta_root / 'episodes'
     parquet_files = sorted(episodes_dir.rglob('*.parquet'))
     if parquet_files:
         return _load_parquet_records(parquet_files)
+
+    legacy_path = meta_root / 'episodes.jsonl'
+    if legacy_path.exists():
+        return _load_jsonl_records(legacy_path)
 
     raise FileNotFoundError(f'Episodes metadata not found under {meta_root}')
 
@@ -128,7 +128,8 @@ class ParquetDatasetV3(ParquetDataset):
                  window_start_idx: int = 1,
                  frame_window_size: int = 1,
                  frame_sample_stride: int = 1,
-                 expose_index: bool = False) -> None:
+                 expose_index: bool = False,
+                 task_filter_policy: str = 'resample') -> None:
         """Initialize a parquet dataset backed by LeRobot v3 metadata.
 
         Args:
@@ -151,8 +152,19 @@ class ParquetDatasetV3(ParquetDataset):
                 frames should span a longer temporal window.
             expose_index (bool): Whether to expose the concatenated row index
                 to transforms for offline sample weighting.
+            task_filter_policy (str): ``resample`` retains legacy v3 sampling;
+                ``preserve`` uses the base class's row-preserving window
+                assembler, including current-inclusive and padded tail rows.
         """
         Dataset.__init__(self)
+        if task_filter_policy not in ('resample', 'preserve'):
+            raise ValueError('task_filter_policy must be resample or preserve')
+        self.task_filter_policy = task_filter_policy
+        self.action_dtype = np.dtype('float32')
+        self.require_full_window = False
+        self.supervise_terminal_padding = False
+        # Match the shared v2 window assembler's current-frame default.
+        self.image_frame_offset = 0
         self.action_window_size = action_window_size
         if isinstance(data_root_path, str):
             data_root_path = [data_root_path]
@@ -242,6 +254,10 @@ class ParquetDatasetV3(ParquetDataset):
 
         return ''
 
+    def _get_task_name(self, dataset_idx: int, index: int) -> str:
+        return self._resolve_task_description(dataset_idx,
+                                              self._window_rows()[index])
+
     def __getitem__(self, index, dataset_statistics):
         """Build one transformed sample from a parquet row.
 
@@ -254,6 +270,10 @@ class ParquetDatasetV3(ParquetDataset):
             Dict: Sample dictionary containing task text, actions, masks,
             metadata, and transform outputs.
         """
+        # Official-data adapters reuse the base window assembler verbatim.
+        # Legacy v3 users retain their historical next-row filtering below.
+        if self.task_filter_policy == 'preserve':
+            return super().__getitem__(index, dataset_statistics)
         data = self.dataset[index]
         dataset_idx = self._get_dataset_index(index)
         while True:
