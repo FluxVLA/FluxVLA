@@ -138,8 +138,9 @@ def test_unsupported_model_is_not_mislabelled(bundle_inputs, tmp_path):
 
 def test_checkpoint_hook_waits_then_exports_and_preserves_resume_on_failure(
         bundle_inputs, tmp_path, monkeypatch):
-    import fluxvla.engines.runners.rlinf_checkpoint_runner as module
     from types import SimpleNamespace
+
+    import fluxvla.engines.runners.rlinf_checkpoint_runner as module
     step, _, cfg = bundle_inputs
     calls = []
     cfg.runner.logger.log_path = str(tmp_path)
@@ -185,8 +186,9 @@ def test_checkpoint_hook_can_disable_export(bundle_inputs, monkeypatch):
 
 def test_checkpoint_hook_publishes_bundle_after_save(bundle_inputs, tmp_path,
                                                      monkeypatch):
-    import fluxvla.engines.runners.rlinf_checkpoint_runner as module
     from types import SimpleNamespace
+
+    import fluxvla.engines.runners.rlinf_checkpoint_runner as module
     step, _, cfg = bundle_inputs
     expected = tmp_path / 'run/checkpoints/global_step_1'
     runner = module.FluxEmbodiedRunner.__new__(module.FluxEmbodiedRunner)
@@ -204,6 +206,7 @@ def test_checkpoint_hook_publishes_bundle_after_save(bundle_inputs, tmp_path,
 @pytest.mark.parametrize('state_dtype', ['float32', 'bfloat16'])
 def test_eval_dataset_emits_configured_state_dtype(state_dtype, monkeypatch):
     import numpy as np
+
     from fluxvla.datasets.parquet_dataset import LiberoParquetEvalDataset
     dataset = LiberoParquetEvalDataset(
         norm_stats=None,

@@ -18,9 +18,10 @@ def _initialize_common_attrs(monkeypatch, logger):
     return runner
 
 
-def test_direct_eval_uses_visible_gpu_zero_without_distributed_state(monkeypatch):
+def test_direct_eval_uses_visible_gpu_zero_without_distributed_state(
+        monkeypatch):
     runner = _initialize_common_attrs(monkeypatch,
-                                     PureOverwatch('single_process_eval'))
+                                      PureOverwatch('single_process_eval'))
     assert runner.device_id == 0
     assert runner.distributed_state is None
 
@@ -34,11 +35,12 @@ def test_distributed_eval_preserves_local_rank_and_state(monkeypatch):
 
 
 @pytest.mark.parametrize('build_dtype', [None, torch.float32])
-def test_libero_setup_retains_explicit_parameter_precision(monkeypatch,
-                                                         build_dtype):
+def test_libero_setup_retains_explicit_parameter_precision(
+        monkeypatch, build_dtype):
     from fluxvla.engines.runners import libero_eval_runner
 
     class CPUModel(torch.nn.Linear):
+
         def to(self, *, device, dtype):
             # Exercise the real dtype conversion without requiring a GPU.
             return super().to(dtype=dtype)
@@ -56,7 +58,8 @@ def test_libero_setup_retains_explicit_parameter_precision(monkeypatch,
     runner.enable_mixed_precision_training = True
     runner.mixed_precision_dtype = torch.bfloat16
     monkeypatch.setattr(torch.cuda, 'is_available', lambda: False)
-    monkeypatch.setattr(libero_eval_runner, 'set_seed_everywhere', lambda _: None)
+    monkeypatch.setattr(libero_eval_runner, 'set_seed_everywhere',
+                        lambda _: None)
     runner.run_setup()
     expected = build_dtype or torch.bfloat16
     assert runner.vla.weight.dtype == expected

@@ -93,9 +93,7 @@ actor = dict(
         enable_gradient_accumulation=False))
 
 rollout = dict(
-    enable_offload=True,
-    pipeline_stage_num=1,
-    recompute_logprobs=False)
+    enable_offload=True, pipeline_stage_num=1, recompute_logprobs=False)
 
 env = dict(
     enable_offload=True,
@@ -121,8 +119,7 @@ env = dict(
             clear_cache_on_reset=False,
             planner_backend='mplib',
             embodiment=['aloha-agilex'],
-            camera=dict(
-                collect_head_camera=True, collect_wrist_camera=True),
+            camera=dict(collect_head_camera=True, collect_wrist_camera=True),
             data_type=dict(
                 rgb=True,
                 third_view=False,

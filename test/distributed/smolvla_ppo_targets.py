@@ -15,10 +15,22 @@ def main():
     assert dist.get_world_size() == 2
     rank = dist.get_rank()
     cfg = OmegaConf.create({
-        'runner': {'task_type': 'embodied'},
-        'algorithm': {'adv_type': 'gae', 'reward_type': 'chunk_level',
-                      'gamma': 1., 'gae_lambda': 1., 'normalize_advantages': True},
-        'env': {'train': {'auto_reset': False, 'ignore_terminations': False}},
+        'runner': {
+            'task_type': 'embodied'
+        },
+        'algorithm': {
+            'adv_type': 'gae',
+            'reward_type': 'chunk_level',
+            'gamma': 1.,
+            'gae_lambda': 1.,
+            'normalize_advantages': True
+        },
+        'env': {
+            'train': {
+                'auto_reset': False,
+                'ignore_terminations': False
+            }
+        },
     })
     # Rank 0 succeeds, then loses the success condition within its final
     # chunk. Rank 1 times out. Both ranks have two valid chunk decisions.
@@ -28,9 +40,11 @@ def main():
     if rank == 0:
         dones[-1, 0, 0] = True
         rewards[-1, 0, :2] = torch.tensor([1., -1.])
-    batch = dict(rewards=rewards, dones=dones,
-                 prev_values=torch.zeros(3, 1, 1),
-                 loss_mask=torch.ones(2, 1, 1, dtype=torch.bool))
+    batch = dict(
+        rewards=rewards,
+        dones=dones,
+        prev_values=torch.zeros(3, 1, 1),
+        loss_mask=torch.ones(2, 1, 1, dtype=torch.bool))
     actor = SimpleNamespace(cfg=cfg, device='cpu', rollout_batch=batch)
     # Omit scheduler profiling and metrics, exercise the actor target path.
     import fluxvla.engines.runners.rlinf.smolvla_actor as module

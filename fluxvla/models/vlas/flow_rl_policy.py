@@ -176,11 +176,13 @@ class FlowRLPolicyMixin:
         noise = noise.to(device=self.device, dtype=torch.float32).clone()
         # Keep trajectories and RNG draws at the real environment batch size.
         # Only the BF16 network calls need the replay microbatch shape.
-        network_batch = (micro if mode == 'train' and self.fixed_ppo_batch
-                         and micro else batch)
-        network_obs = ({key: pad_batch(value, network_batch)
-                        for key, value in obs.items()}
-                       if network_batch > batch else obs)
+        network_batch = (
+            micro
+            if mode == 'train' and self.fixed_ppo_batch and micro else batch)
+        network_obs = ({
+            key: pad_batch(value, network_batch)
+            for key, value in obs.items()
+        } if network_batch > batch else obs)
         hidden, mask, cache = self._prefix(network_obs)
         values = self._value(hidden, mask)[:batch, None]
         if mode == 'eval':
@@ -207,9 +209,10 @@ class FlowRLPolicyMixin:
                                  index,
                                  device=self.device,
                                  dtype=torch.long)
-                velocity = self._velocity(
-                    network_obs, mask, cache, pad_batch(x, network_batch),
-                    pad_batch(times[idx], network_batch))[:batch]
+                velocity = self._velocity(network_obs, mask, cache,
+                                          pad_batch(x, network_batch),
+                                          pad_batch(times[idx],
+                                                    network_batch))[:batch]
                 if index == chosen:
                     mean, std = transition(
                         x,

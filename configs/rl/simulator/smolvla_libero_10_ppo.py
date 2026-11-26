@@ -17,10 +17,9 @@ simulator = dict(
     tokenizer_path=(
         '${oc.env:SMOLVLA_LIBERO10_ROOT,'
         '/mnt/data/cpfs/users/danny/ckpt/smolvla/libero_10}/tokenizer'),
-    norm_stats_path=(
-        '${oc.env:SMOLVLA_LIBERO10_ROOT,'
-        '/mnt/data/cpfs/users/danny/ckpt/smolvla/libero_10}'
-        '/dataset_statistics.json'))
+    norm_stats_path=('${oc.env:SMOLVLA_LIBERO10_ROOT,'
+                     '/mnt/data/cpfs/users/danny/ckpt/smolvla/libero_10}'
+                     '/dataset_statistics.json'))
 
 runner = dict(
     val_check_interval=10,

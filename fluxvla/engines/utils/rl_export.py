@@ -159,10 +159,9 @@ def export_native_bundle(checkpoint, output_dir, rl_cfg):
         tempfile.mkdtemp(prefix='.native_export-', dir=destination.parent))
     try:
         # Clone shared storage so safetensors retains every native key.
-        save_file({
-            k: v.contiguous().clone()
-            for k, v in policy.items()
-        }, str(staging / 'model.safetensors'))
+        save_file({k: v.contiguous().clone()
+                   for k, v in policy.items()},
+                  str(staging / 'model.safetensors'))
         (staging / 'dataset_statistics.json'
          ).write_text(json.dumps(stats, indent=2) + '\n')
         shutil.copytree(tokenizer, staging / 'tokenizer', symlinks=False)

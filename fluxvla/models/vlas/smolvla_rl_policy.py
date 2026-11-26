@@ -45,8 +45,10 @@ class FluxSmolVLARLPolicy(FlowRLPolicyMixin, SmolVLAFlowMatching, BasePolicy):
         parts = []
         for start in range(0, batch, micro):
             end = min(start + micro, batch)
-            inputs = {k: pad_batch(v[start:end], micro)
-                      for k, v in forward_inputs.items()}
+            inputs = {
+                k: pad_batch(v[start:end], micro)
+                for k, v in forward_inputs.items()
+            }
             out = super().default_forward(inputs, *args, **kwargs)
             parts.append({k: v[:end - start] for k, v in out.items()})
         return {k: torch.cat([part[k] for part in parts]) for k in parts[0]}

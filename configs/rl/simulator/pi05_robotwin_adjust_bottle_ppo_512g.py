@@ -12,6 +12,4 @@ runner = dict(
 
 env = dict(
     train=dict(
-        total_num_envs=64,
-        rollout_epoch=16,
-        video_cfg=dict(save_video=False)))
+        total_num_envs=64, rollout_epoch=16, video_cfg=dict(save_video=False)))

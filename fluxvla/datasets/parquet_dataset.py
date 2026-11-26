@@ -613,8 +613,8 @@ class LiberoParquetEvalDataset:
         )
 
         if 'states' in data:
-            batch['states'] = torch.from_numpy(
-                data['states']).to(self.state_dtype).cuda().unsqueeze(0)
+            batch['states'] = torch.from_numpy(data['states']).to(
+                self.state_dtype).cuda().unsqueeze(0)
         if 'embodiment_ids' in data:
             batch['embodiment_ids'] = torch.from_numpy(
                 data['embodiment_ids']).int().cuda().unsqueeze(0)

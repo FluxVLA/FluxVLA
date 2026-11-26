@@ -10,7 +10,8 @@ from rlinf.workers.actor.embodied_fsdp_actor_worker import EmbodiedFSDPActor
 
 def normalize_rollout_advantages(advantages, mask, device):
     """Use the same masked sample mean and std on every actor rank."""
-    valid = advantages if mask is None else advantages[mask.expand_as(advantages)]
+    valid = advantages if mask is None else advantages[mask.expand_as(
+        advantages)]
     valid = valid.to(dtype=torch.float64)
     stats = torch.stack((valid.new_tensor(valid.numel()), valid.sum(),
                          valid.square().sum())).to(device)
@@ -26,14 +27,14 @@ def normalize_rollout_advantages(advantages, mask, device):
 
 class SmolVLAActor(EmbodiedFSDPActor):
 
-    @Worker.timer("actor/compute_adv")
+    @Worker.timer('actor/compute_adv')
     def compute_advantages_and_returns(self):
         batch = self.rollout_batch
         algo = self.cfg.algorithm
         rewards = batch['rewards']
-        if (algo.reward_type == 'chunk_level' and
-                not self.cfg.env.train.auto_reset and
-                not self.cfg.env.train.ignore_terminations):
+        if (algo.reward_type == 'chunk_level'
+                and not self.cfg.env.train.auto_reset
+                and not self.cfg.env.train.ignore_terminations):
             # LIBERO executes the rest of a chunk after a success. Mask
             # those steps before summing relative rewards for chunk GAE.
             step_mask, _ = compute_loss_mask(batch['dones'])

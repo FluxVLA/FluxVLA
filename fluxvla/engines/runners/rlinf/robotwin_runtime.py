@@ -28,8 +28,7 @@ def install_strict_seed_runtime():
         _flux_strict_seeds = True
 
         def setup_task(self):
-            self.close(
-                clear_cache=self.args.get('clear_cache_on_reset', True))
+            self.close(clear_cache=self.args.get('clear_cache_on_reset', True))
             self.task = runtime.class_decorator(self.task_name)
             with self.global_lock, self.lock:
                 task = runtime.class_decorator(self.task_name)

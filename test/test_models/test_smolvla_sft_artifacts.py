@@ -50,8 +50,8 @@ def test_missing_explicit_stats_never_falls_back(tmp_path):
     (tmp_path / 'dataset_statistics.json').write_text('{}')
     (tmp_path / 'tokenizer').mkdir()
     with pytest.raises(FileNotFoundError, match='simulator.norm_stats_path'):
-        resolve_sft_artifacts(tmp_path / 'model.pt',
-                              norm_stats_path=tmp_path / 'missing.json')
+        resolve_sft_artifacts(
+            tmp_path / 'model.pt', norm_stats_path=tmp_path / 'missing.json')
 
 
 def test_default_model_uses_sft_config_and_matching_libero_reward_scale():
@@ -65,8 +65,8 @@ def test_default_model_uses_sft_config_and_matching_libero_reward_scale():
 
 def test_ppo_native_eval_preserves_master_weight_precision():
     root = Path(__file__).resolve().parents[2]
-    cfg = Config.fromfile(
-        root / 'configs/smolvla/smolvla_libero_10_ppo_eval.py')
+    cfg = Config.fromfile(root /
+                          'configs/smolvla/smolvla_libero_10_ppo_eval.py')
     assert cfg.model.vlm_backbone.torch_dtype == 'float32'
     assert cfg.model.llm_expert.torch_dtype == 'float32'
     assert cfg.model.pretrained_name_or_path is None

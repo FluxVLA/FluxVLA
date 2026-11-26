@@ -13,9 +13,11 @@ from .pi05_rl_builder import _deep_update, load_sft_weights
 from .smolvla_rl_policy import FluxSmolVLARLPolicy
 
 
-def resolve_sft_artifacts(checkpoint_path, *, norm_stats_path=None,
+def resolve_sft_artifacts(checkpoint_path,
+                          *,
+                          norm_stats_path=None,
                           tokenizer_path=None):
-    """Use the SFT checkpoint's preprocessing artifacts, never PI0.5 defaults."""
+    """Resolve preprocessing artifacts for the SmolVLA SFT checkpoint."""
     checkpoint = Path(checkpoint_path).expanduser().resolve()
     parent = checkpoint if checkpoint.is_dir() else checkpoint.parent
     roots = [parent, parent.parent]
@@ -36,8 +38,9 @@ def resolve_sft_artifacts(checkpoint_path, *, norm_stats_path=None,
     if tokenizer_path is not None:
         tokenizer = Path(tokenizer_path).expanduser().resolve()
     else:
-        tokenizer = next((root / 'tokenizer' for root in roots
-                          if (root / 'tokenizer').is_dir()), None)
+        tokenizer = next((root / 'tokenizer'
+                          for root in roots if (root / 'tokenizer').is_dir()),
+                         None)
         if tokenizer is None:
             tokenizer = next((root for root in roots
                               if (root / 'tokenizer_config.json').is_file()),
@@ -63,7 +66,8 @@ def build_smolvla_policy(cfg, torch_dtype=None):
         raise FileNotFoundError(f'Initial SFT checkpoint not found: {path}')
     options = cfg.fluxvla
     stats_path, tokenizer_path = resolve_sft_artifacts(
-        path, norm_stats_path=options.get('norm_stats_path'),
+        path,
+        norm_stats_path=options.get('norm_stats_path'),
         tokenizer_path=options.get('tokenizer_path'))
     for key in ('joint_logprob', 'is_lora'):
         if cfg.get(key, False):

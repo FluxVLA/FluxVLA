@@ -54,7 +54,8 @@ def main():
     from libero.libero import benchmark, get_libero_path
     from libero.libero.envs import OffScreenRenderEnv
     from rlinf.envs.libero.utils import (get_libero_image,
-                                       get_libero_wrist_image, quat2axisangle)
+                                         get_libero_wrist_image,
+                                         quat2axisangle)
 
     suite = benchmark.get_benchmark_dict()['libero_10']()
     task = suite.get_task(0)
@@ -72,8 +73,7 @@ def main():
             obs, _, _, _ = env.step([0, 0, 0, 0, 0, 0, -1])
         state = np.concatenate([
             obs['robot0_eef_pos'],
-            quat2axisangle(obs['robot0_eef_quat']),
-            obs['robot0_gripper_qpos']
+            quat2axisangle(obs['robot0_eef_quat']), obs['robot0_gripper_qpos']
         ]).astype(np.float32)
         env_obs = dict(
             states=torch.from_numpy(state[None]),
@@ -84,11 +84,16 @@ def main():
         torch.manual_seed(42)
         # Each rollout rank can have one environment while the actor
         # replays shuffled transitions in a larger microbatch.
-        micro = int(policy.rollout_micro_batch_size or cfg.actor.micro_batch_size)
-        rollouts = [policy.predict_action(env_obs, mode='train')[1]
-                    for _ in range(micro)]
-        inputs = {key: torch.cat([r['forward_inputs'][key] for r in rollouts])
-                  for key in rollouts[0]['forward_inputs']}
+        micro = int(policy.rollout_micro_batch_size
+                    or cfg.actor.micro_batch_size)
+        rollouts = [
+            policy.predict_action(env_obs, mode='train')[1]
+            for _ in range(micro)
+        ]
+        inputs = {
+            key: torch.cat([r['forward_inputs'][key] for r in rollouts])
+            for key in rollouts[0]['forward_inputs']
+        }
         old = torch.cat([r['prev_logprobs'] for r in rollouts])
         old_values = torch.cat([r['prev_values'][:, 0] for r in rollouts])
         policy.train()
@@ -96,19 +101,21 @@ def main():
         new = replay['logprobs'].detach()
         ratio = (new.sum((1, 2)) - old.sum((1, 2))).exp()
         logprob_error = (new - old).abs().max().item()
-        value_error = (replay['values'].detach() - old_values).abs().max().item()
-        torch.testing.assert_close(ratio, torch.ones_like(ratio),
-                                   atol=1e-4, rtol=0)
+        value_error = (replay['values'].detach() -
+                       old_values).abs().max().item()
+        torch.testing.assert_close(
+            ratio, torch.ones_like(ratio), atol=1e-4, rtol=0)
         assert logprob_error < 1e-5, logprob_error
         assert value_error < 1e-5, value_error
         del replay
         policy.eval()
-        noise = torch.randn(1, policy.chunk_size, policy.max_action_dim,
-                            device='cuda')
-        rl_actions, _ = policy.predict_action(env_obs, mode='eval', noise=noise)
+        noise = torch.randn(
+            1, policy.chunk_size, policy.max_action_dim, device='cuda')
+        rl_actions, _ = policy.predict_action(
+            env_obs, mode='eval', noise=noise)
 
-        model_cfg = copy.deepcopy(Config.fromfile(
-            cfg.actor.model.fluxvla.config_path).model)
+        model_cfg = copy.deepcopy(
+            Config.fromfile(cfg.actor.model.fluxvla.config_path).model)
         model_cfg.pretrained_name_or_path = None
         model_cfg.name_mapping = None
         model_cfg.strict_mapping = True
@@ -118,7 +125,8 @@ def main():
             from safetensors.torch import load_file
             exported = load_file(str(args.export))
         else:
-            exported = torch.load(args.export, map_location='cpu', weights_only=True)
+            exported = torch.load(
+                args.export, map_location='cpu', weights_only=True)
         assert not any(name.startswith('value_head.') for name in exported)
         native.load_state_dict(exported, strict=True)
         del exported
@@ -131,8 +139,10 @@ def main():
         assert export_error < 1e-5, export_error
         assert torch.isfinite(rl_actions).all()
         result = dict(
-            status='passed', checkpoint=str(checkpoint),
-            task=task.language, action_shape=list(rl_actions.shape),
+            status='passed',
+            checkpoint=str(checkpoint),
+            task=task.language,
+            action_shape=list(rl_actions.shape),
             changed_expert_tensors=expert_changed,
             changed_frozen_tensors=frozen_changed,
             pre_update_chunk_ratio=ratio.tolist(),
