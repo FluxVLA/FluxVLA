@@ -31,6 +31,7 @@ env = dict(
         total_num_envs=16,
         max_episode_steps=480,
         max_steps_per_rollout_epoch=480,
+        reward_coef='${algorithm.reward_coef}',
         auto_reset=True,
         ignore_terminations=True,
         is_eval=True,

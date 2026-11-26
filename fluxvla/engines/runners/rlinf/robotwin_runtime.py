@@ -2,6 +2,8 @@
 
 
 def install_strict_seed_runtime():
+    import gc
+
     import sapien.core as sapien
     from robotwin.envs import vector_env as runtime
 
@@ -26,7 +28,7 @@ def install_strict_seed_runtime():
         _flux_strict_seeds = True
 
         def setup_task(self):
-            self.close()
+            self.close(clear_cache=self.args.get('clear_cache_on_reset', True))
             self.task = runtime.class_decorator(self.task_name)
             with self.global_lock, self.lock:
                 task = runtime.class_decorator(self.task_name)
@@ -39,13 +41,25 @@ def install_strict_seed_runtime():
                     self.episode_info_list = [task.get_info()]
                 finally:
                     task.close_env()
+                    # Reward objects retain back-references to the temporary
+                    # task. Collect these cycles before constructing the next
+                    # slot so closed metadata scenes cannot accumulate.
+                    del task
+                    gc.collect()
 
         def reset(self, env_seed=None):
             with self.global_lock, self.lock:
                 if self.task is not None:
                     self.reset_count += 1
-                    self.task.close_env(clear_cache=self.reset_count %
-                                        self.clear_cache_freq == 0)
+                    # The renderer cache is shared by all slots. Clearing it
+                    # while other scenes are alive reloads the same robot
+                    # meshes into distinct allocations for each new scene.
+                    # Profiles can defer clearing to VectorEnv.close() when
+                    # the entire pool is offloaded instead.
+                    clear_cache = (
+                        self.args.get('clear_cache_on_reset', True)
+                        and self.reset_count % self.clear_cache_freq == 0)
+                    self.task.close_env(clear_cache=clear_cache)
                 if env_seed is not None:
                     self.env_seed = env_seed
                 # Refresh metadata for this seed, not the slot's first scene.
