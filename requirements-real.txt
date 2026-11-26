@@ -2,7 +2,9 @@ catkin_pkg
 defusedxml
 msgpack
 netifaces
+osqp
 protobuf>=3.20.3,<5
 pyzmq
 rospkg
+ruckig==0.12.2
 websocket-client
