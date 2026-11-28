@@ -194,6 +194,9 @@ class FluxVLAServingRunner(PolicyRunnerMixin):
                 raise ValueError('New episodes must start at sequence 1 / '
                                  'observation 0; interleaving is unsupported')
             self.reset_policy(goal)
+            bind_episode = getattr(self.policy, 'set_episode_context', None)
+            if callable(bind_episode):
+                bind_episode(episode_id)
             self._episode_id = episode_id
             self._sequence = 0
             self._observation_id = 0
@@ -245,6 +248,7 @@ class FluxVLAServingRunner(PolicyRunnerMixin):
                                   'planner_recovery_exhausted',
                                   'control_replan_budget_exhausted',
                                   'agent_visual_completion',
+                                  'harness_no_observed_change',
                                   'planner_cannot_progress'):
                     reason = 'planner_error'
                 self._episode_failed = True

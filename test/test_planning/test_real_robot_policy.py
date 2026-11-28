@@ -105,7 +105,12 @@ class Operator:
     movegrip = send_action
 
 
-def make_runner(monkeypatch, tmp_path, runner_cls, width, async_execution):
+def make_runner(monkeypatch,
+                tmp_path,
+                runner_cls,
+                width,
+                async_execution,
+                policy_type='HierarchicalPolicy'):
     import fluxvla.engines as engines
     from fluxvla.engines.runners import (base_inference_runner,
                                          oli_inference_runner)
@@ -156,6 +161,17 @@ def make_runner(monkeypatch, tmp_path, runner_cls, width, async_execution):
         options.update(rtc_config=dict(enabled=True, prefix_len=2))
         if issubclass(runner_cls, OliRTCInferenceRunner):
             options['async_remaining_actions_threshold'] = 2
+    policy = dict(
+        type=policy_type,
+        subtask_source=dict(data_root=str(tmp_path)),
+        completion_mode='disabled',
+        replan_every_chunks=2,
+        planner_image_keys=['cam_high'],
+        planner=dict(
+            type='ScriptedSubtaskPlanner',
+            choices=['skill_0000', 'skill_0001']))
+    if policy_type == 'AgentHarnessPolicy':
+        policy['harness'] = dict(min_subtask_chunks=1, switch_confirmations=1)
     runner = runner_cls(
         cfg=Config(dict(inference_model=dict(type='Fake'))),
         ckpt_path=str(checkpoint),
@@ -166,15 +182,7 @@ def make_runner(monkeypatch, tmp_path, runner_cls, width, async_execution):
         publish_rate=1000,
         task_descriptions={'1': GOAL},
         enable_mixed_precision=False,
-        policy=dict(
-            type='HierarchicalPolicy',
-            subtask_source=dict(data_root=str(tmp_path)),
-            completion_mode='disabled',
-            replan_every_chunks=2,
-            planner_image_keys=['cam_high'],
-            planner=dict(
-                type='ScriptedSubtaskPlanner',
-                choices=['skill_0000', 'skill_0001'])),
+        policy=policy,
         **options)
     runner._get_user_task_instruction = lambda _: [GOAL] * 4
     runner._poll_keyboard_pause = lambda: False
@@ -209,6 +217,62 @@ def test_all_robot_and_rtc_entries_share_policy_lifecycle(
     runner._run_episode(GOAL)
     assert 'prev_actions' not in model.calls[4]
     assert operator.sent == 16
+
+
+@pytest.mark.parametrize('async_execution', [False, True])
+@pytest.mark.parametrize(
+    'runner_cls,width', RUNNERS, ids=[cls.__name__ for cls, _ in RUNNERS])
+def test_harness_all_robot_and_rtc_entries_count_only_real_execution(
+        monkeypatch, tmp_path, runner_cls, width, async_execution):
+    runner, model, operator, inputs = make_runner(
+        monkeypatch,
+        tmp_path,
+        runner_cls,
+        width,
+        async_execution,
+        policy_type='AgentHarnessPolicy')
+    runner._run_episode(GOAL)
+    memory = runner.policy.harness.memory
+    assert memory.executed_steps == operator.sent == 8
+    assert memory.executed_chunks == runner.policy.controller.total_chunks == 4
+    assert memory.pending is None and runner._policy_actor is None
+    assert [data['task_description'] for data in inputs] == \
+        [LABELS[0], LABELS[0], LABELS[1], LABELS[1]]
+    assert all('agent_memory' not in data for data in inputs)
+    if 'RTC' in runner_cls.__name__:
+        assert ['prev_actions' in data for data in model.calls] == \
+            [False, True, False, True]
+    episode_id = memory.episode_id
+    runner._run_episode(GOAL)
+    assert memory.episode_id != episode_id
+    assert memory.executed_steps == 8 and operator.sent == 16
+    assert 'prev_actions' not in model.calls[4]
+
+
+@pytest.mark.parametrize('disabled', [False, True])
+@pytest.mark.parametrize('runner_cls,width', [
+    (AlohaInferenceRunner, 14),
+    (OliRTCInferenceRunner, 33),
+])
+def test_harness_pause_or_disabled_robot_never_counts_queued_actions(
+        monkeypatch, tmp_path, runner_cls, width, disabled):
+    runner, _, operator, _ = make_runner(
+        monkeypatch,
+        tmp_path,
+        runner_cls,
+        width,
+        True,
+        policy_type='AgentHarnessPolicy')
+    runner.disable_puppet_arm = disabled
+    operator.delay = 0.04
+    runner._poll_keyboard_pause = lambda: operator.sent >= 1
+    runner._run_episode(GOAL)
+    memory = runner.policy.harness.memory
+    assert memory.executed_steps == operator.sent == (0 if disabled else 1)
+    assert memory.pending is None and runner._policy_actor is None
+    count = operator.sent
+    time.sleep(0.05)
+    assert operator.sent == count
 
 
 @pytest.mark.parametrize(

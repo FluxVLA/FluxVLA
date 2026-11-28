@@ -13,9 +13,11 @@
 # limitations under the License.
 """Online policies compose inference; datasets remain input processors."""
 
+from .agent_harness_policy import AgentHarnessPolicy
 from .hierarchical_policy import HierarchicalPolicy
 from .vla_policy import ActionChunkProcessor, PolicyOutput, VLAPolicy
 
 __all__ = [
-    'ActionChunkProcessor', 'HierarchicalPolicy', 'PolicyOutput', 'VLAPolicy'
+    'ActionChunkProcessor', 'AgentHarnessPolicy', 'HierarchicalPolicy',
+    'PolicyOutput', 'VLAPolicy'
 ]

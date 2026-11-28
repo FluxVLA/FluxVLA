@@ -26,6 +26,7 @@ from safetensors.torch import save_file
 
 from fluxvla.engines.utils.builder import build_from_cfg
 from fluxvla.engines.utils.root import PLANNERS
+from fluxvla.harness import AgentHarness
 from fluxvla.planning.local_vlm import (LocalVLMSubtaskPlanner, _CandidateTrie,
                                         resolve_planner_checkpoint)
 from fluxvla.transforms import vlm_transforms
@@ -177,6 +178,36 @@ def test_task_candidate_switch_does_not_keep_previous_ids(local):
     assert planner.choose(**request(changed)) == dict(
         choice='different_task_id')
     assert len(model.calls) == 2
+
+
+def test_harness_retains_execution_memory_without_changing_local_sft_prompt(
+        local):
+    planner, processor, model, loads, model_loads = local
+    harness = AgentHarness(
+        CAMERAS, min_subtask_chunks=1, switch_confirmations=1)
+    harness.reset('Stack the blocks.')
+    req = request()
+    harness.observe(req['observation'], 0)
+    choice = harness.choose(planner, **req)
+    assert choice == dict(choice='skill_0001')
+    harness.issue(CANDIDATES[1], 1, 8, 0)
+    harness.acknowledge(3)
+    harness.observe(req['observation'], 3)
+    assert harness.choose(planner, **req) == choice
+    assert harness.memory.executed_steps == 3
+    assert harness.memory.outcomes['skill_0001']['completion'] == 'unverified'
+    assert len(processor.calls) == len(model.calls) == 2
+    for messages, _ in processor.calls:
+        content = messages[0]['content']
+        expected = build_subtask_vlm_messages(
+            req['goal'],
+            [part['image']
+             for part in content if part['type'] == 'image'], CAMERAS)
+        assert messages == expected
+        assert 'agent_memory' not in repr(messages)
+        assert 'skill_000' not in repr(messages) and 'do not' not in repr(
+            messages)
+    assert loads.call_count == model_loads.call_count == 1
 
 
 @pytest.mark.parametrize('bad_input', ['facts', 'camera', 'goal'])
