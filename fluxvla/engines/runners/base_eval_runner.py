@@ -27,12 +27,31 @@ overwatch = initialize_overwatch(__name__)
 
 
 class BaseEvalRunner:
-    """Common helper mixin for environment evaluation runners.
+    """Evaluation consumes an assembled predictor, never planner configs."""
 
-    This base class intentionally keeps the task-specific evaluation loops in
-    their concrete runners. It only centralizes small, side-effect-free helpers
-    that are shared by LIBERO and RoboCasa evaluation code.
-    """
+    def __init__(self, predictor=None, **kwargs):
+        if 'policy' in kwargs or 'observation_adapter' in kwargs:
+            raise TypeError('Build configured evaluation through '
+                            'build_runner_from_cfg(), or inject a predictor '
+                            'instance; runners do not construct policies.')
+        self.predictor = predictor
+
+    def require_predictor(self):
+        if self.predictor is None:
+            raise RuntimeError('An assembled predictor is required; use '
+                               'build_runner_from_cfg() or inject predictor.')
+        return self.predictor
+
+    def close_predictor(self):
+        if getattr(self, 'predictor', None) is not None:
+            self.predictor.close()
+            self.predictor = None
+
+    def cleanup(self):
+        self.close_predictor()
+        self.vla = None
+        self.dataset = None
+        self.denormalize_action = None
 
     @staticmethod
     def build_eval_vla(cfg: Dict):

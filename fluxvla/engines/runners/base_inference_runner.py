@@ -12,7 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import copy
 import io
+import json
+import math
 import os
 import select
 import sys
@@ -31,11 +34,12 @@ from safetensors.torch import load_file
 from fluxvla.engines.utils.torch_utils import set_seed_everywhere
 from ..utils import build_operator_from_cfg, initialize_overwatch
 from ..utils.name_map import str_to_dtype
+from .policy_runner import POLICY_UNSET, PolicyModelAdapter, PolicyRunnerMixin
 
 overwatch = initialize_overwatch(__name__)
 
 
-class BaseInferenceRunner:
+class BaseInferenceRunner(PolicyRunnerMixin):
     """Base class for robot inference runners.
 
     Provides model setup, observation handling, task management, and a
@@ -64,6 +68,7 @@ class BaseInferenceRunner:
         task_suite_name (str): Name of task suite.
         state_dim (int): Dimension of robot state vector.
         action_chunk (int): Number of actions to predict at once.
+        execute_horizon (int): Optional policy dispatch horizon.
         publish_rate (int): ROS publishing rate in Hz.
         max_publish_step (int): Maximum steps per episode.
         use_eval_collector (bool): Whether to use evaluation data collector.
@@ -81,9 +86,23 @@ class BaseInferenceRunner:
             model loading is skipped and inference is delegated to a ZMQ
             server.  Keys: ``server_host``, ``server_port``, ``timeout_s``,
             ``serializer``, ``compress``, ``enable_profiling``.
+        policy (Dict): Optional policy override. If omitted, inherits from
+            cfg.inference then cfg.policy. Explicit None disables it. Uses
+            the legacy path when neither policy nor adapter is set.
+        observation_adapter (Dict): Optional observation enrichment. Receives
+            the raw snapshot and ROS operator; returns data, not an operator.
+        policy_max_observation_age_s (float): Maximum elapsed time between
+            capture and command publication. Expired predictions are discarded.
+        policy_poll_interval_s (float): Delay before collecting fresh evidence
+            when a policy returns waiting/rejected. Only used in policy mode.
+        policy_execution_timeout_s (float): Action dispatch timeout.
+        policy_stop_timeout_s (float): Maximum time to join a cancelled actor.
     """
 
     _PAUSE_COMMAND = 'p'
+    # Opt in only when _execute_actions returns an actual publication count.
+    policy_execution_ack = False
+    policy_custom_loop = False
 
     def __init__(self,
                  cfg: Dict = None,
@@ -107,13 +126,36 @@ class BaseInferenceRunner:
                  enable_mixed_precision: bool = True,
                  keep_params_fp32: bool = False,
                  remote_inference: Dict = None,
+                 policy: Optional[Dict] = POLICY_UNSET,
+                 observation_adapter: Optional[Dict] = POLICY_UNSET,
+                 policy_max_observation_age_s: float = 10.0,
+                 policy_poll_interval_s: float = 0.1,
+                 policy_execution_timeout_s: float = 120.0,
+                 policy_stop_timeout_s: float = 5.0,
+                 execute_horizon: Optional[int] = None,
                  **kwargs):
         from fluxvla.engines import (build_dataset_from_cfg,
                                      build_transform_from_cfg,
                                      build_vla_from_cfg)
 
+        self.configure_policy(
+            policy, observation_adapter, cfg=cfg, section='inference')
         self.ckpt_path = ckpt_path
         self._use_remote = remote_inference is not None
+        self.execute_horizon = getattr(self, 'execute_horizon',
+                                       execute_horizon)
+        self.use_robot_base = use_robot_base
+        self.policy_max_observation_age_s = policy_max_observation_age_s
+        self.policy_poll_interval_s = policy_poll_interval_s
+        self.policy_execution_timeout_s = policy_execution_timeout_s
+        self.policy_stop_timeout_s = policy_stop_timeout_s
+        self._policy_stop_event = threading.Event()
+        self._policy_actor = None
+        if self.policy_requested:
+            self._validate_policy_execution()
+            if not self._use_remote and ckpt_path is None:
+                raise ValueError(
+                    'Local policy inference requires a checkpoint')
 
         self.dataset = None
         self.denormalize_action = None
@@ -207,6 +249,266 @@ class BaseInferenceRunner:
         # Becomes _prev_ctx in the next iteration for cross-chunk continuity.
         self._prev_ctx = None
         self._action_ctx = SimpleNamespace()
+
+        self._policy_new_segment = True
+        self.setup_policy(
+            vla=PolicyModelAdapter(self._policy_predict,
+                                   self._reset_policy_model_history),
+            input_processor=self._policy_inputs,
+            output_processor=self._policy_actions,
+            unnorm_key=self.task_suite_name,
+            mixed_precision_dtype=self.mixed_precision_dtype,
+            enable_mixed_precision=(self.enable_mixed_precision
+                                    and not self._use_remote))
+
+    def _validate_policy_execution(self):
+        # Check before constructing operators or sending any robot command.
+        if ((type(self)._run_episode is not BaseInferenceRunner._run_episode
+             and not self.policy_custom_loop) or self.use_robot_base):
+            raise ValueError(
+                'Policy inference requires the shared acknowledged '
+                'loop; custom/mobile-base execution is unsupported')
+        if not self.policy_execution_ack:
+            raise ValueError('This executor must implement publication-count '
+                             'acknowledgments before enabling a policy')
+        rtc = getattr(self, 'rtc_config', None) or {}
+        if self._use_remote and rtc.get('enabled', False):
+            raise ValueError('Policy RTC requires local inference; the remote '
+                             'transport does not carry normalized prefixes')
+        horizon = getattr(self, 'execute_horizon', None)
+        if horizon is not None and (type(horizon) is not int or horizon < 1):
+            raise ValueError('Policy execute_horizon must be positive')
+        if (not math.isfinite(self.policy_max_observation_age_s)
+                or self.policy_max_observation_age_s <= 0
+                or not math.isfinite(self.policy_poll_interval_s)
+                or self.policy_poll_interval_s < 0):
+            raise ValueError('Invalid policy observation timing limits')
+        if any(not math.isfinite(value) or value <= 0
+               for value in (self.policy_execution_timeout_s,
+                             self.policy_stop_timeout_s)):
+            raise ValueError('Policy execution timeouts must be positive')
+
+    def _policy_is_shutdown(self):
+        import rospy
+
+        return rospy.is_shutdown()
+
+    def _policy_publish_rate(self):
+        import rospy
+
+        return rospy.Rate(self.publish_rate)
+
+    def _policy_execution_cancelled(self):
+        return (self._policy_stop_event.is_set() or self._policy_is_shutdown())
+
+    def _policy_trajectory_options(self):
+        return ({
+            'stop_event': self._policy_stop_event
+        } if getattr(self, 'policy', None) is not None else {})
+
+    def _inference_context(self):
+        rtc = getattr(self, 'rtc_config', None) or {}
+        use_vjp = (
+            rtc.get('enabled', False)
+            and rtc.get('method', 'prefix') == 'guidance'
+            and rtc.get('use_vjp', False))
+        return torch.no_grad() if use_vjp else torch.inference_mode()
+
+    def _remaining_rtc_actions(self, previous, timestamp, dt):
+        """Use actual dispatch indices in policy mode, never elapsed time."""
+        from ..utils.trajectory_utils import resample_remaining
+
+        raw = previous.raw_actions
+        if raw.ndim == 3:
+            raw = raw[0]
+        if self.policy is not None:
+            return raw[previous.executed_steps:]
+        offset = (timestamp - previous.action_timestamp) / dt
+        return resample_remaining(raw, offset)
+
+    def _stop_policy_execution(self):
+        self._policy_stop_event.set()
+        stop = getattr(self.ros_operator, 'stop_trajectory', None)
+        if not callable(stop):
+            raise ValueError('Policy inference requires stop_trajectory')
+        stop()
+        # A stop request is not evidence that a background sender has exited.
+        # Join every sender before capturing another snapshot/resetting a
+        # prefix.
+        threads = (self._policy_actor,
+                   getattr(self.ros_operator, '_traj_thread', None))
+        for thread in threads:
+            if thread is None or thread is threading.current_thread():
+                continue
+            thread.join(self.policy_stop_timeout_s)
+            if thread.is_alive():
+                raise TimeoutError('Robot actor did not stop; refusing '
+                                   'to replan or publish another chunk')
+
+    def _execute_policy_actions(self, actions, rate):
+        """Dispatch on one acknowledged actor, with a planning barrier.
+
+        Robot hooks run their synchronous send path on this actor. This also
+        supports async/RTC runners without untracked operator queues. No
+        planner snapshot overlaps action publication. RTC retains only the
+        unexecuted prediction suffix of the SAME active subtask.
+        """
+        result = {}
+        self._policy_stop_event = threading.Event()
+
+        def execute():
+            try:
+                result['published'] = self._execute_actions(actions, rate)
+            except BaseException as exc:
+                result['error'] = exc
+
+        actor = threading.Thread(
+            target=execute, daemon=True, name='fluxvla-policy-actor')
+        self._policy_actor = actor
+        actor.start()
+        deadline = time.monotonic() + self.policy_execution_timeout_s
+        try:
+            while actor.is_alive():
+                actor.join(0.01)
+                if self._policy_is_shutdown() or self._poll_keyboard_pause():
+                    self._stop_policy_execution()
+                    break
+                if time.monotonic() > deadline:
+                    raise TimeoutError('Policy action dispatch timed out')
+            if 'error' in result:
+                raise result['error']
+            return result['published']
+        finally:
+            if actor.is_alive():
+                self._stop_policy_execution()
+            if not actor.is_alive():
+                self._policy_actor = None
+
+    def _reset_policy_model_history(self):
+        self._stop_policy_execution()
+        self.reset_inference_history()
+        self._policy_new_segment = True
+        reset = getattr(self.vla, 'reset_inference_history', None)
+        if callable(reset):
+            reset()
+
+    def _policy_inputs(self, observation):
+        self._action_ctx.instruction = observation['task_description']
+        observation = dict(observation)
+        observation['is_new_episode'] = (
+            observation.get('is_new_episode', False)
+            or self._policy_new_segment)
+        self._policy_new_segment = False
+        return self._preprocess_observation(observation['task_description'],
+                                            observation)
+
+    def _policy_predict(self, **inputs):
+        # Remote responses are already native actions. Some robot overrides
+        # directly access self.vla, so use the shared transport explicitly.
+        if self._use_remote:
+            return self._predict_action_remote(inputs)
+        return self._predict_action(inputs)
+
+    def _policy_actions(self, raw_actions, *, raw_state=None):
+        # Preserve each robot's delta/gripper processing. The legacy remote
+        # postprocessor skips denormalization, avoiding a second conversion.
+        actions = self._postprocess_actions(raw_actions)
+        horizon = getattr(self, 'execute_horizon', None)
+        if horizon is not None:
+            actions = actions[:horizon]
+        if (not isinstance(actions, np.ndarray) or actions.ndim != 2
+                or not actions.size or not np.isfinite(actions).all()):
+            raise ValueError(
+                'Policy must produce finite native [T, A] actions')
+        return actions, []
+
+    def _infer_and_execute_policy(self, observation_id, rate, remaining_steps):
+        self._validate_policy_execution()
+        self._stop_policy_execution()
+        self._action_ctx = SimpleNamespace()
+        observation = self.update_observation_window()
+        captured_at = time.monotonic()
+        observation = copy.deepcopy(observation)
+        output = self.step_policy(
+            observation, observation_id, environment=self.ros_operator)
+        overwatch.info('Policy: ' +
+                       json.dumps(output.event(), ensure_ascii=False))
+        if output.status != 'ready':
+            self._stop_policy_execution()
+            return output, 0
+        try:
+            if time.monotonic(
+            ) - captured_at > self.policy_max_observation_age_s:
+                raise TimeoutError(
+                    'Observation expired during policy inference')
+            if self._policy_is_shutdown() or self._poll_keyboard_pause():
+                raise InterruptedError('Stopped before action publication')
+        except Exception:
+            self.acknowledge_policy(0)
+            self._stop_policy_execution()
+            raise
+        actions = output.actions[:remaining_steps]
+        try:
+            published = self._execute_policy_actions(
+                actions, rate) if len(actions) else 0
+        except BaseException:
+            self.acknowledge_policy(0)
+            self._stop_policy_execution()
+            raise
+        # None is not evidence that a trajectory was executed in full.
+        if type(published) is not int or not 0 <= published <= len(actions):
+            self._stop_policy_execution()
+            raise ValueError(
+                'Executor must report the number of published steps')
+        self.acknowledge_policy(published)
+        self._action_ctx.executed_steps = published
+        self._prev_ctx = self._action_ctx
+        return output, published
+
+    def _run_policy_episode(self, default_instruction, *, instructions=None):
+        rate = self._policy_publish_rate()
+        self._validate_policy_execution()
+        self._stop_policy_execution()
+        if instructions is None:
+            instructions = self._get_user_task_instruction(default_instruction)
+        self.reset_inference_history()
+        self._policy_new_segment = True
+        goal = None
+        observation_id = published_steps = 0
+        try:
+            # Preserve the operator-selected chunk count. A repeated goal
+            # keeps the same subtask; a changed goal starts a new session.
+            for instruction in instructions:
+                if self._policy_is_shutdown() or (
+                        self.max_publish_step
+                        and published_steps >= self.max_publish_step):
+                    break
+                if goal != instruction:
+                    self.reset_policy(instruction)
+                    goal = instruction
+                    observation_id = 0
+                output, sent = self._infer_and_execute_policy(
+                    observation_id, rate,
+                    (self.max_publish_step -
+                     published_steps if self.max_publish_step else None))
+                observation_id += 1
+                published_steps += sent
+                if output.status not in {'ready', 'waiting', 'rejected'}:
+                    break
+                if ((output.status == 'ready'
+                     and self._policy_stop_event.is_set())
+                        or self._poll_keyboard_pause()):
+                    break
+                if output.status != 'ready':
+                    # Obtain a new snapshot on the next iteration, not a
+                    # second reading of the frozen pre-planning observation.
+                    time.sleep(self.policy_poll_interval_s)
+        except (InterruptedError, KeyboardInterrupt):
+            overwatch.info(
+                'Policy episode cancelled before further publication')
+        finally:
+            self._stop_policy_execution()
+            self.reset_inference_history()
 
     def _init_zmq_client(self, cfg: Dict):
         """Initialize ZMQ client for remote inference.
@@ -317,6 +619,11 @@ class BaseInferenceRunner:
             raise ValueError(
                 'Local inference requires cfg.inference_model before '
                 'run_setup; use remote_inference for a remote policy.')
+        if self.policy_requested:
+            self._validate_policy_execution()
+            if not callable(
+                    getattr(self.ros_operator, 'stop_trajectory', None)):
+                raise ValueError('Policy inference requires stop_trajectory')
         set_seed_everywhere(self.seed)
         if self._use_remote:
             if not self.ping():
@@ -362,26 +669,16 @@ class BaseInferenceRunner:
         overwatch.info('Starting inference runner')
 
         # Main inference loop
-        with torch.inference_mode():
+        with self._inference_context():
             while not rospy.is_shutdown():
                 self._run_episode(initial_instruction)
 
     def _run_episode(self, default_instruction: str):
-        """Run a single episode: preprocess → predict → postprocess → execute.
-
-        Subclasses should override individual phases rather than this method.
-
-        Args:
-            default_instruction (str): Default task instruction to use
-        """
-        """Run a single episode: preprocess → predict → postprocess → execute.
-
-        Subclasses should override individual phases rather than this method.
-
-        Args:
-            default_instruction (str): Default task instruction to use
-        """
+        """Run configured policy, or retain the original four-phase loop."""
         import rospy
+
+        if self.policy is not None:
+            return self._run_policy_episode(default_instruction)
 
         t = 0
         rate = rospy.Rate(self.publish_rate)
@@ -428,6 +725,16 @@ class BaseInferenceRunner:
             dict: Model-ready inputs (local) or raw obs (remote).
         """
         obs = self.update_observation_window()
+        return self._preprocess_observation(instruction, obs)
+
+    def _preprocess_observation(self, instruction: str, observation: dict):
+        """Preprocess the same snapshot used by a high-level planner.
+
+        Keep observation capture separate so hierarchical inference cannot
+        silently re-observe after committing a decision for an older scene.
+        The instruction is already validated and rendered by the caller.
+        """
+        obs = dict(observation)
         if obs.get('qpos') is not None:
             self._action_ctx.state = np.asarray(obs['qpos']).copy()
         obs['task_description'] = instruction
@@ -645,6 +952,9 @@ class BaseInferenceRunner:
         and action context.
         """
         overwatch.info('Cleaning up BaseInferenceRunner')
+        if self.policy is not None:
+            self._stop_policy_execution()
+        self.release_policy()
         if self._use_remote:
             import zmq
             if hasattr(self, '_zmq_socket') and not self._zmq_socket.closed:
@@ -693,6 +1003,10 @@ class BaseInferenceRunner:
         Args:
             actions (np.ndarray): Array of denormalized robot actions
             rate: ROS rate limiter for action timing
+
+        Policy-enabled executors must return an integer count of published
+        command steps (including partial/zero execution), not physical task
+        completion. Async submission alone cannot acknowledge execution.
         """
         raise NotImplementedError(
             'Subclasses must implement _execute_actions method')

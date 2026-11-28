@@ -47,6 +47,8 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             Defaults to None (execute all).
     """
 
+    policy_execution_ack = True
+
     def __init__(self,
                  gripper_threshold: float = 0.05,
                  prepare_pose: List[float] = None,
@@ -319,14 +321,16 @@ class FrankaInferenceRunner(BaseInferenceRunner):
     def _execute_actions(self, actions, rate):
         """Execute active-arm actions (sync or async)."""
         if self.disable_puppet_arm:
-            return
+            return 0
 
         ctx = self._action_ctx
+        native_async = self.async_execution and getattr(self, 'policy',
+                                                        None) is None
         final_chunk = False
         if self._remaining_instruction_chunks is not None:
             final_chunk = self._remaining_instruction_chunks <= 1
 
-        if self.async_execution and self._prev_ctx is not None:
+        if native_async and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
             offset = (time.time() - ctx.action_timestamp) / self.dt
             # Drop actions that are already stale while the previous chunk was
@@ -349,13 +353,14 @@ class FrankaInferenceRunner(BaseInferenceRunner):
                                             7]
             gripper_trajectories[arm] = actions[:, arm_slice.start + 7]
 
-        self.ros_operator.execute_trajectory(
+        published = self.ros_operator.execute_trajectory(
             arm_trajectories=arm_trajectories,
             gripper_trajectories=gripper_trajectories,
             dt=self.dt,
-            async_exec=self.async_execution)
+            async_exec=native_async,
+            **self._policy_trajectory_options())
 
-        if self.async_execution and self.execute_horizon is not None:
+        if native_async and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
             if final_chunk:
                 self.ros_operator.stop_trajectory()
@@ -364,6 +369,7 @@ class FrankaInferenceRunner(BaseInferenceRunner):
             self._remaining_instruction_chunks -= 1
             if self._remaining_instruction_chunks <= 0:
                 self._remaining_instruction_chunks = None
+        return published
 
     def cleanup(self):
         """Clean up resources."""

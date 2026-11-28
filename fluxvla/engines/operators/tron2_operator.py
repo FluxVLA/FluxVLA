@@ -267,10 +267,13 @@ class Tron2Operator:
                            right_gripper_trajectory,
                            head_trajectory=None,
                            dt: float = 0.1,
-                           async_exec: bool = False):
+                           async_exec: bool = False,
+                           stop_event=None):
         """Execute trajectory in sync or async mode."""
-        self._traj_stop_event.set()
-        self._traj_stop_event = threading.Event()
+        if self._traj_stop_event is not stop_event:
+            self._traj_stop_event.set()
+        self._traj_stop_event = (
+            stop_event if stop_event is not None else threading.Event())
         stop_event = self._traj_stop_event
 
         args = (left_arm_trajectory, right_arm_trajectory,
@@ -282,7 +285,7 @@ class Tron2Operator:
                 target=self._run_trajectory, args=args, daemon=True)
             self._traj_thread.start()
         else:
-            self._run_trajectory(*args)
+            return self._run_trajectory(*args)
 
     def stop_trajectory(self):
         """Stop the currently executing trajectory."""
@@ -313,14 +316,14 @@ class Tron2Operator:
                         head_trajectory, dt, stop_event):
         """Run trajectory in selected execution mode."""
         if stop_event.is_set():
-            return
+            return 0
 
         n = len(left_arm_trajectory)
         if n == 0:
-            return
+            return 0
 
         if self.trajectory_exec_mode == 'movej':
-            self._run_trajectory_movej(
+            return self._run_trajectory_movej(
                 left_arm_trajectory=left_arm_trajectory,
                 right_arm_trajectory=right_arm_trajectory,
                 left_gripper_trajectory=left_gripper_trajectory,
@@ -329,7 +332,7 @@ class Tron2Operator:
                 dt=dt,
                 stop_event=stop_event)
         elif self.trajectory_exec_mode == 'servoj':
-            self._run_trajectory_servoj(
+            return self._run_trajectory_servoj(
                 left_arm_trajectory=left_arm_trajectory,
                 right_arm_trajectory=right_arm_trajectory,
                 left_gripper_trajectory=left_gripper_trajectory,
@@ -350,7 +353,7 @@ class Tron2Operator:
         n = len(left_arm_trajectory)
         for i in range(n):
             if stop_event.is_set():
-                return
+                return i
             head = head_trajectory[i] if head_trajectory is not None else None
             self._send_joints(
                 left=left_arm_trajectory[i],
@@ -361,6 +364,7 @@ class Tron2Operator:
                 right_opening=float(right_gripper_trajectory[i]))
             self._send_head(head_positions=head, duration=dt)
             time.sleep(dt)
+        return n
 
     def _resolve_head_positions(self,
                                 head_positions: Optional[List[float]] = None
@@ -417,29 +421,35 @@ class Tron2Operator:
         steps_per_seg = max(int(dt * self.servoj_frequency), 1)
 
         t0 = time.perf_counter()
-        global_step = 0
+        if stop_event.is_set():
+            return 0
+        # The first waypoint is a predicted target, not an assumed current
+        # pose. Publish it explicitly, including single-action chunks.
+        self._send_gripper(
+            left_opening=float(left_gripper_trajectory[0]),
+            right_opening=float(right_gripper_trajectory[0]))
+        self._servo_step(wps[0], t0, 1, servo_dt)
+        global_step = published = 1
 
         for seg in range(len(wps) - 1):
             if stop_event.is_set():
-                return
+                return published
             q0, q1 = wps[seg], wps[seg + 1]
-            self._send_gripper(
-                left_opening=float(left_gripper_trajectory[seg]),
-                right_opening=float(right_gripper_trajectory[seg]))
 
             for step in range(1, steps_per_seg + 1):
+                if stop_event.is_set():
+                    return published
                 q_cmd = [
                     a + (step / steps_per_seg) * (b - a)
                     for a, b in zip(q0, q1)
                 ]
                 global_step += 1
                 self._servo_step(q_cmd, t0, global_step, servo_dt)
-
-        self._send_gripper(
-            left_opening=float(left_gripper_trajectory[n - 1]),
-            right_opening=float(right_gripper_trajectory[n - 1]))
-
-        return
+            self._send_gripper(
+                left_opening=float(left_gripper_trajectory[seg + 1]),
+                right_opening=float(right_gripper_trajectory[seg + 1]))
+            published += 1
+        return published
 
     # ========== Motion Execution ==========
 

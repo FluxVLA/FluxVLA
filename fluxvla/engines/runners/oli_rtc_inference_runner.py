@@ -321,6 +321,8 @@ class OliRTCInferenceRunner(OliInferenceRunner):
         )
 
     def run(self, initial_instruction='pour water into the cup'):
+        if self.policy is not None:
+            return super().run(initial_instruction)
         overwatch.info('Starting Oli RTC inference runner')
         if not self.interactive:
             prompt_id = self.default_prompt_id
@@ -333,6 +335,8 @@ class OliRTCInferenceRunner(OliInferenceRunner):
             self._run_episode(initial_instruction)
 
     def _run_episode(self, default_instruction):
+        if self.policy is not None:
+            return super()._run_episode(default_instruction)
         instructions = self._get_user_task_instruction(default_instruction)
         if not instructions or not self._running:
             return
@@ -460,6 +464,27 @@ class OliRTCInferenceRunner(OliInferenceRunner):
             stop_event.set()
         finally:
             producer_done.set()
+
+    def _policy_predict(self, **inputs):
+        """Reuse RTC within a subtask, on the policy's committed snapshot."""
+        context = self._action_ctx
+        context.inference_start = time.time()
+        previous = self._prev_ctx
+        if previous is not None and self._rtc_enabled():
+            remaining = self._remaining_rtc_actions(previous,
+                                                    context.inference_start,
+                                                    self._dt)
+            request = OliRTCInferenceRequest(
+                prefix_actions=remaining,
+                prefix_len=min(self._rtc_prefix_len(), len(remaining)),
+                remaining_actions=len(remaining),
+                active_chunk_id=None,
+                active_index_at_request=previous.executed_steps)
+            self._apply_request_prefix(inputs, request)
+        raw = super()._policy_predict(**inputs)
+        context.raw_actions = raw.detach().float().cpu().numpy()
+        context.inference_elapsed = time.time() - context.inference_start
+        return raw
 
     def _infer_action_chunk(self, instruction: str,
                             request: OliRTCInferenceRequest):

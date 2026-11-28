@@ -24,6 +24,7 @@ from .robocasa_transforms import (  # noqa: F401, F403
     DenormalizeRobocasaAction, IdentityRobocasaAction,
     ProcessRobocasaEvalInputs, ProcessRobocasaVideoHistoryInputs,
     RobocasaEvalDataset, RobocasaGR1N15Bridge, flatten_robocasa_state)
+from .subtask_vlm_transforms import BuildSubtaskMessages  # noqa: F401
 from .transform_actions import *  # noqa: F401, F403
 from .transform_cosmos3 import *  # noqa: F401, F403
 from .transform_images import *  # noqa: F401, F403

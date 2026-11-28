@@ -1,5 +1,18 @@
 #!/usr/bin/env python
-"""Launch a single- or multi-node stateless FluxVLA ZMQ server."""
+# Copyright 2026 Limx Dynamics
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+"""Launch FluxVLA ZMQ model replicas or a single in-process policy server."""
 
 from __future__ import annotations
 import argparse
@@ -32,7 +45,7 @@ def parse_args(argv=None):
     from mmengine import DictAction
 
     parser = argparse.ArgumentParser(
-        description='Launch the stateless FluxVLA ZMQ inference service.')
+        description='Launch the FluxVLA ZMQ inference service.')
     parser.add_argument('--config', required=True)
     parser.add_argument('--ckpt-path', default=None)
     networking = parser.add_argument_group('advanced networking')

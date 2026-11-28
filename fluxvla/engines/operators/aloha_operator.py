@@ -516,7 +516,8 @@ class AlohaOperator:
                            right_trajectory,
                            dt=0.1,
                            async_exec=False,
-                           base_velocity=None):
+                           base_velocity=None,
+                           stop_event=None):
         """Execute trajectories for both arms.
 
         Args:
@@ -534,9 +535,11 @@ class AlohaOperator:
             np.asarray(base_velocity) if base_velocity is not None else None)
 
         # Stop any existing trajectory (old event stays set → old thread exits)
-        self._traj_stop_event.set()
+        if self._traj_stop_event is not stop_event:
+            self._traj_stop_event.set()
         # Fresh event for the new trajectory
-        self._traj_stop_event = threading.Event()
+        self._traj_stop_event = (
+            stop_event if stop_event is not None else threading.Event())
 
         stop_event = self._traj_stop_event
         if async_exec:
@@ -546,8 +549,8 @@ class AlohaOperator:
                 daemon=True)
             self._traj_thread.start()
         else:
-            self._run_trajectory(left_traj, right_traj, dt, base_vel,
-                                 stop_event)
+            return self._run_trajectory(left_traj, right_traj, dt, base_vel,
+                                        stop_event)
 
     def stop_trajectory(self):
         """Stop the currently executing trajectory."""
@@ -678,10 +681,13 @@ class AlohaOperator:
         stop = stop_event
         rate = rospy.Rate(1.0 / dt)
 
+        published = 0
         for i in range(len(left_traj)):
             if rospy.is_shutdown() or stop.is_set():
                 break
             self._send_joints(left_traj[i].tolist(), right_traj[i].tolist())
             if base_vel is not None:
                 self._send_base_velocity(base_vel[i])
+            published += 1
             rate.sleep()
+        return published

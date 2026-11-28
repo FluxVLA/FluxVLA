@@ -316,7 +316,8 @@ class BaseOperator:
                            gripper_trajectories=None,
                            head_trajectory=None,
                            dt: float = 0.1,
-                           async_exec: bool = False):
+                           async_exec: bool = False,
+                           stop_event=None):
         """Execute arm/gripper trajectories in sync or async mode."""
         if dt <= 0.0:
             raise ValueError('dt must be positive')
@@ -325,8 +326,10 @@ class BaseOperator:
         n = self._validate_trajectory_lengths(arm_trajectories,
                                               gripper_trajectories)
 
-        self._traj_stop_event.set()
-        self._traj_stop_event = threading.Event()
+        if self._traj_stop_event is not stop_event:
+            self._traj_stop_event.set()
+        self._traj_stop_event = (
+            stop_event if stop_event is not None else threading.Event())
         stop_event = self._traj_stop_event
         args = (arm_trajectories, gripper_trajectories, head_trajectory, n, dt,
                 stop_event)
@@ -336,7 +339,7 @@ class BaseOperator:
                 target=self._run_trajectory, args=args, daemon=True)
             self._traj_thread.start()
         else:
-            self._run_trajectory(*args)
+            return self._run_trajectory(*args)
 
     @staticmethod
     def _validate_trajectory_lengths(arm_trajectories, gripper_trajectories):
@@ -365,7 +368,7 @@ class BaseOperator:
         rate = rospy.Rate(1.0 / dt)
         for idx in range(num_steps):
             if rospy.is_shutdown() or stop_event.is_set():
-                return
+                return idx
 
             arm_targets = {
                 name: trajectory[idx]
@@ -385,6 +388,7 @@ class BaseOperator:
                 self.send_gripper(gripper_targets)
 
             rate.sleep()
+        return num_steps
 
     def stop_trajectory(self):
         self._traj_stop_event.set()

@@ -48,6 +48,8 @@ class Tron2InferenceRunner(BaseInferenceRunner):
 
     """
 
+    policy_execution_ack = True
+
     def __init__(self,
                  gripper_threshold: float = 0.1,
                  prepare_pose: List[float] = None,
@@ -287,11 +289,13 @@ class Tron2InferenceRunner(BaseInferenceRunner):
         In async mode, skips elapsed steps and executes in background thread.
         """
         if self.disable_puppet_arm:
-            return
+            return 0
 
         ctx = self._action_ctx
+        native_async = self.async_execution and getattr(self, 'policy',
+                                                        None) is None
 
-        if self.async_execution and self._prev_ctx is not None:
+        if native_async and self._prev_ctx is not None:
             ctx.action_timestamp = ctx.inference_start
             offset = (time.time() - ctx.action_timestamp) / self.dt
             actions = resample_remaining(actions, offset)
@@ -303,17 +307,19 @@ class Tron2InferenceRunner(BaseInferenceRunner):
         head_trajectory = actions[:,
                                   14:16] if self.enable_head_control else None
 
-        self.ros_operator.execute_trajectory(
+        published = self.ros_operator.execute_trajectory(
             left_arm_trajectory=actions[:, :7],
             right_arm_trajectory=actions[:, 7:14],
             left_gripper_trajectory=actions[:, 16],
             right_gripper_trajectory=actions[:, 17],
             head_trajectory=head_trajectory,
             dt=self.dt,
-            async_exec=self.async_execution)
+            async_exec=native_async,
+            **self._policy_trajectory_options())
 
-        if self.async_execution and self.execute_horizon is not None:
+        if native_async and self.execute_horizon is not None:
             time.sleep(self.execute_horizon * self.dt)
+        return published
 
     def cleanup(self):
         """Clean up resources."""
